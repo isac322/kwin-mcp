@@ -8,7 +8,7 @@ from mcp.server.fastmcp import FastMCP
 
 from kwin_mcp.accessibility import find_elements, get_accessibility_tree
 from kwin_mcp.input import InputBackend, MouseButton
-from kwin_mcp.screenshot import capture_screenshot_base64
+from kwin_mcp.screenshot import capture_screenshot_to_file
 from kwin_mcp.session import Session, SessionConfig
 
 mcp = FastMCP("kwin-mcp")
@@ -117,7 +117,7 @@ def session_stop() -> str:
 def screenshot(include_cursor: bool = False) -> str:
     """Capture a screenshot of the isolated session.
 
-    Returns base64-encoded PNG image data.
+    Returns the file path of the saved PNG image.
     """
     session = _get_session()
     info = session.info
@@ -125,11 +125,14 @@ def screenshot(include_cursor: bool = False) -> str:
         msg = "No session info available"
         raise RuntimeError(msg)
 
-    return capture_screenshot_base64(
+    path = capture_screenshot_to_file(
         dbus_address=info.dbus_address,
         wayland_socket=info.wayland_socket,
         include_cursor=include_cursor,
+        output_dir=info.screenshot_dir,
     )
+    size_kb = path.stat().st_size / 1024
+    return f"Screenshot saved: {path} ({size_kb:.1f} KB)"
 
 
 @mcp.tool()

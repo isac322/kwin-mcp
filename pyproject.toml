@@ -1,7 +1,7 @@
 [project]
 name = "kwin-mcp"
 version = "0.1.0"
-description = "MCP server for GUI automation on KDE Plasma 6 Wayland via isolated kwin_wayland --virtual sessions"
+description = "MCP server for Linux desktop GUI automation on KDE Plasma 6 Wayland via isolated KWin virtual sessions"
 readme = "README.md"
 license = "MIT"
 authors = [{ name = "Byeonghoon Yoo", email = "bhyoo@bhyoo.com" }]

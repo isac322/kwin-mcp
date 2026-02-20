@@ -70,3 +70,14 @@ indent-style = "space"
 
 [tool.ty.environment]
 python-version = "3.12"
+
+# gi.repository and dbus.bus are dynamic modules that cannot be resolved statically
+[[tool.ty.overrides]]
+include = ["src/kwin_mcp/accessibility.py"]
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"
+
+[[tool.ty.overrides]]
+include = ["src/kwin_mcp/input.py"]
+[tool.ty.overrides.rules]
+possibly-missing-attribute = "ignore"

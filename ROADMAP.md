@@ -75,11 +75,11 @@ Claude Code
 - **완료**: E2E 테스트에서 키보드 입력, 마우스 호버, 우클릭 모두 시각적 변화 확인
 - **기술 히스토리**: fake-input(Plasma 6에서 제거) → RemoteDesktop Portal(권한 대화상자 필요) → KWin EIS 직접 연결(최종)
 
-### M5: MCP 서버 통합 (`server.py`) ⚠️ 부분 완료
+### M5: MCP 서버 통합 (`server.py`) ✅
 - [x] 10개 도구 등록 및 MCP 서버 구동
-- [ ] Claude Code 설정에 서버 등록
+- [x] Claude Code 설정에 서버 등록 (.mcp.json)
 - [ ] 전체 피드백 루프 테스트 (실행 → 조작 → 확인)
-- **진행 중**: 서버 코드 완성, Claude Code 등록 및 실제 사용 테스트 필요
+- **완료**: 서버 코드 완성, kwin-mcp 및 krema 프로젝트에 .mcp.json 등록
 
 ### M6: krema 통합 테스트
 - [ ] krema dock 앱을 격리 환경에서 실행

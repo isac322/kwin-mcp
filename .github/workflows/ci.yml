@@ -27,7 +27,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcairo2-dev libgirepository1.0-dev libdbus-1-dev pkg-config
+          sudo apt-get install -y libcairo2-dev libgirepository-2.0-dev libdbus-1-dev pkg-config
       - run: uv run ty check src/
 
   build:
@@ -38,7 +38,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcairo2-dev libgirepository1.0-dev libdbus-1-dev pkg-config
+          sudo apt-get install -y libcairo2-dev libgirepository-2.0-dev libdbus-1-dev pkg-config
       - run: uv build
       - run: uvx twine check dist/*
       - uses: actions/upload-artifact@v4

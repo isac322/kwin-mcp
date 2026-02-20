@@ -28,14 +28,14 @@ Claude Code가 이 MCP를 통해 할 수 있어야 하는 것:
 Claude Code
   └── kwin-mcp (MCP 서버)
         ├── 환경 관리: dbus-run-session + kwin_wayland --virtual
-        ├── 화면 관찰: KWin ScreenShot2 D-Bus + AT-SPI2
-        └── 입력 주입: fake-input Wayland 프로토콜 (inputsynth)
+        ├── 화면 관찰: spectacle CLI + AT-SPI2
+        └── 입력 주입: KWin EIS D-Bus + libei
 ```
 
 3중 격리로 호스트 데스크탑에 영향 없음:
 1. dbus-run-session → D-Bus 세션 격리
 2. kwin_wayland --virtual → 디스플레이 격리
-3. fake-input 프로토콜 → 입력 격리
+3. EIS (Emulated Input Server) → 입력 격리 (격리 세션 내부만)
 
 ---
 
@@ -47,36 +47,39 @@ Claude Code
 - [x] ROADMAP.md, CLAUDE.md, README.md
 - [x] git 초기화
 
-### M1: 격리 환경 관리 (`session.py`)
-- [ ] dbus-run-session + kwin_wayland --virtual 시작/종료
-- [ ] AT-SPI 데몬 자동 시작
-- [ ] 앱 실행 (환경변수 자동 설정: QT_LINUX_ACCESSIBILITY_ALWAYS_ON 등)
-- [ ] 프로세스 트리 정리
-- **완료 기준**: `session_start`로 kcalc 같은 Qt 앱이 격리 KWin에서 실행됨
+### M1: 격리 환경 관리 (`session.py`) ✅
+- [x] dbus-run-session + kwin_wayland --virtual 시작/종료
+- [x] AT-SPI 데몬 자동 시작
+- [x] 앱 실행 (환경변수 자동 설정: QT_LINUX_ACCESSIBILITY_ALWAYS_ON 등)
+- [x] 프로세스 트리 정리
+- **완료**: kcalc이 격리 KWin에서 실행됨 확인
 
-### M2: 스크린샷 캡처 (`screenshot.py`)
-- [ ] KWin ScreenShot2 D-Bus 연동 (격리 세션)
-- [ ] CaptureActiveScreen → pipe fd → ARGB32 → PNG → base64
-- [ ] MCP 도구로 이미지 반환
-- **완료 기준**: 격리 세션의 앱 화면을 캡처하여 Claude Code에서 이미지로 확인 가능
+### M2: 스크린샷 캡처 (`screenshot.py`) ✅
+- [x] spectacle CLI를 사용한 격리 세션 스크린샷 캡처
+- [x] PNG → base64 변환
+- [x] MCP 도구로 이미지 반환
+- **완료**: 격리 세션의 앱 화면을 52KB+ PNG로 캡처 확인
 
-### M3: AT-SPI2 접근성 트리 (`accessibility.py`)
-- [ ] gi.repository.Atspi로 격리 세션의 위젯 트리 탐색
-- [ ] 역할, 이름, 상태, 좌표, 크기 추출
-- [ ] 텍스트 형식으로 MCP 도구에서 반환
-- **완료 기준**: 격리 세션의 앱 위젯 목록(버튼, 입력 등)을 좌표와 함께 조회 가능
+### M3: AT-SPI2 접근성 트리 (`accessibility.py`) ⚠️ 부분 완료
+- [x] gi.repository.Atspi로 위젯 트리 탐색 구현
+- [x] 역할, 이름, 상태, 좌표, 크기 추출
+- [x] 텍스트 형식으로 MCP 도구에서 반환
+- [ ] 격리 세션에서 AT-SPI2가 앱 접근 가능한지 검증 필요
+- **참고**: AT-SPI2 레지스트리가 격리 세션에서 활성화되지 않는 문제 있음. 추가 조사 필요.
 
-### M4: 입력 주입 (`input.py`)
-- [ ] inputsynth 래퍼 (W3C WebDriver Actions JSON 생성)
-- [ ] 마우스: move(호버), click(좌/우/중간, 단일/더블), scroll, drag
-- [ ] 키보드: type text, key combo (Ctrl+C 등)
-- **완료 기준**: 격리 세션의 앱에 마우스/키보드 입력 주입 가능, screenshot으로 변화 확인
+### M4: 입력 주입 (`input.py`) ✅
+- [x] KWin의 org.kde.KWin.EIS.RemoteDesktop D-Bus 인터페이스로 EIS fd 획득
+- [x] libei (ctypes)로 EIS 프로토콜 핸드셰이크 + 디바이스 협상
+- [x] 절대 좌표 포인터: move, click(좌/우/중간, 단일/더블), scroll, drag
+- [x] 키보드: type text (US QWERTY evdev 키코드), key combo (Ctrl+C 등)
+- **완료**: E2E 테스트에서 키보드 입력, 마우스 호버, 우클릭 모두 시각적 변화 확인
+- **기술 히스토리**: fake-input(Plasma 6에서 제거) → RemoteDesktop Portal(권한 대화상자 필요) → KWin EIS 직접 연결(최종)
 
-### M5: MCP 서버 통합 (`server.py`)
-- [ ] 10개 도구 등록 및 MCP 서버 구동
+### M5: MCP 서버 통합 (`server.py`) ⚠️ 부분 완료
+- [x] 10개 도구 등록 및 MCP 서버 구동
 - [ ] Claude Code 설정에 서버 등록
 - [ ] 전체 피드백 루프 테스트 (실행 → 조작 → 확인)
-- **완료 기준**: Claude Code에서 MCP 도구로 앱 실행/조작/스크린샷 확인의 전체 루프 수행 가능
+- **진행 중**: 서버 코드 완성, Claude Code 등록 및 실제 사용 테스트 필요
 
 ### M6: krema 통합 테스트
 - [ ] krema dock 앱을 격리 환경에서 실행

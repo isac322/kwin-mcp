@@ -16,23 +16,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - run: uv run --python ${{ matrix.python-version }} ruff check src/
-      - run: uv run --python ${{ matrix.python-version }} ruff format --check src/
+      - run: uvx --python ${{ matrix.python-version }} ruff check src/
+      - run: uvx --python ${{ matrix.python-version }} ruff format --check src/
 
   type-check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - run: uv run ty check src/
+      - run: uvx ty check src/
 
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev libgirepository1.0-dev libdbus-1-dev pkg-config
       - run: uv build
-      - run: uv run twine check dist/*
+      - run: uvx twine check dist/*
       - uses: actions/upload-artifact@v4
         with:
           name: dist

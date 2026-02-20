@@ -8,7 +8,7 @@ from mcp.server.fastmcp import FastMCP
 
 from kwin_mcp.accessibility import find_elements, get_accessibility_tree
 from kwin_mcp.input import InputBackend, MouseButton
-from kwin_mcp.screenshot import capture_screenshot_to_file
+from kwin_mcp.screenshot import capture_frame_burst, capture_screenshot_to_file
 from kwin_mcp.session import Session, SessionConfig
 
 mcp = FastMCP("kwin-mcp")
@@ -44,6 +44,36 @@ def _session_env() -> dict[str, str]:
     env["QT_QPA_PLATFORM"] = "wayland"
     env.pop("DISPLAY", None)
     return env
+
+
+def _with_frame_capture(
+    action_result: str,
+    screenshot_after_ms: list[int] | None,
+) -> str:
+    """Append frame captures to an action result if requested.
+
+    Captures screenshots at specified delays (in ms) after the action
+    using the fast D-Bus capture method (~15-30ms per frame).
+    """
+    if not screenshot_after_ms:
+        return action_result
+
+    session = _get_session()
+    info = session.info
+    if info is None:
+        return action_result
+
+    frames = capture_frame_burst(
+        dbus_address=info.dbus_address,
+        output_dir=info.screenshot_dir,
+        delays_ms=screenshot_after_ms,
+    )
+
+    lines = [action_result, f"Captured {len(frames)} frames:"]
+    for delay_ms, path in zip(sorted(screenshot_after_ms), frames, strict=True):
+        size_kb = path.stat().st_size / 1024
+        lines.append(f"  {delay_ms}ms: {path} ({size_kb:.1f} KB)")
+    return "\n".join(lines)
 
 
 @mcp.tool()
@@ -181,6 +211,7 @@ def mouse_click(
     y: int,
     button: str = "left",
     double: bool = False,
+    screenshot_after_ms: list[int] | None = None,
 ) -> str:
     """Click at coordinates in the isolated session.
 
@@ -189,24 +220,36 @@ def mouse_click(
         y: Y coordinate.
         button: "left", "right", or "middle".
         double: If True, double-click.
+        screenshot_after_ms: If provided, capture screenshots at these delays
+            (in milliseconds) after the click. Example: [0, 50, 100, 200, 500]
+            captures 5 frames showing the click animation over 500ms.
     """
     inp = _get_input()
     btn = MouseButton(button)
     inp.mouse_click(x, y, btn, double=double)
-    return f"Clicked {button} at ({x}, {y})" + (" (double)" if double else "")
+    result = f"Clicked {button} at ({x}, {y})" + (" (double)" if double else "")
+    return _with_frame_capture(result, screenshot_after_ms)
 
 
 @mcp.tool()
-def mouse_move(x: int, y: int) -> str:
+def mouse_move(
+    x: int,
+    y: int,
+    screenshot_after_ms: list[int] | None = None,
+) -> str:
     """Move the mouse (hover) to coordinates without clicking.
 
     Args:
         x: X coordinate.
         y: Y coordinate.
+        screenshot_after_ms: If provided, capture screenshots at these delays
+            (in milliseconds) after moving. Useful for observing hover effects
+            and tooltip animations.
     """
     inp = _get_input()
     inp.mouse_move(x, y)
-    return f"Mouse moved to ({x}, {y})"
+    result = f"Mouse moved to ({x}, {y})"
+    return _with_frame_capture(result, screenshot_after_ms)
 
 
 @mcp.tool()
@@ -226,40 +269,64 @@ def mouse_scroll(x: int, y: int, delta: int, horizontal: bool = False) -> str:
 
 
 @mcp.tool()
-def mouse_drag(from_x: int, from_y: int, to_x: int, to_y: int) -> str:
+def mouse_drag(
+    from_x: int,
+    from_y: int,
+    to_x: int,
+    to_y: int,
+    screenshot_after_ms: list[int] | None = None,
+) -> str:
     """Drag from one point to another.
 
     Args:
         from_x, from_y: Starting coordinates.
         to_x, to_y: Ending coordinates.
+        screenshot_after_ms: If provided, capture screenshots at these delays
+            (in milliseconds) after the drag completes. Useful for observing
+            drop animations and visual feedback.
     """
     inp = _get_input()
     inp.mouse_drag(from_x, from_y, to_x, to_y)
-    return f"Dragged from ({from_x}, {from_y}) to ({to_x}, {to_y})"
+    result = f"Dragged from ({from_x}, {from_y}) to ({to_x}, {to_y})"
+    return _with_frame_capture(result, screenshot_after_ms)
 
 
 @mcp.tool()
-def keyboard_type(text: str) -> str:
+def keyboard_type(
+    text: str,
+    screenshot_after_ms: list[int] | None = None,
+) -> str:
     """Type text in the focused element.
 
     Args:
         text: Text to type.
+        screenshot_after_ms: If provided, capture screenshots at these delays
+            (in milliseconds) after typing. Useful for observing autocomplete
+            popups and input validation feedback.
     """
     inp = _get_input()
     inp.keyboard_type(text)
-    return f"Typed: {text!r}"
+    result = f"Typed: {text!r}"
+    return _with_frame_capture(result, screenshot_after_ms)
 
 
 @mcp.tool()
-def keyboard_key(key: str) -> str:
+def keyboard_key(
+    key: str,
+    screenshot_after_ms: list[int] | None = None,
+) -> str:
     """Press a key combination.
 
     Args:
         key: Key to press (e.g., "Return", "ctrl+c", "alt+F4", "Tab").
+        screenshot_after_ms: If provided, capture screenshots at these delays
+            (in milliseconds) after the key press. Useful for observing menu
+            openings, dialog transitions, and keyboard-triggered animations.
     """
     inp = _get_input()
     inp.keyboard_key(key)
-    return f"Pressed: {key}"
+    result = f"Pressed: {key}"
+    return _with_frame_capture(result, screenshot_after_ms)
 
 
 def main() -> None:

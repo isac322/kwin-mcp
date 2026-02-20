@@ -211,17 +211,19 @@ python -m kwin_mcp
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `mouse_click` | `x`, `y`, `button?`, `double?` | Click at coordinates (left/right/middle, single/double) |
-| `mouse_move` | `x`, `y` | Move the cursor to coordinates without clicking |
+| `mouse_click` | `x`, `y`, `button?`, `double?`, `screenshot_after_ms?` | Click at coordinates (left/right/middle, single/double) |
+| `mouse_move` | `x`, `y`, `screenshot_after_ms?` | Move the cursor to coordinates without clicking |
 | `mouse_scroll` | `x`, `y`, `delta`, `horizontal?` | Scroll at coordinates (positive = down/right, negative = up/left) |
-| `mouse_drag` | `from_x`, `from_y`, `to_x`, `to_y` | Drag from one point to another with smooth interpolation |
+| `mouse_drag` | `from_x`, `from_y`, `to_x`, `to_y`, `screenshot_after_ms?` | Drag from one point to another with smooth interpolation |
 
 ### Keyboard Input
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `keyboard_type` | `text` | Type a string of text character by character (US QWERTY layout) |
-| `keyboard_key` | `key` | Press a key or key combination (e.g., `Return`, `ctrl+c`, `alt+F4`, `shift+Tab`) |
+| `keyboard_type` | `text`, `screenshot_after_ms?` | Type a string of text character by character (US QWERTY layout) |
+| `keyboard_key` | `key`, `screenshot_after_ms?` | Press a key or key combination (e.g., `Return`, `ctrl+c`, `alt+F4`, `shift+Tab`) |
+
+> **Frame capture:** Action tools accept an optional `screenshot_after_ms` parameter (e.g., `[0, 50, 100, 200, 500]`) that captures screenshots at specified delays (in milliseconds) after the action completes. This is useful for observing transient UI states like hover effects, click animations, and menu transitions without extra MCP round-trips.
 
 ## How It Works
 
@@ -242,7 +244,8 @@ kwin-mcp server
   ├── accessibility_tree ────► AT-SPI2 (via PyGObject)
   ├── find_ui_elements ──────► AT-SPI2 (via PyGObject)
   │
-  └── mouse_* / keyboard_* ─► KWin EIS D-Bus ──► libei
+  ├── mouse_* / keyboard_* ─► KWin EIS D-Bus ──► libei
+  │   └── screenshot_after_ms ► KWin ScreenShot2 D-Bus (fast frame capture)
 ```
 
 ### Triple Isolation
@@ -263,7 +266,7 @@ Mouse and keyboard events are injected through KWin's private `org.kde.KWin.EIS.
 
 ### Screenshot Capture
 
-Screenshots are captured using `spectacle --dbus --background --nonotify` connected to the isolated session's D-Bus and Wayland socket. The KWin `org.kde.KWin.ScreenShot2` interface provides the framebuffer data.
+The `screenshot` tool uses `spectacle` CLI for reliable full-screen capture. For action tools with the `screenshot_after_ms` parameter, screenshots are captured directly via the KWin `org.kde.KWin.ScreenShot2` D-Bus interface, which is much faster (~30-70ms vs ~200-300ms per frame) because it avoids process spawn overhead. Raw ARGB pixel data is read from a pipe and converted to PNG using Pillow.
 
 ### Accessibility Tree
 

@@ -255,6 +255,9 @@ wait $KWIN_PID
             "XDG_CURRENT_DESKTOP": "KDE",
             "QT_LINUX_ACCESSIBILITY_ALWAYS_ON": "1",
             "QT_ACCESSIBILITY": "1",
+            # Allow direct D-Bus screenshot capture without portal authorization.
+            # Safe in isolated virtual sessions where there is no user desktop to protect.
+            "KWIN_SCREENSHOT_NO_PERMISSION_CHECKS": "1",
         }
         # Remove host display references to avoid kwin connecting to host
         env.pop("WAYLAND_DISPLAY", None)

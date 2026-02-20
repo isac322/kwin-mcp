@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import contextlib
 import os
+import shutil
 import signal
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,6 +35,7 @@ class SessionInfo:
     dbus_address: str
     wayland_socket: str
     kwin_pid: int
+    screenshot_dir: Path = field(default_factory=lambda: Path("/tmp"))
     app_pid: int | None = None
     wrapper_pid: int | None = None
 
@@ -121,10 +124,13 @@ class Session:
                 msg = f"Session setup failed. Expected READY, got: {ready_line!r}"
                 raise RuntimeError(msg)
 
+        screenshot_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-screenshots-"))
+
         self._info = SessionInfo(
             dbus_address=dbus_address,
             wayland_socket=self._socket_name,
             kwin_pid=self._process.pid,
+            screenshot_dir=screenshot_dir,
         )
         return self._info
 
@@ -184,6 +190,10 @@ class Session:
                 self._process.kill()
             with contextlib.suppress(subprocess.TimeoutExpired):
                 self._process.wait(timeout=3)
+
+        # Clean up screenshot directory
+        if self._info and self._info.screenshot_dir.exists():
+            shutil.rmtree(self._info.screenshot_dir, ignore_errors=True)
 
         # Clean up socket files
         runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")

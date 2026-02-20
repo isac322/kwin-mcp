@@ -3,14 +3,37 @@ name = "kwin-mcp"
 version = "0.1.0"
 description = "MCP server for GUI automation on KDE Plasma 6 Wayland via isolated kwin_wayland --virtual sessions"
 readme = "README.md"
+license = "MIT"
 authors = [{ name = "Byeonghoon Yoo", email = "bhyoo@bhyoo.com" }]
 requires-python = ">=3.12"
+keywords = ["mcp", "kwin", "kde", "wayland", "gui-automation", "plasma", "testing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Desktop Environment :: K Desktop Environment (KDE)",
+    "Typing :: Typed",
+]
 dependencies = [
     "mcp>=1.0.0",
     "PyGObject>=3.42.0",
     "dbus-python>=1.3.2",
     "Pillow>=10.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/isac322/kwin-mcp"
+Repository = "https://github.com/isac322/kwin-mcp"
+Issues = "https://github.com/isac322/kwin-mcp/issues"
+Changelog = "https://github.com/isac322/kwin-mcp/blob/main/CHANGELOG.md"
+
+[project.scripts]
+kwin-mcp = "kwin_mcp.server:main"
 
 [build-system]
 requires = ["uv_build>=0.10.3,<0.11.0"]

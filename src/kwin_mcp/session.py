@@ -287,7 +287,11 @@ dbus-update-activation-environment WAYLAND_DISPLAY={self._socket_name} QT_QPA_PL
 # Start KWin WITHOUT WAYLAND_DISPLAY to prevent nesting attempt.
 # KWin with --virtual creates its own compositor, it must not try
 # to connect to another compositor as a client.
+# Explicitly pass KWIN_ permission env vars to ensure they reach the
+# KWin process (environment inheritance through dbus-run-session can be unreliable).
 env -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM \
+    KWIN_WAYLAND_NO_PERMISSION_CHECKS=1 \
+    KWIN_SCREENSHOT_NO_PERMISSION_CHECKS=1 \
     kwin_wayland --virtual --no-lockscreen --socket {self._socket_name} &
 KWIN_PID=$!
 

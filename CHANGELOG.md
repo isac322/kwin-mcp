@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-02-22
+
+### Fixed
+
+- Explicitly pass `KWIN_WAYLAND_NO_PERMISSION_CHECKS` and `KWIN_SCREENSHOT_NO_PERMISSION_CHECKS` env vars directly to the KWin process in the wrapper script — environment inheritance through `dbus-run-session` was unreliable, causing restricted Wayland protocols (e.g. `org_kde_plasma_window_management`) and `X-KDE-Wayland-Interfaces` desktop file declarations to not take effect
+
 ## [0.4.0] - 2026-02-22
 
 ### Added
@@ -51,6 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keyboard input: text typing and key combinations via KWin EIS
 - FastMCP-based MCP server with stdio transport
 
+[0.4.1]: https://github.com/isac322/kwin-mcp/releases/tag/v0.4.1
 [0.4.0]: https://github.com/isac322/kwin-mcp/releases/tag/v0.4.0
 [0.3.0]: https://github.com/isac322/kwin-mcp/releases/tag/v0.3.0
 [0.2.0]: https://github.com/isac322/kwin-mcp/releases/tag/v0.2.0

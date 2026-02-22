@@ -25,6 +25,7 @@ class SessionConfig:
     socket_name: str = ""
     screen_width: int = 1920
     screen_height: int = 1080
+    enable_clipboard: bool = False
     extra_env: dict[str, str] = field(default_factory=dict)
 
 

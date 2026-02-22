@@ -14,6 +14,8 @@ import contextlib
 import ctypes
 import ctypes.util
 import select
+import shutil
+import subprocess
 import time
 from enum import Enum
 
@@ -187,6 +189,8 @@ def _load_libei() -> ctypes.CDLL:
     lib.ei_device_button_button.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int]
     lib.ei_device_scroll_delta.restype = None
     lib.ei_device_scroll_delta.argtypes = [ctypes.c_void_p, ctypes.c_double, ctypes.c_double]
+    lib.ei_device_scroll_discrete.restype = None
+    lib.ei_device_scroll_discrete.argtypes = [ctypes.c_void_p, ctypes.c_int32, ctypes.c_int32]
     lib.ei_device_scroll_stop.restype = None
     lib.ei_device_scroll_stop.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
     lib.ei_device_keyboard_key.restype = None
@@ -194,9 +198,21 @@ def _load_libei() -> ctypes.CDLL:
     lib.ei_device_frame.restype = None
     lib.ei_device_frame.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
     lib.ei_device_start_emulating.restype = None
-    lib.ei_device_start_emulating.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32]
+    lib.ei_device_start_emulating.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
     lib.ei_device_stop_emulating.restype = None
     lib.ei_device_stop_emulating.argtypes = [ctypes.c_void_p]
+
+    # Touch functions
+    lib.ei_device_touch_new.restype = ctypes.c_void_p
+    lib.ei_device_touch_new.argtypes = [ctypes.c_void_p]
+    lib.ei_touch_down.restype = None
+    lib.ei_touch_down.argtypes = [ctypes.c_void_p, ctypes.c_double, ctypes.c_double]
+    lib.ei_touch_motion.restype = None
+    lib.ei_touch_motion.argtypes = [ctypes.c_void_p, ctypes.c_double, ctypes.c_double]
+    lib.ei_touch_up.restype = None
+    lib.ei_touch_up.argtypes = [ctypes.c_void_p]
+    lib.ei_touch_unref.restype = ctypes.c_void_p
+    lib.ei_touch_unref.argtypes = [ctypes.c_void_p]
 
     return lib
 
@@ -220,7 +236,10 @@ class EISClient:
         self._cookie: int = 0
         self._pointer: int = 0  # absolute pointer device
         self._keyboard: int = 0  # keyboard device
+        self._touch_device: int = 0  # touch-capable device
         self._eis_iface: dbus.Interface | None = None
+        self._next_touch_id: int = 0  # auto-increment touch ID
+        self._active_touches: dict[int, int] = {}  # touch_id -> ctypes pointer
         self._setup()
 
     def _setup(self) -> None:
@@ -233,6 +252,7 @@ class EISClient:
             _EI_CAP_POINTER
             | _EI_CAP_POINTER_ABSOLUTE
             | _EI_CAP_KEYBOARD
+            | _EI_CAP_TOUCH
             | _EI_CAP_BUTTON
             | _EI_CAP_SCROLL
         )
@@ -303,10 +323,12 @@ class EISClient:
             msg = "No keyboard device available from EIS"
             raise RuntimeError(msg)
 
-        # Start emulating on both devices
-        _libei.ei_device_start_emulating(self._pointer, 0, 0)
+        # Start emulating on all devices
+        _libei.ei_device_start_emulating(self._pointer, 0)
         if self._keyboard != self._pointer:
-            _libei.ei_device_start_emulating(self._keyboard, 0, 0)
+            _libei.ei_device_start_emulating(self._keyboard, 0)
+        if self._touch_device and self._touch_device not in (self._pointer, self._keyboard):
+            _libei.ei_device_start_emulating(self._touch_device, 0)
 
     def _bind_seat_capabilities(self, event: int) -> None:
         """Bind to all available capabilities on the seat."""
@@ -317,6 +339,7 @@ class EISClient:
             _EI_CAP_POINTER,
             _EI_CAP_POINTER_ABSOLUTE,
             _EI_CAP_KEYBOARD,
+            _EI_CAP_TOUCH,
             _EI_CAP_BUTTON,
             _EI_CAP_SCROLL,
         ]:
@@ -336,12 +359,15 @@ class EISClient:
 
         has_abs = _libei.ei_device_has_capability(device, _EI_CAP_POINTER_ABSOLUTE)
         has_kbd = _libei.ei_device_has_capability(device, _EI_CAP_KEYBOARD)
+        has_touch = _libei.ei_device_has_capability(device, _EI_CAP_TOUCH)
 
         # Prefer absolute pointer device
         if has_abs and not self._pointer:
             self._pointer = _libei.ei_device_ref(device)
         if has_kbd and not self._keyboard:
             self._keyboard = _libei.ei_device_ref(device)
+        if has_touch and not self._touch_device:
+            self._touch_device = _libei.ei_device_ref(device)
 
     def _now_us(self) -> int:
         """Current time in microseconds."""
@@ -369,6 +395,12 @@ class EISClient:
         _libei.ei_device_frame(self._pointer, self._now_us())
         self._flush()
 
+    def pointer_scroll_discrete(self, dx: int, dy: int) -> None:
+        """Scroll by discrete steps (wheel ticks)."""
+        _libei.ei_device_scroll_discrete(self._pointer, dx, dy)
+        _libei.ei_device_frame(self._pointer, self._now_us())
+        self._flush()
+
     def pointer_scroll_stop(self) -> None:
         """Signal end of scroll."""
         _libei.ei_device_scroll_stop(self._pointer, 1, 1)
@@ -381,8 +413,57 @@ class EISClient:
         _libei.ei_device_frame(self._keyboard, self._now_us())
         self._flush()
 
+    def touch_down(self, x: float, y: float) -> int:
+        """Start a new touch at (x, y). Returns a touch ID."""
+        device = self._touch_device or self._pointer
+        touch = _libei.ei_device_touch_new(device)
+        if not touch:
+            msg = "Failed to create touch object"
+            raise RuntimeError(msg)
+        _libei.ei_touch_down(touch, x, y)
+        _libei.ei_device_frame(device, self._now_us())
+        self._flush()
+
+        touch_id = self._next_touch_id
+        self._next_touch_id += 1
+        self._active_touches[touch_id] = touch
+        return touch_id
+
+    def touch_move(self, touch_id: int, x: float, y: float) -> None:
+        """Move an active touch to (x, y)."""
+        touch = self._active_touches.get(touch_id)
+        if touch is None:
+            msg = f"No active touch with ID {touch_id}"
+            raise ValueError(msg)
+        device = self._touch_device or self._pointer
+        _libei.ei_touch_motion(touch, x, y)
+        _libei.ei_device_frame(device, self._now_us())
+        self._flush()
+
+    def touch_up(self, touch_id: int) -> None:
+        """End an active touch."""
+        touch = self._active_touches.pop(touch_id, None)
+        if touch is None:
+            msg = f"No active touch with ID {touch_id}"
+            raise ValueError(msg)
+        device = self._touch_device or self._pointer
+        _libei.ei_touch_up(touch)
+        _libei.ei_device_frame(device, self._now_us())
+        _libei.ei_touch_unref(touch)
+        self._flush()
+
     def close(self) -> None:
         """Clean up EIS connection."""
+        # Release any lingering touches
+        for touch in self._active_touches.values():
+            _libei.ei_touch_up(touch)
+            _libei.ei_touch_unref(touch)
+        self._active_touches.clear()
+
+        if self._touch_device and self._touch_device not in (self._pointer, self._keyboard):
+            _libei.ei_device_stop_emulating(self._touch_device)
+            _libei.ei_device_unref(self._touch_device)
+            self._touch_device = 0
         if self._pointer:
             _libei.ei_device_stop_emulating(self._pointer)
             _libei.ei_device_unref(self._pointer)
@@ -422,60 +503,181 @@ class InputBackend:
         button: MouseButton = MouseButton.LEFT,
         *,
         double: bool = False,
+        click_count: int = 1,
+        modifiers: list[str] | None = None,
+        hold_ms: int = 0,
     ) -> None:
-        """Click at the given coordinates."""
+        """Click at the given coordinates.
+
+        Args:
+            x, y: Coordinates to click at.
+            button: Mouse button to use.
+            double: If True, double-click (shorthand for click_count=2).
+            click_count: Number of consecutive clicks (1=single, 2=double, 3=triple).
+            modifiers: Modifier keys to hold during click (e.g. ["ctrl"], ["shift", "alt"]).
+            hold_ms: Duration to hold button pressed before release (for long-press).
+        """
+        if double and click_count == 1:
+            click_count = 2
+
         btn_code = _BTN_CODES[button]
+        mod_codes = _resolve_modifiers(modifiers)
+
         self.mouse_move(x, y)
         time.sleep(0.02)
 
-        self._client.pointer_button(btn_code, _PRESSED)
-        time.sleep(0.01)
-        self._client.pointer_button(btn_code, _RELEASED)
-
-        if double:
-            time.sleep(0.05)
-            self._client.pointer_button(btn_code, _PRESSED)
+        # Press modifier keys
+        for mod in mod_codes:
+            self._client.keyboard_key(mod, _PRESSED)
             time.sleep(0.01)
+
+        for i in range(click_count):
+            if i > 0:
+                time.sleep(0.05)
+            self._client.pointer_button(btn_code, _PRESSED)
+            if hold_ms > 0 and i == click_count - 1:
+                time.sleep(max(0.01, hold_ms / 1000.0))
+            else:
+                time.sleep(0.01)
             self._client.pointer_button(btn_code, _RELEASED)
 
-    def mouse_scroll(self, x: int, y: int, delta: int, *, horizontal: bool = False) -> None:
+        # Release modifier keys in reverse order
+        for mod in reversed(mod_codes):
+            time.sleep(0.01)
+            self._client.keyboard_key(mod, _RELEASED)
+
+    def mouse_scroll(
+        self,
+        x: int,
+        y: int,
+        delta: int,
+        *,
+        horizontal: bool = False,
+        discrete: bool = False,
+        steps: int = 1,
+    ) -> None:
         """Scroll at the given coordinates.
 
         Args:
             x, y: Coordinates to scroll at.
             delta: Scroll amount (positive = down/right, negative = up/left).
             horizontal: If True, scroll horizontally.
+            discrete: If True, use discrete scroll (wheel ticks) instead of smooth pixels.
+            steps: Split total delta into this many increments with 10ms intervals.
         """
         self.mouse_move(x, y)
         time.sleep(0.02)
 
-        dx = float(delta) * _SCROLL_STEP_PIXELS if horizontal else 0.0
-        dy = float(delta) * _SCROLL_STEP_PIXELS if not horizontal else 0.0
-        self._client.pointer_scroll(dx, dy)
-        self._client.pointer_scroll_stop()
+        if discrete:
+            dx = delta if horizontal else 0
+            dy = delta if not horizontal else 0
+            if steps > 1:
+                for i in range(steps):
+                    frac_dx = dx // steps + (1 if i < dx % steps else 0) if dx else 0
+                    frac_dy = dy // steps + (1 if i < dy % steps else 0) if dy else 0
+                    if frac_dx or frac_dy:
+                        self._client.pointer_scroll_discrete(frac_dx, frac_dy)
+                    time.sleep(0.01)
+            else:
+                self._client.pointer_scroll_discrete(dx, dy)
+            self._client.pointer_scroll_stop()
+        else:
+            total_dx = float(delta) * _SCROLL_STEP_PIXELS if horizontal else 0.0
+            total_dy = float(delta) * _SCROLL_STEP_PIXELS if not horizontal else 0.0
+            if steps > 1:
+                step_dx = total_dx / steps
+                step_dy = total_dy / steps
+                for _ in range(steps):
+                    self._client.pointer_scroll(step_dx, step_dy)
+                    time.sleep(0.01)
+            else:
+                self._client.pointer_scroll(total_dx, total_dy)
+            self._client.pointer_scroll_stop()
 
-    def mouse_drag(self, from_x: int, from_y: int, to_x: int, to_y: int) -> None:
-        """Drag from one point to another."""
-        btn_code = _BTN_CODES[MouseButton.LEFT]
+    def mouse_drag(
+        self,
+        from_x: int,
+        from_y: int,
+        to_x: int,
+        to_y: int,
+        button: MouseButton = MouseButton.LEFT,
+        modifiers: list[str] | None = None,
+        waypoints: list[tuple[int, int, int]] | None = None,
+    ) -> None:
+        """Drag from one point to another.
+
+        Args:
+            from_x, from_y: Starting coordinates.
+            to_x, to_y: Ending coordinates.
+            button: Mouse button to use for dragging.
+            modifiers: Modifier keys to hold during drag (e.g. ["alt"], ["ctrl"]).
+            waypoints: Intermediate points as (x, y, dwell_ms) tuples.
+        """
+        btn_code = _BTN_CODES[button]
+        mod_codes = _resolve_modifiers(modifiers)
 
         self.mouse_move(from_x, from_y)
         time.sleep(0.05)
 
+        # Press modifier keys
+        for mod in mod_codes:
+            self._client.keyboard_key(mod, _PRESSED)
+            time.sleep(0.01)
+
         self._client.pointer_button(btn_code, _PRESSED)
         time.sleep(0.02)
 
-        # Interpolate movement in steps
-        dx = to_x - from_x
-        dy = to_y - from_y
-        steps = max(10, int((dx**2 + dy**2) ** 0.5 / 10))
+        # Build full path: start -> waypoints -> end
+        segments: list[tuple[int, int, int, int, int]] = []  # (fx, fy, tx, ty, dwell_ms)
+        prev_x, prev_y = from_x, from_y
+        if waypoints:
+            for wx, wy, dwell_ms in waypoints:
+                segments.append((prev_x, prev_y, wx, wy, dwell_ms))
+                prev_x, prev_y = wx, wy
+        segments.append((prev_x, prev_y, to_x, to_y, 0))
 
-        for i in range(1, steps + 1):
-            frac = i / steps
-            cx = from_x + dx * frac
-            cy = from_y + dy * frac
-            self._client.pointer_move_absolute(cx, cy)
+        for seg_fx, seg_fy, seg_tx, seg_ty, dwell_ms in segments:
+            dx = seg_tx - seg_fx
+            dy = seg_ty - seg_fy
+            steps = max(10, int((dx**2 + dy**2) ** 0.5 / 10))
+            for i in range(1, steps + 1):
+                frac = i / steps
+                cx = seg_fx + dx * frac
+                cy = seg_fy + dy * frac
+                self._client.pointer_move_absolute(cx, cy)
+                time.sleep(0.01)
+            if dwell_ms > 0:
+                time.sleep(dwell_ms / 1000.0)
+
+        time.sleep(0.02)
+        self._client.pointer_button(btn_code, _RELEASED)
+
+        # Release modifier keys in reverse order
+        for mod in reversed(mod_codes):
             time.sleep(0.01)
+            self._client.keyboard_key(mod, _RELEASED)
 
+    def mouse_button_down(self, x: int, y: int, button: MouseButton = MouseButton.LEFT) -> None:
+        """Move to coordinates and press a mouse button without releasing.
+
+        Args:
+            x, y: Coordinates.
+            button: Mouse button to press.
+        """
+        btn_code = _BTN_CODES[button]
+        self.mouse_move(x, y)
+        time.sleep(0.02)
+        self._client.pointer_button(btn_code, _PRESSED)
+
+    def mouse_button_up(self, x: int, y: int, button: MouseButton = MouseButton.LEFT) -> None:
+        """Move to coordinates and release a mouse button.
+
+        Args:
+            x, y: Coordinates.
+            button: Mouse button to release.
+        """
+        btn_code = _BTN_CODES[button]
+        self.mouse_move(x, y)
         time.sleep(0.02)
         self._client.pointer_button(btn_code, _RELEASED)
 
@@ -506,21 +708,7 @@ class InputBackend:
 
         Supports modifier combinations with '+' separator.
         """
-        parts = key.split("+")
-        modifiers: list[int] = []
-        main_key: str | None = None
-
-        for part in parts:
-            part_lower = part.strip().lower()
-            if part_lower in _MODIFIER_KEYS:
-                modifiers.append(_MODIFIER_KEYS[part_lower])
-            else:
-                main_key = part.strip()
-
-        if main_key is None:
-            return
-
-        keycode = _key_name_to_evdev(main_key)
+        modifiers, keycode = _parse_key_combo(key)
         if keycode is None:
             return
 
@@ -538,6 +726,204 @@ class InputBackend:
         for mod in reversed(modifiers):
             time.sleep(0.01)
             self._client.keyboard_key(mod, _RELEASED)
+
+    def keyboard_key_down(self, key: str) -> None:
+        """Press (and hold) a key combination without releasing.
+
+        Useful for holding modifier keys across multiple actions.
+
+        Args:
+            key: Key to press (e.g., "ctrl", "shift+a", "alt").
+        """
+        modifiers, keycode = _parse_key_combo(key)
+
+        for mod in modifiers:
+            self._client.keyboard_key(mod, _PRESSED)
+            time.sleep(0.01)
+
+        if keycode is not None:
+            self._client.keyboard_key(keycode, _PRESSED)
+            time.sleep(0.01)
+
+    def keyboard_key_up(self, key: str) -> None:
+        """Release a previously pressed key combination.
+
+        Releases in reverse order (main key first, then modifiers).
+
+        Args:
+            key: Key to release (e.g., "ctrl", "shift+a", "alt").
+        """
+        modifiers, keycode = _parse_key_combo(key)
+
+        if keycode is not None:
+            self._client.keyboard_key(keycode, _RELEASED)
+            time.sleep(0.01)
+
+        for mod in reversed(modifiers):
+            self._client.keyboard_key(mod, _RELEASED)
+            time.sleep(0.01)
+
+    def touch_tap(self, x: int, y: int, hold_ms: int = 0) -> None:
+        """Tap at the given coordinates.
+
+        Args:
+            x, y: Coordinates to tap at.
+            hold_ms: Duration to hold before lifting (for long-press).
+        """
+        tid = self._client.touch_down(float(x), float(y))
+        if hold_ms > 0:
+            time.sleep(max(0.01, hold_ms / 1000.0))
+        else:
+            time.sleep(0.01)
+        self._client.touch_up(tid)
+
+    def touch_swipe(
+        self,
+        from_x: int,
+        from_y: int,
+        to_x: int,
+        to_y: int,
+        duration_ms: int = 300,
+    ) -> None:
+        """Swipe from one point to another.
+
+        Args:
+            from_x, from_y: Starting coordinates.
+            to_x, to_y: Ending coordinates.
+            duration_ms: Duration of the swipe in milliseconds.
+        """
+        steps = max(10, duration_ms // 10)
+        dx = to_x - from_x
+        dy = to_y - from_y
+
+        tid = self._client.touch_down(float(from_x), float(from_y))
+        step_delay = max(0.001, duration_ms / 1000.0 / steps)
+
+        for i in range(1, steps + 1):
+            frac = i / steps
+            cx = from_x + dx * frac
+            cy = from_y + dy * frac
+            self._client.touch_move(tid, cx, cy)
+            time.sleep(step_delay)
+
+        self._client.touch_up(tid)
+
+    def touch_pinch(
+        self,
+        center_x: int,
+        center_y: int,
+        start_distance: int,
+        end_distance: int,
+        duration_ms: int = 500,
+    ) -> None:
+        """Pinch gesture with two fingers.
+
+        Args:
+            center_x, center_y: Center point of the pinch.
+            start_distance: Initial distance between fingers (pixels).
+            end_distance: Final distance between fingers (pixels).
+            duration_ms: Duration of the gesture.
+        """
+        steps = max(10, duration_ms // 10)
+        step_delay = max(0.001, duration_ms / 1000.0 / steps)
+
+        # Two fingers start symmetrically on the x-axis
+        half_start = start_distance / 2.0
+        tid1 = self._client.touch_down(float(center_x - half_start), float(center_y))
+        tid2 = self._client.touch_down(float(center_x + half_start), float(center_y))
+
+        for i in range(1, steps + 1):
+            frac = i / steps
+            half = half_start + (end_distance / 2.0 - half_start) * frac
+            self._client.touch_move(tid1, float(center_x - half), float(center_y))
+            self._client.touch_move(tid2, float(center_x + half), float(center_y))
+            time.sleep(step_delay)
+
+        self._client.touch_up(tid1)
+        self._client.touch_up(tid2)
+
+    def touch_multi_swipe(
+        self,
+        from_x: int,
+        from_y: int,
+        to_x: int,
+        to_y: int,
+        fingers: int = 3,
+        duration_ms: int = 300,
+    ) -> None:
+        """Multi-finger swipe gesture.
+
+        Args:
+            from_x, from_y: Starting coordinates (center of finger group).
+            to_x, to_y: Ending coordinates.
+            fingers: Number of fingers (2-5).
+            duration_ms: Duration of the swipe.
+        """
+        steps = max(10, duration_ms // 10)
+        dx = to_x - from_x
+        dy = to_y - from_y
+        step_delay = max(0.001, duration_ms / 1000.0 / steps)
+        finger_spacing = 20  # pixels between fingers
+
+        # Start touches spread vertically around center
+        tids: list[int] = []
+        for f in range(fingers):
+            offset = (f - (fingers - 1) / 2.0) * finger_spacing
+            tid = self._client.touch_down(float(from_x), float(from_y + offset))
+            tids.append(tid)
+
+        for i in range(1, steps + 1):
+            frac = i / steps
+            cx = from_x + dx * frac
+            cy = from_y + dy * frac
+            for f, tid in enumerate(tids):
+                offset = (f - (fingers - 1) / 2.0) * finger_spacing
+                self._client.touch_move(tid, cx, cy + offset)
+            time.sleep(step_delay)
+
+        for tid in tids:
+            self._client.touch_up(tid)
+
+    def keyboard_type_unicode(self, text: str, dbus_address: str | None = None) -> bool:
+        """Type arbitrary Unicode text using wtype or clipboard fallback.
+
+        Args:
+            text: Text to type (supports non-ASCII, e.g. Korean, CJK).
+            dbus_address: D-Bus address for the session (needed for wl-copy fallback).
+
+        Returns:
+            True if text was typed successfully.
+        """
+        env = dict(__import__("os").environ)
+        if dbus_address:
+            env["DBUS_SESSION_BUS_ADDRESS"] = dbus_address
+
+        # Try wtype first
+        if shutil.which("wtype"):
+            result = subprocess.run(
+                ["wtype", "--", text],
+                env=env,
+                capture_output=True,
+                timeout=5,
+            )
+            return result.returncode == 0
+
+        # Fallback: clipboard paste via wl-copy + Ctrl+V
+        # Use Popen + DEVNULL to avoid pipe-blocking from wl-copy's forked child
+        if shutil.which("wl-copy"):
+            cp = subprocess.Popen(
+                ["wl-copy", "--", text],
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            time.sleep(0.1)  # Wait for fork to complete
+            if cp.poll() is None or cp.returncode == 0:
+                self.keyboard_key("ctrl+v")
+                return True
+
+        return False
 
     def close(self) -> None:
         """Close the EIS connection."""
@@ -558,3 +944,38 @@ def _key_name_to_evdev(name: str) -> int | None:
             return entry[0]
 
     return None
+
+
+def _resolve_modifiers(modifiers: list[str] | None) -> list[int]:
+    """Resolve modifier key names to evdev keycodes."""
+    if not modifiers:
+        return []
+    codes: list[int] = []
+    for mod in modifiers:
+        code = _MODIFIER_KEYS.get(mod.lower())
+        if code is not None:
+            codes.append(code)
+    return codes
+
+
+def _parse_key_combo(key: str) -> tuple[list[int], int | None]:
+    """Parse a key combo string into (modifier_codes, main_keycode).
+
+    Returns a tuple of (list of modifier evdev keycodes, main key evdev keycode or None).
+    """
+    parts = key.split("+")
+    modifiers: list[int] = []
+    main_key: str | None = None
+
+    for part in parts:
+        part_lower = part.strip().lower()
+        if part_lower in _MODIFIER_KEYS:
+            modifiers.append(_MODIFIER_KEYS[part_lower])
+        else:
+            main_key = part.strip()
+
+    keycode: int | None = None
+    if main_key is not None:
+        keycode = _key_name_to_evdev(main_key)
+
+    return modifiers, keycode

@@ -81,6 +81,27 @@ Claude Code
 - [ ] 전체 피드백 루프 테스트 (실행 → 조작 → 확인)
 - **완료**: 서버 코드 완성, kwin-mcp 및 krema 프로젝트에 .mcp.json 등록
 
+### M5.1: E2E 테스트용 입력 기능 확장 ✅
+- [x] `ei_device_start_emulating` 인자 개수 버그 수정 (2개 → 3개)
+- [x] Modifier + Click (`mouse_click(modifiers=["ctrl"])`)
+- [x] Long-Press (`mouse_click(hold_ms=1000)`)
+- [x] Triple-Click (`mouse_click(triple=True)` 또는 `click_count=3`)
+- [x] Key Hold/Release 분리 (`keyboard_key_down`, `keyboard_key_up`)
+- [x] Modifier + Drag (`mouse_drag(modifiers=["alt"])`)
+- [x] Mouse Button Hold/Release 분리 (`mouse_button_down`, `mouse_button_up`)
+- [x] Discrete Scroll (`mouse_scroll(discrete=True)`)
+- [x] Smooth Scroll (`mouse_scroll(steps=5)`)
+- [x] Drag 경유점 (`mouse_drag(waypoints=[[x, y, dwell_ms], ...])`)
+- [x] Drag 버튼 선택 (`mouse_drag(button="right")`)
+- [x] Clipboard 읽기/쓰기 (`clipboard_get`, `clipboard_set` via wl-clipboard)
+- [x] Wait-for-UI-State (`wait_for_element` — AT-SPI2 폴링)
+- [x] Touch 기본 입력 (`touch_tap`, `touch_swipe`)
+- [x] Multi-Touch 제스처 (`touch_pinch`, `touch_multi_swipe`)
+- [x] IME / 비ASCII 텍스트 입력 (`keyboard_type_unicode` via wtype/clipboard)
+- [x] 윈도우 관리 (`launch_app`, `list_windows`, `focus_window`)
+- [x] D-Bus 범용 호출 (`dbus_call` via dbus-send)
+- **총 도구 수**: 10개 → 27개
+
 ### M6: krema 통합 테스트
 - [ ] krema dock 앱을 격리 환경에서 실행
 - [ ] 호버 확대, 스크롤, 우클릭, 드래그 테스트

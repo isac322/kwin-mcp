@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import time
 
 from mcp.server.fastmcp import FastMCP
 
@@ -16,6 +18,8 @@ mcp = FastMCP("kwin-mcp")
 # Global session state
 _session: Session | None = None
 _input: InputBackend | None = None
+_clipboard_enabled: bool = False
+_wl_copy_proc: subprocess.Popen[bytes] | None = None
 
 
 def _get_session() -> Session:
@@ -76,11 +80,15 @@ def _with_frame_capture(
     return "\n".join(lines)
 
 
+# ── Session management ──────────────────────────────────────────────────
+
+
 @mcp.tool()
 def session_start(
     app_command: str = "",
     screen_width: int = 1920,
     screen_height: int = 1080,
+    enable_clipboard: bool = False,
 ) -> str:
     """Start an isolated KWin Wayland session, optionally launching an app.
 
@@ -89,19 +97,24 @@ def session_start(
                     Leave empty to start session without an app.
         screen_width: Virtual screen width in pixels.
         screen_height: Virtual screen height in pixels.
+        enable_clipboard: Enable clipboard tools (wl-copy/wl-paste). Disabled by default
+                         because wl-copy can hang in isolated sessions.
 
     Returns:
         Session status information.
     """
-    global _session, _input
+    global _session, _input, _clipboard_enabled
 
     if _session is not None and _session.is_running:
         return "Session already running. Call session_stop first."
+
+    _clipboard_enabled = enable_clipboard
 
     _session = Session()
     config = SessionConfig(
         screen_width=screen_width,
         screen_height=screen_height,
+        enable_clipboard=enable_clipboard,
     )
     info = _session.start(config)
 
@@ -113,8 +126,6 @@ def session_start(
         result += f"\nApp launched: {app_command} (PID={pid})"
 
     # Set up input backend via KWin's EIS D-Bus interface
-    import time
-
     time.sleep(0.5)
     try:
         _input = InputBackend(info.dbus_address)
@@ -130,10 +141,20 @@ def session_start(
 @mcp.tool()
 def session_stop() -> str:
     """Stop the isolated KWin session and clean up."""
-    global _session, _input
+    global _session, _input, _wl_copy_proc, _clipboard_enabled
 
     if _session is None:
         return "No session running."
+
+    # Clean up wl-copy process if active
+    if _wl_copy_proc is not None:
+        _wl_copy_proc.terminate()
+        try:
+            _wl_copy_proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            _wl_copy_proc.kill()
+        _wl_copy_proc = None
+    _clipboard_enabled = False
 
     if _input is not None:
         _input.close()
@@ -141,6 +162,9 @@ def session_stop() -> str:
     _session = None
     _input = None
     return "Session stopped."
+
+
+# ── Screenshot / Accessibility ───────────────────────────────────────────
 
 
 @mcp.tool()
@@ -205,12 +229,18 @@ def find_ui_elements(query: str, app_name: str = "") -> str:
     return "\n".join(lines)
 
 
+# ── Mouse tools ──────────────────────────────────────────────────────────
+
+
 @mcp.tool()
 def mouse_click(
     x: int,
     y: int,
     button: str = "left",
     double: bool = False,
+    triple: bool = False,
+    modifiers: list[str] | None = None,
+    hold_ms: int = 0,
     screenshot_after_ms: list[int] | None = None,
 ) -> str:
     """Click at coordinates in the isolated session.
@@ -220,15 +250,29 @@ def mouse_click(
         y: Y coordinate.
         button: "left", "right", or "middle".
         double: If True, double-click.
+        triple: If True, triple-click (overrides double).
+        modifiers: Modifier keys to hold during click (e.g. ["ctrl"], ["shift", "alt"]).
+        hold_ms: Duration to hold button pressed before release (ms, for long-press).
         screenshot_after_ms: If provided, capture screenshots at these delays
             (in milliseconds) after the click. Example: [0, 50, 100, 200, 500]
             captures 5 frames showing the click animation over 500ms.
     """
     inp = _get_input()
     btn = MouseButton(button)
-    inp.mouse_click(x, y, btn, double=double)
-    result = f"Clicked {button} at ({x}, {y})" + (" (double)" if double else "")
-    return _with_frame_capture(result, screenshot_after_ms)
+    click_count = 3 if triple else (2 if double else 1)
+    inp.mouse_click(x, y, btn, click_count=click_count, modifiers=modifiers, hold_ms=hold_ms)
+
+    desc = f"Clicked {button} at ({x}, {y})"
+    if triple:
+        desc += " (triple)"
+    elif double:
+        desc += " (double)"
+    if modifiers:
+        desc += f" with {'+'.join(modifiers)}"
+    if hold_ms > 0:
+        desc += f" held {hold_ms}ms"
+
+    return _with_frame_capture(desc, screenshot_after_ms)
 
 
 @mcp.tool()
@@ -253,7 +297,14 @@ def mouse_move(
 
 
 @mcp.tool()
-def mouse_scroll(x: int, y: int, delta: int, horizontal: bool = False) -> str:
+def mouse_scroll(
+    x: int,
+    y: int,
+    delta: int,
+    horizontal: bool = False,
+    discrete: bool = False,
+    steps: int = 1,
+) -> str:
     """Scroll at coordinates.
 
     Args:
@@ -261,11 +312,17 @@ def mouse_scroll(x: int, y: int, delta: int, horizontal: bool = False) -> str:
         y: Y coordinate.
         delta: Scroll amount (positive = down/right, negative = up/left).
         horizontal: If True, scroll horizontally.
+        discrete: If True, use discrete scroll (wheel ticks) instead of smooth pixels.
+        steps: Split total delta into this many increments (for smooth animation).
     """
     inp = _get_input()
-    inp.mouse_scroll(x, y, delta, horizontal=horizontal)
+    inp.mouse_scroll(x, y, delta, horizontal=horizontal, discrete=discrete, steps=steps)
     direction = "horizontal" if horizontal else "vertical"
-    return f"Scrolled {direction} by {delta} at ({x}, {y})"
+    mode = "discrete" if discrete else "smooth"
+    desc = f"Scrolled {direction} ({mode}) by {delta} at ({x}, {y})"
+    if steps > 1:
+        desc += f" in {steps} steps"
+    return desc
 
 
 @mcp.tool()
@@ -274,6 +331,9 @@ def mouse_drag(
     from_y: int,
     to_x: int,
     to_y: int,
+    button: str = "left",
+    modifiers: list[str] | None = None,
+    waypoints: list[list[int]] | None = None,
     screenshot_after_ms: list[int] | None = None,
 ) -> str:
     """Drag from one point to another.
@@ -281,14 +341,57 @@ def mouse_drag(
     Args:
         from_x, from_y: Starting coordinates.
         to_x, to_y: Ending coordinates.
+        button: Mouse button to use ("left", "right", "middle").
+        modifiers: Modifier keys to hold during drag (e.g. ["alt"], ["ctrl"]).
+        waypoints: Intermediate points as [[x, y, dwell_ms], ...].
         screenshot_after_ms: If provided, capture screenshots at these delays
             (in milliseconds) after the drag completes. Useful for observing
             drop animations and visual feedback.
     """
     inp = _get_input()
-    inp.mouse_drag(from_x, from_y, to_x, to_y)
-    result = f"Dragged from ({from_x}, {from_y}) to ({to_x}, {to_y})"
-    return _with_frame_capture(result, screenshot_after_ms)
+    btn = MouseButton(button)
+    wp: list[tuple[int, int, int]] | None = None
+    if waypoints:
+        wp = [(w[0], w[1], w[2]) for w in waypoints]
+    inp.mouse_drag(from_x, from_y, to_x, to_y, button=btn, modifiers=modifiers, waypoints=wp)
+
+    desc = f"Dragged from ({from_x}, {from_y}) to ({to_x}, {to_y})"
+    if modifiers:
+        desc += f" with {'+'.join(modifiers)}"
+    if waypoints:
+        desc += f" via {len(waypoints)} waypoints"
+    return _with_frame_capture(desc, screenshot_after_ms)
+
+
+@mcp.tool()
+def mouse_button_down(x: int, y: int, button: str = "left") -> str:
+    """Press a mouse button at coordinates without releasing.
+
+    Args:
+        x: X coordinate.
+        y: Y coordinate.
+        button: "left", "right", or "middle".
+    """
+    inp = _get_input()
+    inp.mouse_button_down(x, y, MouseButton(button))
+    return f"Button {button} pressed at ({x}, {y})"
+
+
+@mcp.tool()
+def mouse_button_up(x: int, y: int, button: str = "left") -> str:
+    """Release a mouse button at coordinates.
+
+    Args:
+        x: X coordinate.
+        y: Y coordinate.
+        button: "left", "right", or "middle".
+    """
+    inp = _get_input()
+    inp.mouse_button_up(x, y, MouseButton(button))
+    return f"Button {button} released at ({x}, {y})"
+
+
+# ── Keyboard tools ───────────────────────────────────────────────────────
 
 
 @mcp.tool()
@@ -311,6 +414,28 @@ def keyboard_type(
 
 
 @mcp.tool()
+def keyboard_type_unicode(
+    text: str,
+    screenshot_after_ms: list[int] | None = None,
+) -> str:
+    """Type arbitrary Unicode text (non-ASCII, e.g. Korean, CJK).
+
+    Uses wtype or clipboard fallback (wl-copy + Ctrl+V).
+
+    Args:
+        text: Text to type.
+        screenshot_after_ms: If provided, capture screenshots at these delays
+            (in milliseconds) after typing.
+    """
+    inp = _get_input()
+    session = _get_session()
+    dbus_addr = session.info.dbus_address if session.info else None
+    ok = inp.keyboard_type_unicode(text, dbus_address=dbus_addr)
+    result = f"Typed unicode: {text!r}" if ok else f"Failed to type unicode: {text!r}"
+    return _with_frame_capture(result, screenshot_after_ms)
+
+
+@mcp.tool()
 def keyboard_key(
     key: str,
     screenshot_after_ms: list[int] | None = None,
@@ -327,6 +452,371 @@ def keyboard_key(
     inp.keyboard_key(key)
     result = f"Pressed: {key}"
     return _with_frame_capture(result, screenshot_after_ms)
+
+
+@mcp.tool()
+def keyboard_key_down(key: str) -> str:
+    """Press and hold a key combination without releasing.
+
+    Useful for holding modifier keys across multiple actions
+    (e.g., hold Ctrl while clicking multiple items).
+
+    Args:
+        key: Key to press (e.g., "ctrl", "shift+a", "alt").
+    """
+    inp = _get_input()
+    inp.keyboard_key_down(key)
+    return f"Key down: {key}"
+
+
+@mcp.tool()
+def keyboard_key_up(key: str) -> str:
+    """Release a previously pressed key combination.
+
+    Args:
+        key: Key to release (e.g., "ctrl", "shift+a", "alt").
+    """
+    inp = _get_input()
+    inp.keyboard_key_up(key)
+    return f"Key up: {key}"
+
+
+# ── Touch tools ──────────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def touch_tap(
+    x: int,
+    y: int,
+    hold_ms: int = 0,
+    screenshot_after_ms: list[int] | None = None,
+) -> str:
+    """Tap at coordinates (touch input).
+
+    Args:
+        x: X coordinate.
+        y: Y coordinate.
+        hold_ms: Duration to hold before lifting (ms, for long-press).
+        screenshot_after_ms: If provided, capture screenshots at these delays.
+    """
+    inp = _get_input()
+    inp.touch_tap(x, y, hold_ms=hold_ms)
+    desc = f"Touch tap at ({x}, {y})"
+    if hold_ms > 0:
+        desc += f" held {hold_ms}ms"
+    return _with_frame_capture(desc, screenshot_after_ms)
+
+
+@mcp.tool()
+def touch_swipe(
+    from_x: int,
+    from_y: int,
+    to_x: int,
+    to_y: int,
+    duration_ms: int = 300,
+    screenshot_after_ms: list[int] | None = None,
+) -> str:
+    """Swipe from one point to another (touch input).
+
+    Args:
+        from_x, from_y: Starting coordinates.
+        to_x, to_y: Ending coordinates.
+        duration_ms: Duration of the swipe in milliseconds.
+        screenshot_after_ms: If provided, capture screenshots at these delays.
+    """
+    inp = _get_input()
+    inp.touch_swipe(from_x, from_y, to_x, to_y, duration_ms=duration_ms)
+    desc = f"Touch swipe from ({from_x}, {from_y}) to ({to_x}, {to_y}) in {duration_ms}ms"
+    return _with_frame_capture(desc, screenshot_after_ms)
+
+
+@mcp.tool()
+def touch_pinch(
+    center_x: int,
+    center_y: int,
+    start_distance: int,
+    end_distance: int,
+    duration_ms: int = 500,
+    screenshot_after_ms: list[int] | None = None,
+) -> str:
+    """Pinch gesture with two fingers.
+
+    Args:
+        center_x, center_y: Center point of the pinch.
+        start_distance: Initial distance between fingers (pixels).
+        end_distance: Final distance between fingers (pixels).
+        duration_ms: Duration of the gesture.
+        screenshot_after_ms: If provided, capture screenshots at these delays.
+    """
+    inp = _get_input()
+    inp.touch_pinch(center_x, center_y, start_distance, end_distance, duration_ms=duration_ms)
+    direction = "in" if end_distance < start_distance else "out"
+    desc = f"Pinch {direction} at ({center_x}, {center_y}): {start_distance}→{end_distance}px"
+    return _with_frame_capture(desc, screenshot_after_ms)
+
+
+@mcp.tool()
+def touch_multi_swipe(
+    from_x: int,
+    from_y: int,
+    to_x: int,
+    to_y: int,
+    fingers: int = 3,
+    duration_ms: int = 300,
+    screenshot_after_ms: list[int] | None = None,
+) -> str:
+    """Multi-finger swipe gesture.
+
+    Args:
+        from_x, from_y: Starting coordinates (center of finger group).
+        to_x, to_y: Ending coordinates.
+        fingers: Number of fingers (2-5).
+        duration_ms: Duration of the swipe.
+        screenshot_after_ms: If provided, capture screenshots at these delays.
+    """
+    inp = _get_input()
+    inp.touch_multi_swipe(from_x, from_y, to_x, to_y, fingers=fingers, duration_ms=duration_ms)
+    desc = (
+        f"{fingers}-finger swipe from ({from_x}, {from_y}) to ({to_x}, {to_y}) in {duration_ms}ms"
+    )
+    return _with_frame_capture(desc, screenshot_after_ms)
+
+
+# ── Clipboard tools ──────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def clipboard_get() -> str:
+    """Read the current clipboard content in the isolated session.
+
+    Returns:
+        The clipboard text content.
+    """
+    if not _clipboard_enabled:
+        return "Clipboard not enabled. Pass enable_clipboard=True to session_start."
+
+    env = _session_env()
+    result = subprocess.run(
+        ["wl-paste", "--no-newline"],
+        env=env,
+        capture_output=True,
+        timeout=5,
+    )
+    if result.returncode != 0:
+        return f"Failed to read clipboard: {result.stderr.decode(errors='replace')}"
+    return result.stdout.decode(errors="replace")
+
+
+@mcp.tool()
+def clipboard_set(text: str) -> str:
+    """Set the clipboard content in the isolated session.
+
+    Args:
+        text: Text to copy to clipboard.
+    """
+    global _wl_copy_proc
+
+    if not _clipboard_enabled:
+        return "Clipboard not enabled. Pass enable_clipboard=True to session_start."
+
+    # Terminate previous wl-copy process (replaced by new content)
+    if _wl_copy_proc is not None:
+        _wl_copy_proc.terminate()
+        try:
+            _wl_copy_proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            _wl_copy_proc.kill()
+        _wl_copy_proc = None
+
+    env = _session_env()
+    # wl-copy forks: parent exits immediately, child serves clipboard.
+    # Using Popen + DEVNULL avoids the pipe-blocking issue that
+    # subprocess.run(capture_output=True) causes with forked children.
+    _wl_copy_proc = subprocess.Popen(
+        ["wl-copy", "--", text],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    time.sleep(0.1)  # Wait for fork to complete
+    return f"Clipboard set: {text!r}"
+
+
+# ── Wait-for-UI tools ───────────────────────────────────────────────────
+
+
+@mcp.tool()
+def wait_for_element(
+    query: str,
+    app_name: str = "",
+    timeout_ms: int = 5000,
+    poll_interval_ms: int = 200,
+) -> str:
+    """Wait for a UI element to appear.
+
+    Polls the accessibility tree until an element matching the query is found
+    or the timeout expires.
+
+    Args:
+        query: Search text (case-insensitive, matches names/roles/descriptions).
+        app_name: Filter to a specific app.
+        timeout_ms: Maximum wait time in milliseconds.
+        poll_interval_ms: Polling interval in milliseconds.
+
+    Returns:
+        Matching elements (same format as find_ui_elements) or error on timeout.
+    """
+    _get_session()
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    interval = poll_interval_ms / 1000.0
+
+    while True:
+        elements = find_elements(query, app_name=app_name)
+        if elements:
+            lines = [f"Found {len(elements)} elements matching '{query}':\n"]
+            for el in elements:
+                actions_str = f" [actions: {', '.join(el.actions)}]" if el.actions else ""
+                lines.append(
+                    f'- [{el.role}] "{el.name}" @ '
+                    f"({el.x}, {el.y}, {el.width}x{el.height}){actions_str}"
+                )
+            return "\n".join(lines)
+
+        if time.monotonic() >= deadline:
+            return f"Timeout after {timeout_ms}ms: no elements matching '{query}'"
+
+        time.sleep(interval)
+
+
+# ── Window management tools ──────────────────────────────────────────────
+
+
+@mcp.tool()
+def launch_app(command: str) -> str:
+    """Launch an application inside the running isolated session.
+
+    Args:
+        command: Command to launch (e.g., "kcalc" or "/path/to/app --arg").
+
+    Returns:
+        Launch status with PID.
+    """
+    session = _get_session()
+    cmd = command.split()
+    pid = session.launch_app(cmd)
+    return f"App launched: {command} (PID={pid})"
+
+
+@mcp.tool()
+def list_windows() -> str:
+    """List windows in the isolated session via AT-SPI2.
+
+    Returns:
+        List of top-level application windows.
+    """
+    _get_session()
+    import gi
+
+    gi.require_version("Atspi", "2.0")
+    from gi.repository import Atspi
+
+    desktop = Atspi.get_desktop(0)
+    lines: list[str] = []
+    for i in range(desktop.get_child_count()):
+        app = desktop.get_child_at_index(i)
+        if app is None:
+            continue
+        name = app.get_name() or "(unnamed)"
+        child_count = app.get_child_count()
+        lines.append(f"- {name} ({child_count} windows)")
+    if not lines:
+        return "(no accessible applications found)"
+    return f"Applications ({len(lines)}):\n" + "\n".join(lines)
+
+
+@mcp.tool()
+def focus_window(app_name: str) -> str:
+    """Attempt to focus a window by application name.
+
+    Uses AT-SPI2 to find the window and activate it.
+
+    Args:
+        app_name: Application name to focus.
+    """
+    _get_session()
+    import gi
+
+    gi.require_version("Atspi", "2.0")
+    from gi.repository import Atspi
+
+    desktop = Atspi.get_desktop(0)
+    for i in range(desktop.get_child_count()):
+        app = desktop.get_child_at_index(i)
+        if app is None:
+            continue
+        name = app.get_name() or ""
+        if app_name.lower() in name.lower():
+            # Try to find a focusable window child
+            for j in range(app.get_child_count()):
+                win = app.get_child_at_index(j)
+                if win is None:
+                    continue
+                try:
+                    component = win.get_component_iface()
+                    if component is not None:
+                        component.grab_focus()
+                        return f"Focused: {name}"
+                except Exception:
+                    continue
+            return f"Found '{name}' but could not focus it"
+    return f"No application matching '{app_name}' found"
+
+
+# ── D-Bus tools ──────────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def dbus_call(
+    service: str,
+    path: str,
+    interface: str,
+    method: str,
+    args: list[str] | None = None,
+) -> str:
+    """Call a D-Bus method in the isolated session.
+
+    Args:
+        service: D-Bus service name (e.g., "org.kde.KWin").
+        path: Object path (e.g., "/org/kde/KWin").
+        interface: Interface name (e.g., "org.kde.KWin.Scripting").
+        method: Method name.
+        args: Method arguments as strings.
+
+    Returns:
+        Method return value as string.
+    """
+    env = _session_env()
+    cmd = [
+        "dbus-send",
+        "--session",
+        "--print-reply",
+        f"--dest={service}",
+        f"{path}",
+        f"{interface}.{method}",
+    ]
+    if args:
+        cmd.extend(args)
+
+    result = subprocess.run(
+        cmd,
+        env=env,
+        capture_output=True,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        return f"D-Bus call failed: {result.stderr.decode(errors='replace')}"
+    return result.stdout.decode(errors="replace")
 
 
 def main() -> None:

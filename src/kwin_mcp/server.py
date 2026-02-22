@@ -7,8 +7,10 @@ import shlex
 import shutil
 import subprocess
 import time
+from typing import Annotated
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import Field
 
 from kwin_mcp.accessibility import find_elements, get_accessibility_tree
 from kwin_mcp.input import InputBackend, MouseButton
@@ -114,25 +116,32 @@ def _with_frame_capture(
 
 @mcp.tool()
 def session_start(
-    app_command: str = "",
-    screen_width: int = 1920,
-    screen_height: int = 1080,
-    enable_clipboard: bool = False,
-    env: dict[str, str] | None = None,
+    app_command: Annotated[
+        str,
+        Field(
+            description='Command to launch (e.g. "kcalc" or "/path/to/app --arg"). '
+            "Leave empty to start session without an app."
+        ),
+    ] = "",
+    screen_width: Annotated[int, Field(description="Virtual screen width in pixels.")] = 1920,
+    screen_height: Annotated[int, Field(description="Virtual screen height in pixels.")] = 1080,
+    enable_clipboard: Annotated[
+        bool,
+        Field(
+            description="Enable clipboard tools (wl-copy/wl-paste). Disabled by default "
+            "because wl-copy can hang in isolated sessions."
+        ),
+    ] = False,
+    env: Annotated[
+        dict[str, str] | None,
+        Field(description="Extra environment variables to pass to the launched app."),
+    ] = None,
 ) -> str:
     """Start an isolated KWin Wayland session, optionally launching an app.
 
-    Args:
-        app_command: Command to launch (e.g., "kcalc" or "/path/to/app --arg").
-                    Leave empty to start session without an app.
-        screen_width: Virtual screen width in pixels.
-        screen_height: Virtual screen height in pixels.
-        enable_clipboard: Enable clipboard tools (wl-copy/wl-paste). Disabled by default
-                         because wl-copy can hang in isolated sessions.
-        env: Extra environment variables to pass to the launched app.
-
-    Returns:
-        Session status information.
+    This must be called before any other tool. If a session is already running,
+    call session_stop first. Returns session status including the Wayland socket
+    path, launched app PID (if any), and input backend availability.
     """
     global _session, _input, _clipboard_enabled
 
@@ -172,7 +181,12 @@ def session_start(
 
 @mcp.tool()
 def session_stop() -> str:
-    """Stop the isolated KWin session and clean up."""
+    """Stop the isolated KWin session and clean up.
+
+    Terminates KWin, all launched app processes, and the D-Bus session.
+    Cleans up temporary files and clipboard processes. Safe to call when
+    no session is running (returns "No session running.").
+    """
     global _session, _input, _wl_copy_proc, _clipboard_enabled
 
     if _session is None:
@@ -200,10 +214,16 @@ def session_stop() -> str:
 
 
 @mcp.tool()
-def screenshot(include_cursor: bool = False) -> str:
+def screenshot(
+    include_cursor: Annotated[
+        bool,
+        Field(description="If true, render the mouse cursor in the screenshot."),
+    ] = False,
+) -> str:
     """Capture a screenshot of the isolated session.
 
-    Returns the file path of the saved PNG image.
+    Requires an active session. Returns the file path to the saved PNG image
+    and its size in KB.
     """
     session = _get_session()
     info = session.info
@@ -222,30 +242,39 @@ def screenshot(include_cursor: bool = False) -> str:
 
 
 @mcp.tool()
-def accessibility_tree(app_name: str = "", max_depth: int = 15) -> str:
+def accessibility_tree(
+    app_name: Annotated[
+        str,
+        Field(description="Filter to a specific app name (empty string = all apps)."),
+    ] = "",
+    max_depth: Annotated[int, Field(description="Maximum tree traversal depth.")] = 15,
+) -> str:
     """Get the accessibility tree of apps in the isolated session.
 
-    Args:
-        app_name: Filter to a specific app (empty = all apps).
-        max_depth: Maximum tree traversal depth.
-
-    Returns:
-        Formatted text of the widget tree with roles, names, states, and coordinates.
+    Returns a formatted text tree with each widget's role, name, states,
+    and bounding box coordinates. Use this to understand UI structure before
+    interacting with elements.
     """
     _get_session()  # Ensure session is running
     return get_accessibility_tree(app_name=app_name, max_depth=max_depth)
 
 
 @mcp.tool()
-def find_ui_elements(query: str, app_name: str = "") -> str:
+def find_ui_elements(
+    query: Annotated[
+        str,
+        Field(description="Search text (case-insensitive, matches names/roles/descriptions)."),
+    ],
+    app_name: Annotated[
+        str,
+        Field(description="Filter to a specific app name (empty string = all apps)."),
+    ] = "",
+) -> str:
     """Find UI elements matching a search query.
 
-    Args:
-        query: Search text (case-insensitive, matches names/roles/descriptions).
-        app_name: Filter to a specific app.
-
-    Returns:
-        List of matching elements with positions and actions.
+    Returns a list of matching elements with their role, name, bounding box
+    (x, y, width, height), and available actions. Use this to locate specific
+    buttons, inputs, or labels before clicking or interacting.
     """
     _get_session()
     elements = find_elements(query, app_name=app_name)
@@ -266,28 +295,40 @@ def find_ui_elements(query: str, app_name: str = "") -> str:
 
 @mcp.tool()
 def mouse_click(
-    x: int,
-    y: int,
-    button: str = "left",
-    double: bool = False,
-    triple: bool = False,
-    modifiers: list[str] | None = None,
-    hold_ms: int = 0,
-    screenshot_after_ms: list[int] | None = None,
+    x: Annotated[
+        int,
+        Field(description="X coordinate in pixels (0 = left edge of virtual screen)."),
+    ],
+    y: Annotated[
+        int,
+        Field(description="Y coordinate in pixels (0 = top edge of virtual screen)."),
+    ],
+    button: Annotated[
+        str, Field(description='Mouse button: "left", "right", or "middle".')
+    ] = "left",
+    double: Annotated[bool, Field(description="If true, double-click.")] = False,
+    triple: Annotated[bool, Field(description="If true, triple-click (overrides double).")] = False,
+    modifiers: Annotated[
+        list[str] | None,
+        Field(description='Modifier keys to hold during click (e.g. ["ctrl"], ["shift", "alt"]).'),
+    ] = None,
+    hold_ms: Annotated[
+        int,
+        Field(description="Duration to hold button pressed before release (ms, for long-press)."),
+    ] = 0,
+    screenshot_after_ms: Annotated[
+        list[int] | None,
+        Field(
+            description="Capture screenshots at these delays (ms) after the click. "
+            "Example: [0, 50, 200] captures 3 frames showing the click effect."
+        ),
+    ] = None,
 ) -> str:
     """Click at coordinates in the isolated session.
 
-    Args:
-        x: X coordinate.
-        y: Y coordinate.
-        button: "left", "right", or "middle".
-        double: If True, double-click.
-        triple: If True, triple-click (overrides double).
-        modifiers: Modifier keys to hold during click (e.g. ["ctrl"], ["shift", "alt"]).
-        hold_ms: Duration to hold button pressed before release (ms, for long-press).
-        screenshot_after_ms: If provided, capture screenshots at these delays
-            (in milliseconds) after the click. Example: [0, 50, 100, 200, 500]
-            captures 5 frames showing the click animation over 500ms.
+    Coordinates use the virtual screen pixel grid where (0, 0) is the top-left
+    corner. Returns a description of the click performed. Optionally captures
+    screenshot frames after the click for visual feedback.
     """
     inp = _get_input()
     btn = MouseButton(button)
@@ -309,18 +350,20 @@ def mouse_click(
 
 @mcp.tool()
 def mouse_move(
-    x: int,
-    y: int,
-    screenshot_after_ms: list[int] | None = None,
+    x: Annotated[int, Field(description="X coordinate in pixels.")],
+    y: Annotated[int, Field(description="Y coordinate in pixels.")],
+    screenshot_after_ms: Annotated[
+        list[int] | None,
+        Field(
+            description="Capture screenshots at these delays (ms) after moving. "
+            "Useful for observing hover effects and tooltip animations."
+        ),
+    ] = None,
 ) -> str:
-    """Move the mouse (hover) to coordinates without clicking.
+    """Move the mouse cursor to coordinates without clicking.
 
-    Args:
-        x: X coordinate.
-        y: Y coordinate.
-        screenshot_after_ms: If provided, capture screenshots at these delays
-            (in milliseconds) after moving. Useful for observing hover effects
-            and tooltip animations.
+    Use this to trigger hover effects, reveal tooltips, or position the
+    cursor before a separate button-down action.
     """
     inp = _get_input()
     inp.mouse_move(x, y)
@@ -330,22 +373,37 @@ def mouse_move(
 
 @mcp.tool()
 def mouse_scroll(
-    x: int,
-    y: int,
-    delta: int,
-    horizontal: bool = False,
-    discrete: bool = False,
-    steps: int = 1,
+    x: Annotated[int, Field(description="X coordinate in pixels.")],
+    y: Annotated[int, Field(description="Y coordinate in pixels.")],
+    delta: Annotated[
+        int,
+        Field(
+            description="Scroll amount (positive = down/right, negative = up/left). "
+            "Typical values: 1-5 for discrete wheel ticks, 50-200 for smooth pixel scrolling."
+        ),
+    ],
+    horizontal: Annotated[
+        bool, Field(description="If true, scroll horizontally instead of vertically.")
+    ] = False,
+    discrete: Annotated[
+        bool,
+        Field(
+            description="If true, use discrete scroll (wheel ticks) instead of smooth pixels. "
+            "Most desktop apps expect discrete scrolling."
+        ),
+    ] = False,
+    steps: Annotated[
+        int,
+        Field(
+            description="Split total delta into this many increments for smooth animation. "
+            "Only useful with discrete=false."
+        ),
+    ] = 1,
 ) -> str:
-    """Scroll at coordinates.
+    """Scroll at coordinates in the isolated session.
 
-    Args:
-        x: X coordinate.
-        y: Y coordinate.
-        delta: Scroll amount (positive = down/right, negative = up/left).
-        horizontal: If True, scroll horizontally.
-        discrete: If True, use discrete scroll (wheel ticks) instead of smooth pixels.
-        steps: Split total delta into this many increments (for smooth animation).
+    Moves the cursor to (x, y) and performs a scroll action. Returns a
+    description of the scroll performed.
     """
     inp = _get_input()
     inp.mouse_scroll(x, y, delta, horizontal=horizontal, discrete=discrete, steps=steps)
@@ -359,26 +417,34 @@ def mouse_scroll(
 
 @mcp.tool()
 def mouse_drag(
-    from_x: int,
-    from_y: int,
-    to_x: int,
-    to_y: int,
-    button: str = "left",
-    modifiers: list[str] | None = None,
-    waypoints: list[list[int]] | None = None,
-    screenshot_after_ms: list[int] | None = None,
+    from_x: Annotated[int, Field(description="Starting X coordinate in pixels.")],
+    from_y: Annotated[int, Field(description="Starting Y coordinate in pixels.")],
+    to_x: Annotated[int, Field(description="Ending X coordinate in pixels.")],
+    to_y: Annotated[int, Field(description="Ending Y coordinate in pixels.")],
+    button: Annotated[
+        str, Field(description='Mouse button: "left", "right", or "middle".')
+    ] = "left",
+    modifiers: Annotated[
+        list[str] | None,
+        Field(description='Modifier keys to hold during drag (e.g. ["alt"], ["ctrl"]).'),
+    ] = None,
+    waypoints: Annotated[
+        list[list[int]] | None,
+        Field(
+            description="Intermediate points as [[x, y, dwell_ms], ...]. "
+            "The cursor pauses at each waypoint for dwell_ms milliseconds."
+        ),
+    ] = None,
+    screenshot_after_ms: Annotated[
+        list[int] | None,
+        Field(description="Capture screenshots at these delays (ms) after the drag completes."),
+    ] = None,
 ) -> str:
-    """Drag from one point to another.
+    """Drag from one point to another in the isolated session.
 
-    Args:
-        from_x, from_y: Starting coordinates.
-        to_x, to_y: Ending coordinates.
-        button: Mouse button to use ("left", "right", "middle").
-        modifiers: Modifier keys to hold during drag (e.g. ["alt"], ["ctrl"]).
-        waypoints: Intermediate points as [[x, y, dwell_ms], ...].
-        screenshot_after_ms: If provided, capture screenshots at these delays
-            (in milliseconds) after the drag completes. Useful for observing
-            drop animations and visual feedback.
+    Presses the mouse button at (from_x, from_y), moves to (to_x, to_y)
+    optionally through waypoints, then releases. Returns a description of
+    the drag performed.
     """
     inp = _get_input()
     btn = MouseButton(button)
@@ -396,13 +462,18 @@ def mouse_drag(
 
 
 @mcp.tool()
-def mouse_button_down(x: int, y: int, button: str = "left") -> str:
+def mouse_button_down(
+    x: Annotated[int, Field(description="X coordinate in pixels.")],
+    y: Annotated[int, Field(description="Y coordinate in pixels.")],
+    button: Annotated[
+        str, Field(description='Mouse button: "left", "right", or "middle".')
+    ] = "left",
+) -> str:
     """Press a mouse button at coordinates without releasing.
 
-    Args:
-        x: X coordinate.
-        y: Y coordinate.
-        button: "left", "right", or "middle".
+    Use with mouse_button_up to perform custom drag sequences or
+    hold-and-interact patterns. The button stays pressed until
+    mouse_button_up is called.
     """
     inp = _get_input()
     inp.mouse_button_down(x, y, MouseButton(button))
@@ -410,13 +481,17 @@ def mouse_button_down(x: int, y: int, button: str = "left") -> str:
 
 
 @mcp.tool()
-def mouse_button_up(x: int, y: int, button: str = "left") -> str:
+def mouse_button_up(
+    x: Annotated[int, Field(description="X coordinate in pixels.")],
+    y: Annotated[int, Field(description="Y coordinate in pixels.")],
+    button: Annotated[
+        str, Field(description='Mouse button: "left", "right", or "middle".')
+    ] = "left",
+) -> str:
     """Release a mouse button at coordinates.
 
-    Args:
-        x: X coordinate.
-        y: Y coordinate.
-        button: "left", "right", or "middle".
+    Pair with mouse_button_down. The release happens at the specified
+    coordinates, which may differ from where the button was pressed.
     """
     inp = _get_input()
     inp.mouse_button_up(x, y, MouseButton(button))
@@ -428,16 +503,26 @@ def mouse_button_up(x: int, y: int, button: str = "left") -> str:
 
 @mcp.tool()
 def keyboard_type(
-    text: str,
-    screenshot_after_ms: list[int] | None = None,
+    text: Annotated[
+        str,
+        Field(
+            description="ASCII text to type. For non-ASCII (Korean, CJK, emoji), "
+            "use keyboard_type_unicode instead."
+        ),
+    ],
+    screenshot_after_ms: Annotated[
+        list[int] | None,
+        Field(
+            description="Capture screenshots at these delays (ms) after typing. "
+            "Useful for observing autocomplete popups and input validation."
+        ),
+    ] = None,
 ) -> str:
-    """Type text in the focused element.
+    """Type ASCII text into the currently focused element.
 
-    Args:
-        text: Text to type.
-        screenshot_after_ms: If provided, capture screenshots at these delays
-            (in milliseconds) after typing. Useful for observing autocomplete
-            popups and input validation feedback.
+    Simulates individual key presses for each character. Only supports ASCII
+    characters. For non-ASCII text (Korean, CJK, emoji, accented characters),
+    use keyboard_type_unicode instead.
     """
     inp = _get_input()
     inp.keyboard_type(text)
@@ -447,17 +532,21 @@ def keyboard_type(
 
 @mcp.tool()
 def keyboard_type_unicode(
-    text: str,
-    screenshot_after_ms: list[int] | None = None,
+    text: Annotated[
+        str,
+        Field(description="Unicode text to type (supports any script: Korean, CJK, emoji, etc.)."),
+    ],
+    screenshot_after_ms: Annotated[
+        list[int] | None,
+        Field(description="Capture screenshots at these delays (ms) after typing."),
+    ] = None,
 ) -> str:
-    """Type arbitrary Unicode text (non-ASCII, e.g. Korean, CJK).
+    """Type arbitrary Unicode text including non-ASCII characters.
 
-    Uses wtype or clipboard fallback (wl-copy + Ctrl+V).
-
-    Args:
-        text: Text to type.
-        screenshot_after_ms: If provided, capture screenshots at these delays
-            (in milliseconds) after typing.
+    Uses wtype if available, otherwise falls back to clipboard injection
+    (wl-copy + Ctrl+V). Requires wtype or wl-clipboard to be installed.
+    Use this instead of keyboard_type when the text contains non-ASCII
+    characters (e.g. Korean, CJK, emoji, accented characters).
     """
     if not shutil.which("wtype") and not shutil.which("wl-copy"):
         return (
@@ -475,16 +564,25 @@ def keyboard_type_unicode(
 
 @mcp.tool()
 def keyboard_key(
-    key: str,
-    screenshot_after_ms: list[int] | None = None,
+    key: Annotated[
+        str,
+        Field(
+            description='Key or combination to press (e.g. "Return", "ctrl+c", '
+            '"alt+F4", "Tab", "shift+ctrl+z").'
+        ),
+    ],
+    screenshot_after_ms: Annotated[
+        list[int] | None,
+        Field(
+            description="Capture screenshots at these delays (ms) after the key press. "
+            "Useful for observing menu openings and dialog transitions."
+        ),
+    ] = None,
 ) -> str:
-    """Press a key combination.
+    """Press and release a key or key combination.
 
-    Args:
-        key: Key to press (e.g., "Return", "ctrl+c", "alt+F4", "Tab").
-        screenshot_after_ms: If provided, capture screenshots at these delays
-            (in milliseconds) after the key press. Useful for observing menu
-            openings, dialog transitions, and keyboard-triggered animations.
+    Supports single keys and modifier combinations joined with "+".
+    Returns a confirmation of the key pressed.
     """
     inp = _get_input()
     inp.keyboard_key(key)
@@ -493,14 +591,17 @@ def keyboard_key(
 
 
 @mcp.tool()
-def keyboard_key_down(key: str) -> str:
-    """Press and hold a key combination without releasing.
+def keyboard_key_down(
+    key: Annotated[
+        str,
+        Field(description='Key to press and hold (e.g. "ctrl", "shift", "alt").'),
+    ],
+) -> str:
+    """Press and hold a key without releasing.
 
-    Useful for holding modifier keys across multiple actions
-    (e.g., hold Ctrl while clicking multiple items).
-
-    Args:
-        key: Key to press (e.g., "ctrl", "shift+a", "alt").
+    Use with keyboard_key_up to hold modifier keys across multiple actions
+    (e.g. hold Ctrl while clicking multiple items). The key stays pressed
+    until keyboard_key_up is called with the same key.
     """
     inp = _get_input()
     inp.keyboard_key_down(key)
@@ -508,11 +609,16 @@ def keyboard_key_down(key: str) -> str:
 
 
 @mcp.tool()
-def keyboard_key_up(key: str) -> str:
-    """Release a previously pressed key combination.
+def keyboard_key_up(
+    key: Annotated[
+        str,
+        Field(description='Key to release (e.g. "ctrl", "shift", "alt").'),
+    ],
+) -> str:
+    """Release a previously held key.
 
-    Args:
-        key: Key to release (e.g., "ctrl", "shift+a", "alt").
+    Pair with keyboard_key_down. Must be called to release keys that
+    were pressed with keyboard_key_down.
     """
     inp = _get_input()
     inp.keyboard_key_up(key)
@@ -524,18 +630,23 @@ def keyboard_key_up(key: str) -> str:
 
 @mcp.tool()
 def touch_tap(
-    x: int,
-    y: int,
-    hold_ms: int = 0,
-    screenshot_after_ms: list[int] | None = None,
+    x: Annotated[int, Field(description="X coordinate in pixels.")],
+    y: Annotated[int, Field(description="Y coordinate in pixels.")],
+    hold_ms: Annotated[
+        int,
+        Field(
+            description="Duration to hold before lifting (ms). Use >500 for long-press gestures."
+        ),
+    ] = 0,
+    screenshot_after_ms: Annotated[
+        list[int] | None,
+        Field(description="Capture screenshots at these delays (ms) after the tap."),
+    ] = None,
 ) -> str:
-    """Tap at coordinates (touch input).
+    """Tap at coordinates using touch input.
 
-    Args:
-        x: X coordinate.
-        y: Y coordinate.
-        hold_ms: Duration to hold before lifting (ms, for long-press).
-        screenshot_after_ms: If provided, capture screenshots at these delays.
+    Simulates a single finger touch-and-release. Set hold_ms > 0 for
+    long-press gestures. Returns a description of the tap performed.
     """
     inp = _get_input()
     inp.touch_tap(x, y, hold_ms=hold_ms)
@@ -547,20 +658,19 @@ def touch_tap(
 
 @mcp.tool()
 def touch_swipe(
-    from_x: int,
-    from_y: int,
-    to_x: int,
-    to_y: int,
-    duration_ms: int = 300,
-    screenshot_after_ms: list[int] | None = None,
+    from_x: Annotated[int, Field(description="Starting X coordinate in pixels.")],
+    from_y: Annotated[int, Field(description="Starting Y coordinate in pixels.")],
+    to_x: Annotated[int, Field(description="Ending X coordinate in pixels.")],
+    to_y: Annotated[int, Field(description="Ending Y coordinate in pixels.")],
+    duration_ms: Annotated[int, Field(description="Duration of the swipe in milliseconds.")] = 300,
+    screenshot_after_ms: Annotated[
+        list[int] | None,
+        Field(description="Capture screenshots at these delays (ms) after the swipe."),
+    ] = None,
 ) -> str:
-    """Swipe from one point to another (touch input).
+    """Swipe from one point to another using single-finger touch input.
 
-    Args:
-        from_x, from_y: Starting coordinates.
-        to_x, to_y: Ending coordinates.
-        duration_ms: Duration of the swipe in milliseconds.
-        screenshot_after_ms: If provided, capture screenshots at these delays.
+    Returns a description of the swipe performed.
     """
     inp = _get_input()
     inp.touch_swipe(from_x, from_y, to_x, to_y, duration_ms=duration_ms)
@@ -570,21 +680,31 @@ def touch_swipe(
 
 @mcp.tool()
 def touch_pinch(
-    center_x: int,
-    center_y: int,
-    start_distance: int,
-    end_distance: int,
-    duration_ms: int = 500,
-    screenshot_after_ms: list[int] | None = None,
+    center_x: Annotated[int, Field(description="Center X coordinate of the pinch gesture.")],
+    center_y: Annotated[int, Field(description="Center Y coordinate of the pinch gesture.")],
+    start_distance: Annotated[
+        int, Field(description="Initial distance between two fingers in pixels.")
+    ],
+    end_distance: Annotated[
+        int,
+        Field(
+            description="Final distance between two fingers in pixels. "
+            "Smaller than start_distance = pinch in (zoom out), "
+            "larger = pinch out (zoom in)."
+        ),
+    ],
+    duration_ms: Annotated[
+        int, Field(description="Duration of the gesture in milliseconds.")
+    ] = 500,
+    screenshot_after_ms: Annotated[
+        list[int] | None,
+        Field(description="Capture screenshots at these delays (ms) after the pinch."),
+    ] = None,
 ) -> str:
-    """Pinch gesture with two fingers.
+    """Perform a two-finger pinch gesture.
 
-    Args:
-        center_x, center_y: Center point of the pinch.
-        start_distance: Initial distance between fingers (pixels).
-        end_distance: Final distance between fingers (pixels).
-        duration_ms: Duration of the gesture.
-        screenshot_after_ms: If provided, capture screenshots at these delays.
+    Simulates two fingers moving symmetrically toward or away from the
+    center point. Returns a description of the pinch performed.
     """
     inp = _get_input()
     inp.touch_pinch(center_x, center_y, start_distance, end_distance, duration_ms=duration_ms)
@@ -595,22 +715,25 @@ def touch_pinch(
 
 @mcp.tool()
 def touch_multi_swipe(
-    from_x: int,
-    from_y: int,
-    to_x: int,
-    to_y: int,
-    fingers: int = 3,
-    duration_ms: int = 300,
-    screenshot_after_ms: list[int] | None = None,
+    from_x: Annotated[
+        int, Field(description="Starting X coordinate (center of finger group) in pixels.")
+    ],
+    from_y: Annotated[
+        int, Field(description="Starting Y coordinate (center of finger group) in pixels.")
+    ],
+    to_x: Annotated[int, Field(description="Ending X coordinate in pixels.")],
+    to_y: Annotated[int, Field(description="Ending Y coordinate in pixels.")],
+    fingers: Annotated[int, Field(description="Number of fingers (2-5).")] = 3,
+    duration_ms: Annotated[int, Field(description="Duration of the swipe in milliseconds.")] = 300,
+    screenshot_after_ms: Annotated[
+        list[int] | None,
+        Field(description="Capture screenshots at these delays (ms) after the swipe."),
+    ] = None,
 ) -> str:
-    """Multi-finger swipe gesture.
+    """Perform a multi-finger swipe gesture.
 
-    Args:
-        from_x, from_y: Starting coordinates (center of finger group).
-        to_x, to_y: Ending coordinates.
-        fingers: Number of fingers (2-5).
-        duration_ms: Duration of the swipe.
-        screenshot_after_ms: If provided, capture screenshots at these delays.
+    All fingers move in parallel from the start to end coordinates.
+    Returns a description of the swipe performed.
     """
     inp = _get_input()
     inp.touch_multi_swipe(from_x, from_y, to_x, to_y, fingers=fingers, duration_ms=duration_ms)
@@ -627,8 +750,9 @@ def touch_multi_swipe(
 def clipboard_get() -> str:
     """Read the current clipboard content in the isolated session.
 
-    Returns:
-        The clipboard text content.
+    Requires enable_clipboard=true in session_start and wl-clipboard
+    installed. Returns the clipboard text or an error message if clipboard
+    is not enabled or empty.
     """
     if not _clipboard_enabled:
         return "Clipboard not enabled. Pass enable_clipboard=True to session_start."
@@ -649,11 +773,14 @@ def clipboard_get() -> str:
 
 
 @mcp.tool()
-def clipboard_set(text: str) -> str:
+def clipboard_set(
+    text: Annotated[str, Field(description="Text to copy to clipboard.")],
+) -> str:
     """Set the clipboard content in the isolated session.
 
-    Args:
-        text: Text to copy to clipboard.
+    Requires enable_clipboard=true in session_start and wl-clipboard
+    installed. The content remains available until replaced by another
+    clipboard_set call or the session ends.
     """
     global _wl_copy_proc
 
@@ -692,24 +819,22 @@ def clipboard_set(text: str) -> str:
 
 @mcp.tool()
 def wait_for_element(
-    query: str,
-    app_name: str = "",
-    timeout_ms: int = 5000,
-    poll_interval_ms: int = 200,
+    query: Annotated[
+        str,
+        Field(description="Search text (case-insensitive, matches names/roles/descriptions)."),
+    ],
+    app_name: Annotated[
+        str,
+        Field(description="Filter to a specific app name (empty string = all apps)."),
+    ] = "",
+    timeout_ms: Annotated[int, Field(description="Maximum wait time in milliseconds.")] = 5000,
+    poll_interval_ms: Annotated[int, Field(description="Polling interval in milliseconds.")] = 200,
 ) -> str:
-    """Wait for a UI element to appear.
+    """Wait for a UI element to appear in the accessibility tree.
 
-    Polls the accessibility tree until an element matching the query is found
-    or the timeout expires.
-
-    Args:
-        query: Search text (case-insensitive, matches names/roles/descriptions).
-        app_name: Filter to a specific app.
-        timeout_ms: Maximum wait time in milliseconds.
-        poll_interval_ms: Polling interval in milliseconds.
-
-    Returns:
-        Matching elements (same format as find_ui_elements) or error on timeout.
+    Polls repeatedly until a matching element is found or the timeout expires.
+    Returns matching elements in the same format as find_ui_elements, or a
+    timeout error message.
     """
     _get_session()
     deadline = time.monotonic() + timeout_ms / 1000.0
@@ -737,15 +862,20 @@ def wait_for_element(
 
 
 @mcp.tool()
-def launch_app(command: str, env: dict[str, str] | None = None) -> str:
+def launch_app(
+    command: Annotated[
+        str,
+        Field(description='Command to launch (e.g. "kcalc" or "/path/to/app --arg").'),
+    ],
+    env: Annotated[
+        dict[str, str] | None,
+        Field(description="Extra environment variables to pass to the app."),
+    ] = None,
+) -> str:
     """Launch an application inside the running isolated session.
 
-    Args:
-        command: Command to launch (e.g., "kcalc" or "/path/to/app --arg").
-        env: Extra environment variables to pass to the app.
-
-    Returns:
-        Launch status with PID.
+    Requires an active session. Returns the app PID (for use with read_app_log)
+    and the log file path.
     """
     session = _get_session()
     cmd = shlex.split(command)
@@ -755,10 +885,11 @@ def launch_app(command: str, env: dict[str, str] | None = None) -> str:
 
 @mcp.tool()
 def list_windows() -> str:
-    """List windows in the isolated session via AT-SPI2.
+    """List accessible application windows in the isolated session.
 
-    Returns:
-        List of top-level application windows.
+    Uses AT-SPI2 to enumerate top-level applications and their window count.
+    Applications that do not support accessibility (AT-SPI2) may not appear.
+    Returns a formatted list of app names with window counts.
     """
     _get_session()
     import gi
@@ -781,13 +912,16 @@ def list_windows() -> str:
 
 
 @mcp.tool()
-def focus_window(app_name: str) -> str:
+def focus_window(
+    app_name: Annotated[
+        str,
+        Field(description="Application name to focus (case-insensitive substring match)."),
+    ],
+) -> str:
     """Attempt to focus a window by application name.
 
-    Uses AT-SPI2 to find the window and activate it.
-
-    Args:
-        app_name: Application name to focus.
+    Searches for an application whose name contains the given string
+    (case-insensitive) and activates its first focusable window via AT-SPI2.
     """
     _get_session()
     import gi
@@ -823,23 +957,22 @@ def focus_window(app_name: str) -> str:
 
 @mcp.tool()
 def dbus_call(
-    service: str,
-    path: str,
-    interface: str,
-    method: str,
-    args: list[str] | None = None,
+    service: Annotated[str, Field(description='D-Bus service name (e.g. "org.kde.KWin").')],
+    path: Annotated[str, Field(description='Object path (e.g. "/org/kde/KWin").')],
+    interface: Annotated[str, Field(description='Interface name (e.g. "org.kde.KWin.Scripting").')],
+    method: Annotated[str, Field(description="Method name to call.")],
+    args: Annotated[
+        list[str] | None,
+        Field(
+            description="Method arguments in dbus-send format "
+            '(e.g. ["string:hello", "int32:42", "boolean:true"]).'
+        ),
+    ] = None,
 ) -> str:
-    """Call a D-Bus method in the isolated session.
+    """Call a D-Bus method in the isolated session using dbus-send.
 
-    Args:
-        service: D-Bus service name (e.g., "org.kde.KWin").
-        path: Object path (e.g., "/org/kde/KWin").
-        interface: Interface name (e.g., "org.kde.KWin.Scripting").
-        method: Method name.
-        args: Method arguments as strings.
-
-    Returns:
-        Method return value as string.
+    Executes a D-Bus method call and returns the reply. Arguments must use
+    dbus-send type notation (e.g. "string:value", "int32:42", "boolean:true").
     """
     env = _session_env()
     cmd = [
@@ -868,33 +1001,40 @@ def dbus_call(
 
 
 @mcp.tool()
-def read_app_log(pid: int, last_n_lines: int = 50) -> str:
+def read_app_log(
+    pid: Annotated[
+        int,
+        Field(description="PID of the app (returned by launch_app or session_start)."),
+    ],
+    last_n_lines: Annotated[
+        int,
+        Field(description="Number of trailing lines to return (0 = all output)."),
+    ] = 50,
+) -> str:
     """Read stdout/stderr output of a launched app.
 
-    Args:
-        pid: PID of the app (returned by launch_app or session_start).
-        last_n_lines: Number of trailing lines to return (0 = all).
-
-    Returns:
-        The app's captured stdout/stderr output.
+    Returns the combined stdout and stderr text captured since the app was
+    launched. Use the PID from launch_app or session_start to identify the app.
     """
     session = _get_session()
     return session.read_app_log(pid, last_n_lines=last_n_lines)
 
 
 @mcp.tool()
-def wayland_info(filter_protocol: str = "") -> str:
+def wayland_info(
+    filter_protocol: Annotated[
+        str,
+        Field(
+            description="Substring to filter protocol names "
+            '(e.g. "plasma_window_management"). Empty = show all.'
+        ),
+    ] = "",
+) -> str:
     """List Wayland protocols available in the isolated session.
 
-    Runs wayland-info inside the session to enumerate all exposed globals.
-    Useful for verifying that restricted protocols (e.g. plasma_window_management)
-    are accessible.
-
-    Args:
-        filter_protocol: If provided, only show lines matching this substring.
-
-    Returns:
-        wayland-info output (optionally filtered).
+    Runs wayland-info to enumerate all exposed Wayland globals. Useful for
+    verifying that restricted protocols are accessible. Returns the full
+    output or only lines matching the filter.
     """
     env = _session_env()
     try:

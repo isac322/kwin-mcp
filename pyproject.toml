@@ -1,6 +1,6 @@
 [project]
 name = "kwin-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "MCP server for Linux desktop GUI automation on KDE Plasma 6 Wayland via isolated KWin virtual sessions"
 readme = "README.md"
 license = "MIT"

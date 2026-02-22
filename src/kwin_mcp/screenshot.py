@@ -212,13 +212,20 @@ def _capture_via_spectacle(
     # Remove host display refs
     env.pop("DISPLAY", None)
 
-    result = subprocess.run(
-        cmd,
-        env=env,
-        capture_output=True,
-        timeout=10,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            cmd,
+            env=env,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except FileNotFoundError:
+        msg = (
+            "spectacle not found. Install spectacle "
+            "(e.g. 'sudo pacman -S spectacle' or 'sudo apt install kde-spectacle')."
+        )
+        raise RuntimeError(msg) from None
 
     if result.returncode != 0:
         stderr = result.stderr.decode(errors="replace")

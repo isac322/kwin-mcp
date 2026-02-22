@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import time
 
@@ -14,6 +15,29 @@ from kwin_mcp.screenshot import capture_frame_burst, capture_screenshot_to_file
 from kwin_mcp.session import Session, SessionConfig
 
 mcp = FastMCP("kwin-mcp")
+
+# Install hints for external binaries
+_INSTALL_HINTS: dict[str, str] = {
+    "wl-paste": (
+        "wl-paste not found. Install wl-clipboard "
+        "(e.g. 'sudo pacman -S wl-clipboard' or 'sudo apt install wl-clipboard')."
+    ),
+    "wl-copy": (
+        "wl-copy not found. Install wl-clipboard "
+        "(e.g. 'sudo pacman -S wl-clipboard' or 'sudo apt install wl-clipboard')."
+    ),
+    "wtype": (
+        "wtype not found. Install wtype "
+        "(e.g. 'sudo pacman -S wtype' or build from https://github.com/atx/wtype)."
+    ),
+    "dbus-send": (
+        "dbus-send not found. Install dbus (e.g. 'sudo pacman -S dbus' or 'sudo apt install dbus')."
+    ),
+    "spectacle": (
+        "spectacle not found. Install spectacle "
+        "(e.g. 'sudo pacman -S spectacle' or 'sudo apt install kde-spectacle')."
+    ),
+}
 
 # Global session state
 _session: Session | None = None
@@ -427,6 +451,12 @@ def keyboard_type_unicode(
         screenshot_after_ms: If provided, capture screenshots at these delays
             (in milliseconds) after typing.
     """
+    if not shutil.which("wtype") and not shutil.which("wl-copy"):
+        return (
+            "Neither wtype nor wl-copy found. Install at least one: "
+            "wtype (e.g. 'sudo pacman -S wtype') or "
+            "wl-clipboard (e.g. 'sudo pacman -S wl-clipboard')."
+        )
     inp = _get_input()
     session = _get_session()
     dbus_addr = session.info.dbus_address if session.info else None
@@ -596,12 +626,15 @@ def clipboard_get() -> str:
         return "Clipboard not enabled. Pass enable_clipboard=True to session_start."
 
     env = _session_env()
-    result = subprocess.run(
-        ["wl-paste", "--no-newline"],
-        env=env,
-        capture_output=True,
-        timeout=5,
-    )
+    try:
+        result = subprocess.run(
+            ["wl-paste", "--no-newline"],
+            env=env,
+            capture_output=True,
+            timeout=5,
+        )
+    except FileNotFoundError:
+        return _INSTALL_HINTS["wl-paste"]
     if result.returncode != 0:
         return f"Failed to read clipboard: {result.stderr.decode(errors='replace')}"
     return result.stdout.decode(errors="replace")
@@ -632,13 +665,16 @@ def clipboard_set(text: str) -> str:
     # wl-copy forks: parent exits immediately, child serves clipboard.
     # Using Popen + DEVNULL avoids the pipe-blocking issue that
     # subprocess.run(capture_output=True) causes with forked children.
-    _wl_copy_proc = subprocess.Popen(
-        ["wl-copy", "--", text],
-        env=env,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    try:
+        _wl_copy_proc = subprocess.Popen(
+            ["wl-copy", "--", text],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        return _INSTALL_HINTS["wl-copy"]
     time.sleep(0.1)  # Wait for fork to complete
     return f"Clipboard set: {text!r}"
 
@@ -808,12 +844,15 @@ def dbus_call(
     if args:
         cmd.extend(args)
 
-    result = subprocess.run(
-        cmd,
-        env=env,
-        capture_output=True,
-        timeout=10,
-    )
+    try:
+        result = subprocess.run(
+            cmd,
+            env=env,
+            capture_output=True,
+            timeout=10,
+        )
+    except FileNotFoundError:
+        return _INSTALL_HINTS["dbus-send"]
     if result.returncode != 0:
         return f"D-Bus call failed: {result.stderr.decode(errors='replace')}"
     return result.stdout.decode(errors="replace")

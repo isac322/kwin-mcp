@@ -95,7 +95,15 @@ Triple isolation ensures no impact on the host desktop:
 - [x] Generic D-Bus call (`dbus_call` via dbus-send)
 - **Total tools**: 10 → 27
 
-### M7: Pluggable CLI Backend (Auto-detect Alternatives)
+### M7: Session Enhancements for E2E Testing ✅
+- [x] Expose restricted Wayland protocols (`KWIN_WAYLAND_NO_PERMISSION_CHECKS=1`)
+- [x] App stdout/stderr capture (`AppInfo` + log file redirect + `read_app_log` tool)
+- [x] Shell-aware command parsing (`shlex.split()` for proper quoting support)
+- [x] Extra environment variables for `session_start` and `launch_app` (`env` parameter)
+- [x] Wayland protocol diagnostics (`wayland_info` tool)
+- **Total tools**: 27 → 30
+
+### M8: Pluggable CLI Backend (Auto-detect Alternatives)
 - [ ] Research functionally equivalent alternatives for each external CLI (`wl-copy`/`wl-paste`, `wtype`, `spectacle`, `dbus-send`)
 - [ ] Implement auto-detection: discover available CLIs at runtime and select the best match
 - [ ] Ensure all alternatives are functionally identical (no behavioral differences)

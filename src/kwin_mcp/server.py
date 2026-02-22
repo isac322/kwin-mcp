@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import time
@@ -36,6 +37,10 @@ _INSTALL_HINTS: dict[str, str] = {
     "spectacle": (
         "spectacle not found. Install spectacle "
         "(e.g. 'sudo pacman -S spectacle' or 'sudo apt install kde-spectacle')."
+    ),
+    "wayland-info": (
+        "wayland-info not found. Install wayland-utils "
+        "(e.g. 'sudo pacman -S wayland-utils' or 'sudo apt install wayland-utils')."
     ),
 }
 
@@ -113,6 +118,7 @@ def session_start(
     screen_width: int = 1920,
     screen_height: int = 1080,
     enable_clipboard: bool = False,
+    env: dict[str, str] | None = None,
 ) -> str:
     """Start an isolated KWin Wayland session, optionally launching an app.
 
@@ -123,6 +129,7 @@ def session_start(
         screen_height: Virtual screen height in pixels.
         enable_clipboard: Enable clipboard tools (wl-copy/wl-paste). Disabled by default
                          because wl-copy can hang in isolated sessions.
+        env: Extra environment variables to pass to the launched app.
 
     Returns:
         Session status information.
@@ -145,9 +152,10 @@ def session_start(
     result = f"Session started. Wayland socket: {info.wayland_socket}"
 
     if app_command:
-        cmd = app_command.split()
-        pid = _session.launch_app(cmd)
-        result += f"\nApp launched: {app_command} (PID={pid})"
+        cmd = shlex.split(app_command)
+        app_info = _session.launch_app(cmd, extra_env=env)
+        result += f"\nApp launched: {app_command} (PID={app_info.pid})"
+        result += f"\nApp log: {app_info.log_path}"
 
     # Set up input backend via KWin's EIS D-Bus interface
     time.sleep(0.5)
@@ -729,19 +737,20 @@ def wait_for_element(
 
 
 @mcp.tool()
-def launch_app(command: str) -> str:
+def launch_app(command: str, env: dict[str, str] | None = None) -> str:
     """Launch an application inside the running isolated session.
 
     Args:
         command: Command to launch (e.g., "kcalc" or "/path/to/app --arg").
+        env: Extra environment variables to pass to the app.
 
     Returns:
         Launch status with PID.
     """
     session = _get_session()
-    cmd = command.split()
-    pid = session.launch_app(cmd)
-    return f"App launched: {command} (PID={pid})"
+    cmd = shlex.split(command)
+    app_info = session.launch_app(cmd, extra_env=env)
+    return f"App launched: {command} (PID={app_info.pid})\nApp log: {app_info.log_path}"
 
 
 @mcp.tool()
@@ -856,6 +865,57 @@ def dbus_call(
     if result.returncode != 0:
         return f"D-Bus call failed: {result.stderr.decode(errors='replace')}"
     return result.stdout.decode(errors="replace")
+
+
+@mcp.tool()
+def read_app_log(pid: int, last_n_lines: int = 50) -> str:
+    """Read stdout/stderr output of a launched app.
+
+    Args:
+        pid: PID of the app (returned by launch_app or session_start).
+        last_n_lines: Number of trailing lines to return (0 = all).
+
+    Returns:
+        The app's captured stdout/stderr output.
+    """
+    session = _get_session()
+    return session.read_app_log(pid, last_n_lines=last_n_lines)
+
+
+@mcp.tool()
+def wayland_info(filter_protocol: str = "") -> str:
+    """List Wayland protocols available in the isolated session.
+
+    Runs wayland-info inside the session to enumerate all exposed globals.
+    Useful for verifying that restricted protocols (e.g. plasma_window_management)
+    are accessible.
+
+    Args:
+        filter_protocol: If provided, only show lines matching this substring.
+
+    Returns:
+        wayland-info output (optionally filtered).
+    """
+    env = _session_env()
+    try:
+        result = subprocess.run(
+            ["wayland-info"],
+            env=env,
+            capture_output=True,
+            timeout=10,
+        )
+    except FileNotFoundError:
+        return _INSTALL_HINTS["wayland-info"]
+    if result.returncode != 0:
+        return f"wayland-info failed: {result.stderr.decode(errors='replace')}"
+
+    output = result.stdout.decode(errors="replace")
+    if filter_protocol:
+        lines = [line for line in output.splitlines() if filter_protocol in line]
+        if not lines:
+            return f"No protocols matching '{filter_protocol}' found."
+        return "\n".join(lines)
+    return output
 
 
 def main() -> None:

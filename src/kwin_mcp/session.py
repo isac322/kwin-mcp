@@ -30,6 +30,16 @@ class SessionConfig:
 
 
 @dataclass
+class AppInfo:
+    """Tracking info for a launched application."""
+
+    pid: int
+    command: str
+    log_path: Path
+    process: subprocess.Popen[bytes]
+
+
+@dataclass
 class SessionInfo:
     """Runtime information about a running isolated session."""
 
@@ -39,6 +49,7 @@ class SessionInfo:
     screenshot_dir: Path = field(default_factory=lambda: Path("/tmp"))
     app_pid: int | None = None
     wrapper_pid: int | None = None
+    apps: dict[int, AppInfo] = field(default_factory=dict)
 
 
 class Session:
@@ -53,6 +64,7 @@ class Session:
         self._process: subprocess.Popen[bytes] | None = None
         self._info: SessionInfo | None = None
         self._socket_name: str = ""
+        self._app_counter: int = 0
 
     @property
     def is_running(self) -> bool:
@@ -135,12 +147,12 @@ class Session:
         )
         return self._info
 
-    def launch_app(self, command: list[str], extra_env: dict[str, str] | None = None) -> int:
+    def launch_app(self, command: list[str], extra_env: dict[str, str] | None = None) -> AppInfo:
         """Launch an application inside the isolated session.
 
-        Returns the app's PID.
+        Returns AppInfo with pid, command, and log_path.
         """
-        if not self.is_running:
+        if not self.is_running or self._info is None:
             msg = "Session is not running"
             raise RuntimeError(msg)
 
@@ -153,18 +165,62 @@ class Session:
         }
         if extra_env:
             env.update(extra_env)
-        if self._info and self._info.dbus_address:
+        if self._info.dbus_address:
             env["DBUS_SESSION_BUS_ADDRESS"] = self._info.dbus_address
+
+        # Create log file for stdout/stderr capture
+        app_name = Path(command[0]).stem if command else "unknown"
+        self._app_counter += 1
+        log_path = self._info.screenshot_dir / f"app_{app_name}_{self._app_counter}.log"
+        log_file = log_path.open("ab")
 
         proc = subprocess.Popen(
             command,
             env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=log_file,
         )
-        if self._info:
-            self._info.app_pid = proc.pid
-        return proc.pid
+        # Close the fd in the parent; child has inherited it
+        log_file.close()
+
+        app_info = AppInfo(
+            pid=proc.pid,
+            command=" ".join(command),
+            log_path=log_path,
+            process=proc,
+        )
+        self._info.app_pid = proc.pid
+        self._info.apps[proc.pid] = app_info
+        return app_info
+
+    def read_app_log(self, pid: int, last_n_lines: int = 50) -> str:
+        """Read the log output of a launched app.
+
+        Args:
+            pid: PID of the app (from launch_app).
+            last_n_lines: Number of trailing lines to return (0 = all).
+
+        Returns:
+            The app's stdout/stderr output.
+        """
+        if self._info is None:
+            msg = "Session is not running"
+            raise RuntimeError(msg)
+
+        app = self._info.apps.get(pid)
+        if app is None:
+            available = list(self._info.apps.keys())
+            msg = f"No app with PID {pid}. Available PIDs: {available}"
+            raise ValueError(msg)
+
+        if not app.log_path.exists():
+            return "(no log output yet)"
+
+        text = app.log_path.read_text(errors="replace")
+        if last_n_lines > 0:
+            lines = text.splitlines()
+            text = "\n".join(lines[-last_n_lines:])
+        return text or "(no log output yet)"
 
     def stop(self) -> None:
         """Stop the isolated session and clean up all processes."""
@@ -259,6 +315,9 @@ wait $KWIN_PID
             # Allow direct D-Bus screenshot capture without portal authorization.
             # Safe in isolated virtual sessions where there is no user desktop to protect.
             "KWIN_SCREENSHOT_NO_PERMISSION_CHECKS": "1",
+            # Allow clients to bind restricted Wayland protocols (e.g. plasma_window_management).
+            # Safe in isolated virtual sessions where there is no user desktop to protect.
+            "KWIN_WAYLAND_NO_PERMISSION_CHECKS": "1",
         }
         # Remove host display references to avoid kwin connecting to host
         env.pop("WAYLAND_DISPLAY", None)

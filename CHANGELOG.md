@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-02-22
+
+### Added
+
+- **Restricted Wayland protocol access**: Set `KWIN_WAYLAND_NO_PERMISSION_CHECKS=1` in isolated sessions, enabling clients to bind `org_kde_plasma_window_management` and other KWin-restricted protocols — critical for testing apps that use Plasma's TasksModel / window management APIs
+- **App stdout/stderr capture**: `launch_app` and `session_start` now redirect app output to per-app log files, with a new `read_app_log` MCP tool to retrieve logs by PID
+- **Wayland protocol diagnostics**: New `wayland_info` MCP tool runs `wayland-info` inside the session to enumerate exposed Wayland globals (useful for verifying protocol availability)
+- **Environment variable passthrough**: `session_start` and `launch_app` now accept an `env` parameter for passing extra environment variables to launched apps
+- **Shell-aware command parsing**: Commands are now parsed with `shlex.split()` instead of `str.split()`, correctly handling quoted arguments (e.g. `bash -c 'echo hello world'`)
+
+### Changed
+
+- `Session.launch_app()` now returns `AppInfo` (with pid, command, log_path) instead of a bare `int` PID
+- `SessionInfo` now tracks all launched apps via an `apps` dict keyed by PID
+
 ## [0.3.0] - 2026-02-22
 
 ### Added
@@ -36,6 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keyboard input: text typing and key combinations via KWin EIS
 - FastMCP-based MCP server with stdio transport
 
+[0.4.0]: https://github.com/isac322/kwin-mcp/releases/tag/v0.4.0
 [0.3.0]: https://github.com/isac322/kwin-mcp/releases/tag/v0.3.0
 [0.2.0]: https://github.com/isac322/kwin-mcp/releases/tag/v0.2.0
 [0.1.0]: https://github.com/isac322/kwin-mcp/releases/tag/v0.1.0

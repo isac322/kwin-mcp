@@ -6,7 +6,23 @@ readme = "README.md"
 license = "MIT"
 authors = [{ name = "Byeonghoon Yoo", email = "bhyoo@bhyoo.com" }]
 requires-python = ">=3.12"
-keywords = ["mcp", "kwin", "kde", "wayland", "gui-automation", "plasma", "testing"]
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "kwin",
+    "kde",
+    "wayland",
+    "gui-automation",
+    "desktop-automation",
+    "plasma",
+    "testing",
+    "e2e-testing",
+    "ai-agents",
+    "accessibility",
+    "linux-desktop",
+    "headless",
+    "claude-code",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -18,7 +34,9 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: 3.15",
     "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: Quality Assurance",
     "Topic :: Desktop Environment :: K Desktop Environment (KDE)",
+    "Environment :: X11 Applications :: KDE",
     "Typing :: Typed",
 ]
 dependencies = [

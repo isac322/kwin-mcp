@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This MCP server exists to enable **Claude Code to autonomously test the GUI of KDE Plasma apps (especially the krema dock)**.
+This MCP server exists to enable **Claude Code to autonomously test the GUI of KDE Plasma apps**.
 
 What Claude Code should be able to do through this MCP:
 1. Launch apps in an isolated KWin Wayland session
@@ -12,13 +12,6 @@ What Claude Code should be able to do through this MCP:
 5. Repeat the above to autonomously perform **visual/functional/UX feedback loops**
 
 This allows Claude Code to modify code, then directly launch the app, manipulate the GUI, and verify results to autonomously complete the development cycle.
-
-### Key Use Scenarios (krema dock)
-- Verify parabolic zoom effect on icon hover
-- Verify workspace switching via mouse scroll
-- Verify right-click context menu display and item actions
-- Verify icon reordering via drag
-- Verify auto-hide behavior
 
 ---
 
@@ -79,9 +72,9 @@ Triple isolation ensures no impact on the host desktop:
 - [x] Register 10 tools and run MCP server
 - [x] Register server in Claude Code settings (.mcp.json)
 - [ ] Full feedback loop test (launch → interact → verify)
-- **Done**: Server code complete, .mcp.json registered in kwin-mcp and krema projects
+- **Done**: Server code complete, .mcp.json registered
 
-### M5.1: Extended Input Features for E2E Testing ✅
+### M6: Extended Input Features for E2E Testing ✅
 - [x] Fix `ei_device_start_emulating` argument count bug (2 → 3)
 - [x] Modifier + Click (`mouse_click(modifiers=["ctrl"])`)
 - [x] Long-Press (`mouse_click(hold_ms=1000)`)
@@ -102,8 +95,9 @@ Triple isolation ensures no impact on the host desktop:
 - [x] Generic D-Bus call (`dbus_call` via dbus-send)
 - **Total tools**: 10 → 27
 
-### M6: krema Integration Test
-- [ ] Launch krema dock app in isolated environment
-- [ ] Test hover zoom, scroll, right-click, drag
-- [ ] Verify UX via feedback loop
-- **Completion criteria**: Claude Code can launch krema and autonomously test core UX
+### M7: Pluggable CLI Backend (Auto-detect Alternatives)
+- [ ] Research functionally equivalent alternatives for each external CLI (`wl-copy`/`wl-paste`, `wtype`, `spectacle`, `dbus-send`)
+- [ ] Implement auto-detection: discover available CLIs at runtime and select the best match
+- [ ] Ensure all alternatives are functionally identical (no behavioral differences)
+- [ ] Update `_INSTALL_HINTS` to suggest multiple options
+- **Goal**: Users on non-KDE or minimal setups don't need to install KDE-specific tools if equivalent alternatives are already present

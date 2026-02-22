@@ -3,7 +3,7 @@
 ## Project Overview
 
 kwin-mcp is an MCP (Model Context Protocol) server for GUI automation in KDE Plasma 6 Wayland environments.
-**Purpose**: Implement a feedback loop where Claude Code autonomously launches/manipulates/observes the GUI of krema (a KDE dock app).
+**Purpose**: Implement a feedback loop where Claude Code autonomously launches/manipulates/observes the GUI of KDE Plasma apps.
 
 ## Toolchain
 

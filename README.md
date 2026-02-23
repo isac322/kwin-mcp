@@ -148,7 +148,7 @@ kwin-mcp-cli
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `session_start` | `app_command?` `str`, `screen_width?` `int` (1920), `screen_height?` `int` (1080), `enable_clipboard?` `bool` (false), `env?` `dict` | Start an isolated KWin Wayland session, optionally launching an app. Set `enable_clipboard=true` to enable clipboard tools (requires `wl-clipboard`). Pass extra environment variables via `env`. |
+| `session_start` | `app_command?` `str`, `screen_width?` `int` (1920), `screen_height?` `int` (1080), `enable_clipboard?` `bool` (false), `keep_screenshots?` `bool` (false), `env?` `dict` | Start an isolated KWin Wayland session, optionally launching an app. Set `enable_clipboard=true` to enable clipboard tools (requires `wl-clipboard`). Set `keep_screenshots=true` to preserve screenshot files after `session_stop`. Pass extra environment variables via `env`. |
 | `session_stop` | _(none)_ | Stop the session and clean up all processes |
 
 ### Observation (3 tools)
@@ -236,7 +236,7 @@ kwin-mcp server  (29 tools)       kwin-mcp-cli (interactive REPL)
   |                                 +-- kwin_wayland --virtual
   |                                       +-- [your app]
   |
-  |-- screenshot ---------------> spectacle (via D-Bus)
+  |-- screenshot ---------------> KWin ScreenShot2 D-Bus (spectacle fallback)
   |
   |-- accessibility_tree -------> AT-SPI2 (via PyGObject)
   |-- find_ui_elements ---------> AT-SPI2 (via PyGObject)
@@ -278,7 +278,7 @@ Mouse, keyboard, and touch events are injected through KWin's private `org.kde.K
 
 ### Screenshot Capture
 
-The `screenshot` tool uses `spectacle` CLI for reliable full-screen capture. For action tools with the `screenshot_after_ms` parameter, screenshots are captured directly via the KWin `org.kde.KWin.ScreenShot2` D-Bus interface, which is much faster (~30-70ms vs ~200-300ms per frame) because it avoids process spawn overhead. Raw ARGB pixel data is read from a pipe and converted to PNG using Pillow.
+The `screenshot` tool captures via the KWin `org.kde.KWin.ScreenShot2` D-Bus interface (~30-70ms per frame), with `spectacle` CLI as a fallback. For action tools with the `screenshot_after_ms` parameter, the same D-Bus interface is used for fast burst capture. Raw ARGB pixel data is read from a pipe and converted to PNG using Pillow.
 
 ### Accessibility Tree
 
@@ -388,7 +388,7 @@ uv run kwin-mcp
 
 ## Contributing
 
-Contributions are welcome! Please open an issue or pull request on [GitHub](https://github.com/isac322/kwin-mcp).
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, code style guidelines, and the pull request process.
 
 ```bash
 git clone https://github.com/isac322/kwin-mcp.git

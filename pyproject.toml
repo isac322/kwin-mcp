@@ -52,7 +52,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/isac322/kwin-mcp"
+Homepage = "https://pypi.org/project/kwin-mcp/"
 Repository = "https://github.com/isac322/kwin-mcp"
 Issues = "https://github.com/isac322/kwin-mcp/issues"
 Changelog = "https://github.com/isac322/kwin-mcp/blob/main/CHANGELOG.md"

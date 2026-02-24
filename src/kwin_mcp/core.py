@@ -99,21 +99,41 @@ class AutomationEngine:
         The gi.repository.Atspi library caches the D-Bus connection process-wide,
         so we must run queries in a fresh subprocess that inherits the correct
         DBUS_SESSION_BUS_ADDRESS from the isolated dbus-run-session.
+
+        Retries once on failure to handle transient AT-SPI2 bus instability.
         """
         env = self._session_env()
         payload = json.dumps({"op": op, **kwargs})
-        result = subprocess.run(
-            [sys.executable, "-m", "kwin_mcp.accessibility"],
-            input=payload,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode != 0:
-            msg = f"AT-SPI2 query failed: {result.stderr}"
-            raise RuntimeError(msg)
-        return json.loads(result.stdout)
+
+        last_error = ""
+        for attempt in range(2):
+            if attempt > 0:
+                time.sleep(0.5)
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-m", "kwin_mcp.accessibility"],
+                    input=payload,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            except subprocess.TimeoutExpired:
+                last_error = f"AT-SPI2 query timed out after 30s (op={op})"
+                continue
+
+            if result.returncode != 0:
+                last_error = f"AT-SPI2 query failed (exit {result.returncode}): {result.stderr}"
+                continue
+
+            try:
+                return json.loads(result.stdout)
+            except json.JSONDecodeError:
+                last_error = f"AT-SPI2 query returned invalid JSON: {result.stdout[:200]}"
+                continue
+
+        msg = f"{last_error}. Retried once but still failed — the AT-SPI2 bus may be unstable."
+        raise RuntimeError(msg)
 
     def _with_frame_capture(
         self,
@@ -234,21 +254,32 @@ class AutomationEngine:
         size_kb = path.stat().st_size / 1024
         return f"Screenshot saved: {path} ({size_kb:.1f} KB)"
 
-    def accessibility_tree(self, app_name: str = "", max_depth: int = 15) -> str:
+    def accessibility_tree(self, app_name: str = "", max_depth: int = 15, role: str = "") -> str:
         """Get the accessibility tree of apps in the isolated session."""
         self._get_session()
-        resp = self._run_atspi("tree", app_name=app_name, max_depth=max_depth)
+        resp = self._run_atspi("tree", app_name=app_name, max_depth=max_depth, role=role)
         return resp["result"]
 
-    def find_ui_elements(self, query: str, app_name: str = "") -> str:
-        """Find UI elements matching a search query."""
+    def find_ui_elements(
+        self, query: str, app_name: str = "", states: list[str] | None = None
+    ) -> str:
+        """Find UI elements matching a search query and/or required states."""
         self._get_session()
-        resp = self._run_atspi("find", query=query, app_name=app_name)
+        resp = self._run_atspi("find", query=query, app_name=app_name, states=states)
         elements = resp["result"]
-        if not elements:
-            return f"No elements found matching '{query}'"
 
-        lines = [f"Found {len(elements)} elements matching '{query}':\n"]
+        # Build descriptive search summary
+        criteria: list[str] = []
+        if query:
+            criteria.append(f"query='{query}'")
+        if states:
+            criteria.append(f"states={states}")
+        search_desc = ", ".join(criteria) if criteria else "(all)"
+
+        if not elements:
+            return f"No elements found matching {search_desc}"
+
+        lines = [f"Found {len(elements)} elements matching {search_desc}:\n"]
         for el in elements:
             actions_str = f" [actions: {', '.join(el['actions'])}]" if el["actions"] else ""
             lines.append(
@@ -546,6 +577,7 @@ class AutomationEngine:
         app_name: str = "",
         timeout_ms: int = 5000,
         poll_interval_ms: int = 200,
+        expected_states: list[str] | None = None,
     ) -> str:
         """Wait for a UI element to appear in the accessibility tree."""
         self._get_session()
@@ -555,12 +587,22 @@ class AutomationEngine:
             app_name=app_name,
             timeout_ms=timeout_ms,
             poll_interval_ms=poll_interval_ms,
+            states=expected_states,
         )
         if not resp["ok"]:
             return resp["error"]
 
         elements = resp["result"]
-        lines = [f"Found {len(elements)} elements matching '{query}':\n"]
+
+        # Build descriptive search summary
+        criteria: list[str] = []
+        if query:
+            criteria.append(f"query='{query}'")
+        if expected_states:
+            criteria.append(f"states={expected_states}")
+        search_desc = ", ".join(criteria) if criteria else "(all)"
+
+        lines = [f"Found {len(elements)} elements matching {search_desc}:\n"]
         for el in elements:
             actions_str = f" [actions: {', '.join(el['actions'])}]" if el["actions"] else ""
             lines.append(

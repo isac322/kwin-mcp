@@ -156,8 +156,8 @@ kwin-mcp-cli
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `screenshot` | `include_cursor?` `bool` (false) | Capture a screenshot of the virtual display (saved as PNG, returns file path) |
-| `accessibility_tree` | `app_name?` `str`, `max_depth?` `int` (15) | Get the AT-SPI2 widget tree with roles, names, states, and coordinates |
-| `find_ui_elements` | `query` `str`, `app_name?` `str` | Search for UI elements by name, role, or description (case-insensitive) |
+| `accessibility_tree` | `app_name?` `str`, `max_depth?` `int` (15), `role?` `str` | Get the AT-SPI2 widget tree with roles, names, states, and coordinates. Use `role` to filter to specific element types (e.g. `"button"`, `"check box"`). Non-matching elements are hidden but their children are still traversed. |
+| `find_ui_elements` | `query` `str`, `app_name?` `str`, `states?` `list[str]` | Search for UI elements by name, role, or description (case-insensitive). Optionally filter by AT-SPI2 states (e.g. `["focused"]`, `["active", "visible"]`). `query` can be empty when filtering by states only. |
 
 ### Mouse Input (6 tools)
 
@@ -201,14 +201,14 @@ kwin-mcp-cli
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `launch_app` | `command` `str`, `env?` `dict` | Launch an application inside the running session. Returns PID and log path. |
-| `list_windows` | _(none)_ | List all accessible application windows in the session via AT-SPI2 |
+| `list_windows` | _(none)_ | List all accessible application windows with per-window titles and active/focused state markers via AT-SPI2 |
 | `focus_window` | `app_name` `str` | Focus a window by application name (case-insensitive match) |
 
 ### UI Polling (1 tool)
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `wait_for_element` | `query` `str`, `app_name?` `str`, `timeout_ms?` `int` (5000), `poll_interval_ms?` `int` (200) | Poll the accessibility tree until an element matching the query appears or timeout expires. Useful for waiting on loading states and async UI updates. |
+| `wait_for_element` | `query` `str`, `app_name?` `str`, `timeout_ms?` `int` (5000), `poll_interval_ms?` `int` (200), `expected_states?` `list[str]` | Poll the accessibility tree until an element matching the query and/or states appears or timeout expires. Use `expected_states` to wait for state changes (e.g. `["active"]`, `["checked"]`). `query` can be empty when waiting for state changes only. |
 
 ### Advanced (3 tools)
 
@@ -386,6 +386,9 @@ uv run kwin-mcp
 - **AT-SPI2 availability varies** -- Some applications may not fully expose their widget tree via AT-SPI2.
 - **Touch input is EIS-emulated** -- Touch events are emulated through KWin's EIS interface, not from a real touchscreen device. Most applications handle emulated touch correctly, but some may behave differently from physical touch.
 - **Clipboard requires opt-in** -- Clipboard tools (`clipboard_get`, `clipboard_set`) are disabled by default because `wl-copy` can hang in isolated sessions. Enable with `enable_clipboard=true` in `session_start`, and ensure `wl-clipboard` is installed.
+- **QMenu (native context menus) may not appear in AT-SPI2** -- Qt's AT-SPI2 bridge has incomplete support for popup menus on Wayland. Context menus may not be visible in `accessibility_tree` or `find_ui_elements`. Workaround: use `screenshot` to visually locate menu items and click by coordinates.
+- **Screen edge triggers do not work with EIS input** -- Auto-hide panels and layer-shell trigger strips rely on Wayland surface input routing, which may not respond to EIS-injected pointer events. Workaround: use `dbus_call` with KWin scripting or keyboard shortcuts instead.
+- **AT-SPI2 coordinates are surface-local, not screen-global** -- Wayland clients do not know their global screen position (by design). Coordinates returned by `find_ui_elements` and `accessibility_tree` are relative to the window's top-left corner, not the virtual screen. For single-window scenarios this is usually fine; for multi-window layouts, combine with `screenshot` for absolute positioning.
 
 ## Contributing
 

@@ -119,6 +119,14 @@ def accessibility_tree(
         Field(description="Filter to a specific app name (empty string = all apps)."),
     ] = "",
     max_depth: Annotated[int, Field(description="Maximum tree traversal depth.")] = 15,
+    role: Annotated[
+        str,
+        Field(
+            description='Filter to elements with this role (e.g. "push button", "text", '
+            '"check box"). Empty string = show all roles. Non-matching elements are hidden '
+            "but their children are still traversed to find deeper matches."
+        ),
+    ] = "",
 ) -> str:
     """Get the accessibility tree of apps in the isolated session.
 
@@ -126,27 +134,38 @@ def accessibility_tree(
     and bounding box coordinates. Use this to understand UI structure before
     interacting with elements.
     """
-    return _engine.accessibility_tree(app_name=app_name, max_depth=max_depth)
+    return _engine.accessibility_tree(app_name=app_name, max_depth=max_depth, role=role)
 
 
 @mcp.tool()
 def find_ui_elements(
     query: Annotated[
         str,
-        Field(description="Search text (case-insensitive, matches names/roles/descriptions)."),
+        Field(
+            description="Search text (case-insensitive, matches names/roles/descriptions). "
+            "Can be empty string when filtering by states only."
+        ),
     ],
     app_name: Annotated[
         str,
         Field(description="Filter to a specific app name (empty string = all apps)."),
     ] = "",
+    states: Annotated[
+        list[str] | None,
+        Field(
+            description='Filter by AT-SPI2 states (e.g. ["focused"], ["active", "visible"]). '
+            "Only elements matching ALL specified states are returned. "
+            "Common states: active, focused, visible, enabled, checked, selected, expanded."
+        ),
+    ] = None,
 ) -> str:
-    """Find UI elements matching a search query.
+    """Find UI elements matching a search query and/or required AT-SPI2 states.
 
     Returns a list of matching elements with their role, name, bounding box
     (x, y, width, height), and available actions. Use this to locate specific
     buttons, inputs, or labels before clicking or interacting.
     """
-    return _engine.find_ui_elements(query=query, app_name=app_name)
+    return _engine.find_ui_elements(query=query, app_name=app_name, states=states)
 
 
 # ── Mouse tools ──────────────────────────────────────────────────────────
@@ -599,7 +618,10 @@ def clipboard_set(
 def wait_for_element(
     query: Annotated[
         str,
-        Field(description="Search text (case-insensitive, matches names/roles/descriptions)."),
+        Field(
+            description="Search text (case-insensitive, matches names/roles/descriptions). "
+            "Can be empty string when waiting for state changes only."
+        ),
     ],
     app_name: Annotated[
         str,
@@ -607,8 +629,16 @@ def wait_for_element(
     ] = "",
     timeout_ms: Annotated[int, Field(description="Maximum wait time in milliseconds.")] = 5000,
     poll_interval_ms: Annotated[int, Field(description="Polling interval in milliseconds.")] = 200,
+    expected_states: Annotated[
+        list[str] | None,
+        Field(
+            description='Wait until elements also have these AT-SPI2 states (e.g. ["active"]). '
+            "Useful for waiting until a window becomes active or a checkbox becomes checked. "
+            "Common states: active, focused, visible, enabled, checked, selected, expanded."
+        ),
+    ] = None,
 ) -> str:
-    """Wait for a UI element to appear in the accessibility tree.
+    """Wait for a UI element matching query and/or states to appear.
 
     Polls repeatedly until a matching element is found or the timeout expires.
     Returns matching elements in the same format as find_ui_elements, or a
@@ -619,6 +649,7 @@ def wait_for_element(
         app_name=app_name,
         timeout_ms=timeout_ms,
         poll_interval_ms=poll_interval_ms,
+        expected_states=expected_states,
     )
 
 

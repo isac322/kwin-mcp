@@ -121,7 +121,15 @@ Triple isolation ensures no impact on the host desktop:
 - [x] DRY `_xdg_isolation_env()` helper shared across `_build_env()`, `launch_app()`, and `_session_env()`
 - **Goal**: Prevent apps in isolated sessions from reading/writing host user settings for reproducible and safe testing
 
-### M10: Pluggable CLI Backend (Auto-detect Alternatives)
+### M10: AT-SPI2 Query Improvements + Stability ✅
+- [x] `list_windows` shows per-window titles and `[active]`/`[focused]` state markers
+- [x] `find_ui_elements` `states` parameter for AT-SPI2 state-based filtering (e.g. `["focused"]`)
+- [x] `wait_for_element` `expected_states` parameter for waiting on state changes
+- [x] `accessibility_tree` `role` parameter for role-based tree filtering (e.g. `"button"`)
+- [x] `_run_atspi()` retry logic (1 retry with 0.5s delay) for transient AT-SPI2 bus failures
+- **Goal**: Address feedback from E2E PoC testing — enable state-aware UI queries and improve AT-SPI2 reliability
+
+### M11: Pluggable CLI Backend (Auto-detect Alternatives)
 - [ ] Research functionally equivalent alternatives for each external CLI (`wl-copy`/`wl-paste`, `wtype`, `spectacle`, `dbus-send`)
 - [ ] Implement auto-detection: discover available CLIs at runtime and select the best match
 - [ ] Ensure all alternatives are functionally identical (no behavioral differences)

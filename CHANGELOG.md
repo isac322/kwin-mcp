@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-02-25
+
 ### Added
 
 - `isolate_home` option in `session_start` to create a temporary HOME directory with isolated XDG directories (`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME`), preventing apps from reading/writing host user settings
@@ -103,10 +105,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keyboard input: text typing and key combinations via KWin EIS
 - FastMCP-based MCP server with stdio transport
 
+[Unreleased]: https://github.com/isac322/kwin-mcp/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/isac322/kwin-mcp/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/isac322/kwin-mcp/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/isac322/kwin-mcp/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/isac322/kwin-mcp/compare/v0.4.1...v0.4.2
-[Unreleased]: https://github.com/isac322/kwin-mcp/compare/v0.5.1...HEAD
 [0.4.1]: https://github.com/isac322/kwin-mcp/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/isac322/kwin-mcp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/isac322/kwin-mcp/compare/v0.2.0...v0.3.0

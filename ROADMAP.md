@@ -101,7 +101,7 @@ Triple isolation ensures no impact on the host desktop:
 - [x] Shell-aware command parsing (`shlex.split()` for proper quoting support)
 - [x] Extra environment variables for `session_start` and `launch_app` (`env` parameter)
 - [x] Wayland protocol diagnostics (`wayland_info` tool)
-- **Total tools**: 27 → 30
+- **Total tools**: 27 → 29
 
 ### M8: Code Separation + AT-SPI2 Cleanup ✅
 - [x] Extract `AutomationEngine` class from `server.py` into `core.py` (MCP-independent logic)

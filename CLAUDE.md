@@ -51,6 +51,27 @@ See ROADMAP.md. Key modules:
 3. After code changes, run `uv run ruff check .` + `uv run ruff format .` + `uv run ty check`
 4. Update ROADMAP.md checklist when a milestone item is completed
 5. **Verify with CLI, not MCP tools**: After modifying any kwin-mcp code, verify via the CLI (`uv run python -m kwin_mcp.cli`), NOT the MCP server tools. The MCP server process is already running with the old code loaded in memory — calling MCP tools after editing source files will NOT reflect the changes. Use the CLI to launch a session and test the modified functionality. Use `keep_screenshots=true` in `session_start` to preserve screenshot files after `session_stop` (they are deleted by default). Files in `/tmp/kwin-mcp-screenshots-*` must be cleaned up manually when this option is used.
+6. **Invoke docs-seo agent after relevant file changes**: After modifying any of the trigger files below, invoke the `@docs-seo` agent to evaluate whether documentation is stale. A no-op conclusion is acceptable if nothing needs updating.
+
+### docs-seo Auto-Trigger Files
+
+| Changed File | Trigger Label | docs-seo Action |
+|---|---|---|
+| `src/kwin_mcp/server.py` | tool-registration, code-general | Check tool count, README tool tables, CONTRIBUTING structure |
+| `src/kwin_mcp/session.py` | session-api | Check README arch diagram, CONTRIBUTING session docs |
+| `src/kwin_mcp/core.py` | engine-api, code-general | Check README arch description, CONTRIBUTING structure |
+| `src/kwin_mcp/*.py` (any) | code-general | Check concrete numbers, CONTRIBUTING file listing |
+| `pyproject.toml` | package-metadata | Sync keywords with `.claude/positioning.yml`; check CLAUDE.md keyword tiers |
+| `CHANGELOG.md` | changelog-update | Sync docs-seo.md positioning; add new search intents |
+| `README.md` | readme-update | Sync docs-seo.md positioning; update CLAUDE.md keyword tiers |
+| `ROADMAP.md` | roadmap-update | Add new long-tail keywords; update CONTRIBUTING.md if milestone adds contributor workflow |
+| `.claude/positioning.yml` | manifest-update | Full sync of docs-seo.md + CLAUDE.md SEO sections |
+
+**Automation — Claude Code hook** (primary): `.claude/settings.json` registers a `PostToolUse` hook that runs `.claude/hooks/docs-seo-trigger.sh` automatically after every `Edit`, `Write`, `MultiEdit`, and `Bash` tool call. The script detects whether the modified file matches a trigger pattern, then injects a structured `additionalContext` message into the conversation. Claude Code presents this message before the next reply, prompting the docs-seo agent evaluation inline. Context passed: `changed_files` list and `trigger_labels` list. Agent updates: only the Output Targets for each active trigger label (see `.claude/agents/docs-seo.md`).
+
+**Automation — git post-commit hook** (secondary): `scripts/docs-seo-trigger.sh` prints a reminder to the terminal when trigger files are committed. Enable with `git config core.hooksPath .githooks`. Use this as a safety net for commits made outside Claude Code.
+
+**Manual invocation**: Use the `@docs-seo` agent directly and pass `changed_files=[<list>]` as context. The agent will follow its Evaluation Workflow and report no-op if nothing is stale.
 
 ## System Dependencies (Arch/Manjaro)
 

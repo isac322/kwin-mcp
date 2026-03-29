@@ -10,11 +10,19 @@ on:
     paths:
       - "src/kwin_mcp/**"
       - "pyproject.toml"
+      - "CHANGELOG.md"
+      - "README.md"
+      - "ROADMAP.md"
+      - ".claude/positioning.yml"
   pull_request:
     branches: [main]
     paths:
       - "src/kwin_mcp/**"
       - "pyproject.toml"
+      - "CHANGELOG.md"
+      - "README.md"
+      - "ROADMAP.md"
+      - ".claude/positioning.yml"
 
 jobs:
   docs-seo-check:

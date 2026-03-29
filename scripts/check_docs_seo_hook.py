@@ -26,8 +26,8 @@ Exit codes:
 from __future__ import annotations
 
 import json
-import sys
 import re
+import sys
 
 SOURCE_PATTERN = re.compile(r"^src/kwin_mcp/.*\.py$|^pyproject\.toml$")
 
@@ -35,11 +35,7 @@ SOURCE_PATTERN = re.compile(r"^src/kwin_mcp/.*\.py$|^pyproject\.toml$")
 def extract_file_path(data: dict) -> str:
     """Extract file path from Claude Code hook tool_input."""
     tool_input = data.get("tool_input", {})
-    return (
-        tool_input.get("file_path")
-        or tool_input.get("path")
-        or ""
-    )
+    return tool_input.get("file_path") or tool_input.get("path") or ""
 
 
 def normalize_path(path: str) -> str:
@@ -50,7 +46,7 @@ def normalize_path(path: str) -> str:
         "./",
     ]:
         if path.startswith(prefix):
-            return path[len(prefix):]
+            return path[len(prefix) :]
     return path
 
 

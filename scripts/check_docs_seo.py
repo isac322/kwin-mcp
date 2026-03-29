@@ -170,9 +170,7 @@ def main() -> int:
         for term in r.missing:
             print(f"    - missing: {term!r}")
 
-    print(
-        "\nRun the @docs-seo agent in Claude Code to review and update affected documents."
-    )
+    print("\nRun the @docs-seo agent in Claude Code to review and update affected documents.")
     return 1
 
 

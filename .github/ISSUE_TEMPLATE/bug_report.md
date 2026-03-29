@@ -21,7 +21,7 @@ A clear description of what the bug is.
 
 ## Steps to Reproduce
 
-1. Start a session with `session_start`
+1. Start a session with `session_start` (virtual) or `session_connect` (live)
 2. ...
 3. ...
 

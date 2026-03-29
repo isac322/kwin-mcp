@@ -5,15 +5,6 @@ name: Docs & SEO Review
 # This workflow intentionally runs on every push / PR — it exits cleanly (no-op)
 # when the detected changes do not warrant a documentation review.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "src/kwin_mcp/**"
-      - "pyproject.toml"
-      - "CHANGELOG.md"
-      - "README.md"
-      - "ROADMAP.md"
-      - ".claude/positioning.yml"
   pull_request:
     branches: [main]
     paths:
@@ -40,13 +31,7 @@ jobs:
       - name: Detect changed source files
         id: changed
         run: |
-          # Determine the comparison base
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE_SHA="${{ github.event.pull_request.base.sha }}"
-          else
-            # For push events use the previous commit
-            BASE_SHA="${{ github.event.before }}"
-          fi
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
 
           CHANGED=$(git diff --name-only "$BASE_SHA" HEAD -- \
             'src/kwin_mcp/*.py' \

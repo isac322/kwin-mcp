@@ -47,37 +47,17 @@ sudo apt install wl-clipboard wtype wayland-utils
 git clone https://github.com/isac322/kwin-mcp.git
 cd kwin-mcp
 uv sync
-
-# Install git hooks (docs-seo reminder after source commits)
-bash scripts/install_hooks.sh
 ```
 
-The `install_hooks.sh` script installs a `post-commit` hook that prints a docs-seo reminder and runs `scripts/check_docs_seo.py` automatically whenever `src/kwin_mcp/*.py` or `pyproject.toml` files are committed.
+### Documentation Consistency Check
 
-### Claude Code PostToolUse Hook (optional)
+The project includes a docs-seo consistency checker (`scripts/check_docs_seo.py`) that validates SEO keywords and positioning terms across documentation files. It runs automatically in CI on pull requests and can be invoked locally:
 
-If you use Claude Code for development, you can enable in-editor docs-seo reminders by adding the following hook to `.claude/settings.json` in the project root:
-
-```json
-{
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write|MultiEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 scripts/check_docs_seo_hook.py",
-            "timeout": 10
-          }
-        ]
-      }
-    ]
-  }
-}
+```bash
+python3 scripts/check_docs_seo.py
 ```
 
-This causes Claude Code to print a reminder whenever it edits a source file, prompting you to run `@docs-seo` if documentation may need updating.
+In Claude Code sessions, use the `/check-docs-seo` skill or the `@docs-seo` agent to evaluate and update documentation after code changes.
 
 ## Code Style
 

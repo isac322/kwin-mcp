@@ -67,11 +67,11 @@ See ROADMAP.md. Key modules:
 | `ROADMAP.md` | roadmap-update | Add new long-tail keywords; update CONTRIBUTING.md if milestone adds contributor workflow |
 | `.claude/positioning.yml` | manifest-update | Full sync of docs-seo.md + CLAUDE.md SEO sections |
 
-**Automation — Claude Code hook** (primary): `.claude/settings.json` registers a `PostToolUse` hook that runs `.claude/hooks/docs-seo-trigger.sh` automatically after every `Edit`, `Write`, `MultiEdit`, and `Bash` tool call. The script detects whether the modified file matches a trigger pattern, then injects a structured `additionalContext` message into the conversation. Claude Code presents this message before the next reply, prompting the docs-seo agent evaluation inline. Context passed: `changed_files` list and `trigger_labels` list. Agent updates: only the Output Targets for each active trigger label (see `.claude/agents/docs-seo.md`).
+**Automation — Claude Code hook**: `.claude/settings.json` registers a `PostToolUse` hook on `Bash` that runs `.claude/hooks/docs-seo-trigger.sh` when `git commit` or `git add` is executed. The script detects whether committed files match trigger patterns, then injects context into the conversation prompting docs-seo evaluation.
 
-**Automation — git post-commit hook** (secondary): `scripts/docs-seo-trigger.sh` prints a reminder to the terminal when trigger files are committed. Enable with `git config core.hooksPath .githooks`. Use this as a safety net for commits made outside Claude Code.
+**Automation — CI**: `.github/workflows/docs-seo.yml` runs `scripts/check_docs_seo.py` on pull requests to validate SEO keyword consistency.
 
-**Manual invocation**: Use the `@docs-seo` agent directly and pass `changed_files=[<list>]` as context. The agent will follow its Evaluation Workflow and report no-op if nothing is stale.
+**Manual invocation**: Use `/check-docs-seo` skill or the `@docs-seo` agent directly.
 
 ## System Dependencies (Arch/Manjaro)
 

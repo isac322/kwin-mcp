@@ -8,7 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/isac322/kwin-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/isac322/kwin-mcp/actions/workflows/ci.yml)
 
-A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that enables AI agents (Claude Code, Cursor, and other MCP clients) to launch, interact with, and observe any Wayland application in a fully isolated virtual KWin session -- without affecting the user's desktop. It can also connect to a live KWin session (real desktop or container) for collaborative workflows. With 30 MCP tools covering mouse, keyboard, touch, clipboard, accessibility tree inspection, screenshot capture, and window management, kwin-mcp provides everything needed for end-to-end GUI testing and desktop automation on Linux.
+A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that enables AI agents (Claude Code, Cursor, and other MCP clients) to launch, interact with, and observe any Wayland application in a fully isolated virtual KWin session -- without affecting the user's desktop. It also supports **live desktop automation** by connecting to an existing KWin session (real desktop or container) for collaborative workflows. With 30 MCP tools covering mouse, keyboard, touch, clipboard, accessibility tree inspection, screenshot capture, and window management, kwin-mcp provides everything needed for end-to-end GUI testing and desktop automation on Linux.
 
 ## Table of Contents
 
@@ -50,6 +50,10 @@ Connect to your real desktop session and let Claude observe and interact with wh
 ### Headless GUI Testing in CI/CD
 
 Integrate Linux desktop GUI testing into CI/CD pipelines. kwin-mcp's virtual sessions require no X11 or physical display server, making it suitable for headless environments like GitHub Actions or GitLab CI runners on Linux.
+
+### Kiosk and Embedded Device Automation
+
+Automate kiosk interfaces and embedded Linux desktops running KDE Plasma or a bare KWin Wayland compositor. Use `session_start` for isolated virtual testing of kiosk UIs, or `session_connect` to attach directly to a live kiosk or embedded device session for real-time automation and diagnostics.
 
 ## Quick Start
 

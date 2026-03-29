@@ -2,8 +2,8 @@
 
 ## Project Overview
 
-kwin-mcp is an MCP (Model Context Protocol) server for GUI automation in KDE Plasma 6 Wayland environments.
-**Purpose**: Implement a feedback loop where Claude Code autonomously launches/manipulates/observes the GUI of KDE Plasma apps.
+kwin-mcp is an MCP (Model Context Protocol) server for Linux desktop GUI automation on KDE Plasma 6 Wayland.
+**Purpose**: Enable AI agents (Claude Code and other MCP clients) to launch, interact with, and observe any Wayland application — either in a fully isolated virtual KWin session for reproducible GUI testing, or by connecting to a live KDE Plasma desktop (real session or container) for collaborative desktop automation workflows.
 
 ## Toolchain
 
@@ -39,7 +39,7 @@ See ROADMAP.md. Key modules:
 - `core.py`: AutomationEngine — MCP-independent automation logic (session, input, screenshot, a11y)
 - `server.py`: Thin MCP wrappers delegating to AutomationEngine
 - `cli.py`: Interactive REPL + pipe mode via `cmd.Cmd` (`kwin-mcp-cli` entry point)
-- `session.py`: dbus-run-session + kwin_wayland --virtual (isolated environment)
+- `session.py`: Virtual sessions (dbus-run-session + kwin_wayland --virtual) and live session attachment (session_connect to real desktop or container)
 - `screenshot.py`: KWin ScreenShot2 D-Bus (screenshots)
 - `accessibility.py`: AT-SPI2 (widget tree)
 - `input.py`: KWin EIS D-Bus + libei (input injection)
@@ -66,9 +66,9 @@ When writing or editing any documentation (README.md, CHANGELOG.md, GitHub relea
 
 ### Target Keywords
 
-**Primary**: kwin-mcp, MCP server, GUI automation, KDE Plasma, Wayland automation, Linux desktop automation
-**Secondary**: headless GUI testing, AI agent desktop, accessibility tree, AT-SPI2, libei, EIS, KWin virtual session, desktop testing framework, Wayland compositor testing, MCP tools
-**Long-tail**: headless Wayland GUI testing, KDE Plasma automated testing, Linux GUI test automation CI/CD, Claude Code desktop automation, AI-driven Linux desktop testing
+**Primary**: kwin-mcp, MCP server, GUI automation, KDE Plasma, Wayland automation, Linux desktop automation, live desktop automation
+**Secondary**: headless GUI testing, AI agent desktop, accessibility tree, AT-SPI2, libei, EIS, KWin virtual session, live session, session_connect, desktop testing framework, Wayland compositor testing, MCP tools, real desktop automation, desktop collaboration, kiosk automation, embedded device automation
+**Long-tail**: headless Wayland GUI testing, KDE Plasma automated testing, Linux GUI test automation CI/CD, Claude Code desktop automation, AI-driven Linux desktop testing, live KDE Plasma session automation, AI agent real desktop control, connect to live KWin session, container desktop automation, kiosk desktop automation, embedded Linux desktop testing
 
 ### README.md Rules
 
@@ -95,7 +95,7 @@ When writing or editing any documentation (README.md, CHANGELOG.md, GitHub relea
 - **Patch releases** structure: What's Changed -> detailed description -> Full Changelog comparison link
 - First sentence must convey the value proposition (what the user gains)
 - Name exact technologies: AT-SPI2, libei, EIS, KWin ScreenShot2, D-Bus, PyGObject, wl-clipboard, wtype
-- Include tool counts when relevant (e.g. "29 MCP tools" or "17 new tools")
+- Include tool counts when relevant (e.g. "30 MCP tools" or "17 new tools")
 
 ### pyproject.toml SEO Rules
 

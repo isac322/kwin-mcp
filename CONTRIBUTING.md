@@ -47,7 +47,37 @@ sudo apt install wl-clipboard wtype wayland-utils
 git clone https://github.com/isac322/kwin-mcp.git
 cd kwin-mcp
 uv sync
+
+# Install git hooks (docs-seo reminder after source commits)
+bash scripts/install_hooks.sh
 ```
+
+The `install_hooks.sh` script installs a `post-commit` hook that prints a docs-seo reminder and runs `scripts/check_docs_seo.py` automatically whenever `src/kwin_mcp/*.py` or `pyproject.toml` files are committed.
+
+### Claude Code PostToolUse Hook (optional)
+
+If you use Claude Code for development, you can enable in-editor docs-seo reminders by adding the following hook to `.claude/settings.json` in the project root:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 scripts/check_docs_seo_hook.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+This causes Claude Code to print a reminder whenever it edits a source file, prompting you to run `@docs-seo` if documentation may need updating.
 
 ## Code Style
 
@@ -75,7 +105,35 @@ After modifying kwin-mcp code, verify your changes via the interactive CLI:
 uv run python -m kwin_mcp.cli
 ```
 
-The CLI provides the same functionality as the MCP server and allows you to test tools interactively. Use `session_start` to launch an isolated KWin session, then test your changes.
+The CLI provides the same functionality as the MCP server and allows you to test tools interactively.
+
+### Virtual Session Testing (Isolated)
+
+Use `session_start` to launch an isolated KWin Wayland session — safe for automated tests and CI since it does not touch your real desktop:
+
+```
+> session_start
+```
+
+### Live Session Testing
+
+Use `session_connect` to attach to your existing KDE Plasma desktop session. This is useful when testing features that require a real desktop environment (e.g., clipboard integration, real application interaction):
+
+```
+> session_connect
+```
+
+`session_connect` defaults to the current session via `$DBUS_SESSION_BUS_ADDRESS` and `$WAYLAND_DISPLAY`. You can also pass explicit values:
+
+```
+> session_connect dbus_address=unix:path=/run/user/1000/bus wayland_display=wayland-1
+```
+
+You can also start the CLI in live-session-default mode with `--default-live-session`:
+
+```bash
+uv run python -m kwin_mcp.cli --default-live-session
+```
 
 > **Note**: Do not test via the MCP server if it was started before your code changes -- it will still be running the old code. Always use the CLI for verification.
 
@@ -86,7 +144,7 @@ src/kwin_mcp/
 ├── core.py            # AutomationEngine — MCP-independent automation logic
 ├── server.py          # MCP server (thin wrappers around AutomationEngine)
 ├── cli.py             # Interactive REPL + pipe mode
-├── session.py         # Isolated KWin Wayland session management
+├── session.py         # KWin session management (isolated virtual + live desktop)
 ├── screenshot.py      # Screenshot capture via KWin ScreenShot2 D-Bus
 ├── accessibility.py   # AT-SPI2 accessibility tree inspection
 └── input.py           # Input injection via KWin EIS D-Bus + libei

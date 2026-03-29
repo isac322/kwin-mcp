@@ -2,16 +2,29 @@
 
 ## Purpose
 
-This MCP server exists to enable **Claude Code to autonomously test the GUI of KDE Plasma apps**.
+This MCP server enables **Claude Code to autonomously test and automate KDE Plasma desktop GUIs** — both in isolated virtual sessions and on live real desktops.
 
-What Claude Code should be able to do through this MCP:
-1. Launch apps in an isolated KWin Wayland session
+### Virtual Session Mode (Isolated Testing)
+
+What Claude Code can do through this MCP in isolated mode:
+1. Launch apps in an isolated KWin Wayland session (no impact on the host desktop)
 2. Perform all interactions: mouse hover, click, scroll, drag, etc.
 3. Take screenshots to verify visual changes
 4. Read the accessibility tree to understand widget structure
 5. Repeat the above to autonomously perform **visual/functional/UX feedback loops**
 
 This allows Claude Code to modify code, then directly launch the app, manipulate the GUI, and verify results to autonomously complete the development cycle.
+
+### Live Session Mode (Real Desktop Automation)
+
+What Claude Code can do through this MCP on a live desktop:
+1. Connect to an existing KWin Wayland session via `session_connect`
+2. Automate the real desktop — interact with running apps without launching a new session
+3. Take screenshots of the live screen
+4. Read the accessibility tree of live app windows
+5. Enable **"share my screen" collaboration** and **container-based agent desktops**
+
+This allows Claude Code to act as a desktop automation agent on real user desktops, CI/CD environments with a display, or containerized desktops — expanding use cases beyond pure development testing.
 
 ---
 

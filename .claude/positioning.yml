@@ -1,0 +1,292 @@
+# kwin-mcp Product Positioning Manifest
+# ======================================
+# This file is the single source of truth for product positioning, keywords,
+# and search intents. The docs-seo agent reads this manifest to detect
+# positioning drift and uses it when rewriting its own instructions.
+#
+# Versioning: increment `manifest_version` when making deliberate positioning
+# changes. Use semver: MAJOR for repositioning, MINOR for new use cases,
+# PATCH for keyword additions/corrections.
+#
+# After editing this file, run the docs-seo agent to propagate changes.
+
+manifest_version: "1.2.0"
+last_updated: "2026-03-29"
+product_version_ref: "0.6.0"  # pyproject.toml version this manifest was written against
+
+# ---------------------------------------------------------------------------
+# Core identity
+# ---------------------------------------------------------------------------
+product:
+  name: "kwin-mcp"
+  tagline: "virtual testing + live desktop automation platform"
+  one_liner: >
+    MCP server for Linux desktop GUI automation on KDE Plasma 6 Wayland —
+    supports both isolated KWin virtual sessions for testing and live desktop
+    automation.
+  meta_description: >
+    MCP server enabling AI agents to automate Linux desktops on KDE Plasma 6
+    Wayland — virtual isolated sessions for CI/CD testing and live session
+    connection for real desktop automation.
+  tool_count: 30
+  repo: "https://github.com/isac322/kwin-mcp"
+  pypi: "https://pypi.org/project/kwin-mcp/"
+
+# ---------------------------------------------------------------------------
+# Modes — describes the two primary operating modes
+# ---------------------------------------------------------------------------
+modes:
+  virtual:
+    entry_point: "session_start"
+    description: >
+      Launches an isolated dbus-run-session + kwin_wayland --virtual sandbox.
+      Full D-Bus, display, and input isolation. Ideal for headless GUI testing
+      and CI/CD pipelines without a physical display.
+    use_cases:
+      - Headless end-to-end GUI testing
+      - CI/CD pipeline automation
+      - Reproducible isolated app testing
+      - Development feedback loop (code -> launch -> interact -> verify)
+      - Kiosk and embedded device UI testing in isolated virtual displays
+
+  live:
+    entry_point: "session_connect"
+    description: >
+      Connects to a real KDE Plasma desktop or a KWin instance inside a
+      container (e.g. systemd-nspawn). Enables collaborative "share my screen"
+      workflows and live desktop automation without launching a new session.
+    use_cases:
+      - Live desktop automation on a real running KDE session
+      - '"Share my screen" AI collaboration workflows'
+      - Container-based agent desktops (systemd-nspawn, etc.)
+      - Real-time accessibility tree inspection of live apps
+      - Kiosk and embedded device automation via live session attachment
+
+# ---------------------------------------------------------------------------
+# Keywords — primary source of truth for SEO metadata
+# The docs-seo agent must keep pyproject.toml keywords and CLAUDE.md Target
+# Keywords in sync with this section.
+# ---------------------------------------------------------------------------
+keywords:
+  primary:
+    - kwin-mcp
+    - MCP server
+    - GUI automation
+    - KDE Plasma
+    - Wayland automation
+    - Linux desktop automation
+    - live desktop automation
+
+  secondary:
+    - headless GUI testing
+    - AI agent desktop
+    - accessibility tree
+    - AT-SPI2
+    - libei
+    - EIS
+    - KWin virtual session
+    - live session
+    - session_connect
+    - desktop testing framework
+    - Wayland compositor testing
+    - MCP tools
+    - real desktop automation
+    - desktop collaboration
+    - kiosk automation
+    - embedded device automation
+
+  long_tail:
+    - headless Wayland GUI testing
+    - KDE Plasma automated testing
+    - Linux GUI test automation CI/CD
+    - Claude Code desktop automation
+    - AI-driven Linux desktop testing
+    - live KDE Plasma session automation
+    - AI agent real desktop control
+    - connect to live KWin session
+    - container desktop automation
+    - kiosk desktop automation
+    - embedded Linux desktop testing
+
+  pypi_package_keywords:
+    # Must stay in sync with pyproject.toml [project] keywords
+    - mcp
+    - mcp-server
+    - model-context-protocol
+    - kwin
+    - kde
+    - wayland
+    - wayland-automation
+    - gui-automation
+    - desktop-automation
+    - plasma
+    - testing
+    - e2e-testing
+    - headless-testing
+    - ai-agents
+    - accessibility
+    - at-spi2
+    - libei
+    - linux-desktop
+    - headless
+    - claude-code
+    - live-desktop
+    - live-session
+    - session-connect
+    - desktop-automation-platform
+    - virtual-session
+    - screen-capture
+    - kiosk-automation
+    - embedded-desktop
+
+# ---------------------------------------------------------------------------
+# Search intents — what users are searching for when they find kwin-mcp
+# ---------------------------------------------------------------------------
+search_intents:
+  - intent: "Linux GUI automation"
+    description: >
+      Automating desktop applications on Linux in both virtual and live sessions
+    maps_to_keywords:
+      - Linux desktop automation
+      - GUI automation
+      - Wayland automation
+
+  - intent: "KDE/Plasma testing"
+    description: >
+      Testing KDE/Qt/GTK apps in isolated virtual Wayland sessions
+    maps_to_keywords:
+      - KDE Plasma
+      - KWin virtual session
+      - headless GUI testing
+
+  - intent: "Headless Wayland testing"
+    description: >
+      Running GUI tests in CI/CD pipelines without X11 or a physical display
+    maps_to_keywords:
+      - headless GUI testing
+      - Wayland automation
+      - Linux GUI test automation CI/CD
+
+  - intent: "AI desktop agents"
+    description: >
+      Letting AI agents (Claude Code, Cursor) control desktop apps via MCP
+    maps_to_keywords:
+      - AI agent desktop
+      - Claude Code desktop automation
+      - MCP server
+
+  - intent: "Live desktop automation"
+    description: >
+      AI agents operating on the user's real running desktop session
+    maps_to_keywords:
+      - live desktop automation
+      - live session
+      - session_connect
+      - real desktop automation
+
+  - intent: "Remote desktop AI collaboration"
+    description: >
+      Connecting an AI agent to an existing session for "share my screen" workflows
+    maps_to_keywords:
+      - desktop collaboration
+      - live KDE Plasma session automation
+      - AI agent real desktop control
+
+  - intent: "Accessibility tree inspection"
+    description: >
+      Programmatic access to AT-SPI2 widget data for structured UI understanding
+    maps_to_keywords:
+      - accessibility tree
+      - AT-SPI2
+      - AI agent desktop
+
+  - intent: "MCP server discovery"
+    description: >
+      Developers looking for MCP servers to extend AI agent capabilities
+    maps_to_keywords:
+      - MCP server
+      - MCP tools
+      - kwin-mcp
+
+  - intent: "Container desktop automation"
+    description: >
+      Attaching to KWin inside containers (e.g. systemd-nspawn) for isolated agent desktops
+    maps_to_keywords:
+      - container desktop automation
+      - live session
+      - connect to live KWin session
+
+  - intent: "Kiosk and embedded device automation"
+    description: >
+      Automating kiosk interfaces and embedded Linux desktops using virtual or live KWin sessions
+    maps_to_keywords:
+      - kiosk automation
+      - embedded device automation
+      - kiosk desktop automation
+      - embedded Linux desktop testing
+
+# ---------------------------------------------------------------------------
+# Drift detection thresholds
+# ---------------------------------------------------------------------------
+drift_detection:
+  # Warn if pyproject.toml keywords diverge from pypi_package_keywords by more than this many terms
+  pypi_keyword_max_divergence: 3
+  # Warn if tool_count in docs differs from this value
+  tool_count_canonical: 30
+  # Files the docs-seo agent checks for drift
+  files_to_audit:
+    - path: "CLAUDE.md"
+      section: "## Documentation & SEO"
+      checks:
+        - keyword_coverage     # primary/secondary/long_tail keywords present
+        - tool_count_accuracy  # "30 MCP tools" references are current
+
+    - path: ".claude/agents/docs-seo.md"
+      section: "## Current Product Positioning"
+      checks:
+        - mode_descriptions    # both virtual and live modes described
+        - tool_count_accuracy
+        - entry_point_names    # session_start and session_connect named
+
+    - path: "pyproject.toml"
+      section: "[project]"
+      checks:
+        - keyword_sync         # pypi_package_keywords match
+        - description_keywords # description contains required terms
+
+    - path: "README.md"
+      section: "H1 and first paragraph"
+      checks:
+        - dual_mode_presence   # both virtual and live modes mentioned
+        - tool_count_accuracy
+
+    - path: "ROADMAP.md"
+      section: "## Purpose"
+      checks:
+        - dual_mode_presence
+
+# ---------------------------------------------------------------------------
+# Changelog for this manifest
+# ---------------------------------------------------------------------------
+manifest_changelog:
+  - version: "1.2.0"
+    date: "2026-03-29"
+    changes:
+      - "Added kiosk and embedded device automation as new use case in both virtual and live modes"
+      - "Added secondary keywords: kiosk automation, embedded device automation"
+      - "Added long-tail keywords: kiosk desktop automation, embedded Linux desktop testing"
+      - "Added pypi_package_keywords: kiosk-automation, embedded-desktop"
+      - "Added search intent: Kiosk and embedded device automation"
+
+  - version: "1.1.0"
+    date: "2026-03-29"
+    changes:
+      - "Added drift_detection thresholds and files_to_audit section"
+      - "Expanded live mode use_cases with container desktop entry"
+      - "Added pypi_package_keywords sub-section for pyproject.toml sync"
+
+  - version: "1.0.0"
+    date: "2025-10-01"
+    changes:
+      - "Initial manifest — captures expanded dual-mode positioning"
+      - "Supersedes ad-hoc positioning embedded in docs-seo.md"

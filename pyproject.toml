@@ -1,7 +1,7 @@
 [project]
 name = "kwin-mcp"
 version = "0.6.0"
-description = "MCP server for Linux desktop GUI automation on KDE Plasma 6 Wayland via isolated KWin virtual sessions"
+description = "MCP server for Linux desktop GUI automation on KDE Plasma 6 Wayland — supports both isolated KWin virtual sessions for testing and live desktop automation"
 readme = "README.md"
 license = "MIT"
 authors = [{ name = "Byeonghoon Yoo", email = "bhyoo@bhyoo.com" }]
@@ -27,6 +27,14 @@ keywords = [
     "linux-desktop",
     "headless",
     "claude-code",
+    "live-desktop",
+    "live-session",
+    "session-connect",
+    "desktop-automation-platform",
+    "virtual-session",
+    "screen-capture",
+    "kiosk-automation",
+    "embedded-desktop",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

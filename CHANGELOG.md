@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `accessibility_tree`, `find_ui_elements`, `wait_for_element`, `list_windows`, and `focus_window` now work in isolated virtual sessions on Fedora and other distros that install AT-SPI binaries outside `/usr/lib` (e.g. `/usr/libexec`). Binary paths are now extracted from D-Bus service files instead of being hardcoded.
+- Isolated virtual sessions now explicitly start `at-spi2-registryd` and set `IsEnabled=true` on the AT-SPI bus. Without a session manager, the registryd auto-activation failed silently, causing `accessibility_tree` to return "(no accessible applications found)".
+
 ## [0.7.0] - 2026-03-29
 
 ### Added

@@ -162,7 +162,8 @@ def _load_libei() -> ctypes.CDLL:
     lib.ei_seat_has_capability.argtypes = [ctypes.c_void_p, ctypes.c_uint]
     lib.ei_seat_ref.restype = ctypes.c_void_p
     lib.ei_seat_ref.argtypes = [ctypes.c_void_p]
-    # ei_seat_bind_capabilities is variadic, argtypes not set
+    lib.ei_seat_bind_capabilities.restype = None
+    lib.ei_seat_bind_capabilities.argtypes = [ctypes.c_void_p]  # variadic: fixed param only
 
     # Device functions
     lib.ei_event_get_device.restype = ctypes.c_void_p

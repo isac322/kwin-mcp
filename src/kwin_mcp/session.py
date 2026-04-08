@@ -343,9 +343,30 @@ trap cleanup EXIT TERM INT HUP
 # Start the AT-SPI accessibility bus.
 # ATSPI_DBUS_IMPLEMENTATION is set in _build_env() to force dbus-daemon
 # instead of dbus-broker (which reuses the host's AT-SPI bus).
-/usr/lib/at-spi-bus-launcher --launch-immediately &
-AT_SPI_PID=$!
-sleep 0.2
+# Extract the binary path from the D-Bus service file so this works on
+# any distro (Fedora /usr/libexec, Arch /usr/lib, Debian /usr/lib/at-spi2-core, etc.)
+AT_SPI_LAUNCHER=$(sed -n 's/^Exec=\\([^ ]*\\).*/\\1/p' \\
+    /usr/share/dbus-1/services/org.a11y.Bus.service 2>/dev/null)
+if [ -x "$AT_SPI_LAUNCHER" ]; then
+    "$AT_SPI_LAUNCHER" --launch-immediately &
+    AT_SPI_PID=$!
+    sleep 0.2
+
+    # Enable AT-SPI so apps register with the accessibility bus
+    dbus-send --session --dest=org.a11y.Bus --type=method_call \\
+        /org/a11y/bus org.freedesktop.DBus.Properties.Set \\
+        string:org.a11y.Status string:IsEnabled variant:boolean:true 2>/dev/null
+
+    # Start the AT-SPI registry daemon.  The .service file specifies
+    # --use-gnome-session which fails without a session manager, so we
+    # extract just the binary path and start it without that flag.
+    AT_SPI_REGISTRYD=$(sed -n 's/^Exec=\\([^ ]*\\).*/\\1/p' \\
+        /usr/share/dbus-1/accessibility-services/org.a11y.atspi.Registry.service 2>/dev/null)
+    if [ -x "$AT_SPI_REGISTRYD" ]; then
+        "$AT_SPI_REGISTRYD" &
+    fi
+    sleep 0.2
+fi
 
 # Pre-set D-Bus activation environment BEFORE starting KWin.
 # When KWin triggers portal auto-activation, portal-kde will get

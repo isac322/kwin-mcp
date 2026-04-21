@@ -349,6 +349,7 @@ class EISClient:
         # Call variadic ei_seat_bind_capabilities(seat, cap1, ..., NULL)
         func = _libei.ei_seat_bind_capabilities
         func.restype = None
+        func.argtypes = [ctypes.c_void_p] + [ctypes.c_uint] * len(bind_list) + [ctypes.c_void_p]
         args: list[ctypes.c_uint | ctypes.c_void_p] = [ctypes.c_uint(c) for c in bind_list]
         args.append(ctypes.c_void_p(None))  # NULL sentinel
         func(seat, *args)

@@ -57,15 +57,21 @@ See ROADMAP.md. Key modules:
 
 | Changed File | Trigger Label | docs-seo Action |
 |---|---|---|
-| `src/kwin_mcp/server.py` | tool-registration, code-general | Check tool count, README tool tables, CONTRIBUTING structure |
+| `src/kwin_mcp/server.py` | tool-registration, code-general | Check tool count, README tool tables, CONTRIBUTING structure, **integrations/*/skills/*/SKILL.md tool list freshness** |
 | `src/kwin_mcp/session.py` | session-api | Check README arch diagram, CONTRIBUTING session docs |
 | `src/kwin_mcp/core.py` | engine-api, code-general | Check README arch description, CONTRIBUTING structure |
-| `src/kwin_mcp/*.py` (any) | code-general | Check concrete numbers, CONTRIBUTING file listing |
-| `pyproject.toml` | package-metadata | Sync keywords with `.claude/positioning.yml`; check CLAUDE.md keyword tiers |
+| `src/kwin_mcp/*.py` (any) | code-general | Check concrete numbers, CONTRIBUTING file listing, **integrations/*/skills/*/SKILL.md "30 capabilities" reference** |
+| `pyproject.toml` | package-metadata | Sync keywords with `.claude/positioning.yml`; check CLAUDE.md keyword tiers; **run `python3 scripts/sync_plugin_version.py` to propagate version to integrations manifests** |
 | `CHANGELOG.md` | changelog-update | Sync docs-seo.md positioning; add new search intents |
 | `README.md` | readme-update | Sync docs-seo.md positioning; update CLAUDE.md keyword tiers |
 | `ROADMAP.md` | roadmap-update | Add new long-tail keywords; update CONTRIBUTING.md if milestone adds contributor workflow |
-| `.claude/positioning.yml` | manifest-update | Full sync of docs-seo.md + CLAUDE.md SEO sections |
+| `.claude/positioning.yml` | manifest-update | Full sync of docs-seo.md + CLAUDE.md SEO sections; **propagate `plugin_manifest_required_keywords` to integrations manifests** |
+| `.claude-plugin/marketplace.json` | plugin-manifest | Verify version matches pyproject; verify keywords ⊇ `plugin_manifest_required_keywords` |
+| `integrations/claude-code/.claude-plugin/plugin.json` | plugin-manifest | Verify version + keywords (same rule as above) |
+| `integrations/opencode/plugin/package.json` | plugin-manifest | Verify version + keywords (same rule as above) |
+| `integrations/claude-code/skills/*/SKILL.md` | plugin-skill | This is the source-of-truth SKILL.md. After edit, run `python3 scripts/sync_plugin_version.py` to mirror it into `integrations/opencode/plugin/skill/<name>/SKILL.md` |
+| `integrations/opencode/plugin/skill/*/SKILL.md` | plugin-skill | This file is auto-generated from the Claude Code source. Direct edits are forbidden — `check_docs_seo.py::check_skill_identical` will fail CI. Edit the Claude Code SKILL.md instead |
+| `scripts/sync_plugin_version.py` | code-general | Self-tests: run `--check` after editing the script itself |
 
 **Automation — Claude Code hook**: `.claude/settings.json` registers a `PostToolUse` hook on `Bash` that runs `.claude/hooks/docs-seo-trigger.sh` when `git commit` or `git add` is executed. The script detects whether committed files match trigger patterns, then injects context into the conversation prompting docs-seo evaluation.
 

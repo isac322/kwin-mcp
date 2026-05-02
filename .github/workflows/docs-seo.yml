@@ -14,6 +14,9 @@ on:
       - "README.md"
       - "ROADMAP.md"
       - ".claude/positioning.yml"
+      - "integrations/**"
+      - ".claude-plugin/**"
+      - "scripts/sync_plugin_version.py"
 
 jobs:
   docs-seo-check:
@@ -36,9 +39,15 @@ jobs:
           CHANGED=$(git diff --name-only "$BASE_SHA" HEAD -- \
             'src/kwin_mcp/*.py' \
             'pyproject.toml' \
+            'integrations/**' \
+            '.claude-plugin/**' \
+            'scripts/sync_plugin_version.py' \
             2>/dev/null || git diff --name-only HEAD~1 HEAD -- \
             'src/kwin_mcp/*.py' \
-            'pyproject.toml')
+            'pyproject.toml' \
+            'integrations/**' \
+            '.claude-plugin/**' \
+            'scripts/sync_plugin_version.py')
 
           if [ -z "$CHANGED" ]; then
             echo "has_changes=false" >> "$GITHUB_OUTPUT"
@@ -63,6 +72,10 @@ jobs:
           echo "report<<EOF" >> "$GITHUB_OUTPUT"
           cat /tmp/docs-seo-report.txt >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Run plugin version + SKILL sync check
+        if: steps.changed.outputs.has_changes == 'true'
+        run: python3 scripts/sync_plugin_version.py --check
 
       - name: Post PR comment with docs-seo findings
         if: >

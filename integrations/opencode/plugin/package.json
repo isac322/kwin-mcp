@@ -41,6 +41,7 @@
     "gui-automation",
     "desktop-automation",
     "linux",
+    "linux-desktop",
     "ai-agents",
     "accessibility",
     "at-spi2"

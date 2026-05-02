@@ -51,10 +51,16 @@ uv sync
 
 ### Documentation Consistency Check
 
-The project includes a docs-seo consistency checker (`scripts/check_docs_seo.py`) that validates SEO keywords and positioning terms across documentation files. It runs automatically in CI on pull requests and can be invoked locally:
+The project includes two consistency checkers that run in CI on pull requests:
+
+1. **`scripts/check_docs_seo.py`** — validates SEO keywords and positioning terms across documentation files. It also verifies that the bundled plugin manifests (`.claude-plugin/marketplace.json`, `integrations/claude-code/.claude-plugin/plugin.json`, `integrations/opencode/plugin/package.json`) keep their keyword sets in sync with `.claude/positioning.yml`, and that the Claude Code source SKILL.md and the OpenCode plugin's bundled SKILL.md remain byte-identical.
+2. **`scripts/sync_plugin_version.py --check`** — verifies that `pyproject.toml [project].version` matches the version recorded in every plugin manifest, and that the OpenCode plugin's bundled SKILL.md mirrors the Claude Code source. Without `--check`, the script *writes* the synced state.
+
+Invoke locally:
 
 ```bash
 python3 scripts/check_docs_seo.py
+python3 scripts/sync_plugin_version.py --check
 ```
 
 In Claude Code sessions, use the `/check-docs-seo` skill or the `@docs-seo` agent to evaluate and update documentation after code changes.
@@ -128,6 +134,25 @@ src/kwin_mcp/
 ├── screenshot.py      # Screenshot capture via KWin ScreenShot2 D-Bus
 ├── accessibility.py   # AT-SPI2 accessibility tree inspection
 └── input.py           # Input injection via KWin EIS D-Bus + libei
+
+integrations/
+├── claude-code/
+│   ├── .claude-plugin/plugin.json                            # Claude Code plugin manifest
+│   ├── .mcp.json                                              # MCP server config (uvx kwin-mcp)
+│   └── skills/kwin-desktop-automation/SKILL.md                # source-of-truth skill
+└── opencode/
+    ├── opencode.json.example                                  # manual fallback opencode config
+    └── plugin/                                                 # @isac322/kwin-mcp-opencode npm package
+        ├── package.json                                        # npm manifest (mirrors pyproject version + keywords)
+        ├── src/index.ts                                        # config-hook plugin (TypeScript)
+        └── skill/kwin-desktop-automation/SKILL.md              # auto-synced from claude-code source on build
+
+.claude-plugin/
+└── marketplace.json                                            # Claude Code marketplace catalog (single-plugin)
+
+scripts/
+├── check_docs_seo.py                                           # documentation/SEO consistency checker (CI)
+└── sync_plugin_version.py                                      # syncs pyproject version + SKILL.md to integrations/
 ```
 
 ## Pull Request Process
@@ -137,7 +162,10 @@ src/kwin_mcp/
 3. Run all checks: `uv run ruff check . && uv run ruff format --check . && uv run ty check`
 4. Update `CHANGELOG.md` if your change is user-facing (new tools, bug fixes, behavior changes)
 5. Update `README.md` if you add new tools or change existing tool behavior
-6. Open a pull request with a clear description of the changes
+6. **If you bumped `pyproject.toml [project].version` or modified the MCP tool list (`src/kwin_mcp/server.py`)**: run `python3 scripts/sync_plugin_version.py` to keep `.claude-plugin/marketplace.json`, `integrations/claude-code/.claude-plugin/plugin.json`, `integrations/opencode/plugin/package.json`, and the OpenCode plugin's bundled SKILL.md in sync with the source. Verify with `python3 scripts/sync_plugin_version.py --check` (CI runs the same check).
+7. **If you added/renamed/removed an MCP tool**: also update `integrations/claude-code/skills/kwin-desktop-automation/SKILL.md` (the source of truth — the OpenCode plugin auto-syncs from it during `npm run build`).
+8. **If you bumped any plugin keyword set or `pyproject.toml [project].keywords`**: ensure the plugin manifests' keyword arrays still satisfy the subset rule defined in `.claude/positioning.yml § drift_detection.plugin_keywords_min_overlap` (the `check_docs_seo.py` plugin keyword check enforces this).
+9. Open a pull request with a clear description of the changes
 
 ## Reporting Issues
 

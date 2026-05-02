@@ -1,0 +1,32 @@
+{
+  "$schema": "https://claude.ai/schemas/plugin.json",
+  "name": "kwin-mcp",
+  "version": "0.7.0",
+  "description": "MCP server + skill for Linux KDE Plasma 6 Wayland GUI automation. Provides 30 MCP tools (mouse, keyboard, touch, clipboard, screenshot, AT-SPI2 accessibility tree, window mgmt, D-Bus passthrough) plus the kwin-desktop-automation skill that guides session-mode selection, observation/action sequencing, and platform pitfalls.",
+  "author": {
+    "name": "Byeonghoon Yoo",
+    "email": "bhyoo@bhyoo.com",
+    "url": "https://github.com/isac322"
+  },
+  "homepage": "https://github.com/isac322/kwin-mcp",
+  "repository": "https://github.com/isac322/kwin-mcp",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "kwin",
+    "kde",
+    "plasma",
+    "wayland",
+    "gui-automation",
+    "desktop-automation",
+    "linux",
+    "ai-agents",
+    "accessibility",
+    "at-spi2",
+    "libei",
+    "headless-testing",
+    "live-desktop",
+    "claude-code"
+  ]
+}

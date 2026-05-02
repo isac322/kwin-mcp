@@ -1,0 +1,59 @@
+{
+  "name": "@isac322/kwin-mcp-opencode",
+  "version": "0.7.0",
+  "description": "OpenCode plugin for kwin-mcp — auto-registers the kwin-mcp MCP server (uvx kwin-mcp) and ships the kwin-desktop-automation skill on backend startup.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    "./server": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "skill",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build:skill": "mkdir -p skill/kwin-desktop-automation && cp ../../claude-code/skills/kwin-desktop-automation/SKILL.md skill/kwin-desktop-automation/SKILL.md",
+    "build:js": "swc src -d dist --strip-leading-paths",
+    "build": "npm run clean && npm run build:skill && npm run build:js",
+    "typecheck": "tsgo -p tsconfig.json",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.14.31",
+    "@swc/cli": "^0.8.1",
+    "@swc/core": "^1.15.32",
+    "@types/node": "^25.6.0",
+    "@typescript/native-preview": "^7.0.0-dev.20260502.1"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "kwin-mcp",
+    "mcp",
+    "model-context-protocol",
+    "kwin",
+    "kde",
+    "plasma",
+    "wayland",
+    "gui-automation",
+    "desktop-automation",
+    "linux",
+    "ai-agents",
+    "accessibility",
+    "at-spi2"
+  ],
+  "license": "MIT",
+  "author": "Byeonghoon Yoo <bhyoo@bhyoo.com>",
+  "homepage": "https://github.com/isac322/kwin-mcp/tree/main/integrations/opencode/plugin",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/isac322/kwin-mcp.git",
+    "directory": "integrations/opencode/plugin"
+  },
+  "bugs": {
+    "url": "https://github.com/isac322/kwin-mcp/issues"
+  }
+}

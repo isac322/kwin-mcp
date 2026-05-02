@@ -8,3 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Local OpenCode plugin testing (symlink to integrations/opencode/plugin)
+.opencode/
+

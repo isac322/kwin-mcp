@@ -1,0 +1,46 @@
+{
+  "$schema": "https://claude.ai/schemas/marketplace.json",
+  "name": "kwin-mcp",
+  "owner": {
+    "name": "Byeonghoon Yoo",
+    "email": "bhyoo@bhyoo.com",
+    "url": "https://github.com/isac322"
+  },
+  "metadata": {
+    "description": "kwin-mcp marketplace — MCP server and skill for Linux KDE Plasma 6 Wayland desktop GUI automation (virtual sessions for headless testing, live sessions for real-desktop / container / kiosk control).",
+    "version": "0.7.0",
+    "pluginRoot": "./integrations"
+  },
+  "plugins": [
+    {
+      "name": "kwin-mcp",
+      "source": "./claude-code",
+      "version": "0.7.0",
+      "description": "Bundles the kwin-mcp MCP server (uvx kwin-mcp) plus the kwin-desktop-automation skill that teaches session-mode selection, the observe-act-verify loop, US-QWERTY vs Unicode typing, and platform pitfalls (surface-local coordinates, QMenu invisibility, EIS edge limits, clipboard opt-in).",
+      "category": "automation",
+      "keywords": [
+        "mcp",
+        "kwin",
+        "kde",
+        "plasma",
+        "wayland",
+        "gui-automation",
+        "desktop-automation",
+        "linux",
+        "ai-agents",
+        "accessibility",
+        "at-spi2",
+        "libei",
+        "headless-testing",
+        "live-desktop"
+      ],
+      "license": "MIT",
+      "homepage": "https://github.com/isac322/kwin-mcp",
+      "repository": "https://github.com/isac322/kwin-mcp",
+      "author": {
+        "name": "Byeonghoon Yoo",
+        "email": "bhyoo@bhyoo.com"
+      }
+    }
+  ]
+}

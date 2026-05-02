@@ -96,6 +96,28 @@ Claude Code will autonomously start an isolated session, launch the app, read th
 
 ## Configuration
 
+### Recommended: install as a plugin
+
+The fastest way to wire kwin-mcp into your editor is to install one of the bundled plugins. Each plugin auto-registers the MCP server **and** ships the `kwin-desktop-automation` skill, which teaches the agent which tool to call when (session-mode selection, the observe → act → verify loop, US-QWERTY vs Unicode typing, AT-SPI2 surface-local coordinates, and other platform pitfalls).
+
+**Claude Code** — install the plugin from the marketplace:
+
+```text
+/plugin marketplace add isac322/kwin-mcp
+/plugin install kwin-mcp@kwin-mcp
+```
+
+**OpenCode** — add the npm plugin to your `opencode.json`:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["@isac322/kwin-mcp-opencode"]
+}
+```
+
+For the full integration guide (manual fallback, customising the skill, troubleshooting), see [docs/ai-agent-integration.md](docs/ai-agent-integration.md).
+
 ### Claude Code
 
 Add to your project's `.mcp.json`:

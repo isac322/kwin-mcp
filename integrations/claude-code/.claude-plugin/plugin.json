@@ -2,7 +2,7 @@
   "$schema": "https://claude.ai/schemas/plugin.json",
   "name": "kwin-mcp",
   "version": "0.7.0",
-  "description": "MCP server + skill for Linux KDE Plasma 6 Wayland GUI automation. Provides 30 MCP tools (mouse, keyboard, touch, clipboard, screenshot, AT-SPI2 accessibility tree, window mgmt, D-Bus passthrough) plus the kwin-desktop-automation skill that guides session-mode selection, observation/action sequencing, and platform pitfalls.",
+  "description": "MCP server + skill for Linux KDE Plasma 6 Wayland GUI automation. Provides 35 MCP tools (mouse, keyboard, touch, clipboard, screenshot, AT-SPI2 accessibility tree, window mgmt, D-Bus passthrough) plus the kwin-desktop-automation skill that guides session-mode selection, observation/action sequencing, and platform pitfalls.",
   "author": {
     "name": "Byeonghoon Yoo",
     "email": "bhyoo@bhyoo.com",

@@ -8,7 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/isac322/kwin-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/isac322/kwin-mcp/actions/workflows/ci.yml)
 
-A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that enables AI agents (Claude Code, Cursor, and other MCP clients) to launch, interact with, and observe any Wayland application in a fully isolated virtual KWin session -- without affecting the user's desktop. It also supports **live desktop automation** by connecting to an existing KWin session (real desktop or container) for collaborative workflows. With 30 MCP tools covering mouse, keyboard, touch, clipboard, accessibility tree inspection, screenshot capture, and window management, kwin-mcp provides everything needed for end-to-end GUI testing and desktop automation on Linux.
+A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that enables AI agents (Claude Code, Cursor, and other MCP clients) to launch, interact with, and observe any Wayland application in a fully isolated virtual KWin session -- without affecting the user's desktop. It also supports **live desktop automation** by connecting to an existing KWin session (real desktop or container) for collaborative workflows. With 35 MCP tools covering mouse, keyboard, touch, clipboard, accessibility tree inspection, screenshot capture, and window management, kwin-mcp provides everything needed for end-to-end GUI testing and desktop automation on Linux.
 
 ## Table of Contents
 
@@ -41,7 +41,7 @@ Run end-to-end GUI tests for KDE/Qt/GTK applications in headless isolated sessio
 
 ### AI-Driven Desktop Automation
 
-Let AI agents like Claude Code autonomously operate desktop applications. The agent reads the accessibility tree to understand the UI, performs actions through 30 MCP tools, and observes the results via screenshots -- creating a complete feedback loop for any Wayland application.
+Let AI agents like Claude Code autonomously operate desktop applications. The agent reads the accessibility tree to understand the UI, performs actions through 35 MCP tools, and observes the results via screenshots -- creating a complete feedback loop for any Wayland application.
 
 ### Live Desktop Collaboration
 
@@ -232,13 +232,18 @@ kwin-mcp-cli --default-live-session
 | `clipboard_get` | _(none)_ | Read the current clipboard text content. Requires `enable_clipboard=true` in `session_start` and `wl-clipboard` installed. |
 | `clipboard_set` | `text` `str` | Set the clipboard text content. Same requirements as `clipboard_get`. |
 
-### Window Management (3 tools)
+### Window Management (8 tools)
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `launch_app` | `command` `str`, `env?` `dict` | Launch an application inside the running session. Returns PID and log path. |
 | `list_windows` | _(none)_ | List all accessible application windows with per-window titles and active/focused state markers via AT-SPI2 |
 | `focus_window` | `app_name` `str` | Focus a window by application name (case-insensitive match) |
+| `window_list` | _(none)_ | List all windows with their IDs, titles, and classes using KWin scripting |
+| `active_window` | _(none)_ | Get the currently active window's ID, title, and class using KWin scripting |
+| `window_geometry` | `window_id` `str` | Get the geometry (x, y, width, height) of a window by ID using KWin scripting |
+| `window_activate` | `window_id` `str` | Activate (focus) a window by ID using KWin scripting. Blocked in live sessions for safety. |
+| `window_close` | `window_id` `str` | Close a window by ID using KWin scripting. Blocked in live sessions for safety. |
 
 ### UI Polling (1 tool)
 
@@ -263,7 +268,7 @@ Claude Code / AI Agent
   |
   |  MCP (stdio)
   v
-kwin-mcp server  (30 tools)       kwin-mcp-cli (interactive REPL)
+kwin-mcp server  (35 tools)       kwin-mcp-cli (interactive REPL)
   |                                  |
   +--- both delegate to AutomationEngine (core.py) ---+
   |
@@ -288,8 +293,9 @@ kwin-mcp server  (30 tools)       kwin-mcp-cli (interactive REPL)
   |-- keyboard_type_unicode ----> wtype / wl-copy + Ctrl+V
   |-- clipboard_* --------------> wl-copy / wl-paste (wl-clipboard)
   |
-  |-- launch_app / list_windows / focus_window
+  |-- launch_app / window_* / list_windows / focus_window
   |                                |-- subprocess spawn
+  |                                |-- KWin scripting (window_*)
   |                                +-- AT-SPI2 (via PyGObject)
   |
   |-- dbus_call -----------------> dbus-send (generic D-Bus)
@@ -322,6 +328,10 @@ The `screenshot` tool captures via the KWin `org.kde.KWin.ScreenShot2` D-Bus int
 ### Accessibility Tree
 
 The AT-SPI2 accessibility bus within the isolated session is queried via PyGObject (`gi.repository.Atspi`). This provides a structured tree of all UI widgets with their roles (button, text field, menu item, etc.), names, states (focused, enabled, visible, etc.), screen coordinates, and available actions (click, toggle, etc.).
+
+### Window Management
+
+Window introspection and control (listing, geometry, activation, closing) are performed through KWin's scripting interface. kwin-mcp dynamically loads temporary scripts into the compositor to query window state and perform actions. For safety, destructive actions like `window_close` and `window_activate` are blocked when connected to a live session.
 
 ## System Requirements
 

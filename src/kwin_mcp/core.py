@@ -6,19 +6,27 @@ Can be used directly from the CLI or wrapped by the MCP server.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
+import multiprocessing
+import multiprocessing.pool
 import os
 import shlex
 import shutil
+import signal
 import subprocess
-import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
+from typing import cast
 
 from kwin_mcp.input import InputBackend, MouseButton
 from kwin_mcp.screenshot import capture_frame_burst, capture_screenshot_to_file
 from kwin_mcp.session import LiveSession, Session, SessionConfig
+
+_atspi_logger = logging.getLogger("kwin_mcp.atspi")
 
 # Install hints for external binaries
 _INSTALL_HINTS: dict[str, str] = {
@@ -48,6 +56,56 @@ _INSTALL_HINTS: dict[str, str] = {
 }
 
 
+def _dbus_to_json(value: object) -> object:
+    import dbus
+
+    if isinstance(value, dbus.Boolean):
+        return bool(value)
+    if isinstance(value, dbus.ObjectPath | dbus.Signature | dbus.String):
+        return str(value)
+    if isinstance(
+        value,
+        dbus.Byte | dbus.Int16 | dbus.UInt16 | dbus.Int32 | dbus.UInt32 | dbus.Int64 | dbus.UInt64,
+    ):
+        return int(value)
+    if isinstance(value, dbus.Double):
+        return float(value)
+    if isinstance(value, dbus.Array):
+        return [_dbus_to_json(x) for x in value]
+    if isinstance(value, dbus.Dictionary | dict):
+        return {_dbus_to_json(k): _dbus_to_json(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_dbus_to_json(x) for x in value]
+    if isinstance(value, bool | int | float | str):
+        return value
+    return str(value)
+
+
+def _format_dbus_result(result: object) -> str:
+    """Render a D-Bus reply for MCP clients.
+
+    Returns the empty string for void replies, the bare value for single
+    primitives (so ``GetId`` returns just the UUID), and JSON for
+    containers and multi-value tuples.
+    """
+    import dbus
+
+    if result is None:
+        return ""
+    if isinstance(result, dbus.Boolean):
+        return "true" if bool(result) else "false"
+    if isinstance(result, dbus.ObjectPath | dbus.Signature | dbus.String | str):
+        return str(result)
+    if isinstance(
+        result,
+        dbus.Byte | dbus.Int16 | dbus.UInt16 | dbus.Int32 | dbus.UInt32 | dbus.Int64 | dbus.UInt64,
+    ):
+        return str(int(result))
+    if isinstance(result, dbus.Double | float):
+        return str(float(result))
+    return json.dumps(_dbus_to_json(result))
+
+
 class AutomationEngine:
     """Core automation engine encapsulating all tool logic.
 
@@ -61,6 +119,15 @@ class AutomationEngine:
         self._clipboard_enabled: bool = False
         self._wl_copy_proc: subprocess.Popen[bytes] | None = None
         self._keep_screenshots: bool = False
+        self._atspi_pool: multiprocessing.pool.Pool | None = None
+        self._atspi_worker_pids: tuple[int, ...] = ()
+
+    def __del__(self) -> None:
+        try:
+            if getattr(self, "_atspi_pool", None) is not None:
+                self._teardown_atspi_pool()
+        except Exception:
+            pass
 
     # ── Private helpers ───────────────────────────────────────────────────
 
@@ -96,47 +163,206 @@ class AutomationEngine:
         env.pop("DISPLAY", None)
         return env
 
-    def _run_atspi(self, op: str, **kwargs: object) -> dict:
-        """Run an AT-SPI2 query in a subprocess with the isolated session's D-Bus address.
+    def _ensure_atspi_pool(self) -> multiprocessing.pool.Pool:
+        """Lazily build the spawn-context Pool that hosts AT-SPI ops.
 
-        The gi.repository.Atspi library caches the D-Bus connection process-wide,
-        so we must run queries in a fresh subprocess that inherits the correct
-        DBUS_SESSION_BUS_ADDRESS from the isolated dbus-run-session.
-
-        Retries once on failure to handle transient AT-SPI2 bus instability.
+        The worker module is imported here, NOT at module top, so the parent
+        process never loads ``gi.repository.Atspi`` (which caches its D-Bus
+        connection process-wide).
         """
-        env = self._session_env()
-        payload = json.dumps({"op": op, **kwargs})
+        if self._atspi_pool is not None:
+            return self._atspi_pool
 
-        last_error = ""
-        for attempt in range(2):
-            if attempt > 0:
-                time.sleep(0.5)
-            try:
-                result = subprocess.run(
-                    [sys.executable, "-m", "kwin_mcp.accessibility"],
-                    input=payload,
-                    env=env,
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-            except subprocess.TimeoutExpired:
-                last_error = f"AT-SPI2 query timed out after 30s (op={op})"
-                continue
+        from kwin_mcp.accessibility_worker import _init_atspi_worker
 
-            if result.returncode != 0:
-                last_error = f"AT-SPI2 query failed (exit {result.returncode}): {result.stderr}"
-                continue
+        dbus_addr = self._session_env().get("DBUS_SESSION_BUS_ADDRESS", "")
+        ctx = multiprocessing.get_context("spawn")
+        self._atspi_pool = ctx.Pool(
+            processes=1,
+            initializer=_init_atspi_worker,
+            initargs=(dbus_addr,),
+        )
+        _atspi_logger.info("atspi pool created (DBUS=%s)", dbus_addr)
+        return self._atspi_pool
 
-            try:
-                return json.loads(result.stdout)
-            except json.JSONDecodeError:
-                last_error = f"AT-SPI2 query returned invalid JSON: {result.stdout[:200]}"
-                continue
+    @staticmethod
+    def _atspi_pool_worker_pids(pool: multiprocessing.pool.Pool) -> tuple[int, ...]:
+        return tuple(proc.pid for proc in getattr(pool, "_pool", []) if proc.pid is not None)
 
-        msg = f"{last_error}. Retried once but still failed — the AT-SPI2 bus may be unstable."
-        raise RuntimeError(msg)
+    @staticmethod
+    def _pid_alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+
+    def _atspi_pool_has_dead_or_replaced_worker(
+        self,
+        pool: multiprocessing.pool.Pool,
+        recorded_pids: tuple[int, ...],
+    ) -> bool:
+        if not recorded_pids:
+            return False
+
+        current_pids = self._atspi_pool_worker_pids(pool)
+        if current_pids != recorded_pids:
+            return True
+
+        return any(not self._pid_alive(pid) for pid in recorded_pids)
+
+    def _run_atspi(self, op: str, **kwargs: object) -> dict:
+        """Run an AT-SPI op via the spawn-context worker Pool.
+
+        Long-lived worker amortises the ~700 ms PyGObject + Atspi startup;
+        warm calls land near the round-trip cost of the bus query itself.
+
+        On TimeoutError or IPC death (the multiprocessing.pool surface for
+        dead workers — NOT ``concurrent.futures.process.BrokenProcessPool``),
+        tear down the Pool and retry exactly once.
+        """
+        from kwin_mcp.accessibility_worker import do_atspi_op
+
+        attempts = 0
+        deadline = time.monotonic() + 30.0
+        poll_quantum = 0.05
+        health_check_grace = 2.0
+        retry_backoff = 0.05
+        call_worker_pids = self._atspi_worker_pids
+        while True:
+            attempts += 1
+            attempt_started = time.monotonic()
+            pool = self._ensure_atspi_pool()
+            async_result = pool.apply_async(do_atspi_op, kwds={"op": op, **kwargs})
+            timeout_count = 0
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    _atspi_logger.warning(
+                        "atspi call timeout (30s total, op=%s, attempt=%d)",
+                        op,
+                        attempts,
+                    )
+                    self._teardown_atspi_pool()
+                    if attempts >= 2:
+                        raise multiprocessing.TimeoutError() from None
+                    break
+
+                wait_seconds = min(poll_quantum, remaining)
+                try:
+                    result = async_result.get(timeout=wait_seconds)
+                except multiprocessing.TimeoutError:
+                    timeout_count += 1
+                    if timeout_count < 3:
+                        continue
+
+                    if not call_worker_pids:
+                        continue
+
+                    if time.monotonic() - attempt_started < health_check_grace:
+                        continue
+
+                    worker_failed = self._atspi_pool_has_dead_or_replaced_worker(
+                        pool,
+                        call_worker_pids,
+                    )
+
+                    if worker_failed:
+                        _atspi_logger.warning(
+                            "atspi worker died or was replaced (op=%s, attempt=%d, workers=%s)",
+                            op,
+                            attempts,
+                            call_worker_pids,
+                        )
+                        self._teardown_atspi_pool()
+                        if attempts >= 2:
+                            raise multiprocessing.TimeoutError(
+                                "AT-SPI worker died or was replaced during call"
+                            ) from None
+                        break
+                    continue
+                except (EOFError, BrokenPipeError, ConnectionResetError) as exc:
+                    _atspi_logger.warning(
+                        "atspi worker IPC death (%s, op=%s, attempt=%d)",
+                        type(exc).__name__,
+                        op,
+                        attempts,
+                    )
+                    self._teardown_atspi_pool()
+                    if attempts >= 2:
+                        raise
+                    break
+                except OSError as exc:
+                    if exc.errno in (32, 104):  # EPIPE, ECONNRESET
+                        _atspi_logger.warning(
+                            "atspi worker IPC death (OSError errno=%d, op=%s, attempt=%d)",
+                            exc.errno,
+                            op,
+                            attempts,
+                        )
+                        self._teardown_atspi_pool()
+                        if attempts >= 2:
+                            raise
+                        break
+                    raise
+                else:
+                    self._atspi_worker_pids = self._atspi_pool_worker_pids(pool)
+                    return result
+
+            if attempts < 2:
+                time.sleep(retry_backoff)
+
+    @staticmethod
+    def _join_pool_with_timeout(pool: multiprocessing.pool.Pool, timeout: float) -> bool:
+        """Wrap ``Pool.join`` (which has no timeout kwarg) in a daemon thread."""
+        t = threading.Thread(target=pool.join, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
+        return not t.is_alive()
+
+    @staticmethod
+    def _terminate_pool_with_timeout(pool: multiprocessing.pool.Pool, timeout: float) -> bool:
+        """Wrap ``Pool.terminate`` in a daemon thread so dead workers cannot hang teardown."""
+        t = threading.Thread(target=pool.terminate, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
+        return not t.is_alive()
+
+    def _teardown_atspi_pool(self) -> None:
+        """Tear down the AT-SPI Pool with bounded shutdown latency.
+
+        Escalation: ``close → join(5s) → terminate → join(2s) → SIGKILL → join(1s)``.
+
+        ``multiprocessing.pool.Pool.join`` does not accept a timeout, so we
+        wrap it in a daemon thread. Worker PIDs are captured BEFORE shutdown
+        because ``terminate`` may reap them before SIGKILL escalation.
+        """
+        pool = self._atspi_pool
+        if pool is None:
+            return
+        worker_pids = [p.pid for p in getattr(pool, "_pool", []) if p.pid is not None]
+        try:
+            pool.close()
+            if self._join_pool_with_timeout(pool, 5.0):
+                _atspi_logger.info("atspi pool torn down gracefully")
+                return
+            _atspi_logger.warning("atspi pool graceful shutdown timed out, terminating")
+            if self._terminate_pool_with_timeout(pool, 2.0) and self._join_pool_with_timeout(
+                pool, 2.0
+            ):
+                _atspi_logger.warning("atspi pool terminated after graceful timeout")
+                return
+            _atspi_logger.error(
+                "atspi pool terminate timed out, escalating to SIGKILL pids=%s",
+                worker_pids,
+            )
+            for pid in worker_pids:
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(pid, signal.SIGKILL)
+            self._join_pool_with_timeout(pool, 1.0)
+        finally:
+            self._atspi_pool = None
+            self._atspi_worker_pids = ()
 
     def _with_frame_capture(
         self,
@@ -157,6 +383,7 @@ class AutomationEngine:
             output_dir=info.screenshot_dir,
             delays_ms=screenshot_after_ms,
             wayland_socket=info.wayland_socket,
+            screenshot_backend=info.screenshot_backend,
         )
 
         lines = [action_result, f"Captured {len(frames)} frames:"]
@@ -298,6 +525,9 @@ class AutomationEngine:
         if self._input is not None:
             self._input.close()
 
+        # Pool worker holds a D-Bus connection to this session — tear down BEFORE session.stop().
+        self._teardown_atspi_pool()
+
         is_live = isinstance(self._session, LiveSession)
         if isinstance(self._session, LiveSession):
             self._session.stop(keep_screenshots=self._keep_screenshots)
@@ -324,6 +554,7 @@ class AutomationEngine:
             wayland_socket=info.wayland_socket,
             include_cursor=include_cursor,
             output_dir=info.screenshot_dir,
+            screenshot_backend=info.screenshot_backend,
         )
         size_kb = path.stat().st_size / 1024
         return f"Screenshot saved: {path} ({size_kb:.1f} KB)"
@@ -712,6 +943,146 @@ class AutomationEngine:
         resp = self._run_atspi("focus_window", app_name=app_name)
         return resp["result"]
 
+    # ── KWin scripting window tools ───────────────────────────────────────
+
+    def _kwin_script_dbus_address(self) -> str | None:
+        info = self._get_session().info
+        if info is None or not info.dbus_address:
+            return None
+        return info.dbus_address
+
+    @staticmethod
+    def _shape_window_entry(item: dict) -> dict:
+        return {
+            "id": item["id"],
+            "title": item["title"],
+            "app_id": item["appId"],
+            "geometry": {
+                "x": item["x"],
+                "y": item["y"],
+                "width": item["width"],
+                "height": item["height"],
+            },
+            "active": item["active"],
+        }
+
+    def window_list(self) -> str:
+        """Enumerate windows in the current session via KWin scripting."""
+        from kwin_mcp.window import JS_LIST_WINDOWS, KWinScriptingBackend
+
+        dbus_address = self._kwin_script_dbus_address()
+        if dbus_address is None:
+            return "Error: session has no D-Bus address"
+        backend = KWinScriptingBackend(dbus_address)
+        try:
+            result = backend.run_script(JS_LIST_WINDOWS, timeout=5.0)
+        except TimeoutError:
+            return "Error: timeout waiting for script result"
+        except RuntimeError as exc:
+            return f"Error: {exc}"
+        if not isinstance(result, list):
+            return f"Error: unexpected payload type {type(result).__name__}"
+        shaped = [self._shape_window_entry(cast("dict", item)) for item in result]
+        return json.dumps(shaped)
+
+    def active_window(self) -> str:
+        """Return the currently focused window via KWin scripting, or null."""
+        from kwin_mcp.window import JS_ACTIVE_WINDOW, KWinScriptingBackend
+
+        dbus_address = self._kwin_script_dbus_address()
+        if dbus_address is None:
+            return "Error: session has no D-Bus address"
+        backend = KWinScriptingBackend(dbus_address)
+        try:
+            result = backend.run_script(JS_ACTIVE_WINDOW, timeout=5.0)
+        except TimeoutError:
+            return "Error: timeout waiting for script result"
+        except RuntimeError as exc:
+            return f"Error: {exc}"
+        if result is None:
+            return json.dumps(None)
+        if not isinstance(result, dict):
+            return f"Error: unexpected payload type {type(result).__name__}"
+        return json.dumps(self._shape_window_entry(result))
+
+    def window_geometry(self, window_id: str) -> str:
+        """Return the frame geometry for the window with the given internalId."""
+        from kwin_mcp.window import JS_GEOMETRY_BY_ID, KWinScriptingBackend
+
+        dbus_address = self._kwin_script_dbus_address()
+        if dbus_address is None:
+            return "Error: session has no D-Bus address"
+        js = JS_GEOMETRY_BY_ID.replace("__WINDOW_ID__", window_id)
+        backend = KWinScriptingBackend(dbus_address)
+        try:
+            result = backend.run_script(js, timeout=5.0)
+        except TimeoutError:
+            return "Error: timeout waiting for script result"
+        except RuntimeError as exc:
+            return f"Error: {exc}"
+        if result is None:
+            return f"Error: window {window_id} not found"
+        if not isinstance(result, dict):
+            return f"Error: unexpected payload type {type(result).__name__}"
+        return json.dumps(result)
+
+    def _check_window_mutation_allowed(self) -> str | None:
+        """Return error string if mutation is blocked in the active session, else None."""
+        if isinstance(self._session, LiveSession):
+            return (
+                "Error: window mutation not supported in live session "
+                "(v1 safety). Use virtual session."
+            )
+        return None
+
+    def window_activate(self, window_id: str) -> str:
+        """Activate the window with the given internalId."""
+        blocked = self._check_window_mutation_allowed()
+        if blocked is not None:
+            return blocked
+        from kwin_mcp.window import JS_ACTIVATE_BY_ID, KWinScriptingBackend
+
+        dbus_address = self._kwin_script_dbus_address()
+        if dbus_address is None:
+            return "Error: session has no D-Bus address"
+        js = JS_ACTIVATE_BY_ID.replace("__WINDOW_ID__", window_id)
+        backend = KWinScriptingBackend(dbus_address)
+        try:
+            result = backend.run_script(js, timeout=5.0)
+        except TimeoutError:
+            return "Error: timeout waiting for script result"
+        except RuntimeError as exc:
+            return f"Error: {exc}"
+        if result == "OK":
+            return "OK"
+        if result == "not_found":
+            return f"Error: window {window_id} not found"
+        return f"Error: unexpected payload {result!r}"
+
+    def window_close(self, window_id: str) -> str:
+        """Close the window with the given internalId."""
+        blocked = self._check_window_mutation_allowed()
+        if blocked is not None:
+            return blocked
+        from kwin_mcp.window import JS_CLOSE_BY_ID, KWinScriptingBackend
+
+        dbus_address = self._kwin_script_dbus_address()
+        if dbus_address is None:
+            return "Error: session has no D-Bus address"
+        js = JS_CLOSE_BY_ID.replace("__WINDOW_ID__", window_id)
+        backend = KWinScriptingBackend(dbus_address)
+        try:
+            result = backend.run_script(js, timeout=5.0)
+        except TimeoutError:
+            return "Error: timeout waiting for script result"
+        except RuntimeError as exc:
+            return f"Error: {exc}"
+        if result == "OK":
+            return "OK"
+        if result == "not_found":
+            return f"Error: window {window_id} not found"
+        return f"Error: unexpected payload {result!r}"
+
     # ── D-Bus tools ───────────────────────────────────────────────────────
 
     def dbus_call(
@@ -720,33 +1091,40 @@ class AutomationEngine:
         path: str,
         interface: str,
         method: str,
-        args: list[str] | None = None,
+        args: list[str | dict] | None = None,
     ) -> str:
-        """Call a D-Bus method in the isolated session using dbus-send."""
-        env = self._session_env()
-        cmd = [
-            "dbus-send",
-            "--session",
-            "--print-reply",
-            f"--dest={service}",
-            f"{path}",
-            f"{interface}.{method}",
-        ]
-        if args:
-            cmd.extend(args)
+        """Call a D-Bus method in the isolated session.
+
+        ``args`` accepts dbus-send strings (``"type:value"``) and/or
+        typed-JSON dicts (``{"type": ..., "value": ...}``); both shapes
+        may mix in one call. The reply value is rendered via
+        :func:`_format_dbus_result` (single primitives become bare strings,
+        containers and tuples become JSON).
+        """
+        import dbus
+        import dbus.bus
+
+        from kwin_mcp.dbus_args import parse_arg
+
+        info = self._get_session().info
+        if info is None or not info.dbus_address:
+            return "D-Bus call failed: session has no D-Bus address"
 
         try:
-            result = subprocess.run(
-                cmd,
-                env=env,
-                capture_output=True,
-                timeout=10,
-            )
-        except FileNotFoundError:
-            return _INSTALL_HINTS["dbus-send"]
-        if result.returncode != 0:
-            return f"D-Bus call failed: {result.stderr.decode(errors='replace')}"
-        return result.stdout.decode(errors="replace")
+            parsed_args = [parse_arg(a) for a in (args or [])]
+        except ValueError as exc:
+            return f"D-Bus call failed: {exc}"
+
+        try:
+            bus = dbus.bus.BusConnection(info.dbus_address)
+            obj = bus.get_object(service, path)
+            iface = dbus.Interface(obj, interface)
+            result = iface.get_dbus_method(method)(*parsed_args)
+        except dbus.DBusException as exc:
+            name = exc.get_dbus_name() or type(exc).__name__
+            msg = exc.get_dbus_message() or str(exc)
+            return f"D-Bus error: {name}: {msg}"
+        return _format_dbus_result(result)
 
     def read_app_log(self, pid: int, last_n_lines: int = 50) -> str:
         """Read stdout/stderr output of a launched app."""

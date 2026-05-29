@@ -28,7 +28,7 @@ product:
     MCP server enabling AI agents to automate Linux desktops on KDE Plasma 6
     Wayland — virtual isolated sessions for CI/CD testing and live session
     connection for real desktop automation.
-  tool_count: 30
+  tool_count: 35
   repo: "https://github.com/isac322/kwin-mcp"
   pypi: "https://pypi.org/project/kwin-mcp/"
 
@@ -248,7 +248,7 @@ drift_detection:
   # Warn if pyproject.toml keywords diverge from pypi_package_keywords by more than this many terms
   pypi_keyword_max_divergence: 3
   # Warn if tool_count in docs differs from this value
-  tool_count_canonical: 30
+  tool_count_canonical: 35
   # Plugin manifests (.claude-plugin/marketplace.json, integrations/claude-code/.claude-plugin/plugin.json,
   # integrations/opencode/plugin/package.json) must include AT LEAST this many of the
   # plugin_manifest_required_keywords terms (subset rule, not exact match — manifests
@@ -265,7 +265,7 @@ drift_detection:
       section: "## Documentation & SEO"
       checks:
         - keyword_coverage     # primary/secondary/long_tail keywords present
-        - tool_count_accuracy  # "30 MCP tools" references are current
+        - tool_count_accuracy  # "35 MCP tools" references are current
 
     - path: ".claude/agents/docs-seo.md"
       section: "## Current Product Positioning"

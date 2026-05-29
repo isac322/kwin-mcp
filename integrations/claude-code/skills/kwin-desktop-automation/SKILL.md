@@ -5,7 +5,7 @@ description: Use when the user asks to launch, click, type, screenshot, or other
 
 # kwin-desktop-automation
 
-Drive Linux KDE Plasma 6 Wayland desktops through the `kwin-mcp` MCP server. The MCP server provides 30 capabilities; this skill provides the operational discipline to use them efficiently, in the right order, and without falling into platform-specific traps.
+Drive Linux KDE Plasma 6 Wayland desktops through the `kwin-mcp` MCP server. The MCP server provides 35 capabilities; this skill provides the operational discipline to use them efficiently, in the right order, and without falling into platform-specific traps.
 
 ## When to apply
 
@@ -45,16 +45,19 @@ Each interaction is three steps. Cheap observation **before** action prevents ac
 **Observation tools, cheapest first:**
 
 1. `list_windows` — window titles + active/focused markers. Free.
-2. `accessibility_tree` — full AT-SPI2 widget tree. Always pass `app_name=` and/or `role=` (e.g. `"button"`, `"check box"`) and/or `max_depth=` to keep it small. Don't fetch the whole tree just to find one button.
-3. `find_ui_elements` — query by name/role/states. Use this when you know what you are looking for. `query=""` + `states=["focused"]` answers "what currently has focus?".
-4. `wait_for_element` — same matching as `find_ui_elements` but polls until the element appears (or `timeout_ms` elapses). Use after launching an app or after any click that triggers async UI.
-5. `screenshot` — last resort for visual inspection or when AT-SPI2 fails to expose an element (see Pitfalls).
+2. `window_list` — full window list with IDs, titles, and classes via KWin scripting.
+3. `active_window` / `window_geometry` — get the currently active window, or `(x, y, width, height)` of a specific window by ID, via KWin scripting.
+4. `accessibility_tree` — full AT-SPI2 widget tree. Always pass `app_name=` and/or `role=` (e.g. `"button"`, `"check box"`) and/or `max_depth=` to keep it small. Don't fetch the whole tree just to find one button.
+5. `find_ui_elements` — query by name/role/states. Use this when you know what you are looking for. `query=""` + `states=["focused"]` answers "what currently has focus?".
+6. `wait_for_element` — same matching as `find_ui_elements` but polls until the element appears (or `timeout_ms` elapses). Use after launching an app or after any click that triggers async UI.
+7. `screenshot` — last resort for visual inspection or when AT-SPI2 fails to expose an element (see Pitfalls).
 
 Pick the cheapest tool that answers the question. Do not start with `screenshot` if `find_ui_elements("Save")` would suffice.
 
 **Action tools:**
 
 - Click coordinates returned by `find_ui_elements` / `accessibility_tree` directly with `mouse_click`.
+- `window_activate` / `window_close` — focus or close a window by ID. **Blocked in live sessions.**
 - `keyboard_type` is **ASCII / US-QWERTY only**. It maps characters to evdev keycodes; non-ASCII silently breaks.
 - `keyboard_type_unicode` for Korean / CJK / emoji / any non-ASCII. Internally uses `wtype` first, falls back to `wl-copy` + Ctrl+V. Requires `wtype` or `wl-clipboard` installed.
 

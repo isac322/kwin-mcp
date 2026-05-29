@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- 5 new window management tools using KWin scripting backend: `window_list`, `active_window`, `window_geometry`, `window_activate`, and `window_close`.
+- KWin scripting backend for window introspection and control, providing more reliable window data than AT-SPI2 for certain operations.
+- `dbus_call` MCP tool now accepts typed-JSON dicts (`{"type": "int32", "value": 42}`) alongside legacy dbus-send strings (`"int32:42"`); both shapes can mix freely in one `args` list. Container shapes supported: `array` (basic element types), `dict` (basic key + value types), `variant` (basic value type).
+- New module `kwin_mcp.dbus_args` exposing `parse_dbus_send_arg`, `parse_typed_arg`, `parse_arg`, and `to_dbus_send_string` (80 unit tests).
+
+### Changed
+
+- `dbus_call` reply formatting: single-primitive returns are now the bare value (e.g. `org.freedesktop.DBus.GetId` returns just the UUID string instead of the multi-line `method return … string "…"` block); container and multi-value returns are JSON. Error replies use the format `D-Bus error: <error-name>: <message>` instead of raw `dbus-send` stderr text. Callers that parse the structured value see equivalent data; callers grepping for the literal `method return` prefix must update.
+
+### Internal
+
+- Replaced `subprocess.run(["dbus-send", …])` inside `dbus_call` with in-process `dbus.bus.BusConnection` + `dbus.Interface`, removing one fork+exec per call and surfacing structured `dbus.DBusException` instead of CLI exit codes.
+- Replaced per-call `subprocess.run([sys.executable, "-m", "kwin_mcp.accessibility", …])` for AT-SPI queries with a long-lived spawn-context `multiprocessing.Pool(processes=1)` worker. New module `kwin_mcp.accessibility_worker` is never imported by the parent process (CI guard 3 enforced); worker init validates `Atspi.get_desktop(0).get_child_count() >= 0` against the bus address. Cold start ≤ 1.5s, warm calls < 200ms (vs ~700ms per subprocess). Pool teardown protocol: `close → join 5s → terminate → join 2s → SIGKILL → join 1s` survives hung workers within 7s. External `SIGKILL` of the worker is recovered by lazy pool recreation on the next call.
+- Screenshot backend selection now runs an eager capability probe at session_start. `_probe_screenshot_capability(dbus_address, wayland_socket)` tries a 1×1 `CaptureArea` via in-process ScreenShot2 D-Bus first; on any failure it falls back to a real `spectacle` capture. The result (`screenshot2_dbus` / `spectacle_cli` / `unavailable`) is stored on `SessionInfo.screenshot_backend` and consumed by `capture_screenshot_to_file` and `capture_frame_burst` via an explicit keyword argument — no global state. `unavailable` raises `RuntimeError("No screenshot backend available; install spectacle or fix KWin EglBackend").`
+
 ### Fixed
 
 - Segfault on Python 3.14 caused by missing `argtypes` on variadic `ei_seat_bind_capabilities` ctypes call

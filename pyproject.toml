@@ -75,7 +75,21 @@ requires = ["uv_build>=0.10.3,<0.12.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
-dev = ["ruff>=0.11.0", "ty>=0.0.1"]
+dev = [
+    "ruff>=0.11.0",
+    "ty>=0.0.1",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-timeout>=2.3.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q"
+asyncio_mode = "auto"
+timeout = 30
+timeout_method = "thread"
+markers = ["kwin: marks tests requiring a real KWin virtual session (deselect with -m 'not kwin')"]
 
 [tool.ruff]
 target-version = "py312"
@@ -108,7 +122,12 @@ python-version = "3.12"
 
 # gi.repository and dbus.bus are dynamic modules that cannot be resolved statically
 [[tool.ty.overrides]]
-include = ["src/kwin_mcp/accessibility.py", "src/kwin_mcp/server.py"]
+include = [
+    "src/kwin_mcp/accessibility.py",
+    "src/kwin_mcp/accessibility_worker.py",
+    "src/kwin_mcp/server.py",
+    "src/kwin_mcp/window.py",
+]
 [tool.ty.overrides.rules]
 unresolved-import = "ignore"
 

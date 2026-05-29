@@ -254,7 +254,7 @@ kwin-mcp-cli --default-live-session
 | `read_app_log` | `pid` `int`, `last_n_lines?` `int` (50) | Read stdout/stderr output of a launched app by PID. Set `last_n_lines=0` for all output. |
 | `wayland_info` | `filter_protocol?` `str` | List Wayland protocols available in the session. Useful for verifying protocol access (e.g., `plasma_window_management`). |
 
-> **Frame capture:** Many action tools accept an optional `screenshot_after_ms` parameter (e.g., `[0, 50, 100, 200, 500]`) that captures screenshots at specified delays (in milliseconds) after the action completes. This is useful for observing transient UI states like hover effects, click animations, and menu transitions without extra MCP round-trips. Frame capture uses the fast KWin ScreenShot2 D-Bus interface (~30-70ms per frame).
+> **Frame capture:** Many action tools accept an optional `screenshot_after_ms` parameter (e.g., `[0, 50, 100, 200, 500]`) that captures screenshots at specified delays (in milliseconds) after the action completes. This is useful for observing transient UI states like hover effects, click animations, and menu transitions without extra MCP round-trips. Frame capture tries the fast KWin ScreenShot2 D-Bus interface (~30-70ms per frame) and falls back to `spectacle` when ScreenShot2 is unavailable.
 
 ## How It Works
 
@@ -283,7 +283,7 @@ kwin-mcp server  (30 tools)       kwin-mcp-cli (interactive REPL)
   |-- mouse_* ------------------> KWin EIS D-Bus --> libei
   |-- keyboard_* ---------------> KWin EIS D-Bus --> libei
   |-- touch_* ------------------> KWin EIS D-Bus --> libei
-  |    +-- screenshot_after_ms -> KWin ScreenShot2 D-Bus (fast frame capture)
+  |    +-- screenshot_after_ms -> KWin ScreenShot2 D-Bus (fast path, spectacle fallback)
   |
   |-- keyboard_type_unicode ----> wtype / wl-copy + Ctrl+V
   |-- clipboard_* --------------> wl-copy / wl-paste (wl-clipboard)

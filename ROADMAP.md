@@ -159,3 +159,11 @@ Triple isolation ensures no impact on the host desktop:
 - [ ] Ensure all alternatives are functionally identical (no behavioral differences)
 - [ ] Update `_INSTALL_HINTS` to suggest multiple options
 - **Goal**: Users on non-KDE or minimal setups don't need to install KDE-specific tools if equivalent alternatives are already present
+
+### M13: Multi-distro test harness ✅
+- [x] Manjaro Docker smoke test harness (local; see [docs/docker-testing.md](docs/docker-testing.md))
+- [ ] Ubuntu Docker smoke test harness (future; validate apt-based container parity)
+- [ ] Debian Docker smoke test harness (future; validate apt-based container parity)
+- [ ] Fedora Docker smoke test harness (future; validate dnf-based container parity)
+- [ ] openSUSE Docker smoke test harness (future; validate zypper-based container parity)
+- **Goal**: Extend the Docker smoke harness beyond Manjaro so distro-specific regressions stay visible.

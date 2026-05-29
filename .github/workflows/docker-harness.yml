@@ -1,0 +1,52 @@
+name: Docker smoke harness
+
+# Runs scripts/test-distro.sh in CI for every supported distro slot.
+# Matrix lets us add new distros (fedora, kubuntu, opensuse, ...) by appending
+# an entry below — no further wiring required as long as the corresponding
+# docker/<distro>.Dockerfile exists.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  smoke:
+    name: smoke (${{ matrix.distro }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: manjaro
+            image: ghcr.io/isac322/kwin-mcp-minimal-test-env:manjaro
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Install build deps for wheel
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev libgirepository-2.0-dev libdbus-1-dev pkg-config
+
+      - name: Login to GHCR
+        run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Run smoke harness
+        env:
+          DOCKER_HOST: unix:///var/run/docker.sock
+          KWIN_MCP_TEST_IMAGE: ${{ matrix.image }}
+        run: scripts/test-distro.sh ${{ matrix.distro }}
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-evidence-${{ matrix.distro }}
+          path: .sisyphus/evidence/${{ matrix.distro }}/
+          if-no-files-found: warn

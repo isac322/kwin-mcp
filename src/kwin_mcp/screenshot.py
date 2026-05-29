@@ -36,6 +36,9 @@ def capture_screenshot_to_file(
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     output_path = output_dir / f"screenshot_{timestamp}.png"
 
+    if dbus_address:
+        return capture_screenshot_dbus(dbus_address, output_path, include_cursor=include_cursor)
+
     _capture_via_spectacle(
         dbus_address,
         wayland_socket,
@@ -77,7 +80,7 @@ def capture_screenshot_dbus(
     read_fd, write_fd = os.pipe()
     try:
         options = {"include-cursor": dbus.Boolean(include_cursor)}
-        results = iface.CaptureActiveScreen(options, dbus.types.UnixFd(write_fd))
+        results = iface.CaptureWorkspace(options, dbus.types.UnixFd(write_fd))
     finally:
         os.close(write_fd)
 
@@ -178,7 +181,7 @@ def _capture_frame_burst_dbus(
 
         read_fd, write_fd = os.pipe()
         try:
-            results = iface.CaptureActiveScreen(options, dbus.types.UnixFd(write_fd))
+            results = iface.CaptureWorkspace(options, dbus.types.UnixFd(write_fd))
         finally:
             os.close(write_fd)
         try:

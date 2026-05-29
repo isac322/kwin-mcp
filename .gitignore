@@ -12,3 +12,4 @@ wheels/
 # Local OpenCode plugin testing (symlink to integrations/opencode/plugin)
 .opencode/
 
+.sisyphus/evidence/

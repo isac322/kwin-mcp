@@ -1,0 +1,21 @@
+{
+  "active_plan": "/home/bhyoo/.local/share/opencode/worktree/de995745c5fbc81e6aa1f2dd8c312bfd3cba55a7/cosmic-wolf/.sisyphus/plans/archlinux-docker-harness-regression.md",
+  "started_at": "2026-05-05T04:10:22.024Z",
+  "session_ids": [
+    "ses_20d16abefffe4B0pfom9b82eOW",
+    "ses_20996d818ffe0HywVWpnsQW6yK",
+    "ses_2099649b5ffeCZJ24oJR2MraRt",
+    "ses_20995bf53ffeRIe4dBsNIwmCGl",
+    "ses_20995396bffd6P5MjFGK1Vd78p"
+  ],
+  "session_origins": {
+    "ses_20d16abefffe4B0pfom9b82eOW": "direct",
+    "ses_20996d818ffe0HywVWpnsQW6yK": "appended",
+    "ses_2099649b5ffeCZJ24oJR2MraRt": "appended",
+    "ses_20995bf53ffeRIe4dBsNIwmCGl": "appended",
+    "ses_20995396bffd6P5MjFGK1Vd78p": "appended"
+  },
+  "plan_name": "archlinux-docker-harness-regression",
+  "agent": "atlas",
+  "task_sessions": {}
+}

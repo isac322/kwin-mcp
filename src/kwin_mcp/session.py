@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import select
 import shutil
 import signal
 import subprocess
@@ -156,32 +157,42 @@ class Session:
         # Read startup output from the wrapper script.
         # Expected lines: DBUS_SESSION_BUS_ADDRESS=..., READY
         # Any other lines (e.g. from D-Bus activation) are ignored.
+        # Use select() with timeout so we don't block forever when the D-Bus
+        # session daemon (started by dbus-run-session) inherits the stdout fd
+        # and keeps the pipe open after bash exits.
         dbus_address = ""
-        got_ready = False
         if self._process.stdout:
-            while True:
-                line = self._process.stdout.readline().decode().strip()
-                if not line and self._process.poll() is not None:
-                    break
-                if line.startswith("DBUS_SESSION_BUS_ADDRESS="):
-                    dbus_address = line.split("=", 1)[1]
-                elif line == "READY":
-                    got_ready = True
+            deadline = time.monotonic() + 90.0
+            while time.monotonic() < deadline:
+                remaining = max(0.0, deadline - time.monotonic())
+                ready, _, _ = select.select([self._process.stdout], [], [], min(0.5, remaining))
+                if ready:
+                    data = self._process.stdout.readline()
+                    if not data:
+                        break
+                    line = data.decode().strip()
+                    if line.startswith("DBUS_SESSION_BUS_ADDRESS="):
+                        dbus_address = line.split("=", 1)[1]
+                    elif line == "READY":
+                        break
+                elif self._process.poll() is not None:
                     break
 
-        # Wait for kwin to be ready (socket file appears)
+        # Socket existence is the authoritative ready signal; READY is a fast-path hint
+        # that may be missed when the 90 s select loop times out before kwin initializes.
         socket_path = Path(runtime_dir) / self._socket_name
         if not self._wait_for_socket(socket_path, timeout=10.0):
-            self.stop()
             stderr = ""
             if self._process and self._process.stderr:
-                stderr = self._process.stderr.read().decode(errors="replace")
-            msg = f"KWin failed to start. stderr: {stderr}"
-            raise RuntimeError(msg)
-
-        if not got_ready:
+                rdy, _, _ = select.select([self._process.stderr], [], [], 2.0)
+                if rdy:
+                    stderr = self._process.stderr.read(65536).decode(errors="replace")
+            kwin_log = Path("/tmp/kwin.stderr")
+            if not stderr and kwin_log.exists():
+                with contextlib.suppress(OSError):
+                    stderr = kwin_log.read_text(errors="replace")
             self.stop()
-            msg = "Session setup failed: did not receive READY signal"
+            msg = f"KWin failed to start. stderr: {stderr[:2000]}"
             raise RuntimeError(msg)
 
         if self._home_dir is not None:
@@ -354,21 +365,42 @@ sleep 0.2
 # only after KWin creates it.
 dbus-update-activation-environment WAYLAND_DISPLAY={self._socket_name} QT_QPA_PLATFORM=wayland
 
+# KDE 6.x runtime services that KWin headless mode depends on.
+# In CI/container/headless setups these are NOT auto-started by a desktop
+# environment, so KWin's StatusNotifierWatcher and KGlobalAccel hosts
+# never come up and KWin hangs waiting for them. Start them here, guarded
+# with `command -v` so non-KDE distros (e.g. Ubuntu/Fedora) degrade gracefully.
+command -v kded6 >/dev/null 2>&1 && kded6 >/dev/null 2>&1 &
+command -v kglobalacceld >/dev/null 2>&1 && kglobalacceld >/dev/null 2>&1 &
+sleep 0.3   # let the services register on the bus before KWin queries them
+
 # Start KWin WITHOUT WAYLAND_DISPLAY to prevent nesting attempt.
 # KWin with --virtual creates its own compositor, it must not try
 # to connect to another compositor as a client.
 # Explicitly pass KWIN_ permission env vars to ensure they reach the
 # KWin process (environment inheritance through dbus-run-session can be unreliable).
+# Redirect stdout/stderr away from the subprocess pipe — kwin_wayland writes >64KB of
+# debug output, which fills the 64KB Linux pipe buffer and deadlocks the process before
+# creating the socket. Stderr is kept in /tmp/kwin.stderr for post-mortem debugging.
 env -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM \
     KWIN_WAYLAND_NO_PERMISSION_CHECKS=1 \
     KWIN_SCREENSHOT_NO_PERMISSION_CHECKS=1 \
     kwin_wayland --virtual --no-lockscreen \
     --width {config.screen_width} --height {config.screen_height} \
-    --socket {self._socket_name} &
+    --socket {self._socket_name} >/dev/null 2>/tmp/kwin.stderr &
 KWIN_PID=$!
 
-# Wait for KWin socket to appear
-while [ ! -e "$XDG_RUNTIME_DIR/{self._socket_name}" ]; do sleep 0.1; done
+# Wait for KWin socket to appear. Exit early if the process crashes so
+# Python's select loop doesn't wait the full 90 s before detecting failure.
+deadline=$(($(date +%s) + 90))
+while [ ! -e "$XDG_RUNTIME_DIR/{self._socket_name}" ]; do
+    if ! kill -0 $KWIN_PID 2>/dev/null; then
+        echo "KWIN_DIED"
+        exit 1
+    fi
+    [ $(date +%s) -gt $deadline ] && echo "KWIN_TIMEOUT" && exit 1
+    sleep 0.1
+done
 sleep 0.3
 
 # Signal parent that setup is complete
@@ -382,8 +414,6 @@ wait $KWIN_PID
         """Build the environment for the isolated session."""
         env = {
             **os.environ,
-            "KDE_FULL_SESSION": "true",
-            "KDE_SESSION_VERSION": "6",
             "XDG_SESSION_TYPE": "wayland",
             "XDG_CURRENT_DESKTOP": "KDE",
             "QT_LINUX_ACCESSIBILITY_ALWAYS_ON": "1",
@@ -398,6 +428,10 @@ wait $KWIN_PID
             # Allow clients to bind restricted Wayland protocols (e.g. plasma_window_management).
             # Safe in isolated virtual sessions where there is no user desktop to protect.
             "KWIN_WAYLAND_NO_PERMISSION_CHECKS": "1",
+            # Force Mesa software rendering (llvmpipe). Without this, kwin_wayland
+            # tries to open /dev/dri hardware, segfaults in containers with no GPU.
+            "LIBGL_ALWAYS_SOFTWARE": "1",
+            "GALLIUM_DRIVER": "llvmpipe",
         }
         # Remove host display references to avoid kwin connecting to host
         env.pop("WAYLAND_DISPLAY", None)

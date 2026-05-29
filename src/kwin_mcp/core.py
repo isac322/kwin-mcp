@@ -48,6 +48,56 @@ _INSTALL_HINTS: dict[str, str] = {
 }
 
 
+def _dbus_to_json(value: object) -> object:
+    import dbus
+
+    if isinstance(value, dbus.Boolean):
+        return bool(value)
+    if isinstance(value, dbus.ObjectPath | dbus.Signature | dbus.String):
+        return str(value)
+    if isinstance(
+        value,
+        dbus.Byte | dbus.Int16 | dbus.UInt16 | dbus.Int32 | dbus.UInt32 | dbus.Int64 | dbus.UInt64,
+    ):
+        return int(value)
+    if isinstance(value, dbus.Double):
+        return float(value)
+    if isinstance(value, dbus.Array):
+        return [_dbus_to_json(x) for x in value]
+    if isinstance(value, dbus.Dictionary | dict):
+        return {_dbus_to_json(k): _dbus_to_json(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_dbus_to_json(x) for x in value]
+    if isinstance(value, bool | int | float | str):
+        return value
+    return str(value)
+
+
+def _format_dbus_result(result: object) -> str:
+    """Render a D-Bus reply for MCP clients.
+
+    Returns the empty string for void replies, the bare value for single
+    primitives (so ``GetId`` returns just the UUID), and JSON for
+    containers and multi-value tuples.
+    """
+    import dbus
+
+    if result is None:
+        return ""
+    if isinstance(result, dbus.Boolean):
+        return "true" if bool(result) else "false"
+    if isinstance(result, dbus.ObjectPath | dbus.Signature | dbus.String | str):
+        return str(result)
+    if isinstance(
+        result,
+        dbus.Byte | dbus.Int16 | dbus.UInt16 | dbus.Int32 | dbus.UInt32 | dbus.Int64 | dbus.UInt64,
+    ):
+        return str(int(result))
+    if isinstance(result, dbus.Double | float):
+        return str(float(result))
+    return json.dumps(_dbus_to_json(result))
+
+
 class AutomationEngine:
     """Core automation engine encapsulating all tool logic.
 
@@ -720,33 +770,40 @@ class AutomationEngine:
         path: str,
         interface: str,
         method: str,
-        args: list[str] | None = None,
+        args: list[str | dict] | None = None,
     ) -> str:
-        """Call a D-Bus method in the isolated session using dbus-send."""
-        env = self._session_env()
-        cmd = [
-            "dbus-send",
-            "--session",
-            "--print-reply",
-            f"--dest={service}",
-            f"{path}",
-            f"{interface}.{method}",
-        ]
-        if args:
-            cmd.extend(args)
+        """Call a D-Bus method in the isolated session.
+
+        ``args`` accepts dbus-send strings (``"type:value"``) and/or
+        typed-JSON dicts (``{"type": ..., "value": ...}``); both shapes
+        may mix in one call. The reply value is rendered via
+        :func:`_format_dbus_result` (single primitives become bare strings,
+        containers and tuples become JSON).
+        """
+        import dbus
+        import dbus.bus
+
+        from kwin_mcp.dbus_args import parse_arg
+
+        info = self._get_session().info
+        if info is None or not info.dbus_address:
+            return "D-Bus call failed: session has no D-Bus address"
 
         try:
-            result = subprocess.run(
-                cmd,
-                env=env,
-                capture_output=True,
-                timeout=10,
-            )
-        except FileNotFoundError:
-            return _INSTALL_HINTS["dbus-send"]
-        if result.returncode != 0:
-            return f"D-Bus call failed: {result.stderr.decode(errors='replace')}"
-        return result.stdout.decode(errors="replace")
+            parsed_args = [parse_arg(a) for a in (args or [])]
+        except ValueError as exc:
+            return f"D-Bus call failed: {exc}"
+
+        try:
+            bus = dbus.bus.BusConnection(info.dbus_address)
+            obj = bus.get_object(service, path)
+            iface = dbus.Interface(obj, interface)
+            result = iface.get_dbus_method(method)(*parsed_args)
+        except dbus.DBusException as exc:
+            name = exc.get_dbus_name() or type(exc).__name__
+            msg = exc.get_dbus_message() or str(exc)
+            return f"D-Bus error: {name}: {msg}"
+        return _format_dbus_result(result)
 
     def read_app_log(self, pid: int, last_n_lines: int = 50) -> str:
         """Read stdout/stderr output of a launched app."""

@@ -754,17 +754,25 @@ def dbus_call(
     interface: Annotated[str, Field(description='Interface name (e.g. "org.kde.KWin.Scripting").')],
     method: Annotated[str, Field(description="Method name to call.")],
     args: Annotated[
-        list[str] | None,
+        list[str | dict] | None,
         Field(
-            description="Method arguments in dbus-send format "
-            '(e.g. ["string:hello", "int32:42", "boolean:true"]).'
+            description=(
+                "Method arguments. Two interchangeable shapes are accepted "
+                "and may be mixed in the same list: "
+                '(legacy) ["string:hello", "int32:42", "boolean:true"] OR '
+                '(typed JSON) [{"type":"string","value":"hello"}, '
+                '{"type":"int32","value":42}, '
+                '{"type":"array","element_type":"string","value":["a","b"]}].'
+            )
         ),
     ] = None,
 ) -> str:
-    """Call a D-Bus method in the isolated session using dbus-send.
+    """Call a D-Bus method in the isolated session.
 
-    Executes a D-Bus method call and returns the reply. Arguments must use
-    dbus-send type notation (e.g. "string:value", "int32:42", "boolean:true").
+    Executes a D-Bus method call and returns the reply. Each entry in
+    ``args`` may use dbus-send notation (``"string:value"``, ``"int32:42"``,
+    ...) or the typed-JSON shape (``{"type":"string","value":"hello"}``).
+    Both shapes can mix in one call.
     """
     return _engine.dbus_call(
         service=service, path=path, interface=interface, method=method, args=args

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `dbus_call` MCP tool now accepts typed-JSON dicts (`{"type": "int32", "value": 42}`) alongside legacy dbus-send strings (`"int32:42"`); both shapes can mix freely in one `args` list. Container shapes supported: `array` (basic element types), `dict` (basic key + value types), `variant` (basic value type).
+- New module `kwin_mcp.dbus_args` exposing `parse_dbus_send_arg`, `parse_typed_arg`, `parse_arg`, and `to_dbus_send_string` (80 unit tests).
+
+### Changed
+
+- `dbus_call` reply formatting: single-primitive returns are now the bare value (e.g. `org.freedesktop.DBus.GetId` returns just the UUID string instead of the multi-line `method return … string "…"` block); container and multi-value returns are JSON. Error replies use the format `D-Bus error: <error-name>: <message>` instead of raw `dbus-send` stderr text. Callers that parse the structured value see equivalent data; callers grepping for the literal `method return` prefix must update.
+
+### Internal
+
+- Replaced `subprocess.run(["dbus-send", …])` inside `dbus_call` with in-process `dbus.bus.BusConnection` + `dbus.Interface`, removing one fork+exec per call and surfacing structured `dbus.DBusException` instead of CLI exit codes.
+
 ### Fixed
 
 - Segfault on Python 3.14 caused by missing `argtypes` on variadic `ei_seat_bind_capabilities` ctypes call

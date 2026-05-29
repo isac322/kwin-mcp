@@ -15,8 +15,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
-      - run: uvx --python ${{ matrix.python-version }} ruff check src/
-      - run: uvx --python ${{ matrix.python-version }} ruff format --check src/
+      - run: uvx --python ${{ matrix.python-version }} ruff check src/ tests/ scripts/
+      - run: uvx --python ${{ matrix.python-version }} ruff format --check src/ tests/ scripts/
+
+  guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run CI guards
+        run: bash scripts/ci_guards.sh
 
   type-check:
     runs-on: ubuntu-latest
@@ -27,7 +34,34 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libcairo2-dev libgirepository-2.0-dev libdbus-1-dev pkg-config
-      - run: uv run ty check src/
+      - run: uv run ty check src/ tests/ scripts/
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Skip 3.15 (alpha): rpds-py has no wheel and Rust source build fails on cpython-3.15.0a8.
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev libgirepository-2.0-dev libdbus-1-dev pkg-config
+      - name: Run non-kwin pytest (tolerate exit 5 = no tests collected)
+        # Ignore tests/integration: those tests require a real KWin/Wayland session
+        # and import kwin_mcp.input which dlopens libei.so.1 (not available on GHA).
+        run: |
+          set +e
+          uv run --python ${{ matrix.python-version }} pytest -m "not kwin" --ignore=tests/integration
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ] || [ "$rc" -eq 5 ]; then
+            exit 0
+          fi
+          exit "$rc"
 
   build:
     runs-on: ubuntu-latest
@@ -47,7 +81,7 @@ jobs:
 
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [lint, type-check, build]
+    needs: [lint, type-check, test, build, guards]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

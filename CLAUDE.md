@@ -60,7 +60,11 @@ See ROADMAP.md. Key modules:
 | `src/kwin_mcp/server.py` | tool-registration, code-general | Check tool count, README tool tables, CONTRIBUTING structure, **integrations/*/skills/*/SKILL.md tool list freshness** |
 | `src/kwin_mcp/session.py` | session-api | Check README arch diagram, CONTRIBUTING session docs |
 | `src/kwin_mcp/core.py` | engine-api, code-general | Check README arch description, CONTRIBUTING structure |
+| `src/kwin_mcp/dbus_args.py` | code-general | Check concrete numbers, CONTRIBUTING file listing, **integrations/*/skills/*/SKILL.md "30 capabilities" reference** |
+| `src/kwin_mcp/window.py` | engine-api, code-general | Check README arch description, CONTRIBUTING structure |
+| `src/kwin_mcp/accessibility_worker.py` | engine-api, code-general | Check README arch description, CONTRIBUTING structure |
 | `src/kwin_mcp/*.py` (any) | code-general | Check concrete numbers, CONTRIBUTING file listing, **integrations/*/skills/*/SKILL.md "30 capabilities" reference** |
+| `docs/design/*.md` | code-general | Check docs/design architecture notes and related docs-seo guidance |
 | `pyproject.toml` | package-metadata | Sync keywords with `.claude/positioning.yml`; check CLAUDE.md keyword tiers; **run `python3 scripts/sync_plugin_version.py` to propagate version to integrations manifests** |
 | `CHANGELOG.md` | changelog-update | Sync docs-seo.md positioning; add new search intents |
 | `README.md` | readme-update | Sync docs-seo.md positioning; update CLAUDE.md keyword tiers |

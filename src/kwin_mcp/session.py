@@ -8,6 +8,7 @@ Manages the lifecycle of KWin Wayland sessions:
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import shutil
 import signal
@@ -17,6 +18,10 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+
+from kwin_mcp.screenshot import _probe_screenshot_capability
+
+logger = logging.getLogger("kwin_mcp.session")
 
 
 class SessionType(Enum):
@@ -63,6 +68,17 @@ class SessionInfo:
     wrapper_pid: int | None = None
     apps: dict[int, AppInfo] = field(default_factory=dict)
     session_type: SessionType = SessionType.VIRTUAL
+    screenshot_backend: str = "unavailable"
+
+
+def _probe_and_store_screenshot_backend(info: SessionInfo) -> None:
+    try:
+        info.screenshot_backend = _probe_screenshot_capability(
+            info.dbus_address,
+            info.wayland_socket,
+        )
+    except Exception as exc:
+        logger.warning("screenshot probe failed, defaulting to unavailable: %s", exc)
 
 
 class Session:
@@ -196,6 +212,7 @@ class Session:
             screenshot_dir=screenshot_dir,
             home_dir=self._home_dir,
         )
+        _probe_and_store_screenshot_backend(self._info)
         return self._info
 
     def launch_app(self, command: list[str], extra_env: dict[str, str] | None = None) -> AppInfo:
@@ -447,6 +464,7 @@ class LiveSession:
             screenshot_dir=screenshot_dir,
             session_type=SessionType.LIVE,
         )
+        _probe_and_store_screenshot_backend(self._info)
         self._running = True
         self._app_counter: int = 0
         self._keep_screenshots: bool = False

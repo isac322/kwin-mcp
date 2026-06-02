@@ -347,12 +347,18 @@ class EISClient:
             if _libei.ei_seat_has_capability(seat, cap):
                 bind_list.append(cap)
 
-        # Call variadic ei_seat_bind_capabilities(seat, cap1, ..., NULL)
-        func = _libei.ei_seat_bind_capabilities
-        func.restype = None
-        args: list[ctypes.c_uint | ctypes.c_void_p] = [ctypes.c_uint(c) for c in bind_list]
-        args.append(ctypes.c_void_p(None))  # NULL sentinel
-        func(seat, *args)
+        # ei_seat_bind_capabilities is variadic: build a fully-typed CFUNCTYPE for the
+        # exact argument list so libffi passes every arg with explicit register/stack
+        # placement. The raw variadic call via ctypes is fragile across Python/libffi
+        # versions (wrong ABI on e.g. Python 3.14 / libei 1.5+).
+        # Sentinel is NULL per the documented API contract.
+        FuncType = ctypes.CFUNCTYPE(
+            None,
+            ctypes.c_void_p,                     # seat
+            *([ctypes.c_uint] * len(bind_list)),  # capabilities
+            ctypes.c_void_p,                      # NULL sentinel
+        )
+        FuncType(_libei.ei_seat_bind_capabilities)(seat, *bind_list, None)
 
     def _register_device(self, event: int) -> None:
         """Register a device from a DEVICE_ADDED event."""

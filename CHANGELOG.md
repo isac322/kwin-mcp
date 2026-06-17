@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Segfault on Python 3.14 caused by missing `argtypes` on variadic `ei_seat_bind_capabilities` ctypes call
+- `accessibility_tree`, `find_ui_elements`, `wait_for_element`, `list_windows`, and `focus_window` now work in isolated virtual sessions on Fedora, Debian, Ubuntu, and any other distro that installs the AT-SPI bus launcher outside `/usr/lib` (e.g. `/usr/libexec`). Instead of executing a hardcoded path, the AT-SPI bus is now brought up via D-Bus auto-activation (`gdbus call org.a11y.Bus.GetAddress`), which defers binary-path resolution to `dbus-daemon` and the distro-provided service file. The registry daemon is auto-activated transparently when apps first touch the a11y bus, so no manual bootstrap is required. Thanks to @davidselassie for reporting the Fedora failure in [#8](https://github.com/isac322/kwin-mcp/pull/8).
 
 ## [0.7.0] - 2026-03-29
 

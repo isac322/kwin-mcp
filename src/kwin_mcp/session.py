@@ -333,19 +333,32 @@ class Session:
         return f"""\
 echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
 
-# Ensure all child processes are cleaned up on exit
+# Ensure all child processes are cleaned up on exit.
+# The AT-SPI bus launcher and registryd are started via D-Bus
+# auto-activation below; they are terminated automatically when our
+# isolated session bus exits (dbus-run-session tears the bus down on
+# parent exit), so we only need to track KWin explicitly here.
 cleanup() {{
-    kill $KWIN_PID $AT_SPI_PID 2>/dev/null
-    wait $KWIN_PID $AT_SPI_PID 2>/dev/null
+    kill $KWIN_PID 2>/dev/null
+    wait $KWIN_PID 2>/dev/null
 }}
 trap cleanup EXIT TERM INT HUP
 
-# Start the AT-SPI accessibility bus.
-# ATSPI_DBUS_IMPLEMENTATION is set in _build_env() to force dbus-daemon
-# instead of dbus-broker (which reuses the host's AT-SPI bus).
-/usr/lib/at-spi-bus-launcher --launch-immediately &
-AT_SPI_PID=$!
-sleep 0.2
+# Bring up the AT-SPI accessibility bus via D-Bus auto-activation.
+# Calling org.a11y.Bus.GetAddress makes dbus-daemon resolve the
+# service file (/usr/share/dbus-1/services/org.a11y.Bus.service) and
+# exec the launcher at whatever path the current distro uses — Arch
+# /usr/lib, Fedora/Debian/Ubuntu /usr/libexec, Flatpak /app/libexec,
+# etc. Hardcoding a path breaks on everything except Arch.
+# ATSPI_DBUS_IMPLEMENTATION=dbus-daemon (set in _build_env) prevents
+# dbus-broker from sharing the host's a11y bus.
+# The registryd comes up on its own when apps first touch the a11y
+# bus, so no manual bootstrap is needed here.
+gdbus call --session \\
+    --dest=org.a11y.Bus \\
+    --object-path=/org/a11y/bus \\
+    --method=org.a11y.Bus.GetAddress >/dev/null 2>&1 || true
+sleep 0.3
 
 # Pre-set D-Bus activation environment BEFORE starting KWin.
 # When KWin triggers portal auto-activation, portal-kde will get

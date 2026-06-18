@@ -13,7 +13,7 @@ jobs:
       matrix:
         python-version: ["3.12", "3.13", "3.14", "3.15"]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
       - run: uvx --python ${{ matrix.python-version }} ruff check src/
       - run: uvx --python ${{ matrix.python-version }} ruff format --check src/
@@ -21,7 +21,7 @@ jobs:
   type-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
       - name: Install system dependencies
         run: |
@@ -32,7 +32,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
       - name: Install system dependencies
         run: |

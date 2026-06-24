@@ -615,8 +615,30 @@ class AutomationEngine:
         except FileNotFoundError:
             return _INSTALL_HINTS["wl-paste"]
         if result.returncode != 0:
-            return f"Failed to read clipboard: {result.stderr.decode(errors='replace')}"
+            # Diagnostic: distinguish "kcalc never wrote a selection" (focus
+            # lost, source-app bug) from "KWin does not expose
+            # ext-data-control-v1" (wl-paste cannot read without focus). The
+            # MIME-type listings + wayland-info registry answer that.
+            return self._format_clipboard_error(result.stderr.decode(errors="replace"), env)
         return result.stdout.decode(errors="replace")
+
+    def _format_clipboard_error(self, stderr: str, env: dict[str, str]) -> str:
+        parts: list[str] = [f"Failed to read clipboard: {stderr.rstrip()}"]
+        parts.append(f"WAYLAND_DISPLAY={env.get('WAYLAND_DISPLAY', '<unset>')}")
+        for label, cmd in (
+            ("wl-paste --list-types", ["wl-paste", "--list-types"]),
+            ("wl-paste --primary --list-types", ["wl-paste", "--primary", "--list-types"]),
+            ("wayland-info globals", ["wayland-info"]),
+        ):
+            try:
+                proc = subprocess.run(cmd, env=env, capture_output=True, timeout=3)
+            except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+                parts.append(f"[{label}] unavailable: {type(exc).__name__}")
+                continue
+            tag = "ok" if proc.returncode == 0 else f"rc={proc.returncode}"
+            payload = (proc.stdout or proc.stderr).decode(errors="replace").rstrip()
+            parts.append(f"[{label} {tag}] {payload}")
+        return "\n".join(parts) + "\n"
 
     def clipboard_set(self, text: str) -> str:
         """Set the clipboard content in the isolated session."""

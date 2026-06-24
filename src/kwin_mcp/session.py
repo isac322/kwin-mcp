@@ -144,9 +144,14 @@ class Session:
         # Build the wrapper script that runs inside dbus-run-session
         wrapper_script = self._build_wrapper_script(config)
 
-        # Start the isolated session in its own process group
+        # Start the isolated session in its own process group.
+        # stdin is redirected to /dev/null so the wrapper chain does not share
+        # the MCP server's stdin (which carries the JSON-RPC request stream
+        # when kwin-mcp runs under an MCP stdio client) — otherwise any child
+        # that reads stdin can consume MCP protocol bytes and hang the server.
         self._process = subprocess.Popen(
             ["dbus-run-session", "bash", "-c", wrapper_script],
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=self._build_env(config),
@@ -172,10 +177,11 @@ class Session:
         # Wait for kwin to be ready (socket file appears)
         socket_path = Path(runtime_dir) / self._socket_name
         if not self._wait_for_socket(socket_path, timeout=10.0):
+            process = self._process
             self.stop()
             stderr = ""
-            if self._process and self._process.stderr:
-                stderr = self._process.stderr.read().decode(errors="replace")
+            if process and process.stderr:
+                stderr = process.stderr.read().decode(errors="replace")
             msg = f"KWin failed to start. stderr: {stderr}"
             raise RuntimeError(msg)
 
@@ -335,16 +341,33 @@ echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
 
 # Ensure all child processes are cleaned up on exit
 cleanup() {{
-    kill $KWIN_PID $AT_SPI_PID 2>/dev/null
-    wait $KWIN_PID $AT_SPI_PID 2>/dev/null
+    kill $KWIN_PID ${{AT_SPI_PID:+$AT_SPI_PID}} 2>/dev/null
+    wait $KWIN_PID ${{AT_SPI_PID:+$AT_SPI_PID}} 2>/dev/null
 }}
 trap cleanup EXIT TERM INT HUP
 
 # Start the AT-SPI accessibility bus.
 # ATSPI_DBUS_IMPLEMENTATION is set in _build_env() to force dbus-daemon
 # instead of dbus-broker (which reuses the host's AT-SPI bus).
-/usr/lib/at-spi-bus-launcher --launch-immediately &
-AT_SPI_PID=$!
+AT_SPI_LAUNCHER=""
+for candidate in \
+    /usr/lib/at-spi-bus-launcher \
+    /usr/libexec/at-spi-bus-launcher \
+    /usr/lib/at-spi2-core/at-spi-bus-launcher \
+    at-spi-bus-launcher; do
+    if [ -x "$candidate" ]; then
+        AT_SPI_LAUNCHER="$candidate"
+        break
+    fi
+    if command -v "$candidate" >/dev/null 2>&1; then
+        AT_SPI_LAUNCHER="$(command -v "$candidate")"
+        break
+    fi
+done
+if [ -n "$AT_SPI_LAUNCHER" ]; then
+    "$AT_SPI_LAUNCHER" --launch-immediately &
+    AT_SPI_PID=$!
+fi
 sleep 0.2
 
 # Pre-set D-Bus activation environment BEFORE starting KWin.
@@ -359,16 +382,60 @@ dbus-update-activation-environment WAYLAND_DISPLAY={self._socket_name} QT_QPA_PL
 # to connect to another compositor as a client.
 # Explicitly pass KWIN_ permission env vars to ensure they reach the
 # KWin process (environment inheritance through dbus-run-session can be unreliable).
+#
+# The XKB_DEFAULT_* / KWIN_XKB_DEFAULT_KEYMAP env vars and the
+# --no-global-shortcuts flag mirror KDE's selenium CI driver:
+#   https://github.com/KDE/selenium-webdriver-at-spi/blob/master/run.rb
+# (function kwin_reexec!). They are the right defaults for a headless
+# virtual KWin compositor used for automation: predictable keymap, and
+# no attempt to register global shortcuts via D-Bus services that may
+# not be running inside a stripped container. Do not remove without
+# verifying KWin still starts on Fedora/Ubuntu/openSUSE containers.
+# Optional CI-only KWin backtrace capture. When KWIN_MCP_DEBUG=1 and gdb is
+# on PATH, wrap kwin_wayland in gdb so a SIGSEGV produces a synchronous
+# backtrace alongside the bash post-mortem. Production runs without the env
+# var stay byte-identical to the previous launch.
+KWIN_RUNNER=()
+KWIN_LOG="/tmp/kwin-mcp-kwin-$$.log"
+if [ "${{KWIN_MCP_DEBUG:-}}" = "1" ] && command -v gdb >/dev/null 2>&1; then
+    KWIN_RUNNER=(gdb --batch
+        -ex 'set pagination off'
+        -ex 'handle SIGPIPE nostop noprint'
+        -ex 'run'
+        -ex 'thread apply all bt full'
+        -ex 'info sharedlibrary'
+        --args)
+fi
+
 env -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM \
     KWIN_WAYLAND_NO_PERMISSION_CHECKS=1 \
     KWIN_SCREENSHOT_NO_PERMISSION_CHECKS=1 \
-    kwin_wayland --virtual --no-lockscreen \
+    KWIN_XKB_DEFAULT_KEYMAP=true \
+    XKB_DEFAULT_LAYOUT=us \
+    XKB_DEFAULT_VARIANT= \
+    XKB_DEFAULT_OPTIONS= \
+    "${{KWIN_RUNNER[@]}}" kwin_wayland --virtual --no-lockscreen --no-global-shortcuts \
     --width {config.screen_width} --height {config.screen_height} \
-    --socket {self._socket_name} &
+    --socket {self._socket_name} > >(tee -a "$KWIN_LOG" >&2) 2>&1 &
 KWIN_PID=$!
 
-# Wait for KWin socket to appear
-while [ ! -e "$XDG_RUNTIME_DIR/{self._socket_name}" ]; do sleep 0.1; done
+# Wait for KWin socket to appear, but do not block forever if KWin exits
+# before creating it (for example because a container lacks a runtime library).
+for _ in $(seq 1 100); do
+    if [ -e "$XDG_RUNTIME_DIR/{self._socket_name}" ]; then
+        break
+    fi
+    if ! kill -0 $KWIN_PID 2>/dev/null; then
+        wait $KWIN_PID
+        exit $?
+    fi
+    sleep 0.1
+done
+
+if [ ! -e "$XDG_RUNTIME_DIR/{self._socket_name}" ]; then
+    echo "KWin socket did not appear in time" >&2
+    exit 1
+fi
 sleep 0.3
 
 # Signal parent that setup is complete
@@ -388,6 +455,13 @@ wait $KWIN_PID
             "XDG_CURRENT_DESKTOP": "KDE",
             "QT_LINUX_ACCESSIBILITY_ALWAYS_ON": "1",
             "QT_ACCESSIBILITY": "1",
+            # Force Qt's generic Unix platform theme. Without this, Qt detects
+            # XDG_CURRENT_DESKTOP=KDE and instantiates QKdeTheme, which crashes
+            # in QStyleHintsPrivate::update during init when kdeglobals defaults
+            # are absent (Fedora/Ubuntu kwin-wayland packages do not pull in
+            # plasma-workspace). Generic theme bypasses the QKdeTheme init path
+            # entirely. Test fixtures do not assert theme-derived properties.
+            "QT_QPA_PLATFORMTHEME": "generic",
             # Force dbus-daemon for the AT-SPI bus instead of dbus-broker.
             # dbus-broker with --scope=user reuses the host's existing AT-SPI bus,
             # breaking accessibility isolation. Verified as REQUIRED.

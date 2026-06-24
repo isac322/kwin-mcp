@@ -159,3 +159,19 @@ Triple isolation ensures no impact on the host desktop:
 - [ ] Ensure all alternatives are functionally identical (no behavioral differences)
 - [ ] Update `_INSTALL_HINTS` to suggest multiple options
 - **Goal**: Users on non-KDE or minimal setups don't need to install KDE-specific tools if equivalent alternatives are already present
+
+### M13: Cross-distro Integration CI (MCP stdio + observable outcomes)
+- [x] Pytest integration suite under `tests/integration/` driving the MCP stdio transport (FastMCP tool registration, Pydantic parameter validation, stdio JSON-RPC) via `mcp.ClientSession` — tests never touch `AutomationEngine` directly
+- [x] Observable-outcome verification for input tools:
+  - `mouse_click`: click `2+3=` on kcalc → Ctrl+C → `clipboard_get` returns `5`
+  - `keyboard_type`: seed with `mouse_click("1")` → `keyboard_type("8675309")` → Ctrl+C → `clipboard_get` returns `18675309`
+  - `launch_app`: kcalc appears in AT-SPI tree AND post-launch screenshot is >1.5× the empty-session screenshot size (proves pixels were actually drawn)
+- [x] MCP layer smoke tests (tool inventory present, descriptions non-empty, invalid-type rejected by Pydantic)
+- [x] `.github/workflows/integration.yml` matrix across Arch Linux, Fedora, openSUSE Tumbleweed, and Ubuntu running each distro's native `kwin_wayland` / `at-spi2-core` / `python-gobject` / `kcalc` / `wl-clipboard` packages in a container
+- [x] Per-distro setup scripts (`scripts/ci/setup-<distro>.sh`) reused by CI and by the local reproduction helper (`scripts/run-integration-local.sh`)
+- [x] Pytest `timeout=90` + `timeout_method="signal"` so a hung MCP tool call fails fast instead of blocking the whole job
+- [x] Artifact upload of pytest JUnit report and screenshot directory on failure
+- [x] `stdin=subprocess.DEVNULL` on the compositor wrapper subprocess in `session.py` so downstream children cannot consume the MCP server's JSON-RPC stdin stream when kwin-mcp runs under an MCP stdio client
+- [ ] KDE Neon and Kubuntu-backports variants (future — requires container that already boots Plasma or a Kubuntu CI image)
+- [ ] Live session (`session_connect`) coverage via a container image that boots a real Plasma Shell (future)
+- **Goal**: Guard against regressions in per-distro package naming, KWin version drift, **and** actual input delivery. A passing matrix job proves the full stack — MCP protocol → FastMCP → AutomationEngine → libei/EIS → compositor → target app — routes real keystrokes and pointer events end to end on that distro's native binaries.

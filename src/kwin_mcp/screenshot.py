@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -35,6 +36,27 @@ def capture_screenshot_to_file(
 
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     output_path = output_dir / f"screenshot_{timestamp}.png"
+
+    # Try fast direct D-Bus capture first; fall back to spectacle CLI on
+    # D-Bus authorization / interface errors. spectacle 6 routes through
+    # xdg-desktop-portal which we disable in headless CI containers (it
+    # crashes KWin on activation), so spectacle hangs forever there.
+    # capture_frame_burst already uses this same pattern.
+    if dbus_address:
+        try:
+            return capture_screenshot_dbus(
+                dbus_address,
+                output_path,
+                include_cursor=include_cursor,
+            )
+        except dbus.DBusException as exc:
+            # Surface the exact KWin error to stderr so future failures are
+            # diagnosable without code changes (CaptureWorkspace returning
+            # InvalidScreen, ServiceUnknown, etc.) before we silently fall back.
+            sys.stderr.write(
+                f"kwin-mcp: ScreenShot2 D-Bus failed, falling back to spectacle: "
+                f"{exc.get_dbus_name()}: {exc.get_dbus_message()}\n"
+            )
 
     _capture_via_spectacle(
         dbus_address,
@@ -77,7 +99,7 @@ def capture_screenshot_dbus(
     read_fd, write_fd = os.pipe()
     try:
         options = {"include-cursor": dbus.Boolean(include_cursor)}
-        results = iface.CaptureActiveScreen(options, dbus.types.UnixFd(write_fd))
+        results = iface.CaptureWorkspace(options, dbus.types.UnixFd(write_fd))
     finally:
         os.close(write_fd)
 
@@ -178,7 +200,7 @@ def _capture_frame_burst_dbus(
 
         read_fd, write_fd = os.pipe()
         try:
-            results = iface.CaptureActiveScreen(options, dbus.types.UnixFd(write_fd))
+            results = iface.CaptureWorkspace(options, dbus.types.UnixFd(write_fd))
         finally:
             os.close(write_fd)
         try:

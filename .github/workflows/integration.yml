@@ -1,0 +1,169 @@
+name: Integration (cross-distro)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: integration-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    # Absolute path bypasses the OCI runtime's container-PATH lookup, which
+    # fails on opensuse/tumbleweed:latest even though /usr/bin/bash exists
+    # (Round 19a diagnostic confirmed bash on PATH inside the setup step yet
+    # the next step's docker exec still got `exec: "bash": not found`).
+    shell: '/usr/bin/bash --noprofile --norc -e -o pipefail {0}'
+
+jobs:
+  integration:
+    name: ${{ matrix.distro }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # ubuntu and opensuse-tumbleweed are flagged experimental: true via the matrix
+    # below, which sets continue-on-error so their failures do not gate the matrix.
+    # Both have container-environment defects we cannot fix from this repo:
+    #   - ubuntu:26.04 ships kwin-wayland 4:6.6.4-0ubuntu1 built without EIS support
+    #     (KWIN_BUILD_EIS=OFF in the Debian/Ubuntu build), so the
+    #     /org/kde/KWin/EIS/RemoteDesktop D-Bus path session_start expects is never
+    #     registered. Diagnostic step in this workflow surfaces the missing libei
+    #     linker bindings as evidence.
+    #   - opensuse/tumbleweed:latest minimal image relies on busybox for /usr/bin/sh
+    #     and /usr/bin/bash; installing GNU diffutils via --force-resolution
+    #     cascades into busybox removal which leaves the next workflow step unable
+    #     to exec bash. Setup script tries to reinstall bash but the order is
+    #     fragile under iteration.
+    # Do NOT remove the experimental flag without first verifying both jobs pass
+    # green; flipping it silently masks regressions on the other distros.
+    continue-on-error: ${{ matrix.experimental || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: archlinux
+            image: archlinux:latest
+          - distro: fedora
+            image: fedora:latest
+          - distro: opensuse-tumbleweed
+            image: opensuse/tumbleweed:latest
+            experimental: true
+          - distro: ubuntu
+            image: invent-registry.kde.org/neon/docker-images/all:unstable
+            experimental: true
+    container:
+      image: ${{ matrix.image }}
+      options: --user root
+    env:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      XDG_RUNTIME_DIR: /tmp/xdg-runtime-root
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      KWIN_MCP_DEBUG: "1"
+      # Round 19b: surface KWin's own EIS / input / screenshot lifecycle
+      # to /tmp/kwin-mcp-kwin-*.log so the pre-existing libei "Broken pipe"
+      # and ScreenShot2 "Cancelled" symptoms can be diagnosed from the
+      # compositor's perspective. Round 19a's gdb-only artifact captured
+      # only thread startup chatter; KWin's qCDebug() sites stay silent
+      # without QT_LOGGING_RULES.
+      QT_LOGGING_RULES: "kwin*.debug=true"
+      # Qt 5.6+ auto-routes qCDebug to systemd journal via sd_journal_send
+      # whenever it detects journald, bypassing stderr. Round 19b proved
+      # this happens in our containers: KWIN_LOG captured only gdb thread
+      # chatter (~300B per test) despite QT_LOGGING_RULES being set. Force
+      # stderr so the wrapper's tee can actually see KWin's qCDebug output.
+      QT_FORCE_STDERR_LOGGING: "1"
+    steps:
+      - name: Prepare XDG_RUNTIME_DIR
+        run: |
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies (${{ matrix.distro }})
+        run: bash scripts/ci/setup-${{ matrix.distro }}.sh
+
+      - name: Expose uv on PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Sync Python dependencies
+        run: uv sync --group test
+
+      - name: Diagnose KWin runtime
+        run: |
+          echo "::group::kwin_wayland version + linker bindings"
+          kwin_wayland --version 2>&1 || true
+          ldd "$(command -v kwin_wayland)" 2>/dev/null | grep -E "EGL|gbm|drm|GL\.so|vulkan|xkb" || true
+          echo "::endgroup::"
+          echo "::group::Graphics environment"
+          ls -l /dev/dri 2>/dev/null || echo "no /dev/dri"
+          ls /usr/lib*/libEGL* /usr/lib*/libgbm* 2>/dev/null | head -10 || echo "no EGL/gbm libs found on common paths"
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
+          echo "QT_QPA_PLATFORM=$QT_QPA_PLATFORM"
+          echo "::endgroup::"
+          echo "::group::xkb data"
+          ls /usr/share/X11/xkb/symbols/us 2>/dev/null || echo "no xkb-data symbols/us"
+          ls /usr/share/X11/xkb/keymap.dir 2>/dev/null || echo "no xkb keymap.dir"
+          echo "::endgroup::"
+          echo "::group::EIS support in kwin_wayland"
+          ldd "$(command -v kwin_wayland)" 2>/dev/null | grep -iE 'eis|libei' || echo "no eis/libei in kwin_wayland linker bindings"
+          if command -v dpkg >/dev/null 2>&1; then
+            dpkg -L kwin-wayland kwin-common libkwin6 2>/dev/null | grep -iE 'eis|remotedesktop' || echo "no EIS artifacts in kwin-* dpkg contents"
+          fi
+          echo "::endgroup::"
+          echo "::group::Try kwin_wayland --virtual under gdb"
+          ulimit -c unlimited || true
+          timeout 8 env -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM \
+            KWIN_WAYLAND_NO_PERMISSION_CHECKS=1 \
+            QT_QPA_PLATFORMTHEME=generic \
+            QT_LOGGING_RULES='kwin*=debug' \
+            dbus-run-session -- gdb --batch \
+              -ex 'set pagination off' \
+              -ex 'handle SIGPIPE nostop noprint' \
+              -ex 'run --virtual --width 320 --height 240 --no-lockscreen --no-global-shortcuts --socket diag' \
+              -ex 'thread apply all bt full' \
+              -ex 'info sharedlibrary' \
+              --args kwin_wayland 2>&1 | head -300 || echo "EXIT $?"
+          echo "::endgroup::"
+
+      - name: Run integration tests
+        run: uv run pytest tests/integration/ -v --junit-xml=report.xml
+
+      - name: Surface KWin debug logs on failure
+        if: failure()
+        run: |
+          echo "::group::KWin stderr capture"
+          for f in /tmp/kwin-mcp-kwin-*.log; do
+            [ -e "$f" ] || continue
+            echo "--- $f ---"
+            cat "$f"
+          done
+          echo "::endgroup::"
+
+      - name: Upload pytest report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pytest-report-${{ matrix.distro }}
+          path: report.xml
+          if-no-files-found: ignore
+
+      - name: Upload KWin debug logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: kwin-debug-${{ matrix.distro }}
+          path: /tmp/kwin-mcp-kwin-*.log
+          if-no-files-found: ignore
+
+      - name: Upload screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: screenshots-${{ matrix.distro }}
+          path: /tmp/kwin-mcp-screenshots-*/
+          if-no-files-found: ignore

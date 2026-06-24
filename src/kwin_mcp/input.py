@@ -16,11 +16,15 @@ import ctypes.util
 import select
 import shutil
 import subprocess
+import sys
+import threading
 import time
 from enum import Enum
 
 import dbus
+import dbus.mainloop.glib
 from dbus.mainloop.glib import DBusGMainLoop
+from gi.repository import GLib
 
 
 class MouseButton(Enum):
@@ -231,8 +235,21 @@ class EISClient:
     """
 
     def __init__(self, dbus_address: str) -> None:
+        # dbus-python is not thread-safe by default. We are about to spin a
+        # background GLib thread to drain D-Bus signals (so dbus-daemon does
+        # not kick us off for outgoing-buffer overflow, which would otherwise
+        # cause KWin's EisBackend to destroy the EisContext via its
+        # QDBusServiceWatcher and surface as "libei: failed to send message:
+        # Broken pipe" on the next input call). The threads_init() call must
+        # happen before the second thread is created, otherwise dbus-glib's
+        # signal dispatch is not safe across threads and the buffer still
+        # overflows even with the loop running.
+        dbus.mainloop.glib.threads_init()
         DBusGMainLoop(set_as_default=True)
         self._bus = dbus.bus.BusConnection(dbus_address)
+        self._glib_loop = GLib.MainLoop()
+        self._glib_thread = threading.Thread(target=self._glib_loop.run, daemon=True)
+        self._glib_thread.start()
         self._ei: int = 0  # ctypes void pointer (int representation)
         self._cookie: int = 0
         self._pointer: int = 0  # absolute pointer device
@@ -374,9 +391,21 @@ class EISClient:
         """Current time in microseconds."""
         return int(time.monotonic() * 1_000_000)
 
+    def _log_state(self, label: str, dispatch_ret: int | None = None) -> None:
+        # Diagnostic: a prior CI round proved the D-Bus connection stays
+        # alive through every flush, so libei's "Broken pipe" must come
+        # either from ei_dispatch returning < 0 silently, or from teardown
+        # after disconnect() closes KWin's EIS socket. Logging the dispatch
+        # return value with a per-flush sequence number narrows the cause.
+        self._diag_seq = getattr(self, "_diag_seq", 0) + 1
+        suffix = f" dispatch_ret={dispatch_ret}" if dispatch_ret is not None else ""
+        sys.stderr.write(f"kwin-mcp[diag-{self._diag_seq}]: {label}{suffix}\n")
+        sys.stderr.flush()
+
     def _flush(self) -> None:
         """Dispatch pending events to send data to KWin."""
-        _libei.ei_dispatch(self._ei)
+        ret = _libei.ei_dispatch(self._ei)
+        self._log_state("flush", dispatch_ret=ret)
 
     def pointer_move_absolute(self, x: float, y: float) -> None:
         """Move pointer to absolute coordinates."""
@@ -455,7 +484,7 @@ class EISClient:
 
     def close(self) -> None:
         """Clean up EIS connection."""
-        # Release any lingering touches
+        self._log_state("close-start")
         for touch in self._active_touches.values():
             _libei.ei_touch_up(touch)
             _libei.ei_touch_unref(touch)
@@ -481,6 +510,11 @@ class EISClient:
         if self._ei:
             _libei.ei_unref(self._ei)
             self._ei = 0
+
+        if hasattr(self, "_glib_loop") and self._glib_loop is not None:
+            self._glib_loop.quit()
+            self._glib_thread.join(timeout=1.0)
+            self._glib_loop = None
 
 
 class InputBackend:

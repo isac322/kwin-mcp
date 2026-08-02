@@ -93,6 +93,7 @@ def _remove_tree(path: Path, attempts: int = 3) -> None:
             return
         time.sleep(0.3)
 
+
 class Session:
     """An isolated KWin Wayland session.
 

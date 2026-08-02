@@ -7,9 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Containerized end-to-end test environment (`docker/e2e.Dockerfile`) running a virtual KWin Wayland session on Debian trixie, plus the `E2E` GitHub Actions workflow that builds it and runs `tests/e2e` on every push and pull request. No `--privileged`, `--cap-add` or X server required.
+- `tests/e2e` smoke suite: a virtual session is started, `kcalc` is launched inside it, the app is observed through `list_windows` and `find_ui_elements`, and a keystroke injected over KWin EIS is verified to reach it. Screenshot capture is covered by an opt-in test (`KWIN_MCP_E2E_SCREENSHOT=1`); see `docker/README.md` for what the container cannot exercise.
+
 ### Fixed
 
 - Segfault on Python 3.14 caused by missing `argtypes` on variadic `ei_seat_bind_capabilities` ctypes call
+- KWin crashed on startup in minimal environments (containers, CI) because `KDE_FULL_SESSION` / `KDE_SESSION_VERSION` pushed it onto the full Plasma session path; both are now stripped from the compositor's environment only, so launched apps still see them
+- `session_start` could hang forever when KWin died during startup: the wrapper script waited on the Wayland socket in an unbounded loop, so the `READY` handshake never returned. The wait is now bounded, reports `FAILED`, and the resulting error includes KWin's stderr
+- `accessibility_tree` and `find_ui_elements` failed with `TypeError: 'type' object is not iterable` on newer PyGObject releases; element states now come from `state_set.get_states()` instead of iterating the `Atspi.StateType` enum
+- `session_start` aborted with a `dbus.DBusException` instead of degrading gracefully when KWin exposes no EIS interface; the input backend is now reported as unavailable, as intended
+- `screenshot` shelled out to spectacle unconditionally; it now uses the KWin ScreenShot2 D-Bus interface first (as documented) and falls back to spectacle, reporting the original D-Bus error when the fallback is unusable
+- KWin ScreenShot2 capture read the pixel pipe only after the D-Bus call returned, so a frame larger than the pipe buffer could stall the call; the pipe is now drained concurrently while the call is in flight
+- EIS input injection started emulating before the compositor had resumed the devices, which libei rejects (`ei_device_keyboard_key: device is not emulating`) and which silently dropped every injected event; `_negotiate_devices` now waits for `EI_EVENT_DEVICE_RESUMED` on the pointer and keyboard before calling `ei_device_start_emulating`, falling back to the previous unconditional start if a device does not resume within the handshake budget
 
 ## [0.7.0] - 2026-03-29
 

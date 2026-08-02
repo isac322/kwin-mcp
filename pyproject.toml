@@ -75,7 +75,12 @@ requires = ["uv_build>=0.10.3,<0.12.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
-dev = ["ruff>=0.11.0", "ty>=0.0.1"]
+dev = ["ruff>=0.11.0", "ty>=0.0.1", "pytest>=8.0.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# tests/e2e drives a real KWin session; keep failures readable.
+addopts = "-ra"
 
 [tool.ruff]
 target-version = "py312"

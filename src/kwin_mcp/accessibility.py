@@ -292,14 +292,14 @@ def _extract_info(element: Atspi.Accessible, depth: int) -> ElementInfo:
     name = element.get_name() or ""
     description = element.get_description() or ""
 
-    # Get states
-    state_set = element.get_state_set()
+    # Get states. get_states() returns only the active members, which is both
+    # cheaper than probing every enum value and portable: GI enum types are not
+    # iterable in newer PyGObject releases.
     states: list[str] = []
-    for state in Atspi.StateType:
-        if state_set.contains(state):
-            state_name = state.value_nick
-            if state_name:
-                states.append(state_name)
+    for state in element.get_state_set().get_states():
+        state_name = state.value_nick
+        if state_name:
+            states.append(state_name)
 
     # Get position and size
     x, y, width, height = 0, 0, 0, 0

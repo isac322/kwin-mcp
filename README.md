@@ -21,6 +21,7 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that e
 - [System Requirements](#system-requirements)
 - [Installation](#installation)
 - [Limitations](#limitations)
+- [End-to-End Testing](#end-to-end-testing)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -427,6 +428,17 @@ uv run kwin-mcp
 - **QMenu (native context menus) may not appear in AT-SPI2** -- Qt's AT-SPI2 bridge has incomplete support for popup menus on Wayland. Context menus may not be visible in `accessibility_tree` or `find_ui_elements`. Workaround: use `screenshot` to visually locate menu items and click by coordinates.
 - **Screen edge triggers do not work with EIS input** -- Auto-hide panels and layer-shell trigger strips rely on Wayland surface input routing, which may not respond to EIS-injected pointer events. Workaround: use `dbus_call` with KWin scripting or keyboard shortcuts instead.
 - **AT-SPI2 coordinates are surface-local, not screen-global** -- Wayland clients do not know their global screen position (by design). Coordinates returned by `find_ui_elements` and `accessibility_tree` are relative to the window's top-left corner, not the virtual screen. For single-window scenarios this is usually fine; for multi-window layouts, combine with `screenshot` for absolute positioning.
+
+## End-to-End Testing
+
+`docker/e2e.Dockerfile` builds a reproducible KWin Wayland environment so headless GUI tests behave identically on a laptop and in CI (GitHub Actions workflow: `.github/workflows/e2e.yml`):
+
+```bash
+docker build -f docker/e2e.Dockerfile -t kwin-mcp-e2e .
+docker run --rm kwin-mcp-e2e
+```
+
+The suite in `tests/e2e` starts a virtual session, launches `kcalc` inside it, observes the app through `list_windows` and `find_ui_elements`, and verifies that a keystroke injected over KWin EIS reaches it. No `--privileged`, `--cap-add` or X server is needed. See [docker/README.md](docker/README.md) for coverage details and the container's known limitations.
 
 ## Contributing
 

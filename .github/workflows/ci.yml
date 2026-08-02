@@ -15,8 +15,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
-      - run: uvx --python ${{ matrix.python-version }} ruff check src/
-      - run: uvx --python ${{ matrix.python-version }} ruff format --check src/
+      - run: uvx --python ${{ matrix.python-version }} ruff check src/ tests/
+      - run: uvx --python ${{ matrix.python-version }} ruff format --check src/ tests/
 
   type-check:
     runs-on: ubuntu-latest

@@ -1,0 +1,33 @@
+name: E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  virtual-session:
+    name: Virtual KWin session (container)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build the KWin test image
+        run: docker build -f docker/e2e.Dockerfile -t kwin-mcp-e2e .
+
+      # KWin's OpenGL compositing needs a DRM render node. Hosted runners have
+      # none, which only affects the opt-in screenshot test; pass the device
+      # through when a self-hosted runner provides one.
+      - name: Detect DRM render node
+        id: dri
+        run: |
+          if [ -e /dev/dri ]; then
+            echo "flag=--device /dev/dri" >> "$GITHUB_OUTPUT"
+          else
+            echo "flag=" >> "$GITHUB_OUTPUT"
+          fi
+          ls -l /dev/dri || echo "no /dev/dri on this runner"
+
+      - name: Run end-to-end tests
+        run: docker run --rm ${{ steps.dri.outputs.flag }} kwin-mcp-e2e

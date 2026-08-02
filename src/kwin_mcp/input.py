@@ -245,19 +245,26 @@ class EISClient:
 
     def _setup(self) -> None:
         """Connect to KWin EIS and negotiate devices."""
-        eis_obj = self._bus.get_object("org.kde.KWin", "/org/kde/KWin/EIS/RemoteDesktop")
-        self._eis_iface = dbus.Interface(eis_obj, "org.kde.KWin.EIS.RemoteDesktop")
+        # KWin only exposes the EIS interface when it supports remote input;
+        # translate the D-Bus failure so callers can treat the input backend as
+        # optional (see AutomationEngine.session_start).
+        try:
+            eis_obj = self._bus.get_object("org.kde.KWin", "/org/kde/KWin/EIS/RemoteDesktop")
+            self._eis_iface = dbus.Interface(eis_obj, "org.kde.KWin.EIS.RemoteDesktop")
 
-        # Request all relevant capabilities
-        caps = (
-            _EI_CAP_POINTER
-            | _EI_CAP_POINTER_ABSOLUTE
-            | _EI_CAP_KEYBOARD
-            | _EI_CAP_TOUCH
-            | _EI_CAP_BUTTON
-            | _EI_CAP_SCROLL
-        )
-        result = self._eis_iface.connectToEIS(dbus.Int32(caps))
+            # Request all relevant capabilities
+            caps = (
+                _EI_CAP_POINTER
+                | _EI_CAP_POINTER_ABSOLUTE
+                | _EI_CAP_KEYBOARD
+                | _EI_CAP_TOUCH
+                | _EI_CAP_BUTTON
+                | _EI_CAP_SCROLL
+            )
+            result = self._eis_iface.connectToEIS(dbus.Int32(caps))
+        except dbus.DBusException as exc:
+            msg = f"KWin EIS interface unavailable: {exc}"
+            raise RuntimeError(msg) from exc
         fd = result[0].take()
         self._cookie = int(result[1])
 
@@ -280,9 +287,16 @@ class EISClient:
         self._negotiate_devices()
 
     def _negotiate_devices(self, timeout: float = 5.0) -> None:
-        """Process EIS handshake events until we have pointer + keyboard."""
+        """Process EIS handshake events until pointer + keyboard are usable.
+
+        A libei device may only emulate once the server has resumed it. Calling
+        ei_device_start_emulating() earlier is rejected ("device is not
+        emulating") and every event sent afterwards is silently dropped, so wait
+        for EI_EVENT_DEVICE_RESUMED on each device before starting emulation.
+        """
         ei_fd = _libei.ei_get_fd(self._ei)
         start = time.monotonic()
+        resumed: set[int] = set()
 
         while time.monotonic() - start < timeout:
             readable, _, _ = select.select([ei_fd], [], [], 0.3)
@@ -310,11 +324,11 @@ class EISClient:
                     self._register_device(event)
 
                 elif etype == _EI_EVENT_DEVICE_RESUMED:
-                    pass  # Device ready for input
+                    resumed.add(int(_libei.ei_event_get_device(event)))
 
                 _libei.ei_event_unref(event)
 
-            if self._pointer and self._keyboard:
+            if self._pointer in resumed and self._keyboard in resumed:
                 break
 
         if not self._pointer:
@@ -324,12 +338,13 @@ class EISClient:
             msg = "No keyboard device available from EIS"
             raise RuntimeError(msg)
 
-        # Start emulating on all devices
-        _libei.ei_device_start_emulating(self._pointer, 0)
-        if self._keyboard != self._pointer:
-            _libei.ei_device_start_emulating(self._keyboard, 0)
-        if self._touch_device and self._touch_device not in (self._pointer, self._keyboard):
-            _libei.ei_device_start_emulating(self._touch_device, 0)
+        # Devices that never announced a resume are still started: emulating a
+        # paused device is no worse than the unconditional start this wait
+        # replaced, and losing a slow-to-resume device would drop input that
+        # used to work.
+        for device in {self._pointer, self._keyboard, self._touch_device}:
+            if device:
+                _libei.ei_device_start_emulating(device, 0)
 
     def _bind_seat_capabilities(self, event: int) -> None:
         """Bind to all available capabilities on the seat."""

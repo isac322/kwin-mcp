@@ -18,6 +18,22 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+# at-spi-bus-launcher is not on PATH and its location is distro-specific:
+# /usr/lib on Arch, /usr/libexec on Debian/Ubuntu/Fedora.
+_AT_SPI_LAUNCHER_CANDIDATES = (
+    "/usr/libexec/at-spi-bus-launcher",
+    "/usr/lib/at-spi-bus-launcher",
+    "/usr/lib/at-spi2-core/at-spi-bus-launcher",
+)
+
+
+def _at_spi_bus_launcher() -> str:
+    """Locate the AT-SPI bus launcher binary for the current distribution."""
+    for candidate in _AT_SPI_LAUNCHER_CANDIDATES:
+        if Path(candidate).exists():
+            return candidate
+    return shutil.which("at-spi-bus-launcher") or _AT_SPI_LAUNCHER_CANDIDATES[0]
+
 
 class SessionType(Enum):
     """Type of KWin session."""
@@ -168,20 +184,31 @@ class Session:
                 elif line == "READY":
                     got_ready = True
                     break
+                elif line == "FAILED":
+                    # KWin died during startup; stop reading so the caller can
+                    # surface the error instead of blocking on READY forever.
+                    break
 
         # Wait for kwin to be ready (socket file appears)
         socket_path = Path(runtime_dir) / self._socket_name
-        if not self._wait_for_socket(socket_path, timeout=10.0):
+        socket_ready = self._wait_for_socket(socket_path, timeout=10.0)
+        if not socket_ready or not got_ready:
+            # stderr.read() blocks until EOF, so terminate the session first;
+            # stop() must come after, since it clears self._process.
+            self._signal_process_group(signal.SIGTERM)
+            try:
+                _, stderr_bytes = self._process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._signal_process_group(signal.SIGKILL)
+                _, stderr_bytes = self._process.communicate(timeout=5)
+            stderr = stderr_bytes.decode(errors="replace")
             self.stop()
-            stderr = ""
-            if self._process and self._process.stderr:
-                stderr = self._process.stderr.read().decode(errors="replace")
-            msg = f"KWin failed to start. stderr: {stderr}"
-            raise RuntimeError(msg)
-
-        if not got_ready:
-            self.stop()
-            msg = "Session setup failed: did not receive READY signal"
+            reason = (
+                "KWin failed to start"
+                if not socket_ready
+                else "Session setup failed: did not receive READY signal"
+            )
+            msg = f"{reason}. stderr: {stderr}"
             raise RuntimeError(msg)
 
         if self._home_dir is not None:
@@ -280,21 +307,13 @@ class Session:
             return
 
         # Send SIGTERM to the entire process group (all children)
-        try:
-            pgid = os.getpgid(self._process.pid)
-            os.killpg(pgid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            pass
+        self._signal_process_group(signal.SIGTERM)
 
         try:
             self._process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             # Force kill the entire process group
-            try:
-                pgid = os.getpgid(self._process.pid)
-                os.killpg(pgid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
+            self._signal_process_group(signal.SIGKILL)
             with contextlib.suppress(ProcessLookupError):
                 self._process.kill()
             with contextlib.suppress(subprocess.TimeoutExpired):
@@ -328,6 +347,13 @@ class Session:
         self._info = None
         self._home_dir = None
 
+    def _signal_process_group(self, sig: int) -> None:
+        """Signal the whole session process group, ignoring races."""
+        if self._process is None:
+            return
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(os.getpgid(self._process.pid), sig)
+
     def _build_wrapper_script(self, config: SessionConfig) -> str:
         """Build the bash script that runs inside dbus-run-session."""
         return f"""\
@@ -343,7 +369,7 @@ trap cleanup EXIT TERM INT HUP
 # Start the AT-SPI accessibility bus.
 # ATSPI_DBUS_IMPLEMENTATION is set in _build_env() to force dbus-daemon
 # instead of dbus-broker (which reuses the host's AT-SPI bus).
-/usr/lib/at-spi-bus-launcher --launch-immediately &
+{_at_spi_bus_launcher()} --launch-immediately &
 AT_SPI_PID=$!
 sleep 0.2
 
@@ -357,9 +383,13 @@ dbus-update-activation-environment WAYLAND_DISPLAY={self._socket_name} QT_QPA_PL
 # Start KWin WITHOUT WAYLAND_DISPLAY to prevent nesting attempt.
 # KWin with --virtual creates its own compositor, it must not try
 # to connect to another compositor as a client.
+# KDE_FULL_SESSION / KDE_SESSION_VERSION are also stripped: they make KWin take
+# the full Plasma session startup path (ksmserver, kded, plasma-workspace),
+# which is absent in minimal environments such as CI containers and makes the
+# compositor crash on startup. Apps launched into the session still see them.
 # Explicitly pass KWIN_ permission env vars to ensure they reach the
 # KWin process (environment inheritance through dbus-run-session can be unreliable).
-env -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM \
+env -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM -u KDE_FULL_SESSION -u KDE_SESSION_VERSION \
     KWIN_WAYLAND_NO_PERMISSION_CHECKS=1 \
     KWIN_SCREENSHOT_NO_PERMISSION_CHECKS=1 \
     kwin_wayland --virtual --no-lockscreen \
@@ -367,8 +397,19 @@ env -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM \
     --socket {self._socket_name} &
 KWIN_PID=$!
 
-# Wait for KWin socket to appear
-while [ ! -e "$XDG_RUNTIME_DIR/{self._socket_name}" ]; do sleep 0.1; done
+# Wait for the KWin socket to appear, but never block forever: give up as soon
+# as KWin dies, or after 30s. Exiting here lets the parent report the failure
+# (including KWin's stderr) instead of hanging on the READY handshake.
+for _ in $(seq 1 300); do
+    [ -e "$XDG_RUNTIME_DIR/{self._socket_name}" ] && break
+    kill -0 $KWIN_PID 2>/dev/null || break
+    sleep 0.1
+done
+if [ ! -e "$XDG_RUNTIME_DIR/{self._socket_name}" ]; then
+    echo "FAILED"
+    echo "kwin_wayland exited before creating socket {self._socket_name}" >&2
+    exit 1
+fi
 sleep 0.3
 
 # Signal parent that setup is complete

@@ -130,6 +130,8 @@ _EI_EVENT_DEVICE_RESUMED = 8
 
 # Scroll axis values (in libei, scroll is in pixels)
 _SCROLL_STEP_PIXELS = 15.0
+# libei expresses discrete scrolling in 120ths of a wheel detent.
+_SCROLL_DISCRETE_UNIT = 120
 
 
 def _load_libei() -> ctypes.CDLL:
@@ -584,27 +586,35 @@ class InputBackend:
         """
         self.mouse_move(x, y)
         time.sleep(0.02)
+        increments = max(steps, 1)
 
         if discrete:
-            dx = delta if horizontal else 0
-            dy = delta if not horizontal else 0
-            if steps > 1:
-                for i in range(steps):
-                    frac_dx = dx // steps + (1 if i < dx % steps else 0) if dx else 0
-                    frac_dy = dy // steps + (1 if i < dy % steps else 0) if dy else 0
-                    if frac_dx or frac_dy:
-                        self._client.pointer_scroll_discrete(frac_dx, frac_dy)
-                    time.sleep(0.01)
-            else:
-                self._client.pointer_scroll_discrete(dx, dy)
+            # libei counts discrete scrolling in 120ths of a wheel detent (the
+            # wl_pointer axis_value120 convention). Passing the caller's click
+            # count straight through makes libei reject it as a suspicious
+            # fraction of a click and the compositor drops the event, so split
+            # whole detents across the increments and scale each chunk. The
+            # split works on the magnitude: floor division on a negative delta
+            # would hand out more clicks than were asked for.
+            sign = 1 if delta >= 0 else -1
+            magnitude = abs(delta)
+            for index in range(increments):
+                clicks = magnitude // increments + (1 if index < magnitude % increments else 0)
+                if not clicks:
+                    continue
+                ticks = sign * clicks * _SCROLL_DISCRETE_UNIT
+                self._client.pointer_scroll_discrete(
+                    ticks if horizontal else 0, 0 if horizontal else ticks
+                )
+                time.sleep(0.01)
             self._client.pointer_scroll_stop()
         else:
             total_dx = float(delta) * _SCROLL_STEP_PIXELS if horizontal else 0.0
             total_dy = float(delta) * _SCROLL_STEP_PIXELS if not horizontal else 0.0
-            if steps > 1:
-                step_dx = total_dx / steps
-                step_dy = total_dy / steps
-                for _ in range(steps):
+            if increments > 1:
+                step_dx = total_dx / increments
+                step_dy = total_dy / increments
+                for _ in range(increments):
                     self._client.pointer_scroll(step_dx, step_dy)
                     time.sleep(0.01)
             else:

@@ -35,6 +35,8 @@ class ElementInfo:
     height: int
     actions: list[str]
     text: str
+    value: float | None
+    value_max: float | None
     children_count: int
     depth: int
 
@@ -244,8 +246,13 @@ def _format_element(
         pos_str = f" @ ({info.x}, {info.y}, {info.width}x{info.height})"
         actions_str = f" [actions: {', '.join(info.actions)}]" if info.actions else ""
         text_str = f" text={info.text!r}" if info.text else ""
+        has_value = info.value is not None and info.value_max is not None
+        value_str = f" value={info.value:g}/{info.value_max:g}" if has_value else ""
 
-        line = f'{indent}- [{info.role}] "{info.name}"{states_str}{pos_str}{text_str}{actions_str}'
+        line = (
+            f'{indent}- [{info.role}] "{info.name}"{states_str}{pos_str}'
+            f"{text_str}{value_str}{actions_str}"
+        )
         lines.append(line)
         count = 1
 
@@ -346,6 +353,18 @@ def _extract_info(element: Atspi.Accessible, depth: int) -> ElementInfo:
     except Exception:
         pass
 
+    # Scrollbars and sliders keep their position in the Value interface; without
+    # it a caller can see that a scrollbar exists but not where it sits.
+    value: float | None = None
+    value_max: float | None = None
+    try:
+        value_iface = element.get_value_iface()
+        if value_iface is not None:
+            value = float(Atspi.Value.get_current_value(value_iface))
+            value_max = float(Atspi.Value.get_maximum_value(value_iface))
+    except Exception:
+        pass
+
     return ElementInfo(
         role=role,
         name=name,
@@ -357,6 +376,8 @@ def _extract_info(element: Atspi.Accessible, depth: int) -> ElementInfo:
         height=height,
         actions=actions,
         text=text,
+        value=value,
+        value_max=value_max,
         children_count=element.get_child_count(),
         depth=depth,
     )

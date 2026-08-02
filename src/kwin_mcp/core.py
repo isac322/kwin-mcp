@@ -357,9 +357,15 @@ class AutomationEngine:
         for el in elements:
             actions_str = f" [actions: {', '.join(el['actions'])}]" if el["actions"] else ""
             text_str = f" text={el['text']!r}" if el.get("text") else ""
+            value_str = (
+                f" value={el['value']:g}/{el['value_max']:g}"
+                if el.get("value") is not None and el.get("value_max") is not None
+                else ""
+            )
             lines.append(
                 f'- [{el["role"]}] "{el["name"]}" '
-                f"@ ({el['x']}, {el['y']}, {el['width']}x{el['height']}){text_str}{actions_str}"
+                f"@ ({el['x']}, {el['y']}, {el['width']}x{el['height']})"
+                f"{text_str}{value_str}{actions_str}"
             )
         return "\n".join(lines)
 
@@ -687,9 +693,15 @@ class AutomationEngine:
         for el in elements:
             actions_str = f" [actions: {', '.join(el['actions'])}]" if el["actions"] else ""
             text_str = f" text={el['text']!r}" if el.get("text") else ""
+            value_str = (
+                f" value={el['value']:g}/{el['value_max']:g}"
+                if el.get("value") is not None and el.get("value_max") is not None
+                else ""
+            )
             lines.append(
                 f'- [{el["role"]}] "{el["name"]}" '
-                f"@ ({el['x']}, {el['y']}, {el['width']}x{el['height']}){text_str}{actions_str}"
+                f"@ ({el['x']}, {el['y']}, {el['width']}x{el['height']})"
+                f"{text_str}{value_str}{actions_str}"
             )
         return "\n".join(lines)
 
@@ -708,11 +720,36 @@ class AutomationEngine:
         resp = self._run_atspi("list_windows")
         return resp["result"]
 
+    def _run_kwin_query(self, request: dict[str, object]) -> dict:
+        """Run a KWin scripting query in a subprocess bound to the session bus."""
+        result = subprocess.run(
+            [sys.executable, "-m", "kwin_mcp.geometry"],
+            input=json.dumps(request),
+            env=self._session_env(),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            return {"ok": False, "error": f"exit {result.returncode}: {result.stderr[:200]}"}
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return {"ok": False, "error": f"invalid JSON: {result.stdout[:200]}"}
+
     def focus_window(self, app_name: str) -> str:
-        """Attempt to focus a window by application name."""
+        """Activate a window by application name.
+
+        Activation goes through KWin: AT-SPI2's grab_focus neither raises nor
+        activates windows on Wayland, so it reported success while the previously
+        active window kept both focus and the foreground.
+        """
         self._get_session()
-        resp = self._run_atspi("focus_window", app_name=app_name)
-        return resp["result"]
+        resp = self._run_kwin_query({"op": "activate", "app_name": app_name})
+        if not resp["ok"]:
+            return f"Failed to focus '{app_name}': {resp['error']}"
+        activated = str(resp["result"]).strip()
+        return f"Focused: {activated}" if activated else f"No window matches '{app_name}'."
 
     def window_geometry(self, app_name: str = "") -> str:
         """Report window positions in global screen coordinates.
@@ -722,21 +759,7 @@ class AutomationEngine:
         window's client origin before they can be clicked.
         """
         self._get_session()
-        env = self._session_env()
-        result = subprocess.run(
-            [sys.executable, "-m", "kwin_mcp.geometry"],
-            input=json.dumps({"app_name": app_name}),
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode != 0:
-            return f"Window geometry query failed (exit {result.returncode}): {result.stderr}"
-        try:
-            resp = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            return f"Window geometry query returned invalid JSON: {result.stdout[:200]}"
+        resp = self._run_kwin_query({"app_name": app_name})
         if not resp["ok"]:
             return f"Window geometry unavailable: {resp['error']}"
 

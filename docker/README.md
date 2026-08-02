@@ -25,7 +25,8 @@ No `--privileged`, `--cap-add` or X server is needed: the image drops KWin's
 | `test_session_lifecycle.py` | double start, teardown and socket cleanup, bad app command, isolated HOME, live `session_connect` ownership |
 | `test_observation_tools.py` | `accessibility_tree` role filter, query and state filters, multi-window `list_windows`, `read_app_log`, `wayland_info` |
 | `test_window_geometry.py` | global frame/client rectangles and the surface-local offset they correct |
-| `test_input_injection.py` | EIS mouse, keyboard, unicode and clipboard input |
+| `test_window_control.py` | `focus_window` activation, `mouse_scroll` (smooth and discrete), `mouse_drag` selection, touch swipe / multi-swipe / pinch, scrollbar values |
+| `test_input_injection.py` | EIS mouse click and press/release with verified aim, touch tap, key combos, modifier hold, unicode input, clipboard roundtrip |
 
 ## Known limitations in the container
 
@@ -51,12 +52,11 @@ No `--privileged`, `--cap-add` or X server is needed: the image drops KWin's
   on whatever happens to sit at that screen position. Add the client origin from
   `window_geometry` first: for a centred 640x480 kcalc window on a 1280x800
   screen it is `(320, 172)`, so the "Seven" button at surface-local
-  `(8, 204, 100x59)` is clicked at global `(378, 405)`, after which the
-  calculator shows binary `111`.
+  `(8, 204, 100x59)` is clicked at global `(378, 405)`, after which the visible
+  display reads `7` and the AT-SPI2 tree reports the hidden base-conversion
+  label `111` that the tests assert on.
 
-- **Not covered by the suite, for lack of a deterministic oracle**:
-  `focus_window` reports success but no AT-SPI2 state follows it (with kwrite
-  active, focusing kcalc left kwrite's window marked `[active]` for 5s);
-  right-click and modifier-click produce no observable AT-SPI2 change; and
-  `mouse_scroll` leaves the exposed scrollbar value untouched in a 100-line
-  document. These are unverified rather than known-broken.
+- **Not covered**: `touch_pinch` is asserted only as multi-touch delivery, since
+  KWrite has no pinch-zoom to observe. Three- and four-finger `touch_multi_swipe`
+  never reaches the application because KWin claims those as global gestures, so
+  the test uses two fingers.

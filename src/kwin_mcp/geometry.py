@@ -54,6 +54,28 @@ callDBus("{SINK_NAME}", "{SINK_PATH}", "{SINK_NAME}", "Report",
          out.join({_RECORD_SEPARATOR!r}));
 """
 
+# Activation must go through KWin too: AT-SPI's grab_focus does not raise or
+# activate windows on Wayland, so focus_window used to report success while the
+# previously active window kept both focus and the foreground.
+_ACTIVATE_SCRIPT_TEMPLATE = """
+var needle = {needle};
+var activated = "";
+var windows = workspace.windowList();
+for (var i = 0; i < windows.length; i++) {{
+    var w = windows[i];
+    if (!w.normalWindow) {{
+        continue;
+    }}
+    var haystack = (w.resourceClass + " " + w.caption).toLowerCase();
+    if (haystack.indexOf(needle) !== -1) {{
+        workspace.activeWindow = w;
+        activated = w.resourceClass + " " + w.caption;
+        break;
+    }}
+}}
+callDBus("{sink}", "{path}", "{sink}", "Report", activated);
+"""
+
 
 def _parse(payload: str) -> list[dict[str, object]]:
     windows: list[dict[str, object]] = []
@@ -75,8 +97,8 @@ def _parse(payload: str) -> list[dict[str, object]]:
     return windows
 
 
-def query(app_name: str = "", timeout: float = 5.0) -> list[dict[str, object]]:
-    """Ask KWin for the geometry of every normal window."""
+def run_kwin_script(js_source: str, timeout: float = 5.0) -> str:
+    """Run a KWin script and return the payload it reports back over D-Bus."""
     from gi.repository import GLib
 
     DBusGMainLoop(set_as_default=True)
@@ -97,8 +119,8 @@ def query(app_name: str = "", timeout: float = 5.0) -> list[dict[str, object]]:
     loop = GLib.MainLoop()
     threading.Thread(target=loop.run, daemon=True).start()
 
-    script_path = Path(tempfile.mkdtemp(prefix="kwin-mcp-geometry-")) / "geometry.js"
-    script_path.write_text(_SCRIPT)
+    script_path = Path(tempfile.mkdtemp(prefix="kwin-mcp-script-")) / "script.js"
+    script_path.write_text(js_source)
     scripting = dbus.Interface(
         bus.get_object("org.kde.KWin", "/Scripting"), "org.kde.kwin.Scripting"
     )
@@ -119,14 +141,26 @@ def query(app_name: str = "", timeout: float = 5.0) -> list[dict[str, object]]:
         del bus_name
 
     if not received:
-        msg = f"KWin did not report window geometry within {timeout:.0f}s"
+        msg = f"KWin did not answer the script within {timeout:.0f}s"
         raise RuntimeError(msg)
+    return received[0]
 
-    windows = _parse(received[0])
+
+def query(app_name: str = "", timeout: float = 5.0) -> list[dict[str, object]]:
+    """Ask KWin for the geometry of every normal window."""
+    windows = _parse(run_kwin_script(_SCRIPT, timeout))
     if app_name:
         needle = app_name.lower()
         windows = [w for w in windows if needle in str(w["app"]).lower()]
     return windows
+
+
+def activate(app_name: str, timeout: float = 5.0) -> str:
+    """Activate the first window whose app name or caption matches."""
+    script = _ACTIVATE_SCRIPT_TEMPLATE.format(
+        needle=json.dumps(app_name.lower()), sink=SINK_NAME, path=SINK_PATH
+    )
+    return run_kwin_script(script, timeout)
 
 
 def main() -> None:
@@ -136,11 +170,12 @@ def main() -> None:
     except json.JSONDecodeError:
         request = {}
     try:
-        windows = query(app_name=str(request.get("app_name", "")))
+        if request.get("op") == "activate":
+            print(json.dumps({"ok": True, "result": activate(str(request.get("app_name", "")))}))
+            return
+        print(json.dumps({"ok": True, "result": query(app_name=str(request.get("app_name", "")))}))
     except (RuntimeError, dbus.DBusException) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}))
-        return
-    print(json.dumps({"ok": True, "result": windows}))
 
 
 if __name__ == "__main__":

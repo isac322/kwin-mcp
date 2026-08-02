@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tests/e2e` QA suite covering session lifecycle (double start, teardown, isolated home, live `session_connect`), AT-SPI2 observation (tree role filter, query and state filters, multi-window listing, app logs, `wayland_info`), window geometry, and EIS input injection. Screenshot capture is covered by an opt-in test (`KWIN_MCP_E2E_SCREENSHOT=1`); see `docker/README.md` for what the container cannot exercise.
 - `window_geometry` tool reporting window frame and client rectangles in global screen coordinates via KWin scripting. Accessibility rectangles are surface-local, so until now nothing in the public API could turn a located element into clickable coordinates — the core "find an element, then click it" loop was not expressible with the tools alone. Tool count increased from 30 to 31.
 - Element text content in `find_ui_elements`, `wait_for_element` and `accessibility_tree` output (`text='...'`, capped at 200 characters). Editors and entries keep their content in the AT-SPI2 Text interface rather than in the element name, so until now the tools could locate a text widget but never read what it contained.
+- Scrollbar and slider positions in element output (`value=current/max`), read from the AT-SPI2 Value interface. Without it a caller could see that a scrollbar exists but not where it sits, which is the only way to observe scrolling.
 
 ### Fixed
 
@@ -24,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `screenshot` shelled out to spectacle unconditionally; it now uses the KWin ScreenShot2 D-Bus interface first (as documented) and falls back to spectacle, reporting the original D-Bus error when the fallback is unusable
 - KWin ScreenShot2 capture read the pixel pipe only after the D-Bus call returned, so a frame larger than the pipe buffer could stall the call; the pipe is now drained concurrently while the call is in flight
 - EIS input injection started emulating before the compositor had resumed the devices, which libei rejects (`ei_device_keyboard_key: device is not emulating`) and which silently dropped every injected event; `_negotiate_devices` now waits for `EI_EVENT_DEVICE_RESUMED` on the pointer and keyboard before calling `ei_device_start_emulating`, falling back to the previous unconditional start if a device does not resume within the handshake budget
+- `focus_window` reported success while doing nothing on Wayland: it asked AT-SPI2 to grab focus, which neither raises nor activates a window there. It now activates through KWin scripting, and the `[active]` marker in `list_windows` follows it
+- `mouse_scroll(discrete=True)` was silently dropped: libei counts discrete scrolling in 120ths of a wheel detent, so a click count was rejected as a suspicious fraction. Detents are now scaled and split correctly, including for negative deltas with `steps`
 - `keyboard_type_unicode` gave up when `wtype` failed instead of falling back to the documented wl-copy + Ctrl+V path. KWin does not implement the virtual-keyboard Wayland protocol, so `wtype` always fails there and non-ASCII input never worked on Plasma
 
 ## [0.7.0] - 2026-03-29

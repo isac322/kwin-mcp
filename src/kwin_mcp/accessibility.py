@@ -16,6 +16,10 @@ import gi
 gi.require_version("Atspi", "2.0")
 from gi.repository import Atspi  # noqa: E402
 
+# Elements such as editors expose their whole document through the Text
+# interface; cap it so a tree dump stays readable.
+_MAX_TEXT_CHARS = 200
+
 
 @dataclass
 class ElementInfo:
@@ -30,6 +34,9 @@ class ElementInfo:
     width: int
     height: int
     actions: list[str]
+    text: str
+    value: float | None
+    value_max: float | None
     children_count: int
     depth: int
 
@@ -238,8 +245,14 @@ def _format_element(
         states_str = f" ({', '.join(info.states)})" if info.states else ""
         pos_str = f" @ ({info.x}, {info.y}, {info.width}x{info.height})"
         actions_str = f" [actions: {', '.join(info.actions)}]" if info.actions else ""
+        text_str = f" text={info.text!r}" if info.text else ""
+        has_value = info.value is not None and info.value_max is not None
+        value_str = f" value={info.value:g}/{info.value_max:g}" if has_value else ""
 
-        line = f'{indent}- [{info.role}] "{info.name}"{states_str}{pos_str}{actions_str}'
+        line = (
+            f'{indent}- [{info.role}] "{info.name}"{states_str}{pos_str}'
+            f"{text_str}{value_str}{actions_str}"
+        )
         lines.append(line)
         count = 1
 
@@ -292,14 +305,14 @@ def _extract_info(element: Atspi.Accessible, depth: int) -> ElementInfo:
     name = element.get_name() or ""
     description = element.get_description() or ""
 
-    # Get states
-    state_set = element.get_state_set()
+    # Get states. get_states() returns only the active members, which is both
+    # cheaper than probing every enum value and portable: GI enum types are not
+    # iterable in newer PyGObject releases.
     states: list[str] = []
-    for state in Atspi.StateType:
-        if state_set.contains(state):
-            state_name = state.value_nick
-            if state_name:
-                states.append(state_name)
+    for state in element.get_state_set().get_states():
+        state_name = state.value_nick
+        if state_name:
+            states.append(state_name)
 
     # Get position and size
     x, y, width, height = 0, 0, 0, 0
@@ -323,6 +336,35 @@ def _extract_info(element: Atspi.Accessible, depth: int) -> ElementInfo:
     except Exception:
         pass
 
+    # Editors and entries carry their content in the Text interface rather than
+    # in the name, so without this their contents are invisible to callers. The
+    # cap keeps a whole document out of a tree dump that walks every element.
+    text = ""
+    try:
+        text_iface = element.get_text_iface()
+        if text_iface is not None:
+            # Call through the interface class: the bound method on the
+            # accessible returns an empty string on this PyGObject version.
+            count = Atspi.Text.get_character_count(text_iface)
+            if count:
+                text = Atspi.Text.get_text(text_iface, 0, min(count, _MAX_TEXT_CHARS))
+                if count > _MAX_TEXT_CHARS:
+                    text += "…"
+    except Exception:
+        pass
+
+    # Scrollbars and sliders keep their position in the Value interface; without
+    # it a caller can see that a scrollbar exists but not where it sits.
+    value: float | None = None
+    value_max: float | None = None
+    try:
+        value_iface = element.get_value_iface()
+        if value_iface is not None:
+            value = float(Atspi.Value.get_current_value(value_iface))
+            value_max = float(Atspi.Value.get_maximum_value(value_iface))
+    except Exception:
+        pass
+
     return ElementInfo(
         role=role,
         name=name,
@@ -333,6 +375,9 @@ def _extract_info(element: Atspi.Accessible, depth: int) -> ElementInfo:
         width=width,
         height=height,
         actions=actions,
+        text=text,
+        value=value,
+        value_max=value_max,
         children_count=element.get_child_count(),
         depth=depth,
     )

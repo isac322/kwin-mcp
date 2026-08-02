@@ -75,7 +75,12 @@ requires = ["uv_build>=0.10.3,<0.12.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
-dev = ["ruff>=0.11.0", "ty>=0.0.1"]
+dev = ["ruff>=0.11.0", "ty>=0.0.1", "pytest>=8.0.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# tests/e2e drives a real KWin session; keep failures readable.
+addopts = "-ra"
 
 [tool.ruff]
 target-version = "py312"
@@ -108,7 +113,7 @@ python-version = "3.12"
 
 # gi.repository and dbus.bus are dynamic modules that cannot be resolved statically
 [[tool.ty.overrides]]
-include = ["src/kwin_mcp/accessibility.py", "src/kwin_mcp/server.py"]
+include = ["src/kwin_mcp/accessibility.py", "src/kwin_mcp/server.py", "src/kwin_mcp/geometry.py"]
 [tool.ty.overrides.rules]
 unresolved-import = "ignore"
 

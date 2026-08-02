@@ -1,0 +1,24 @@
+name: E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  virtual-session:
+    name: Virtual KWin session (container)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build the KWin test image
+        run: docker build -f docker/e2e.Dockerfile -t kwin-mcp-e2e .
+
+      # No /dev/dri passthrough on purpose: KWin then runs on the same llvmpipe
+      # software path everywhere, so a run here matches a developer's laptop
+      # exactly. A DRM node would only let KWin register ScreenShot2, and its
+      # virtual backend still never answers a capture — see docker/README.md.
+      - name: Run end-to-end tests
+        run: docker run --rm kwin-mcp-e2e

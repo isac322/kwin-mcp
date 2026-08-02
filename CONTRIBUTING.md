@@ -123,6 +123,17 @@ uv run python -m kwin_mcp.cli --default-live-session
 
 > **Note**: Do not test via the MCP server if it was started before your code changes -- it will still be running the old code. Always use the CLI for verification.
 
+### Automated End-to-End Tests (Containerized)
+
+`tests/e2e` drives a real virtual KWin session and runs in a reproducible container, which is what CI executes:
+
+```bash
+docker build -f docker/e2e.Dockerfile -t kwin-mcp-e2e .
+docker run --rm kwin-mcp-e2e
+```
+
+See `docker/README.md` for what the suite covers (session lifecycle, AT-SPI2 queries, EIS keyboard injection) and the container's known limitations (screenshots, pointer events).
+
 ## Project Structure
 
 ```

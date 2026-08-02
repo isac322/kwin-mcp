@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import ctypes.util
+import os
 import select
 import shutil
 import subprocess
@@ -129,6 +130,8 @@ _EI_EVENT_DEVICE_RESUMED = 8
 
 # Scroll axis values (in libei, scroll is in pixels)
 _SCROLL_STEP_PIXELS = 15.0
+# libei expresses discrete scrolling in 120ths of a wheel detent.
+_SCROLL_DISCRETE_UNIT = 120
 
 
 def _load_libei() -> ctypes.CDLL:
@@ -245,19 +248,26 @@ class EISClient:
 
     def _setup(self) -> None:
         """Connect to KWin EIS and negotiate devices."""
-        eis_obj = self._bus.get_object("org.kde.KWin", "/org/kde/KWin/EIS/RemoteDesktop")
-        self._eis_iface = dbus.Interface(eis_obj, "org.kde.KWin.EIS.RemoteDesktop")
+        # KWin only exposes the EIS interface when it supports remote input;
+        # translate the D-Bus failure so callers can treat the input backend as
+        # optional (see AutomationEngine.session_start).
+        try:
+            eis_obj = self._bus.get_object("org.kde.KWin", "/org/kde/KWin/EIS/RemoteDesktop")
+            self._eis_iface = dbus.Interface(eis_obj, "org.kde.KWin.EIS.RemoteDesktop")
 
-        # Request all relevant capabilities
-        caps = (
-            _EI_CAP_POINTER
-            | _EI_CAP_POINTER_ABSOLUTE
-            | _EI_CAP_KEYBOARD
-            | _EI_CAP_TOUCH
-            | _EI_CAP_BUTTON
-            | _EI_CAP_SCROLL
-        )
-        result = self._eis_iface.connectToEIS(dbus.Int32(caps))
+            # Request all relevant capabilities
+            caps = (
+                _EI_CAP_POINTER
+                | _EI_CAP_POINTER_ABSOLUTE
+                | _EI_CAP_KEYBOARD
+                | _EI_CAP_TOUCH
+                | _EI_CAP_BUTTON
+                | _EI_CAP_SCROLL
+            )
+            result = self._eis_iface.connectToEIS(dbus.Int32(caps))
+        except dbus.DBusException as exc:
+            msg = f"KWin EIS interface unavailable: {exc}"
+            raise RuntimeError(msg) from exc
         fd = result[0].take()
         self._cookie = int(result[1])
 
@@ -280,9 +290,16 @@ class EISClient:
         self._negotiate_devices()
 
     def _negotiate_devices(self, timeout: float = 5.0) -> None:
-        """Process EIS handshake events until we have pointer + keyboard."""
+        """Process EIS handshake events until pointer + keyboard are usable.
+
+        A libei device may only emulate once the server has resumed it. Calling
+        ei_device_start_emulating() earlier is rejected ("device is not
+        emulating") and every event sent afterwards is silently dropped, so wait
+        for EI_EVENT_DEVICE_RESUMED on each device before starting emulation.
+        """
         ei_fd = _libei.ei_get_fd(self._ei)
         start = time.monotonic()
+        resumed: set[int] = set()
 
         while time.monotonic() - start < timeout:
             readable, _, _ = select.select([ei_fd], [], [], 0.3)
@@ -310,11 +327,11 @@ class EISClient:
                     self._register_device(event)
 
                 elif etype == _EI_EVENT_DEVICE_RESUMED:
-                    pass  # Device ready for input
+                    resumed.add(int(_libei.ei_event_get_device(event)))
 
                 _libei.ei_event_unref(event)
 
-            if self._pointer and self._keyboard:
+            if self._pointer in resumed and self._keyboard in resumed:
                 break
 
         if not self._pointer:
@@ -324,12 +341,13 @@ class EISClient:
             msg = "No keyboard device available from EIS"
             raise RuntimeError(msg)
 
-        # Start emulating on all devices
-        _libei.ei_device_start_emulating(self._pointer, 0)
-        if self._keyboard != self._pointer:
-            _libei.ei_device_start_emulating(self._keyboard, 0)
-        if self._touch_device and self._touch_device not in (self._pointer, self._keyboard):
-            _libei.ei_device_start_emulating(self._touch_device, 0)
+        # Devices that never announced a resume are still started: emulating a
+        # paused device is no worse than the unconditional start this wait
+        # replaced, and losing a slow-to-resume device would drop input that
+        # used to work.
+        for device in {self._pointer, self._keyboard, self._touch_device}:
+            if device:
+                _libei.ei_device_start_emulating(device, 0)
 
     def _bind_seat_capabilities(self, event: int) -> None:
         """Bind to all available capabilities on the seat."""
@@ -568,27 +586,35 @@ class InputBackend:
         """
         self.mouse_move(x, y)
         time.sleep(0.02)
+        increments = max(steps, 1)
 
         if discrete:
-            dx = delta if horizontal else 0
-            dy = delta if not horizontal else 0
-            if steps > 1:
-                for i in range(steps):
-                    frac_dx = dx // steps + (1 if i < dx % steps else 0) if dx else 0
-                    frac_dy = dy // steps + (1 if i < dy % steps else 0) if dy else 0
-                    if frac_dx or frac_dy:
-                        self._client.pointer_scroll_discrete(frac_dx, frac_dy)
-                    time.sleep(0.01)
-            else:
-                self._client.pointer_scroll_discrete(dx, dy)
+            # libei counts discrete scrolling in 120ths of a wheel detent (the
+            # wl_pointer axis_value120 convention). Passing the caller's click
+            # count straight through makes libei reject it as a suspicious
+            # fraction of a click and the compositor drops the event, so split
+            # whole detents across the increments and scale each chunk. The
+            # split works on the magnitude: floor division on a negative delta
+            # would hand out more clicks than were asked for.
+            sign = 1 if delta >= 0 else -1
+            magnitude = abs(delta)
+            for index in range(increments):
+                clicks = magnitude // increments + (1 if index < magnitude % increments else 0)
+                if not clicks:
+                    continue
+                ticks = sign * clicks * _SCROLL_DISCRETE_UNIT
+                self._client.pointer_scroll_discrete(
+                    ticks if horizontal else 0, 0 if horizontal else ticks
+                )
+                time.sleep(0.01)
             self._client.pointer_scroll_stop()
         else:
             total_dx = float(delta) * _SCROLL_STEP_PIXELS if horizontal else 0.0
             total_dy = float(delta) * _SCROLL_STEP_PIXELS if not horizontal else 0.0
-            if steps > 1:
-                step_dx = total_dx / steps
-                step_dy = total_dy / steps
-                for _ in range(steps):
+            if increments > 1:
+                step_dx = total_dx / increments
+                step_dy = total_dy / increments
+                for _ in range(increments):
                     self._client.pointer_scroll(step_dx, step_dy)
                     time.sleep(0.01)
             else:
@@ -885,21 +911,23 @@ class InputBackend:
         for tid in tids:
             self._client.touch_up(tid)
 
-    def keyboard_type_unicode(self, text: str, dbus_address: str | None = None) -> bool:
+    def keyboard_type_unicode(self, text: str, env: dict[str, str] | None = None) -> bool:
         """Type arbitrary Unicode text using wtype or clipboard fallback.
 
         Args:
             text: Text to type (supports non-ASCII, e.g. Korean, CJK).
-            dbus_address: D-Bus address for the session (needed for wl-copy fallback).
+            env: Session environment. Both helpers are Wayland clients, so this
+                must carry WAYLAND_DISPLAY (and DBUS_SESSION_BUS_ADDRESS) of the
+                target session, otherwise they exit without doing anything.
 
         Returns:
             True if text was typed successfully.
         """
-        env = dict(__import__("os").environ)
-        if dbus_address:
-            env["DBUS_SESSION_BUS_ADDRESS"] = dbus_address
+        env = {**os.environ, **(env or {})}
 
-        # Try wtype first
+        # Try wtype first. It needs the virtual-keyboard Wayland protocol, which
+        # KWin does not implement, so a failure here is expected on Plasma and
+        # must fall through to the clipboard route rather than give up.
         if shutil.which("wtype"):
             result = subprocess.run(
                 ["wtype", "--", text],
@@ -907,7 +935,8 @@ class InputBackend:
                 capture_output=True,
                 timeout=5,
             )
-            return result.returncode == 0
+            if result.returncode == 0:
+                return True
 
         # Fallback: clipboard paste via wl-copy + Ctrl+V
         # Use Popen + DEVNULL to avoid pipe-blocking from wl-copy's forked child

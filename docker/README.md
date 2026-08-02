@@ -31,8 +31,13 @@ No `--privileged`, `--cap-add` or X server is needed: the image drops KWin's
 - **Screenshots**: KWin registers `org.kde.KWin.ScreenShot2` only when the
   screenshot effect loads, which requires OpenGL compositing and therefore a DRM
   render node (`--device /dev/dri`). Even with one, KWin's virtual backend never
-  answers a capture request in this environment, so the screenshot test is
-  skipped unless `KWIN_MCP_E2E_SCREENSHOT=1` is set:
+  answers a capture request (no reply, zero bytes), so the screenshot test is
+  skipped unless `KWIN_MCP_E2E_SCREENSHOT=1` is set. CI deliberately passes
+  neither the device nor the flag: every run then takes the same llvmpipe
+  software path, and enabling the test would only turn a known-unsupported
+  capture into a red build. The combination below **fails today** — it is the
+  command to re-check with once the compositor answers captures, not a working
+  recipe:
 
   ```bash
   docker run --rm --device /dev/dri -e KWIN_MCP_E2E_SCREENSHOT=1 kwin-mcp-e2e

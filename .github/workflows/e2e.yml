@@ -16,18 +16,9 @@ jobs:
       - name: Build the KWin test image
         run: docker build -f docker/e2e.Dockerfile -t kwin-mcp-e2e .
 
-      # KWin's OpenGL compositing needs a DRM render node. Hosted runners have
-      # none, which only affects the opt-in screenshot test; pass the device
-      # through when a self-hosted runner provides one.
-      - name: Detect DRM render node
-        id: dri
-        run: |
-          if [ -e /dev/dri ]; then
-            echo "flag=--device /dev/dri" >> "$GITHUB_OUTPUT"
-          else
-            echo "flag=" >> "$GITHUB_OUTPUT"
-          fi
-          ls -l /dev/dri || echo "no /dev/dri on this runner"
-
+      # No /dev/dri passthrough on purpose: KWin then runs on the same llvmpipe
+      # software path everywhere, so a run here matches a developer's laptop
+      # exactly. A DRM node would only let KWin register ScreenShot2, and its
+      # virtual backend still never answers a capture — see docker/README.md.
       - name: Run end-to-end tests
-        run: docker run --rm ${{ steps.dri.outputs.flag }} kwin-mcp-e2e
+        run: docker run --rm kwin-mcp-e2e

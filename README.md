@@ -193,8 +193,8 @@ kwin-mcp-cli --default-live-session
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `screenshot` | `include_cursor?` `bool` (false) | Capture a screenshot of the virtual display (saved as PNG, returns file path) |
-| `accessibility_tree` | `app_name?` `str`, `max_depth?` `int` (15), `role?` `str` | Get the AT-SPI2 widget tree with roles, names, states, coordinates, and the text content of editors and entries (`text='...'`, capped at 200 characters). Use `role` to filter to specific element types (e.g. `"button"`, `"check box"`). Non-matching elements are hidden but their children are still traversed. |
-| `find_ui_elements` | `query` `str`, `app_name?` `str`, `states?` `list[str]` | Search for UI elements by name, role, or description (case-insensitive); matches report their text content when they have any. Optionally filter by AT-SPI2 states (e.g. `["focused"]`, `["active", "visible"]`). `query` can be empty when filtering by states only. |
+| `accessibility_tree` | `app_name?` `str`, `max_depth?` `int` (15), `role?` `str` | Get the AT-SPI2 widget tree with roles, names, states, coordinates, the text content of editors and entries (`text='...'`, capped at 200 characters), and scrollbar/slider positions (`value=current/max`). Use `role` to filter to specific element types (e.g. `"button"`, `"check box"`). Non-matching elements are hidden but their children are still traversed. |
+| `find_ui_elements` | `query` `str`, `app_name?` `str`, `states?` `list[str]` | Search for UI elements by name, role, or description (case-insensitive); matches report their text content and scrollbar/slider value when they have one. Optionally filter by AT-SPI2 states (e.g. `["focused"]`, `["active", "visible"]`). `query` can be empty when filtering by states only. |
 
 ### Mouse Input (6 tools)
 
@@ -239,7 +239,7 @@ kwin-mcp-cli --default-live-session
 |------|-----------|-------------|
 | `launch_app` | `command` `str`, `env?` `dict` | Launch an application inside the running session. Returns PID and log path. |
 | `list_windows` | _(none)_ | List all accessible application windows with per-window titles and active/focused state markers via AT-SPI2 |
-| `focus_window` | `app_name` `str` | Focus a window by application name (case-insensitive match) |
+| `focus_window` | `app_name` `str` | Activate and raise a window by application name (case-insensitive match), via KWin scripting |
 | `window_geometry` | `app_name?` `str` | Report window frame and client rectangles in **global screen coordinates** via KWin scripting. Accessibility rectangles are surface-local, so add the reported client origin before passing them to `mouse_click` / `touch_tap`. |
 
 ### UI Polling (1 tool)

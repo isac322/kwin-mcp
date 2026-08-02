@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `focus_window` reported success while doing nothing on Wayland: it asked AT-SPI2 to grab focus, which neither raises nor activates a window there. It now activates through KWin scripting, and the `[active]` marker in `list_windows` follows it
 - `mouse_scroll(discrete=True)` was silently dropped: libei counts discrete scrolling in 120ths of a wheel detent, so a click count was rejected as a suspicious fraction. Detents are now scaled and split correctly, including for negative deltas with `steps`
 - `keyboard_type_unicode` gave up when `wtype` failed instead of falling back to the documented wl-copy + Ctrl+V path. KWin does not implement the virtual-keyboard Wayland protocol, so `wtype` always fails there and non-ASCII input never worked on Plasma
+- `session_stop` left applications started by `launch_app` running: they are children of the caller, not of the session's process group, so the group signal never reached them. A surviving app also kept writing into an isolated home and defeated its removal, which surfaced as a leaked directory on slower machines. Apps are now terminated and reaped first, and the home removal retries instead of ignoring errors
 
 ## [0.7.0] - 2026-03-29
 

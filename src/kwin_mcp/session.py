@@ -81,6 +81,18 @@ class SessionInfo:
     session_type: SessionType = SessionType.VIRTUAL
 
 
+def _remove_tree(path: Path, attempts: int = 3) -> None:
+    """Remove a directory tree, retrying while stragglers finish writing.
+
+    Silently ignoring errors here once hid a leaked isolated home for a whole
+    session, so the last attempt reports what is left behind.
+    """
+    for attempt in range(attempts):
+        shutil.rmtree(path, ignore_errors=attempt < attempts - 1)
+        if not path.exists():
+            return
+        time.sleep(0.3)
+
 class Session:
     """An isolated KWin Wayland session.
 
@@ -301,10 +313,34 @@ class Session:
             text = "\n".join(lines[-last_n_lines:])
         return text or "(no log output yet)"
 
+    def _terminate_apps(self) -> None:
+        """Stop applications started through launch_app and reap them."""
+        if self._info is None:
+            return
+        for app in list(self._info.apps.values()):
+            if app.process.poll() is not None:
+                continue
+            with contextlib.suppress(ProcessLookupError):
+                app.process.terminate()
+        for app in list(self._info.apps.values()):
+            try:
+                app.process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(ProcessLookupError):
+                    app.process.kill()
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    app.process.wait(timeout=2)
+
     def stop(self) -> None:
         """Stop the isolated session and clean up all processes."""
         if self._process is None:
             return
+
+        # Apps started by launch_app are children of this process, not of the
+        # session's process group, so the signal below never reaches them. A
+        # surviving app keeps writing into the isolated home and defeats its
+        # removal, which shows up as a leaked directory after session_stop.
+        self._terminate_apps()
 
         # Send SIGTERM to the entire process group (all children)
         self._signal_process_group(signal.SIGTERM)
@@ -324,8 +360,7 @@ class Session:
             keep_home = self._config is not None and self._config.keep_home
             keep_screenshots = self._config is not None and self._config.keep_screenshots
             if not keep_home:
-                # Remove entire home dir (includes screenshots)
-                shutil.rmtree(self._home_dir, ignore_errors=True)
+                _remove_tree(self._home_dir)
             elif not keep_screenshots:
                 # Keep home but remove screenshots subdirectory
                 screenshots = self._home_dir / ".screenshots"

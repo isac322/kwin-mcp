@@ -113,7 +113,7 @@ python-version = "3.12"
 
 # gi.repository and dbus.bus are dynamic modules that cannot be resolved statically
 [[tool.ty.overrides]]
-include = ["src/kwin_mcp/accessibility.py", "src/kwin_mcp/server.py"]
+include = ["src/kwin_mcp/accessibility.py", "src/kwin_mcp/server.py", "src/kwin_mcp/geometry.py"]
 [tool.ty.overrides.rules]
 unresolved-import = "ignore"
 

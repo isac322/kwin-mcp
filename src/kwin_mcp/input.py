@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import ctypes.util
+import os
 import select
 import shutil
 import subprocess
@@ -900,21 +901,23 @@ class InputBackend:
         for tid in tids:
             self._client.touch_up(tid)
 
-    def keyboard_type_unicode(self, text: str, dbus_address: str | None = None) -> bool:
+    def keyboard_type_unicode(self, text: str, env: dict[str, str] | None = None) -> bool:
         """Type arbitrary Unicode text using wtype or clipboard fallback.
 
         Args:
             text: Text to type (supports non-ASCII, e.g. Korean, CJK).
-            dbus_address: D-Bus address for the session (needed for wl-copy fallback).
+            env: Session environment. Both helpers are Wayland clients, so this
+                must carry WAYLAND_DISPLAY (and DBUS_SESSION_BUS_ADDRESS) of the
+                target session, otherwise they exit without doing anything.
 
         Returns:
             True if text was typed successfully.
         """
-        env = dict(__import__("os").environ)
-        if dbus_address:
-            env["DBUS_SESSION_BUS_ADDRESS"] = dbus_address
+        env = {**os.environ, **(env or {})}
 
-        # Try wtype first
+        # Try wtype first. It needs the virtual-keyboard Wayland protocol, which
+        # KWin does not implement, so a failure here is expected on Plasma and
+        # must fall through to the clipboard route rather than give up.
         if shutil.which("wtype"):
             result = subprocess.run(
                 ["wtype", "--", text],
@@ -922,7 +925,8 @@ class InputBackend:
                 capture_output=True,
                 timeout=5,
             )
-            return result.returncode == 0
+            if result.returncode == 0:
+                return True
 
         # Fallback: clipboard paste via wl-copy + Ctrl+V
         # Use Popen + DEVNULL to avoid pipe-blocking from wl-copy's forked child

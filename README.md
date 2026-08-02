@@ -8,7 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/isac322/kwin-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/isac322/kwin-mcp/actions/workflows/ci.yml)
 
-A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that enables AI agents (Claude Code, Cursor, and other MCP clients) to launch, interact with, and observe any Wayland application in a fully isolated virtual KWin session -- without affecting the user's desktop. It also supports **live desktop automation** by connecting to an existing KWin session (real desktop or container) for collaborative workflows. With 30 MCP tools covering mouse, keyboard, touch, clipboard, accessibility tree inspection, screenshot capture, and window management, kwin-mcp provides everything needed for end-to-end GUI testing and desktop automation on Linux.
+A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that enables AI agents (Claude Code, Cursor, and other MCP clients) to launch, interact with, and observe any Wayland application in a fully isolated virtual KWin session -- without affecting the user's desktop. It also supports **live desktop automation** by connecting to an existing KWin session (real desktop or container) for collaborative workflows. With 31 MCP tools covering mouse, keyboard, touch, clipboard, accessibility tree inspection, screenshot capture, and window management, kwin-mcp provides everything needed for end-to-end GUI testing and desktop automation on Linux.
 
 ## Table of Contents
 
@@ -42,7 +42,7 @@ Run end-to-end GUI tests for KDE/Qt/GTK applications in headless isolated sessio
 
 ### AI-Driven Desktop Automation
 
-Let AI agents like Claude Code autonomously operate desktop applications. The agent reads the accessibility tree to understand the UI, performs actions through 30 MCP tools, and observes the results via screenshots -- creating a complete feedback loop for any Wayland application.
+Let AI agents like Claude Code autonomously operate desktop applications. The agent reads the accessibility tree to understand the UI, performs actions through 31 MCP tools, and observes the results via screenshots -- creating a complete feedback loop for any Wayland application.
 
 ### Live Desktop Collaboration
 
@@ -193,8 +193,8 @@ kwin-mcp-cli --default-live-session
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `screenshot` | `include_cursor?` `bool` (false) | Capture a screenshot of the virtual display (saved as PNG, returns file path) |
-| `accessibility_tree` | `app_name?` `str`, `max_depth?` `int` (15), `role?` `str` | Get the AT-SPI2 widget tree with roles, names, states, and coordinates. Use `role` to filter to specific element types (e.g. `"button"`, `"check box"`). Non-matching elements are hidden but their children are still traversed. |
-| `find_ui_elements` | `query` `str`, `app_name?` `str`, `states?` `list[str]` | Search for UI elements by name, role, or description (case-insensitive). Optionally filter by AT-SPI2 states (e.g. `["focused"]`, `["active", "visible"]`). `query` can be empty when filtering by states only. |
+| `accessibility_tree` | `app_name?` `str`, `max_depth?` `int` (15), `role?` `str` | Get the AT-SPI2 widget tree with roles, names, states, coordinates, and the text content of editors and entries (`text='...'`, capped at 200 characters). Use `role` to filter to specific element types (e.g. `"button"`, `"check box"`). Non-matching elements are hidden but their children are still traversed. |
+| `find_ui_elements` | `query` `str`, `app_name?` `str`, `states?` `list[str]` | Search for UI elements by name, role, or description (case-insensitive); matches report their text content when they have any. Optionally filter by AT-SPI2 states (e.g. `["focused"]`, `["active", "visible"]`). `query` can be empty when filtering by states only. |
 
 ### Mouse Input (6 tools)
 
@@ -233,13 +233,14 @@ kwin-mcp-cli --default-live-session
 | `clipboard_get` | _(none)_ | Read the current clipboard text content. Requires `enable_clipboard=true` in `session_start` and `wl-clipboard` installed. |
 | `clipboard_set` | `text` `str` | Set the clipboard text content. Same requirements as `clipboard_get`. |
 
-### Window Management (3 tools)
+### Window Management (4 tools)
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `launch_app` | `command` `str`, `env?` `dict` | Launch an application inside the running session. Returns PID and log path. |
 | `list_windows` | _(none)_ | List all accessible application windows with per-window titles and active/focused state markers via AT-SPI2 |
 | `focus_window` | `app_name` `str` | Focus a window by application name (case-insensitive match) |
+| `window_geometry` | `app_name?` `str` | Report window frame and client rectangles in **global screen coordinates** via KWin scripting. Accessibility rectangles are surface-local, so add the reported client origin before passing them to `mouse_click` / `touch_tap`. |
 
 ### UI Polling (1 tool)
 
@@ -264,7 +265,7 @@ Claude Code / AI Agent
   |
   |  MCP (stdio)
   v
-kwin-mcp server  (30 tools)       kwin-mcp-cli (interactive REPL)
+kwin-mcp server  (31 tools)       kwin-mcp-cli (interactive REPL)
   |                                  |
   +--- both delegate to AutomationEngine (core.py) ---+
   |
@@ -427,7 +428,7 @@ uv run kwin-mcp
 - **Clipboard requires opt-in** -- Clipboard tools (`clipboard_get`, `clipboard_set`) are disabled by default because `wl-copy` can hang in isolated sessions. Enable with `enable_clipboard=true` in `session_start`, and ensure `wl-clipboard` is installed.
 - **QMenu (native context menus) may not appear in AT-SPI2** -- Qt's AT-SPI2 bridge has incomplete support for popup menus on Wayland. Context menus may not be visible in `accessibility_tree` or `find_ui_elements`. Workaround: use `screenshot` to visually locate menu items and click by coordinates.
 - **Screen edge triggers do not work with EIS input** -- Auto-hide panels and layer-shell trigger strips rely on Wayland surface input routing, which may not respond to EIS-injected pointer events. Workaround: use `dbus_call` with KWin scripting or keyboard shortcuts instead.
-- **AT-SPI2 coordinates are surface-local, not screen-global** -- Wayland clients do not know their global screen position (by design). Coordinates returned by `find_ui_elements` and `accessibility_tree` are relative to the window's top-left corner, not the virtual screen. For single-window scenarios this is usually fine; for multi-window layouts, combine with `screenshot` for absolute positioning.
+- **AT-SPI2 coordinates are surface-local, not screen-global** -- Wayland clients do not know their global screen position (by design). Coordinates returned by `find_ui_elements` and `accessibility_tree` are relative to the window's top-left corner, while `mouse_click` and `touch_tap` take screen coordinates. Convert them by adding the client origin from `window_geometry`: clicking a reported rectangle verbatim lands on whatever occupies that screen position instead.
 
 ## End-to-End Testing
 

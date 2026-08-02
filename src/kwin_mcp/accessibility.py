@@ -16,6 +16,10 @@ import gi
 gi.require_version("Atspi", "2.0")
 from gi.repository import Atspi  # noqa: E402
 
+# Elements such as editors expose their whole document through the Text
+# interface; cap it so a tree dump stays readable.
+_MAX_TEXT_CHARS = 200
+
 
 @dataclass
 class ElementInfo:
@@ -30,6 +34,7 @@ class ElementInfo:
     width: int
     height: int
     actions: list[str]
+    text: str
     children_count: int
     depth: int
 
@@ -238,8 +243,9 @@ def _format_element(
         states_str = f" ({', '.join(info.states)})" if info.states else ""
         pos_str = f" @ ({info.x}, {info.y}, {info.width}x{info.height})"
         actions_str = f" [actions: {', '.join(info.actions)}]" if info.actions else ""
+        text_str = f" text={info.text!r}" if info.text else ""
 
-        line = f'{indent}- [{info.role}] "{info.name}"{states_str}{pos_str}{actions_str}'
+        line = f'{indent}- [{info.role}] "{info.name}"{states_str}{pos_str}{text_str}{actions_str}'
         lines.append(line)
         count = 1
 
@@ -323,6 +329,23 @@ def _extract_info(element: Atspi.Accessible, depth: int) -> ElementInfo:
     except Exception:
         pass
 
+    # Editors and entries carry their content in the Text interface rather than
+    # in the name, so without this their contents are invisible to callers. The
+    # cap keeps a whole document out of a tree dump that walks every element.
+    text = ""
+    try:
+        text_iface = element.get_text_iface()
+        if text_iface is not None:
+            # Call through the interface class: the bound method on the
+            # accessible returns an empty string on this PyGObject version.
+            count = Atspi.Text.get_character_count(text_iface)
+            if count:
+                text = Atspi.Text.get_text(text_iface, 0, min(count, _MAX_TEXT_CHARS))
+                if count > _MAX_TEXT_CHARS:
+                    text += "…"
+    except Exception:
+        pass
+
     return ElementInfo(
         role=role,
         name=name,
@@ -333,6 +356,7 @@ def _extract_info(element: Atspi.Accessible, depth: int) -> ElementInfo:
         width=width,
         height=height,
         actions=actions,
+        text=text,
         children_count=element.get_child_count(),
         depth=depth,
     )

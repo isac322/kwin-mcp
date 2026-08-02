@@ -356,9 +356,10 @@ class AutomationEngine:
         lines = [f"Found {len(elements)} elements matching {search_desc}:\n"]
         for el in elements:
             actions_str = f" [actions: {', '.join(el['actions'])}]" if el["actions"] else ""
+            text_str = f" text={el['text']!r}" if el.get("text") else ""
             lines.append(
                 f'- [{el["role"]}] "{el["name"]}" '
-                f"@ ({el['x']}, {el['y']}, {el['width']}x{el['height']}){actions_str}"
+                f"@ ({el['x']}, {el['y']}, {el['width']}x{el['height']}){text_str}{actions_str}"
             )
         return "\n".join(lines)
 
@@ -498,9 +499,9 @@ class AutomationEngine:
                 "wl-clipboard (e.g. 'sudo pacman -S wl-clipboard')."
             )
         inp = self._get_input()
-        session = self._get_session()
-        dbus_addr = session.info.dbus_address if session.info else None
-        ok = inp.keyboard_type_unicode(text, dbus_address=dbus_addr)
+        # wl-copy is a Wayland client: without the session's WAYLAND_DISPLAY it
+        # exits immediately and the clipboard fallback silently does nothing.
+        ok = inp.keyboard_type_unicode(text, env=self._session_env())
         result = f"Typed unicode: {text!r}" if ok else f"Failed to type unicode: {text!r}"
         return self._with_frame_capture(result, screenshot_after_ms)
 
@@ -685,9 +686,10 @@ class AutomationEngine:
         lines = [f"Found {len(elements)} elements matching {search_desc}:\n"]
         for el in elements:
             actions_str = f" [actions: {', '.join(el['actions'])}]" if el["actions"] else ""
+            text_str = f" text={el['text']!r}" if el.get("text") else ""
             lines.append(
                 f'- [{el["role"]}] "{el["name"]}" '
-                f"@ ({el['x']}, {el['y']}, {el['width']}x{el['height']}){actions_str}"
+                f"@ ({el['x']}, {el['y']}, {el['width']}x{el['height']}){text_str}{actions_str}"
             )
         return "\n".join(lines)
 
@@ -711,6 +713,47 @@ class AutomationEngine:
         self._get_session()
         resp = self._run_atspi("focus_window", app_name=app_name)
         return resp["result"]
+
+    def window_geometry(self, app_name: str = "") -> str:
+        """Report window positions in global screen coordinates.
+
+        AT-SPI2 rectangles are surface-local — a Wayland client cannot know where
+        the compositor placed it — so element coordinates must be offset by the
+        window's client origin before they can be clicked.
+        """
+        self._get_session()
+        env = self._session_env()
+        result = subprocess.run(
+            [sys.executable, "-m", "kwin_mcp.geometry"],
+            input=json.dumps({"app_name": app_name}),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            return f"Window geometry query failed (exit {result.returncode}): {result.stderr}"
+        try:
+            resp = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return f"Window geometry query returned invalid JSON: {result.stdout[:200]}"
+        if not resp["ok"]:
+            return f"Window geometry unavailable: {resp['error']}"
+
+        windows = resp["result"]
+        if not windows:
+            return "No windows found." if not app_name else f"No windows found for '{app_name}'."
+
+        lines = [f"Windows ({len(windows)}):"]
+        for window in windows:
+            frame, client = window["frame"], window["client"]
+            lines.append(
+                f'- {window["app"]} "{window["caption"]}"\n'
+                f"    frame:  ({frame['x']}, {frame['y']}, {frame['width']}x{frame['height']})\n"
+                f"    client: ({client['x']}, {client['y']}, "
+                f"{client['width']}x{client['height']})"
+            )
+        return "\n".join(lines)
 
     # ── D-Bus tools ───────────────────────────────────────────────────────
 

@@ -21,8 +21,8 @@ FROM debian:trixie-slim
 #   libgl1-mesa-dri,      - llvmpipe software rendering: the container has no
 #   libegl-mesa0            /dev/dri, so KWin's OpenGL backend needs them
 #   libcap2-bin           - setcap, used below to drop KWin's file capability
-#   qt6-wayland           - Qt Wayland platform plugin; without it Qt apps abort
-#   kcalc                 - small Qt/KF6 app used as the test subject
+#   kcalc, kwrite         - small Qt/KF6 apps used as test subjects
+#   wayland-utils         - wayland-info, backing the wayland_info tool
 #   fonts-dejavu-core     - without a font kcalc renders empty boxes
 #   python3-{gi,dbus,pil} - runtime deps as system packages (no wheel builds)
 RUN apt-get update \
@@ -39,6 +39,8 @@ RUN apt-get update \
         wl-clipboard \
         wtype \
         qt6-wayland \
+        kwrite \
+        wayland-utils \
         kcalc \
         fonts-dejavu-core \
         python3 \

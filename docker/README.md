@@ -19,12 +19,13 @@ No `--privileged`, `--cap-add` or X server is needed: the image drops KWin's
 
 ## What the tests cover
 
-| Test | Covers |
+| Test file | Covers |
 |---|---|
-| `test_launched_app_is_visible_to_accessibility` | virtual session startup, app launch, window listing over AT-SPI2 |
-| `test_widgets_of_the_launched_app_are_queryable` | AT-SPI2 tree traversal: roles, names, geometry |
-| `test_keyboard_input_reaches_the_app` | EIS input injection: a typed key reaches the app and changes its state |
-| `test_screenshot_captures_the_session` | KWin ScreenShot2 capture (opt-in, see below) |
+| `test_virtual_session_smoke.py` | the minimum contract: session starts, app launches, AT-SPI2 sees it, a keystroke reaches it |
+| `test_session_lifecycle.py` | double start, teardown and socket cleanup, bad app command, isolated HOME, live `session_connect` ownership |
+| `test_observation_tools.py` | `accessibility_tree` role filter, query and state filters, multi-window `list_windows`, `read_app_log`, `wayland_info` |
+| `test_window_geometry.py` | global frame/client rectangles and the surface-local offset they correct |
+| `test_input_injection.py` | EIS mouse, keyboard, unicode and clipboard input |
 
 ## Known limitations in the container
 
@@ -43,14 +44,19 @@ No `--privileged`, `--cap-add` or X server is needed: the image drops KWin's
   docker run --rm --device /dev/dri -e KWIN_MCP_E2E_SCREENSHOT=1 kwin-mcp-e2e
   ```
 
-- **Pointer input**: keyboard injection over KWin EIS is verified by the suite,
-  but `mouse_click` / `mouse_move` / `touch_tap` change nothing in the app.
-  KWin's own debug log shows the events arriving
-  (`kwin_libeis: "kwin-mcp eis absolute device" pointer motion absolute 529 233`,
-  `button 272 true/false`), so they are lost inside KWin rather than on the
-  client side. Excluded by experiment: wrong coordinates (a full-screen click
-  sweep changed nothing), a missing device region (the absolute device reports
-  `0,0 1280x800`), a missing button capability, the relative pointer device, a
-  dead EIS connection (typing still works after a click), and a missing cursor
-  theme. Keyboard events reach the app because they follow keyboard focus
-  instead of pointer routing.
+- **Pointer coordinates are not screen coordinates**: `mouse_click(x, y)` takes
+  global screen coordinates, while `find_ui_elements` and `accessibility_tree`
+  report surface-local ones — a Wayland client cannot know its own position, so
+  its frame always starts at `(0, 0)`. Clicking a reported rect verbatim lands
+  on whatever happens to sit at that screen position. Add the client origin from
+  `window_geometry` first: for a centred 640x480 kcalc window on a 1280x800
+  screen it is `(320, 172)`, so the "Seven" button at surface-local
+  `(8, 204, 100x59)` is clicked at global `(378, 405)`, after which the
+  calculator shows binary `111`.
+
+- **Not covered by the suite, for lack of a deterministic oracle**:
+  `focus_window` reports success but no AT-SPI2 state follows it (with kwrite
+  active, focusing kcalc left kwrite's window marked `[active]` for 5s);
+  right-click and modifier-click produce no observable AT-SPI2 change; and
+  `mouse_scroll` leaves the exposed scrollbar value untouched in a 100-line
+  document. These are unverified rather than known-broken.

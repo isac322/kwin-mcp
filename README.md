@@ -408,6 +408,8 @@ uv tool install kwin-mcp
 pip install kwin-mcp
 ```
 
+**System requirements:** PyGObject >= 3.54 builds against girepository-2.0, so Debian/Ubuntu-based distros need `libgirepository-2.0-dev` (plus standard build tools) installed before `pip install`. The optional `wl-clipboard` and `wtype` packages are required for the clipboard and Unicode-typing tools.
+
 ### From source
 
 ```bash

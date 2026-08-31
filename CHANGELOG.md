@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Segfault on Python 3.14 caused by missing `argtypes` on variadic `ei_seat_bind_capabilities` ctypes call
+- `session_start` hanging forever when KWin fails to start: startup now fails with a clear error instead (bounded stdout reader + bounded socket wait in the session wrapper)
+- Fresh installs breaking on import with mcp 2.x: `mcp` dependency is now bounded to `<2` (`FastMCP` was removed in mcp 2.0)
 
 ## [0.7.0] - 2026-03-29
 

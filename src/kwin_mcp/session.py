@@ -156,18 +156,7 @@ class Session:
         # Read startup output from the wrapper script.
         # Expected lines: DBUS_SESSION_BUS_ADDRESS=..., READY
         # Any other lines (e.g. from D-Bus activation) are ignored.
-        dbus_address = ""
-        got_ready = False
-        if self._process.stdout:
-            while True:
-                line = self._process.stdout.readline().decode().strip()
-                if not line and self._process.poll() is not None:
-                    break
-                if line.startswith("DBUS_SESSION_BUS_ADDRESS="):
-                    dbus_address = line.split("=", 1)[1]
-                elif line == "READY":
-                    got_ready = True
-                    break
+        dbus_address, got_ready = self._read_startup_lines(self._process, timeout=25.0)
 
         # Wait for kwin to be ready (socket file appears)
         socket_path = Path(runtime_dir) / self._socket_name
@@ -219,6 +208,9 @@ class Session:
             env.update(extra_env)
         if self._info.dbus_address:
             env["DBUS_SESSION_BUS_ADDRESS"] = self._info.dbus_address
+        # Never leak the host DISPLAY into the isolated session: X11 apps
+        # would silently open on the user's real desktop.
+        env.pop("DISPLAY", None)
 
         # Create log file for stdout/stderr capture
         app_name = Path(command[0]).stem if command else "unknown"
@@ -328,6 +320,55 @@ class Session:
         self._info = None
         self._home_dir = None
 
+    @staticmethod
+    def _read_startup_lines(process: subprocess.Popen[bytes], timeout: float) -> tuple[str, bool]:
+        """Read wrapper startup lines with an overall deadline.
+
+        Returns ``(dbus_address, got_ready)``. Never blocks longer than
+        ``timeout`` seconds: a wrapper that never prints ``READY`` (dead
+        KWin, missing binaries) must surface as an error instead of
+        hanging the caller forever.
+        """
+        import queue
+        import threading
+
+        lines: queue.Queue[bytes | None] = queue.Queue()
+
+        def reader() -> None:
+            try:
+                if process.stdout is not None:
+                    for line in process.stdout:
+                        lines.put(line)
+            except Exception:
+                pass
+            finally:
+                lines.put(None)
+
+        thread = threading.Thread(target=reader, daemon=True)
+        thread.start()
+
+        dbus_address = ""
+        got_ready = False
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                line = lines.get(timeout=0.2)
+            except queue.Empty:
+                if process.poll() is not None:
+                    break
+                continue
+            if line is None:
+                break
+            text = line.decode("utf-8", errors="replace").strip()
+            if text.startswith("DBUS_SESSION_BUS_ADDRESS="):
+                dbus_address = text.split("=", 1)[1]
+            elif text == "READY":
+                got_ready = True
+                break
+            elif text == "NOSOCKET":
+                break
+        return dbus_address, got_ready
+
     def _build_wrapper_script(self, config: SessionConfig) -> str:
         """Build the bash script that runs inside dbus-run-session."""
         return f"""\
@@ -354,12 +395,9 @@ sleep 0.2
 # only after KWin creates it.
 dbus-update-activation-environment WAYLAND_DISPLAY={self._socket_name} QT_QPA_PLATFORM=wayland
 
-# Start KWin WITHOUT WAYLAND_DISPLAY to prevent nesting attempt.
-# KWin with --virtual creates its own compositor, it must not try
-# to connect to another compositor as a client.
-# Explicitly pass KWIN_ permission env vars to ensure they reach the
-# KWin process (environment inheritance through dbus-run-session can be unreliable).
-env -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM \
+# Start KWin WITHOUT WAYLAND_DISPLAY and without DISPLAY to prevent
+# nesting attempts on the host compositor / host X server.
+env -u WAYLAND_DISPLAY -u DISPLAY -u QT_QPA_PLATFORM \
     KWIN_WAYLAND_NO_PERMISSION_CHECKS=1 \
     KWIN_SCREENSHOT_NO_PERMISSION_CHECKS=1 \
     kwin_wayland --virtual --no-lockscreen \
@@ -367,8 +405,19 @@ env -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM \
     --socket {self._socket_name} &
 KWIN_PID=$!
 
-# Wait for KWin socket to appear
-while [ ! -e "$XDG_RUNTIME_DIR/{self._socket_name}" ]; do sleep 0.1; done
+# Wait for KWin socket to appear (bounded: 150 x 0.1s = 15s max)
+SOCKET_OK=0
+for i in $(seq 1 150); do
+    if [ -e "$XDG_RUNTIME_DIR/{self._socket_name}" ]; then
+        SOCKET_OK=1
+        break
+    fi
+    sleep 0.1
+done
+if [ "$SOCKET_OK" != "1" ]; then
+    echo "NOSOCKET"
+    exit 1
+fi
 sleep 0.3
 
 # Signal parent that setup is complete
@@ -400,6 +449,7 @@ wait $KWIN_PID
             "KWIN_WAYLAND_NO_PERMISSION_CHECKS": "1",
         }
         # Remove host display references to avoid kwin connecting to host
+        # and to keep X11 apps inside the session's own XWayland.
         env.pop("WAYLAND_DISPLAY", None)
         env.pop("DISPLAY", None)
 

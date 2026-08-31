@@ -80,6 +80,7 @@ class Session:
         self._app_counter: int = 0
         self._config: SessionConfig | None = None
         self._home_dir: Path | None = None
+        self._x11_display: str | None = None
 
     @property
     def is_running(self) -> bool:
@@ -156,7 +157,7 @@ class Session:
         # Read startup output from the wrapper script.
         # Expected lines: DBUS_SESSION_BUS_ADDRESS=..., READY
         # Any other lines (e.g. from D-Bus activation) are ignored.
-        dbus_address, got_ready = self._read_startup_lines(self._process, timeout=25.0)
+        dbus_address, got_ready, wrapper_x11 = self._read_startup_lines(self._process, timeout=25.0)
 
         # Wait for kwin to be ready (socket file appears)
         socket_path = Path(runtime_dir) / self._socket_name
@@ -177,6 +178,10 @@ class Session:
             screenshot_dir = self._home_dir / ".screenshots"
         else:
             screenshot_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-screenshots-"))
+
+        # The wrapper reports the X display it picked for the session's
+        # Xwayland (or None when Xwayland is not available).
+        self._x11_display = wrapper_x11
 
         self._info = SessionInfo(
             dbus_address=dbus_address,
@@ -208,6 +213,15 @@ class Session:
             env.update(extra_env)
         if self._info.dbus_address:
             env["DBUS_SESSION_BUS_ADDRESS"] = self._info.dbus_address
+        # X11 apps must land on this session's XWayland, not the host X
+        # server: replace the inherited host DISPLAY with the display KWin
+        # created for this session (socket appeared after session start).
+        if self._x11_display is not None:
+            env["DISPLAY"] = self._x11_display
+        else:
+            # No session XWayland: never leak the host DISPLAY into the
+            # isolated session.
+            env.pop("DISPLAY", None)
 
         # Create log file for stdout/stderr capture
         app_name = Path(command[0]).stem if command else "unknown"
@@ -318,13 +332,15 @@ class Session:
         self._home_dir = None
 
     @staticmethod
-    def _read_startup_lines(process: subprocess.Popen[bytes], timeout: float) -> tuple[str, bool]:
+    def _read_startup_lines(
+        process: subprocess.Popen[bytes], timeout: float
+    ) -> tuple[str, bool, str | None]:
         """Read wrapper startup lines with an overall deadline.
 
-        Returns ``(dbus_address, got_ready)``. Never blocks longer than
-        ``timeout`` seconds: a wrapper that never prints ``READY`` (dead
-        KWin, missing binaries) must surface as an error instead of
-        hanging the caller forever.
+        Returns ``(dbus_address, got_ready, x11_display)``. Never blocks
+        longer than ``timeout`` seconds: a wrapper that never prints
+        ``READY`` (dead KWin, missing binaries) must surface as an error
+        instead of hanging the caller forever.
         """
         import queue
         import threading
@@ -346,6 +362,7 @@ class Session:
 
         dbus_address = ""
         got_ready = False
+        x11_display: str | None = None
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
@@ -364,7 +381,11 @@ class Session:
                 break
             elif text == "NOSOCKET":
                 break
-        return dbus_address, got_ready
+            elif text.startswith("XDISPLAY="):
+                value = text.split("=", 1)[1].strip()
+                if value.startswith(":"):
+                    x11_display = value
+        return dbus_address, got_ready, x11_display
 
     def _build_wrapper_script(self, config: SessionConfig) -> str:
         """Build the bash script that runs inside dbus-run-session."""
@@ -373,8 +394,8 @@ echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
 
 # Ensure all child processes are cleaned up on exit
 cleanup() {{
-    kill $KWIN_PID $AT_SPI_PID 2>/dev/null
-    wait $KWIN_PID $AT_SPI_PID 2>/dev/null
+    kill $KWIN_PID $AT_SPI_PID $XWAYLAND_PID 2>/dev/null
+    wait $KWIN_PID $AT_SPI_PID $XWAYLAND_PID 2>/dev/null
 }}
 trap cleanup EXIT TERM INT HUP
 
@@ -392,12 +413,25 @@ sleep 0.2
 # only after KWin creates it.
 dbus-update-activation-environment WAYLAND_DISPLAY={self._socket_name} QT_QPA_PLATFORM=wayland
 
-# Start KWin WITHOUT WAYLAND_DISPLAY to prevent nesting attempt.
-# KWin with --virtual creates its own compositor, it must not try
-# to connect to another compositor as a client.
-# Explicitly pass KWIN_ permission env vars to ensure they reach the
-# KWin process (environment inheritance through dbus-run-session can be unreliable).
-env -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM \
+# Clean stale X11 sockets/locks left by killed Xwayland servers (same
+# user), so the session Xwayland gets a deterministic display number.
+for d in $(seq 0 139); do
+    if [ -e "/tmp/.X$d-lock" ] && ! pgrep -f "Xwayland :$d " >/dev/null 2>&1; then
+        rm -f "/tmp/.X$d-lock" "/tmp/.X11-unix/X$d"
+    fi
+done
+
+# Pick a free X11 display number for the session's Xwayland.
+for d in $(seq 90 139); do
+    if [ ! -e "/tmp/.X11-unix/X$d" ] && [ ! -e "/tmp/.X$d-lock" ]; then
+        export DISPLAY=":$d"
+        break
+    fi
+done
+
+# Start KWin WITHOUT WAYLAND_DISPLAY and without DISPLAY to prevent
+# nesting attempts on the host compositor / host X server.
+env -u WAYLAND_DISPLAY -u DISPLAY -u QT_QPA_PLATFORM \
     KWIN_WAYLAND_NO_PERMISSION_CHECKS=1 \
     KWIN_SCREENSHOT_NO_PERMISSION_CHECKS=1 \
     kwin_wayland --virtual --no-lockscreen \
@@ -420,7 +454,27 @@ if [ "$SOCKET_OK" != "1" ]; then
 fi
 sleep 0.3
 
-# Signal parent that setup is complete
+# Standalone Xwayland bound to the session compositor (KWin 6.7 with
+# --virtual does not spawn its own). -ac: no X auth inside an isolated
+# throwaway session.
+if [ -n "$DISPLAY" ]; then
+    env WAYLAND_DISPLAY={self._socket_name} Xwayland "$DISPLAY" -rootless -ac > /dev/null 2>&1 &
+    XWAYLAND_PID=$!
+fi
+
+# Signal parent that setup is complete (XDISPLAY first: the parent stops
+# reading at READY)
+XSOCKET="/tmp/.X11-unix/X${{DISPLAY#\":\"}}"
+XSOCKET_OK=0
+for i in $(seq 1 50); do
+    [ -e "$XSOCKET" ] && {{ XSOCKET_OK=1; break; }}
+    sleep 0.1
+done
+if [ "$XSOCKET_OK" = "1" ]; then
+    echo "XDISPLAY=$DISPLAY"
+else
+    echo "XDISPLAY="
+fi
 echo "READY"
 
 # Block until kwin exits
@@ -449,6 +503,7 @@ wait $KWIN_PID
             "KWIN_WAYLAND_NO_PERMISSION_CHECKS": "1",
         }
         # Remove host display references to avoid kwin connecting to host
+        # and to keep X11 apps inside the session's own XWayland.
         env.pop("WAYLAND_DISPLAY", None)
         env.pop("DISPLAY", None)
 

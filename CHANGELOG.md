@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Segfault on Python 3.14 caused by missing `argtypes` on variadic `ei_seat_bind_capabilities` ctypes call
 
+## [0.8.0] - 2026-09-06
+
+### Changed
+
+- Migrated from MCP Python SDK 1.x to 2.x: `FastMCP` renamed to `MCPServer` (`from mcp.server import MCPServer`). The tool API is unchanged — all 30 tools keep their names, parameters, descriptions, and behavior
+- Tool handlers in `server.py` are now declared `async def`: mcp 2.x runs synchronous handlers on anyio worker threads, which crashed libei/D-Bus ctypes usage (SIGSEGV in `_bind_seat_capabilities`). `async def` keeps handlers on the event loop thread, matching v1 behavior
+- Dependencies upgraded to the latest releases: `mcp` 1.26.0 → 2.1.1, `Pillow` 12.1.1 → 12.3.0, `PyGObject` 3.54.5 → 3.58.0, `anyio` 4.12.1 → 4.15.1, `pydantic` 2.12.5 → 2.13.5, `starlette` 0.52.1 → 1.6.0, `uvicorn` 0.41.0 → 0.52.4 (new transitive dependencies of `mcp` 2.x: `mcp-types` 2.1.1, `httpx2` 2.12.0, `opentelemetry-api` 1.44.0)
+- `mcp` dependency constraint tightened from `>=1.0.0` (unbounded) to `>=2.0.0,<3` to prevent silent major-version drift from repeating the v1→v2 incident where an unbounded bound resolved to a new major and broke fresh launches
+- Minimum dependency floors raised in `pyproject.toml`: `PyGObject>=3.58.0`, `dbus-python>=1.4.0`, `Pillow>=12.3.0`
+
 ## [0.7.0] - 2026-03-29
 
 ### Added
@@ -125,7 +135,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keyboard input: text typing and key combinations via KWin EIS
 - FastMCP-based MCP server with stdio transport
 
-[Unreleased]: https://github.com/isac322/kwin-mcp/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/isac322/kwin-mcp/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/isac322/kwin-mcp/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/isac322/kwin-mcp/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/isac322/kwin-mcp/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/isac322/kwin-mcp/compare/v0.5.0...v0.5.1

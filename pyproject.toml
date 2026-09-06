@@ -1,6 +1,6 @@
 [project]
 name = "kwin-mcp"
-version = "0.7.0"
+version = "0.8.0"
 description = "MCP server for Linux desktop GUI automation on KDE Plasma 6 Wayland — virtual testing and live desktop automation"
 readme = "README.md"
 license = "MIT"
@@ -53,10 +53,13 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "mcp>=1.0.0",
-    "PyGObject>=3.42.0",
-    "dbus-python>=1.3.2",
-    "Pillow>=10.0.0",
+    # mcp 2.x: FastMCP renamed to MCPServer (mcp.server); upper bound until
+    # a v3 migration is done (v1->v2 breakage precedent: open >=1.0.0 bound
+    # silently resolved to 2.1.1 and broke fresh launches, see wingman #221).
+    "mcp>=2.0.0,<3",
+    "PyGObject>=3.58.0",
+    "dbus-python>=1.4.0",
+    "Pillow>=12.3.0",
 ]
 
 [project.urls]
@@ -71,11 +74,15 @@ kwin-mcp = "kwin_mcp.server:main"
 kwin-mcp-cli = "kwin_mcp.cli:main"
 
 [build-system]
-requires = ["uv_build>=0.10.3,<0.12.0"]
+requires = ["uv_build>=0.10.3,<0.13.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
-dev = ["ruff>=0.11.0", "ty>=0.0.1"]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.6",
+    "ty>=0.0.78",
+]
 
 [tool.ruff]
 target-version = "py312"
@@ -111,8 +118,3 @@ python-version = "3.12"
 include = ["src/kwin_mcp/accessibility.py", "src/kwin_mcp/server.py"]
 [tool.ty.overrides.rules]
 unresolved-import = "ignore"
-
-[[tool.ty.overrides]]
-include = ["src/kwin_mcp/input.py"]
-[tool.ty.overrides.rules]
-possibly-missing-attribute = "ignore"

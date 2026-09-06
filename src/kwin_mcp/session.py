@@ -380,7 +380,7 @@ wait $KWIN_PID
 
     def _build_env(self, config: SessionConfig) -> dict[str, str]:
         """Build the environment for the isolated session."""
-        env = {
+        env: dict[str, str] = {
             **os.environ,
             "KDE_FULL_SESSION": "true",
             "KDE_SESSION_VERSION": "6",

@@ -255,7 +255,7 @@ def _capture_via_spectacle(
     if include_cursor:
         cmd.append("-p")
 
-    env = {**os.environ}
+    env: dict[str, str] = {**os.environ}
     if dbus_address:
         env["DBUS_SESSION_BUS_ADDRESS"] = dbus_address
     if wayland_socket:

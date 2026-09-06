@@ -79,7 +79,7 @@ class AutomationEngine:
     def _session_env(self) -> dict[str, str]:
         """Build environment dict for tools that need the isolated session."""
         session = self._get_session()
-        env = {**os.environ}
+        env: dict[str, str] = {**os.environ}
         info = session.info
         if info:
             if info.dbus_address:

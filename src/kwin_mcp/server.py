@@ -12,12 +12,12 @@ from __future__ import annotations
 import sys
 from typing import Annotated
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 from pydantic import Field
 
 from kwin_mcp.core import AutomationEngine
 
-mcp = FastMCP("kwin-mcp")
+mcp = MCPServer("kwin-mcp")
 _engine = AutomationEngine()
 
 # Detect --default-live-session flag early (before MCP framework consumes args)
@@ -28,7 +28,7 @@ _live_session_mode = "--default-live-session" in sys.argv
 
 
 @mcp.tool()
-def session_start(
+async def session_start(
     app_command: Annotated[
         str,
         Field(
@@ -91,7 +91,7 @@ def session_start(
 
 
 @mcp.tool()
-def session_connect(
+async def session_connect(
     dbus_address: Annotated[
         str,
         Field(
@@ -126,7 +126,7 @@ def session_connect(
 
 
 @mcp.tool()
-def session_stop() -> str:
+async def session_stop() -> str:
     """Stop the current session and clean up.
 
     For virtual sessions: terminates KWin, all launched apps, and the D-Bus session.
@@ -141,7 +141,7 @@ def session_stop() -> str:
 
 
 @mcp.tool()
-def screenshot(
+async def screenshot(
     include_cursor: Annotated[
         bool,
         Field(description="If true, render the mouse cursor in the screenshot."),
@@ -156,7 +156,7 @@ def screenshot(
 
 
 @mcp.tool()
-def accessibility_tree(
+async def accessibility_tree(
     app_name: Annotated[
         str,
         Field(description="Filter to a specific app name (empty string = all apps)."),
@@ -181,7 +181,7 @@ def accessibility_tree(
 
 
 @mcp.tool()
-def find_ui_elements(
+async def find_ui_elements(
     query: Annotated[
         str,
         Field(
@@ -215,7 +215,7 @@ def find_ui_elements(
 
 
 @mcp.tool()
-def mouse_click(
+async def mouse_click(
     x: Annotated[
         int,
         Field(description="X coordinate in pixels (0 = left edge of virtual screen)."),
@@ -264,7 +264,7 @@ def mouse_click(
 
 
 @mcp.tool()
-def mouse_move(
+async def mouse_move(
     x: Annotated[int, Field(description="X coordinate in pixels.")],
     y: Annotated[int, Field(description="Y coordinate in pixels.")],
     screenshot_after_ms: Annotated[
@@ -284,7 +284,7 @@ def mouse_move(
 
 
 @mcp.tool()
-def mouse_scroll(
+async def mouse_scroll(
     x: Annotated[int, Field(description="X coordinate in pixels.")],
     y: Annotated[int, Field(description="Y coordinate in pixels.")],
     delta: Annotated[
@@ -323,7 +323,7 @@ def mouse_scroll(
 
 
 @mcp.tool()
-def mouse_drag(
+async def mouse_drag(
     from_x: Annotated[int, Field(description="Starting X coordinate in pixels.")],
     from_y: Annotated[int, Field(description="Starting Y coordinate in pixels.")],
     to_x: Annotated[int, Field(description="Ending X coordinate in pixels.")],
@@ -366,7 +366,7 @@ def mouse_drag(
 
 
 @mcp.tool()
-def mouse_button_down(
+async def mouse_button_down(
     x: Annotated[int, Field(description="X coordinate in pixels.")],
     y: Annotated[int, Field(description="Y coordinate in pixels.")],
     button: Annotated[
@@ -383,7 +383,7 @@ def mouse_button_down(
 
 
 @mcp.tool()
-def mouse_button_up(
+async def mouse_button_up(
     x: Annotated[int, Field(description="X coordinate in pixels.")],
     y: Annotated[int, Field(description="Y coordinate in pixels.")],
     button: Annotated[
@@ -402,7 +402,7 @@ def mouse_button_up(
 
 
 @mcp.tool()
-def keyboard_type(
+async def keyboard_type(
     text: Annotated[
         str,
         Field(
@@ -428,7 +428,7 @@ def keyboard_type(
 
 
 @mcp.tool()
-def keyboard_type_unicode(
+async def keyboard_type_unicode(
     text: Annotated[
         str,
         Field(description="Unicode text to type (supports any script: Korean, CJK, emoji, etc.)."),
@@ -449,7 +449,7 @@ def keyboard_type_unicode(
 
 
 @mcp.tool()
-def keyboard_key(
+async def keyboard_key(
     key: Annotated[
         str,
         Field(
@@ -474,7 +474,7 @@ def keyboard_key(
 
 
 @mcp.tool()
-def keyboard_key_down(
+async def keyboard_key_down(
     key: Annotated[
         str,
         Field(description='Key to press and hold (e.g. "ctrl", "shift", "alt").'),
@@ -490,7 +490,7 @@ def keyboard_key_down(
 
 
 @mcp.tool()
-def keyboard_key_up(
+async def keyboard_key_up(
     key: Annotated[
         str,
         Field(description='Key to release (e.g. "ctrl", "shift", "alt").'),
@@ -508,7 +508,7 @@ def keyboard_key_up(
 
 
 @mcp.tool()
-def touch_tap(
+async def touch_tap(
     x: Annotated[int, Field(description="X coordinate in pixels.")],
     y: Annotated[int, Field(description="Y coordinate in pixels.")],
     hold_ms: Annotated[
@@ -531,7 +531,7 @@ def touch_tap(
 
 
 @mcp.tool()
-def touch_swipe(
+async def touch_swipe(
     from_x: Annotated[int, Field(description="Starting X coordinate in pixels.")],
     from_y: Annotated[int, Field(description="Starting Y coordinate in pixels.")],
     to_x: Annotated[int, Field(description="Ending X coordinate in pixels.")],
@@ -557,7 +557,7 @@ def touch_swipe(
 
 
 @mcp.tool()
-def touch_pinch(
+async def touch_pinch(
     center_x: Annotated[int, Field(description="Center X coordinate of the pinch gesture.")],
     center_y: Annotated[int, Field(description="Center Y coordinate of the pinch gesture.")],
     start_distance: Annotated[
@@ -595,7 +595,7 @@ def touch_pinch(
 
 
 @mcp.tool()
-def touch_multi_swipe(
+async def touch_multi_swipe(
     from_x: Annotated[
         int, Field(description="Starting X coordinate (center of finger group) in pixels.")
     ],
@@ -631,7 +631,7 @@ def touch_multi_swipe(
 
 
 @mcp.tool()
-def clipboard_get() -> str:
+async def clipboard_get() -> str:
     """Read the current clipboard content in the isolated session.
 
     Requires enable_clipboard=true in session_start and wl-clipboard
@@ -642,7 +642,7 @@ def clipboard_get() -> str:
 
 
 @mcp.tool()
-def clipboard_set(
+async def clipboard_set(
     text: Annotated[str, Field(description="Text to copy to clipboard.")],
 ) -> str:
     """Set the clipboard content in the isolated session.
@@ -658,7 +658,7 @@ def clipboard_set(
 
 
 @mcp.tool()
-def wait_for_element(
+async def wait_for_element(
     query: Annotated[
         str,
         Field(
@@ -700,7 +700,7 @@ def wait_for_element(
 
 
 @mcp.tool()
-def launch_app(
+async def launch_app(
     command: Annotated[
         str,
         Field(description='Command to launch (e.g. "kcalc" or "/path/to/app --arg").'),
@@ -719,7 +719,7 @@ def launch_app(
 
 
 @mcp.tool()
-def list_windows() -> str:
+async def list_windows() -> str:
     """List accessible application windows in the isolated session.
 
     Uses AT-SPI2 to enumerate top-level applications and their window count.
@@ -730,7 +730,7 @@ def list_windows() -> str:
 
 
 @mcp.tool()
-def focus_window(
+async def focus_window(
     app_name: Annotated[
         str,
         Field(description="Application name to focus (case-insensitive substring match)."),
@@ -748,7 +748,7 @@ def focus_window(
 
 
 @mcp.tool()
-def dbus_call(
+async def dbus_call(
     service: Annotated[str, Field(description='D-Bus service name (e.g. "org.kde.KWin").')],
     path: Annotated[str, Field(description='Object path (e.g. "/org/kde/KWin").')],
     interface: Annotated[str, Field(description='Interface name (e.g. "org.kde.KWin.Scripting").')],
@@ -772,7 +772,7 @@ def dbus_call(
 
 
 @mcp.tool()
-def read_app_log(
+async def read_app_log(
     pid: Annotated[
         int,
         Field(description="PID of the app (returned by launch_app or session_start)."),
@@ -791,7 +791,7 @@ def read_app_log(
 
 
 @mcp.tool()
-def wayland_info(
+async def wayland_info(
     filter_protocol: Annotated[
         str,
         Field(

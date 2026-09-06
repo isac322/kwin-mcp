@@ -40,6 +40,29 @@ class SessionConfig:
     extra_env: dict[str, str] = field(default_factory=dict)
 
 
+def _write_deterministic_session_config(config_dir: Path) -> None:
+    """Pre-seed an isolated config dir with settings that make sessions deterministic.
+
+    KWin builds its XKB keymap from ``$XDG_CONFIG_HOME/kxkbrc`` and falls back
+    to the environment (``XKB_DEFAULT_LAYOUT``), which on hosts configured with
+    a non-US primary layout (e.g. ``ru,us``) makes evdev keycodes typed by the
+    EIS keyboard produce the wrong characters (``hello`` → ``руддщ``).
+    Leaving ``kxkbrc`` absent from the isolated config dir keeps the default
+    US layout.
+
+    The same directory silences the kwallet popup (ksecretd/kwalletd) that
+    steals compositor focus at session start, which otherwise breaks
+    focus-dependent automation flows such as ``focus_window`` + keyboard
+    verification.
+
+    Only writes files that do not exist yet so explicit pre-seeding wins.
+    """
+    config_dir.mkdir(parents=True, exist_ok=True)
+    kwalletrc = config_dir / "kwalletrc"
+    if not kwalletrc.exists():
+        kwalletrc.write_text("[Wallet]\nEnabled=false\nFirst Use=false\nLaunch Manager=false\n")
+
+
 @dataclass
 class AppInfo:
     """Tracking info for a launched application."""
@@ -80,6 +103,7 @@ class Session:
         self._app_counter: int = 0
         self._config: SessionConfig | None = None
         self._home_dir: Path | None = None
+        self._session_config_dir: Path | None = None
 
     @property
     def is_running(self) -> bool:
@@ -140,6 +164,18 @@ class Session:
         for suffix in ("", ".lock"):
             path = Path(runtime_dir) / f"{self._socket_name}{suffix}"
             path.unlink(missing_ok=True)
+
+        # Deterministic per-session config dir: without an isolated
+        # XDG_CONFIG_HOME, KWin inherits the host's kxkbrc and the virtual
+        # session runs with the host's XKB layout list (e.g. ru,us — the
+        # evdev keycodes then type Cyrillic instead of ASCII), and the
+        # kwallet popup steals focus at session start.
+        self._session_config_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-config-"))
+        _write_deterministic_session_config(self._session_config_dir)
+        # Deliberately NOT isolating XDG_DATA_HOME / XDG_CACHE_HOME: qtbase
+        # crash-logs a fatal qFatal when a nonexistent standard data dir is
+        # set (reproduced on qt6-base 6.10), and existing dirs already
+        # contain everything kwin/konsole need to start.
 
         # Build the wrapper script that runs inside dbus-run-session
         wrapper_script = self._build_wrapper_script(config)
@@ -324,6 +360,11 @@ class Session:
             path = Path(runtime_dir) / f"{self._socket_name}{suffix}"
             path.unlink(missing_ok=True)
 
+        # Remove the per-session config dir
+        if self._session_config_dir is not None:
+            shutil.rmtree(self._session_config_dir, ignore_errors=True)
+            self._session_config_dir = None
+
         self._process = None
         self._info = None
         self._home_dir = None
@@ -399,6 +440,23 @@ wait $KWIN_PID
             # Safe in isolated virtual sessions where there is no user desktop to protect.
             "KWIN_WAYLAND_NO_PERMISSION_CHECKS": "1",
         }
+        # Per-session deterministic config dir (US keymap via absent kxkbrc,
+        # kwallet popup disabled). Set after os.environ so it always wins.
+        if self._session_config_dir is not None:
+            env["XDG_CONFIG_HOME"] = str(self._session_config_dir)
+            # Strip host XKB defaults: on hosts with a non-US primary layout
+            # (e.g. ru,us via locale1) KWin compiles that keymap even with an
+            # empty kxkbrc, and evdev keycodes from the EIS keyboard then
+            # produce the host layout's characters instead of ASCII.
+            # An empty XKB_DEFAULT_LAYOUT resets libxkbcommon to plain "us".
+            for var in (
+                "XKB_DEFAULT_LAYOUT",
+                "XKB_DEFAULT_VARIANT",
+                "XKB_DEFAULT_OPTIONS",
+                "XKB_DEFAULT_RULES",
+                "XKB_DEFAULT_MODEL",
+            ):
+                env.pop(var, None)
         # Remove host display references to avoid kwin connecting to host
         env.pop("WAYLAND_DISPLAY", None)
         env.pop("DISPLAY", None)

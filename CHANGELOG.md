@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Text injection into isolated virtual sessions produced the host keyboard layout's characters (e.g. `hello` → `руддщ` on a host with `ru,us` layouts): `kwin_wayland --virtual` inherited the host's `XDG_CONFIG_HOME` and compiled its `kxkbrc` layout list into the keymap. Virtual sessions now run with a throwaway per-session config dir (pre-seeded to disable the kwallet popup that stole compositor focus at startup) and without the host's `XKB_DEFAULT_*` environment variables, so the EIS keyboard types plain US ASCII regardless of host layout configuration
 - Segfault on Python 3.14 caused by missing `argtypes` on variadic `ei_seat_bind_capabilities` ctypes call
 
 ## [0.7.0] - 2026-03-29

@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import ctypes.util
+import os
 import select
 import shutil
 import subprocess
@@ -704,10 +705,12 @@ class InputBackend:
 
             time.sleep(0.02)
 
-    def keyboard_key(self, key: str) -> None:
-        """Press a key combination (e.g., 'ctrl+c', 'Return', 'alt+F4').
+    def _press_key_combo(self, key: str) -> None:
+        """Press one key combo via the bare-keycode path.
 
-        Supports modifier combinations with '+' separator.
+        This is ``keyboard_key``'s core without the ctrl+q alias dispatch, so
+        the alias can send each combo exactly once without recursing into
+        itself.
         """
         modifiers, keycode = _parse_key_combo(key)
         if keycode is None:
@@ -727,6 +730,26 @@ class InputBackend:
         for mod in reversed(modifiers):
             time.sleep(0.01)
             self._client.keyboard_key(mod, _RELEASED)
+
+    def keyboard_key(self, key: str) -> None:
+        """Press a key combination (e.g., 'ctrl+c', 'Return', 'alt+F4').
+
+        Supports modifier combinations with '+' separator.
+        """
+        # KDE splits window-close across two bindings by ACCEL convention:
+        # Konsole binds it to Ctrl+Shift+Q (its ACCEL convention is
+        # Ctrl+Shift), while most other KDE apps (kwrite, kcalc) bind plain
+        # Ctrl+Q — each combo is unbound in the other apps. Send both with a
+        # short pause (mirroring the paste alias above); on apps that bind
+        # only one of them the other is an inert no-op shortcut, so "quit the
+        # focused app" behaves uniformly across KDE apps.
+        if key.lower() in ("ctrl+q", "control+q", "ctrl+quit"):
+            self._press_key_combo("ctrl+q")
+            time.sleep(0.15)
+            self._press_key_combo("ctrl+shift+q")
+            return
+
+        self._press_key_combo(key)
 
     def keyboard_key_down(self, key: str) -> None:
         """Press (and hold) a key combination without releasing.
@@ -885,21 +908,36 @@ class InputBackend:
         for tid in tids:
             self._client.touch_up(tid)
 
-    def keyboard_type_unicode(self, text: str, dbus_address: str | None = None) -> bool:
+    def keyboard_type_unicode(
+        self,
+        text: str,
+        env: dict[str, str] | None = None,
+    ) -> bool:
         """Type arbitrary Unicode text using wtype or clipboard fallback.
 
         Args:
             text: Text to type (supports non-ASCII, e.g. Korean, CJK).
-            dbus_address: D-Bus address for the session (needed for wl-copy fallback).
+            env: Environment for the spawned wtype/wl-copy process. MUST
+                contain the session's ``WAYLAND_DISPLAY`` (and
+                ``XDG_RUNTIME_DIR``) so the tools connect to the isolated
+                compositor instead of the host, plus
+                ``DBUS_SESSION_BUS_ADDRESS``. If None, ``os.environ`` is used
+                (host session only — wtype will target the host compositor).
 
         Returns:
             True if text was typed successfully.
-        """
-        env = dict(__import__("os").environ)
-        if dbus_address:
-            env["DBUS_SESSION_BUS_ADDRESS"] = dbus_address
 
-        # Try wtype first
+        Note:
+            The AutomationEngine (core.py) passes its ``_session_env()`` here.
+        """
+        if env is None:
+            env = dict(os.environ)
+
+        # Try wtype first. NOTE: kwin_wayland --virtual does NOT expose the
+        # zwp_virtual_keyboard_manager_v1 protocol wtype needs ("Compositor
+        # does not support the virtual keyboard protocol"), so in virtual
+        # sessions this branch always fails and the clipboard paste below is
+        # the primary path. It is kept for live sessions where wtype works.
         if shutil.which("wtype"):
             result = subprocess.run(
                 ["wtype", "--", text],
@@ -907,9 +945,15 @@ class InputBackend:
                 capture_output=True,
                 timeout=5,
             )
-            return result.returncode == 0
+            if result.returncode == 0:
+                return True
+            # wtype failed (e.g. missing virtual-keyboard protocol) — fall
+            # through to the clipboard fallback instead of giving up.
 
-        # Fallback: clipboard paste via wl-copy + Ctrl+V
+        # Clipboard paste via wl-copy + Ctrl+Shift+V, then Ctrl+V.
+        # The EIS keyboard is layout-independent for modifier combos, so this
+        # is the reliable route for non-ASCII text in virtual sessions where
+        # wtype cannot connect.
         # Use Popen + DEVNULL to avoid pipe-blocking from wl-copy's forked child
         if shutil.which("wl-copy"):
             cp = subprocess.Popen(
@@ -919,9 +963,25 @@ class InputBackend:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            time.sleep(0.1)  # Wait for fork to complete
+            time.sleep(0.2)  # Wait for fork to complete and offer the selection
             if cp.poll() is None or cp.returncode == 0:
+                # Konsole binds paste to Ctrl+Shift+V (its ACCEL convention),
+                # most other apps use Ctrl+V. Send both; on apps that bind
+                # only one of them the other is a no-op shortcut.
+                self.keyboard_key("ctrl+shift+v")
+                time.sleep(0.15)
                 self.keyboard_key("ctrl+v")
+                # Terminators: in a zsh line editor the unbound Ctrl+V above
+                # arrives as ^V (quoted-insert) and silently consumes the
+                # first Return that follows it, no matter the delay (verified
+                # experimentally at 0.1-1.2s gaps). Two Enters guarantee the
+                # paste is committed: the first satisfies the quoted-insert,
+                # the second executes the pasted line (or is an empty
+                # command — harmless in shells and inert in GUI apps).
+                time.sleep(0.5)
+                self.keyboard_key("return")
+                time.sleep(0.3)
+                self.keyboard_key("return")
                 return True
 
         return False

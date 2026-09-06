@@ -218,8 +218,19 @@ def _load_libei() -> ctypes.CDLL:
     return lib
 
 
-# Module-level libei instance (loaded once)
-_libei = _load_libei()
+# Module-level libei instance, loaded lazily on first use. Loading eagerly at
+# import time makes importing this module fail on systems without libei
+# installed (e.g. CI jobs that only lint or type-check), even though no EIS
+# input path is touched there.
+_libei: ctypes.CDLL | None = None
+
+
+def _get_libei() -> ctypes.CDLL:
+    """Return the process-wide libei handle, loading it on first call."""
+    global _libei
+    if _libei is None:
+        _libei = _load_libei()
+    return _libei
 
 
 class EISClient:
@@ -262,16 +273,16 @@ class EISClient:
         self._cookie = int(result[1])
 
         # Create libei sender context
-        self._ei = _libei.ei_new_sender(None)
+        self._ei = _get_libei().ei_new_sender(None)
         if not self._ei:
             msg = "Failed to create EI context"
             raise RuntimeError(msg)
 
-        _libei.ei_configure_name(self._ei, b"kwin-mcp")
+        _get_libei().ei_configure_name(self._ei, b"kwin-mcp")
 
-        ret = _libei.ei_setup_backend_fd(self._ei, fd)
+        ret = _get_libei().ei_setup_backend_fd(self._ei, fd)
         if ret != 0:
-            _libei.ei_unref(self._ei)
+            _get_libei().ei_unref(self._ei)
             self._ei = 0
             msg = f"ei_setup_backend_fd failed: {ret}"
             raise RuntimeError(msg)
@@ -281,25 +292,25 @@ class EISClient:
 
     def _negotiate_devices(self, timeout: float = 5.0) -> None:
         """Process EIS handshake events until we have pointer + keyboard."""
-        ei_fd = _libei.ei_get_fd(self._ei)
+        ei_fd = _get_libei().ei_get_fd(self._ei)
         start = time.monotonic()
 
         while time.monotonic() - start < timeout:
             readable, _, _ = select.select([ei_fd], [], [], 0.3)
             if readable:
-                ret = _libei.ei_dispatch(self._ei)
+                ret = _get_libei().ei_dispatch(self._ei)
                 if ret < 0:
                     break
 
             while True:
-                event = _libei.ei_get_event(self._ei)
+                event = _get_libei().ei_get_event(self._ei)
                 if not event:
                     break
 
-                etype = _libei.ei_event_get_type(event)
+                etype = _get_libei().ei_event_get_type(event)
 
                 if etype == _EI_EVENT_DISCONNECT:
-                    _libei.ei_event_unref(event)
+                    _get_libei().ei_event_unref(event)
                     msg = "EIS server disconnected during handshake"
                     raise RuntimeError(msg)
 
@@ -312,7 +323,7 @@ class EISClient:
                 elif etype == _EI_EVENT_DEVICE_RESUMED:
                     pass  # Device ready for input
 
-                _libei.ei_event_unref(event)
+                _get_libei().ei_event_unref(event)
 
             if self._pointer and self._keyboard:
                 break
@@ -325,15 +336,15 @@ class EISClient:
             raise RuntimeError(msg)
 
         # Start emulating on all devices
-        _libei.ei_device_start_emulating(self._pointer, 0)
+        _get_libei().ei_device_start_emulating(self._pointer, 0)
         if self._keyboard != self._pointer:
-            _libei.ei_device_start_emulating(self._keyboard, 0)
+            _get_libei().ei_device_start_emulating(self._keyboard, 0)
         if self._touch_device and self._touch_device not in (self._pointer, self._keyboard):
-            _libei.ei_device_start_emulating(self._touch_device, 0)
+            _get_libei().ei_device_start_emulating(self._touch_device, 0)
 
     def _bind_seat_capabilities(self, event: int) -> None:
         """Bind to all available capabilities on the seat."""
-        seat = _libei.ei_event_get_seat(event)
+        seat = _get_libei().ei_event_get_seat(event)
 
         bind_list: list[int] = []
         for cap in [
@@ -344,11 +355,11 @@ class EISClient:
             _EI_CAP_BUTTON,
             _EI_CAP_SCROLL,
         ]:
-            if _libei.ei_seat_has_capability(seat, cap):
+            if _get_libei().ei_seat_has_capability(seat, cap):
                 bind_list.append(cap)
 
         # Call variadic ei_seat_bind_capabilities(seat, cap1, ..., NULL)
-        func = _libei.ei_seat_bind_capabilities
+        func = _get_libei().ei_seat_bind_capabilities
         func.restype = None
         args: list[ctypes.c_uint | ctypes.c_void_p] = [ctypes.c_uint(c) for c in bind_list]
         args.append(ctypes.c_void_p(None))  # NULL sentinel
@@ -356,19 +367,19 @@ class EISClient:
 
     def _register_device(self, event: int) -> None:
         """Register a device from a DEVICE_ADDED event."""
-        device = _libei.ei_event_get_device(event)
+        device = _get_libei().ei_event_get_device(event)
 
-        has_abs = _libei.ei_device_has_capability(device, _EI_CAP_POINTER_ABSOLUTE)
-        has_kbd = _libei.ei_device_has_capability(device, _EI_CAP_KEYBOARD)
-        has_touch = _libei.ei_device_has_capability(device, _EI_CAP_TOUCH)
+        has_abs = _get_libei().ei_device_has_capability(device, _EI_CAP_POINTER_ABSOLUTE)
+        has_kbd = _get_libei().ei_device_has_capability(device, _EI_CAP_KEYBOARD)
+        has_touch = _get_libei().ei_device_has_capability(device, _EI_CAP_TOUCH)
 
         # Prefer absolute pointer device
         if has_abs and not self._pointer:
-            self._pointer = _libei.ei_device_ref(device)
+            self._pointer = _get_libei().ei_device_ref(device)
         if has_kbd and not self._keyboard:
-            self._keyboard = _libei.ei_device_ref(device)
+            self._keyboard = _get_libei().ei_device_ref(device)
         if has_touch and not self._touch_device:
-            self._touch_device = _libei.ei_device_ref(device)
+            self._touch_device = _get_libei().ei_device_ref(device)
 
     def _now_us(self) -> int:
         """Current time in microseconds."""
@@ -376,53 +387,53 @@ class EISClient:
 
     def _flush(self) -> None:
         """Dispatch pending events to send data to KWin."""
-        _libei.ei_dispatch(self._ei)
+        _get_libei().ei_dispatch(self._ei)
 
     def pointer_move_absolute(self, x: float, y: float) -> None:
         """Move pointer to absolute coordinates."""
-        _libei.ei_device_pointer_motion_absolute(self._pointer, x, y)
-        _libei.ei_device_frame(self._pointer, self._now_us())
+        _get_libei().ei_device_pointer_motion_absolute(self._pointer, x, y)
+        _get_libei().ei_device_frame(self._pointer, self._now_us())
         self._flush()
 
     def pointer_button(self, button: int, state: int) -> None:
         """Press/release a mouse button (evdev button code)."""
-        _libei.ei_device_button_button(self._pointer, button, state)
-        _libei.ei_device_frame(self._pointer, self._now_us())
+        _get_libei().ei_device_button_button(self._pointer, button, state)
+        _get_libei().ei_device_frame(self._pointer, self._now_us())
         self._flush()
 
     def pointer_scroll(self, dx: float, dy: float) -> None:
         """Scroll by pixel delta."""
-        _libei.ei_device_scroll_delta(self._pointer, dx, dy)
-        _libei.ei_device_frame(self._pointer, self._now_us())
+        _get_libei().ei_device_scroll_delta(self._pointer, dx, dy)
+        _get_libei().ei_device_frame(self._pointer, self._now_us())
         self._flush()
 
     def pointer_scroll_discrete(self, dx: int, dy: int) -> None:
         """Scroll by discrete steps (wheel ticks)."""
-        _libei.ei_device_scroll_discrete(self._pointer, dx, dy)
-        _libei.ei_device_frame(self._pointer, self._now_us())
+        _get_libei().ei_device_scroll_discrete(self._pointer, dx, dy)
+        _get_libei().ei_device_frame(self._pointer, self._now_us())
         self._flush()
 
     def pointer_scroll_stop(self) -> None:
         """Signal end of scroll."""
-        _libei.ei_device_scroll_stop(self._pointer, 1, 1)
-        _libei.ei_device_frame(self._pointer, self._now_us())
+        _get_libei().ei_device_scroll_stop(self._pointer, 1, 1)
+        _get_libei().ei_device_frame(self._pointer, self._now_us())
         self._flush()
 
     def keyboard_key(self, keycode: int, state: int) -> None:
         """Press/release a key (evdev keycode)."""
-        _libei.ei_device_keyboard_key(self._keyboard, keycode, state)
-        _libei.ei_device_frame(self._keyboard, self._now_us())
+        _get_libei().ei_device_keyboard_key(self._keyboard, keycode, state)
+        _get_libei().ei_device_frame(self._keyboard, self._now_us())
         self._flush()
 
     def touch_down(self, x: float, y: float) -> int:
         """Start a new touch at (x, y). Returns a touch ID."""
         device = self._touch_device or self._pointer
-        touch = _libei.ei_device_touch_new(device)
+        touch = _get_libei().ei_device_touch_new(device)
         if not touch:
             msg = "Failed to create touch object"
             raise RuntimeError(msg)
-        _libei.ei_touch_down(touch, x, y)
-        _libei.ei_device_frame(device, self._now_us())
+        _get_libei().ei_touch_down(touch, x, y)
+        _get_libei().ei_device_frame(device, self._now_us())
         self._flush()
 
         touch_id = self._next_touch_id
@@ -437,8 +448,8 @@ class EISClient:
             msg = f"No active touch with ID {touch_id}"
             raise ValueError(msg)
         device = self._touch_device or self._pointer
-        _libei.ei_touch_motion(touch, x, y)
-        _libei.ei_device_frame(device, self._now_us())
+        _get_libei().ei_touch_motion(touch, x, y)
+        _get_libei().ei_device_frame(device, self._now_us())
         self._flush()
 
     def touch_up(self, touch_id: int) -> None:
@@ -448,30 +459,30 @@ class EISClient:
             msg = f"No active touch with ID {touch_id}"
             raise ValueError(msg)
         device = self._touch_device or self._pointer
-        _libei.ei_touch_up(touch)
-        _libei.ei_device_frame(device, self._now_us())
-        _libei.ei_touch_unref(touch)
+        _get_libei().ei_touch_up(touch)
+        _get_libei().ei_device_frame(device, self._now_us())
+        _get_libei().ei_touch_unref(touch)
         self._flush()
 
     def close(self) -> None:
         """Clean up EIS connection."""
         # Release any lingering touches
         for touch in self._active_touches.values():
-            _libei.ei_touch_up(touch)
-            _libei.ei_touch_unref(touch)
+            _get_libei().ei_touch_up(touch)
+            _get_libei().ei_touch_unref(touch)
         self._active_touches.clear()
 
         if self._touch_device and self._touch_device not in (self._pointer, self._keyboard):
-            _libei.ei_device_stop_emulating(self._touch_device)
-            _libei.ei_device_unref(self._touch_device)
+            _get_libei().ei_device_stop_emulating(self._touch_device)
+            _get_libei().ei_device_unref(self._touch_device)
             self._touch_device = 0
         if self._pointer:
-            _libei.ei_device_stop_emulating(self._pointer)
-            _libei.ei_device_unref(self._pointer)
+            _get_libei().ei_device_stop_emulating(self._pointer)
+            _get_libei().ei_device_unref(self._pointer)
             self._pointer = 0
         if self._keyboard and self._keyboard != self._pointer:
-            _libei.ei_device_stop_emulating(self._keyboard)
-            _libei.ei_device_unref(self._keyboard)
+            _get_libei().ei_device_stop_emulating(self._keyboard)
+            _get_libei().ei_device_unref(self._keyboard)
             self._keyboard = 0
 
         if self._eis_iface and self._cookie:
@@ -479,7 +490,7 @@ class EISClient:
                 self._eis_iface.disconnect(dbus.Int32(self._cookie))
 
         if self._ei:
-            _libei.ei_unref(self._ei)
+            _get_libei().ei_unref(self._ei)
             self._ei = 0
 
 

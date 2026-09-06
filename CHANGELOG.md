@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Unicode text injection (`keyboard_type_unicode`) failed inside isolated virtual sessions: wtype and wl-copy were spawned with the host environment instead of the session's (`WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`), so wtype always failed with "Wayland connection failed" and the clipboard fallback was unreachable (wtype failures now fall through to it instead of returning early). The clipboard paste sequence also sends Ctrl+Shift+V before Ctrl+V (Konsole binds paste to Ctrl+Shift+V by its ACCEL convention) and terminates with two Returns — the unbound Ctrl+V leaves a zsh quoted-insert state that silently consumed the first Return, so pasted text in terminal shells was never committed
+- `keyboard_key("ctrl+q")` only closed apps that bind plain Ctrl+Q (kwrite, kcalc); Konsole binds window-close to Ctrl+Shift+Q (its ACCEL convention is Ctrl+Shift). The alias now sends both combos, each exactly once; on apps that bind only one of them the other is an inert no-op shortcut
 - Segfault on Python 3.14 caused by missing `argtypes` on variadic `ei_seat_bind_capabilities` ctypes call
 
 ## [0.7.0] - 2026-03-29

@@ -280,9 +280,17 @@ class EISClient:
         self._negotiate_devices()
 
     def _negotiate_devices(self, timeout: float = 5.0) -> None:
-        """Process EIS handshake events until we have pointer + keyboard."""
+        """Process EIS handshake events until pointer + keyboard are usable.
+
+        A libei device may only send events once the server has resumed it.
+        Calling ``ei_device_start_emulating()`` earlier is rejected ("device
+        is not emulating") and every event sent afterwards is silently
+        dropped, so wait for ``EI_EVENT_DEVICE_RESUMED`` on each of pointer
+        and keyboard before starting emulation.
+        """
         ei_fd = _libei.ei_get_fd(self._ei)
         start = time.monotonic()
+        resumed: set[int] = set()
 
         while time.monotonic() - start < timeout:
             readable, _, _ = select.select([ei_fd], [], [], 0.3)
@@ -310,11 +318,16 @@ class EISClient:
                     self._register_device(event)
 
                 elif etype == _EI_EVENT_DEVICE_RESUMED:
-                    pass  # Device ready for input
+                    resumed.add(int(_libei.ei_event_get_device(event)))
 
                 _libei.ei_event_unref(event)
 
-            if self._pointer and self._keyboard:
+            if (
+                self._pointer
+                and self._pointer in resumed
+                and self._keyboard
+                and self._keyboard in resumed
+            ):
                 break
 
         if not self._pointer:
@@ -324,7 +337,10 @@ class EISClient:
             msg = "No keyboard device available from EIS"
             raise RuntimeError(msg)
 
-        # Start emulating on all devices
+        # Devices that never announced a resume are still started: emulating
+        # a paused device is no worse than the unconditional start this wait
+        # replaced, and failing the handshake would drop input that used to
+        # work.
         _libei.ei_device_start_emulating(self._pointer, 0)
         if self._keyboard != self._pointer:
             _libei.ei_device_start_emulating(self._keyboard, 0)

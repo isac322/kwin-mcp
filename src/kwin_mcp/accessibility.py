@@ -130,6 +130,8 @@ def list_windows() -> str:
             continue
         app_name = app.get_name() or "(unnamed)"
         child_count = app.get_child_count()
+        if child_count == 0:
+            continue
         app_count += 1
         lines.append(f"- {app_name} ({child_count} windows)")
         for j in range(child_count):
@@ -148,37 +150,6 @@ def list_windows() -> str:
     if not lines:
         return "(no accessible applications found)"
     return f"Applications ({app_count}):\n" + "\n".join(lines)
-
-
-def focus_window(app_name: str) -> str:
-    """Focus a window by application name.
-
-    Args:
-        app_name: Application name substring (case-insensitive).
-
-    Returns:
-        Result message.
-    """
-    desktop = Atspi.get_desktop(0)
-    for i in range(desktop.get_child_count()):
-        app = desktop.get_child_at_index(i)
-        if app is None:
-            continue
-        name = app.get_name() or ""
-        if app_name.lower() in name.lower():
-            for j in range(app.get_child_count()):
-                win = app.get_child_at_index(j)
-                if win is None:
-                    continue
-                try:
-                    component = win.get_component_iface()
-                    if component is not None:
-                        component.grab_focus()
-                        return f"Focused: {name}"
-                except Exception:
-                    continue
-            return f"Found '{name}' but could not focus it"
-    return f"No application matching '{app_name}' found"
 
 
 def wait_for_elements(
@@ -421,10 +392,6 @@ def _handle_request(request: dict) -> dict:
 
     if op == "list_windows":
         return {"ok": True, "result": list_windows()}
-
-    if op == "focus_window":
-        result = focus_window(app_name=request.get("app_name", ""))
-        return {"ok": True, "result": result}
 
     return {"ok": False, "error": f"Unknown operation: {op}"}
 

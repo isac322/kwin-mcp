@@ -1,78 +1,152 @@
 # Reproducible KWin Wayland environment for kwin-mcp end-to-end tests.
 #
-# Debian trixie is used because its KWin 6 / AT-SPI2 / libei packages are
-# version-pinned by the stable release (identical bits on every machine) and
-# published for both amd64 and arm64, so the same image runs on CI and on
-# developer laptops.
-#
-# Build (from the repository root):
+# Build from the repository root:
 #   docker build -f docker/e2e.Dockerfile -t kwin-mcp-e2e .
 # Run:
 #   docker run --rm kwin-mcp-e2e
-FROM debian:trixie-slim
 
-# Runtime dependencies of a virtual KWin session plus the automation stack:
-#   kwin-wayland          - the compositor itself (virtual/headless backend)
-#   kwin-common           - KWin plugins, notably eis.so (EIS input injection)
-#   dbus                  - dbus-run-session, dbus-send, dbus-daemon (AT-SPI bus)
-#   at-spi2-core          - at-spi-bus-launcher, AT-SPI2 registry
-#   gir1.2-atspi-2.0      - GObject introspection data for gi.repository.Atspi
-#   libei1                - EIS input injection (loaded via ctypes by input.py)
-#   libgl1-mesa-dri,      - llvmpipe software rendering: the container has no
-#   libegl-mesa0            /dev/dri, so KWin's OpenGL backend needs them
-#   libcap2-bin           - setcap, used below to drop KWin's file capability
-#   kcalc, kwrite         - small Qt/KF6 apps used as test subjects
-#   wayland-utils         - wayland-info, backing the wayland_info tool
-#   fonts-dejavu-core     - without a font kcalc renders empty boxes
-#   python3-{gi,dbus,pil} - runtime deps as system packages (no wheel builds)
+ARG DEBIAN_SNAPSHOT=20260913T000000Z
+
+FROM ghcr.io/astral-sh/uv:0.10.8@sha256:88234bc9e09c2b2f6d176a3daf411419eb0370d450a08129257410de9cfafd2a AS uv-bin
+
+FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS debian-snapshot
+
+ARG DEBIAN_SNAPSHOT
+RUN printf '%s\n' \
+        'Types: deb' \
+        "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/" \
+        'Suites: trixie trixie-updates' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        '' \
+        'Types: deb' \
+        "URIs: http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}/" \
+        'Suites: trixie-security' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        > /etc/apt/sources.list.d/debian.sources \
+    && printf 'Acquire::Check-Valid-Until "false";\n' \
+        > /etc/apt/apt.conf.d/99debian-snapshot
+
+FROM debian-snapshot AS wheel-builder
+
+COPY --from=uv-bin /uv /usr/local/bin/uv
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        kwin-wayland \
-        kwin-common \
-        dbus \
-        at-spi2-core \
-        gir1.2-atspi-2.0 \
-        libei1 \
-        libgl1-mesa-dri \
-        libegl-mesa0 \
-        libcap2-bin \
-        wl-clipboard \
-        wtype \
-        qt6-wayland \
-        kwrite \
-        wayland-utils \
-        kcalc \
-        fonts-dejavu-core \
+        ca-certificates \
         python3 \
-        python3-gi \
-        python3-dbus \
-        python3-pil \
-        python3-pytest \
     && rm -rf /var/lib/apt/lists/*
 
-# Debian ships kwin_wayland with cap_sys_nice=ep. Docker's default capability
-# bounding set excludes CAP_SYS_NICE, so exec'ing the binary fails with EPERM.
-# Dropping the file capability avoids requiring --cap-add on every run; KWin
-# only loses realtime scheduling priority, which tests do not need.
-RUN setcap -r /usr/bin/kwin_wayland
+WORKDIR /build
+COPY pyproject.toml uv.lock README.md ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv export \
+        --locked \
+        --group dev \
+        --no-emit-project \
+        --prune dbus-python \
+        --prune pillow \
+        --prune pygobject \
+        --output-file /build/runtime-requirements.txt
+COPY src/ ./src/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv build --wheel --out-dir /build/dist
 
-# KWin refuses to run as root, and AT-SPI expects a real user account.
-RUN useradd --create-home --uid 1000 tester
+FROM debian-snapshot AS runtime-base
 
-# session.py falls back to /run/user/$(id -u) when XDG_RUNTIME_DIR is unset;
-# that path does not exist in a container, so provide an explicit one.
-# LIBGL_ALWAYS_SOFTWARE keeps KWin on llvmpipe instead of probing for a GPU.
-ENV XDG_RUNTIME_DIR=/tmp/xdg-runtime \
-    PYTHONPATH=/app/src \
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        at-spi2-core \
+        breeze-cursor-theme \
+        ca-certificates \
+        dbus \
+        fonts-dejavu-core \
+        fonts-noto-cjk \
+        fonts-noto-color-emoji \
+        fonts-noto-core \
+        gir1.2-atspi-2.0 \
+        gir1.2-gtk-3.0 \
+        kcalc \
+        kde-spectacle \
+        kwin-common \
+        kwin-wayland \
+        kwrite \
+        libcap2-bin \
+        libegl-mesa0 \
+        libei1 \
+        libgl1-mesa-dri \
+        libglx-mesa0 \
+        mesa-utils \
+        python3 \
+        python3-dbus \
+        python3-gi \
+        python3-numpy \
+        python3-pil \
+        python3-venv \
+        qt6-wayland \
+        scrot \
+        wayland-utils \
+        wl-clipboard \
+        wtype \
+        x11-utils \
+        xauth \
+        xdotool \
+        xvfb \
+        xwayland \
+    && rm -rf /var/lib/apt/lists/* \
+    && setcap -r /usr/bin/kwin_wayland \
+    && groupadd --gid 1000 tester \
+    && useradd --create-home --uid 1000 --gid 1000 --shell /bin/sh tester \
+    && install -d -m 1777 -o root -g root /tmp/.X11-unix \
+    && install -d -m 0755 -o tester -g tester /app \
+    && install -d -m 0755 -o tester -g tester /artifacts \
+    && install -d -m 0700 -o tester -g tester /tmp/xdg-runtime
+
+FROM runtime-base AS venv-builder
+
+COPY --from=uv-bin /uv /usr/local/bin/uv
+COPY --from=wheel-builder /build/runtime-requirements.txt /tmp/runtime-requirements.txt
+COPY --from=wheel-builder /build/dist/ /tmp/wheels/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    python3 -m venv --system-site-packages /opt/kwin-mcp-venv \
+    && uv pip install \
+        --python /opt/kwin-mcp-venv/bin/python \
+        --require-hashes \
+        --no-deps \
+        --requirement /tmp/runtime-requirements.txt \
+    && uv pip install \
+        --python /opt/kwin-mcp-venv/bin/python \
+        --no-deps \
+        /tmp/wheels/*.whl
+
+FROM runtime-base AS runtime
+ARG DEBIAN_SNAPSHOT
+
+LABEL org.opencontainers.image.title="kwin-mcp E2E" \
+      org.opencontainers.image.description="Reproducible virtual KWin environment for kwin-mcp end-to-end tests" \
+      org.opencontainers.image.source="https://github.com/isac322/kwin-mcp" \
+      org.opencontainers.image.base.name="debian:trixie-slim" \
+      org.opencontainers.image.base.digest="sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132" \
+      io.github.isac322.kwin-mcp.debian-snapshot="${DEBIAN_SNAPSHOT}"
+
+ENV PATH="/opt/kwin-mcp-venv/bin:${PATH}" \
+    HOME=/home/tester \
+    XDG_RUNTIME_DIR=/tmp/xdg-runtime \
+    KWIN_MCP_ARTIFACT_DIR=/artifacts \
+    KWIN_MCP_BASE_IMAGE="debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132" \
+    KWIN_MCP_DEBIAN_SNAPSHOT="${DEBIAN_SNAPSHOT}" \
     PYTHONUNBUFFERED=1 \
     LIBGL_ALWAYS_SOFTWARE=1
-RUN install -d -m 0700 -o tester -g tester /tmp/xdg-runtime
 
-RUN install -d -m 0755 -o tester -g tester /app
+COPY --from=venv-builder /opt/kwin-mcp-venv/ /opt/kwin-mcp-venv/
+COPY --chown=1000:1000 pyproject.toml /app/pyproject.toml
+COPY --chown=1000:1000 tests/ /app/tests/
+COPY --chmod=0755 --chown=1000:1000 \
+    docker/e2e-entrypoint.sh \
+    docker/e2e-environment.py \
+    /app/docker/
+
 WORKDIR /app
-COPY --chown=tester:tester pyproject.toml README.md ./
-COPY --chown=tester:tester src/ ./src/
-COPY --chown=tester:tester tests/ ./tests/
-
 USER tester
-CMD ["python3", "-m", "pytest", "tests/e2e", "-v"]
+ENTRYPOINT ["/app/docker/e2e-entrypoint.sh"]
+CMD ["/opt/kwin-mcp-venv/bin/python", "-m", "pytest", "tests/e2e", "-v"]

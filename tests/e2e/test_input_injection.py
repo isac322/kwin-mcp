@@ -23,24 +23,51 @@ INPUT_TIMEOUT_SECONDS = 3.0
 
 
 def _rect(output: str, pattern: str) -> tuple[int, int, int, int]:
-    matches = re.findall(pattern, output)
+    matches = re.findall(pattern, output, re.MULTILINE)
     assert len(matches) == 1, output[:500]
     return tuple(int(value) for value in matches[0])  # type: ignore[return-value]
 
 
 def _global_element_center(
-    engine: AutomationEngine, app_name: str, role: str, name: str
+    engine: AutomationEngine, app_name: str, role: str | None, name: str
 ) -> tuple[int, int]:
     elements = engine.find_ui_elements(query=name, app_name=app_name)
     assert element_count(elements) > 0, elements[:500]
+    role_pattern = re.escape(role) if role is not None else r"[^]]+"
     local_x, local_y, width, height = _rect(
         elements,
-        rf'\[{re.escape(role)}\] "{re.escape(name)}" @ {_RECT}',
+        rf'^- \[{role_pattern}] "{re.escape(name)}" @ {_RECT}(?:\s|$)',
     )
 
     geometry = engine.window_geometry(app_name=app_name)
     client_x, client_y, _, _ = _rect(geometry, rf"client:\s+{_RECT}")
     return client_x + local_x + width // 2, client_y + local_y + height // 2
+
+
+def _has_exact_accessible_name(output: str, name: str) -> bool:
+    return (
+        re.search(
+            rf'^- \[[^]]+] "{re.escape(name)}"(?: |$)',
+            output,
+            re.MULTILINE,
+        )
+        is not None
+    )
+
+
+def _wait_for_exact_accessible_name(
+    engine: AutomationEngine,
+    app_name: str,
+    expected_name: str,
+) -> None:
+    deadline = time.monotonic() + INPUT_TIMEOUT_SECONDS
+    elements = ""
+    while time.monotonic() < deadline:
+        elements = engine.find_ui_elements(query=expected_name, app_name=app_name)
+        if _has_exact_accessible_name(elements, expected_name):
+            return
+        time.sleep(POLL_INTERVAL_SECONDS)
+    raise AssertionError(f"AT-SPI name {expected_name!r} never appeared:\n{elements[:1500]}")
 
 
 def _binary_value(tree: str) -> str | None:
@@ -130,6 +157,30 @@ def test_mouse_button_down_and_up_activate_seven(kcalc_session: AutomationEngine
 
     kcalc_session.mouse_button_up(*seven)
     _wait_for_binary(kcalc_session, "111")
+
+
+def test_mouse_move_enters_hover_target_in_exact_virtual_session(
+    engine: AutomationEngine,
+    start_session: Callable[..., str],
+    wait_for_app: Callable[[str], str],
+) -> None:
+    # This compositor is a standalone kwin_wayland --virtual backend, not the nested
+    # DISPLAY that xdotool mirrors for visual screenshots.
+    app_name = "gui_probe.py"
+    output = start_session(
+        "python3 /app/tests/e2e/gui_probe.py",
+        isolate_home=True,
+    )
+    assert "Session started. Wayland socket:" in output, output
+    assert "Input backend: KWin EIS" in output, output
+    wait_for_app(app_name)
+
+    idle = engine.find_ui_elements(query="hover_status: idle", app_name=app_name)
+    assert _has_exact_accessible_name(idle, "hover_status: idle"), idle[:500]
+    hover_target = _global_element_center(engine, app_name, None, "Hover Target")
+
+    assert engine.mouse_move(*hover_target) == f"Mouse moved to {hover_target}"
+    _wait_for_exact_accessible_name(engine, app_name, "hover_status: entered")
 
 
 def test_mouse_move_then_click_keeps_the_pointer_on_seven(

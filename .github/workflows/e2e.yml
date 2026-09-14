@@ -5,20 +5,91 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   virtual-session:
-    name: Virtual KWin session (container)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    name: Virtual KWin session (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      E2E_ARTIFACT_DIR: artifacts/e2e/${{ matrix.arch }}
+      E2E_CONTAINER_NAME: kwin-mcp-e2e-${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v6
 
+      - name: Create the artifact directory
+        run: install -d -m 0777 "$E2E_ARTIFACT_DIR"
+
       - name: Build the KWin test image
-        run: docker build -f docker/e2e.Dockerfile -t kwin-mcp-e2e .
+        run: docker build --file docker/e2e.Dockerfile --tag kwin-mcp-e2e .
+
+      - name: Run quality checks
+        run: |
+          docker run --rm \
+            --volume "${{ github.workspace }}:/workspace:ro" \
+            --workdir /workspace \
+            kwin-mcp-e2e \
+            /bin/sh -c '
+              /opt/kwin-mcp-venv/bin/ruff check --no-cache src tests &&
+              /opt/kwin-mcp-venv/bin/ruff format --check --no-cache src tests &&
+              /opt/kwin-mcp-venv/bin/ty check src tests
+            '
 
       # No /dev/dri passthrough on purpose: KWin then runs on the same llvmpipe
       # software path everywhere, so a run here matches a developer's laptop
       # exactly. A DRM node would only let KWin register ScreenShot2, and its
       # virtual backend still never answers a capture — see docker/README.md.
       - name: Run end-to-end tests
-        run: docker run --rm kwin-mcp-e2e
+        shell: bash
+        run: |
+          set -o pipefail
+          timeout --signal=INT --kill-after=1m 20m \
+            docker run \
+              --name "$E2E_CONTAINER_NAME" \
+              --volume "$PWD/$E2E_ARTIFACT_DIR:/artifacts" \
+              kwin-mcp-e2e \
+              /opt/kwin-mcp-venv/bin/python -m pytest tests/e2e -v \
+                --junitxml=/artifacts/junit.xml \
+            2>&1 | tee "$E2E_ARTIFACT_DIR/pytest.log"
+
+      - name: Collect container diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          docker inspect "$E2E_CONTAINER_NAME" \
+            > "$E2E_ARTIFACT_DIR/docker-inspect.json" \
+            2> "$E2E_ARTIFACT_DIR/docker-inspect.stderr" || true
+          docker logs --timestamps "$E2E_CONTAINER_NAME" \
+            > "$E2E_ARTIFACT_DIR/docker.log" 2>&1 || true
+          docker top "$E2E_CONTAINER_NAME" -eo pid,ppid,user,stat,etime,args \
+            > "$E2E_ARTIFACT_DIR/docker-processes.txt" 2>&1 || true
+
+      - name: Remove the test container
+        if: always()
+        run: docker rm --force "$E2E_CONTAINER_NAME" || true
+
+      - name: Normalize artifact permissions
+        if: always()
+        shell: bash
+        run: |
+          if [[ -d "$E2E_ARTIFACT_DIR" ]]; then
+            sudo chmod -R a+rX "$E2E_ARTIFACT_DIR"
+          fi
+
+      - name: Upload E2E artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-${{ matrix.arch }}
+          path: ${{ env.E2E_ARTIFACT_DIR }}
+          if-no-files-found: warn

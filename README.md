@@ -319,7 +319,7 @@ Mouse, keyboard, and touch events are injected through KWin's private `org.kde.K
 
 ### Screenshot Capture
 
-The `screenshot` tool captures via the KWin `org.kde.KWin.ScreenShot2` D-Bus interface (~30-70ms per frame), with `spectacle` CLI as a fallback. For action tools with the `screenshot_after_ms` parameter, the same D-Bus interface is used for fast burst capture. Raw ARGB pixel data is read from a pipe and converted to PNG using Pillow.
+The normal Wayland capture path tries KWin's `org.kde.KWin.ScreenShot2` D-Bus interface first and uses the `spectacle` CLI as a fallback. Action tools with `screenshot_after_ms` use the same path for frame bursts, and Pillow converts ScreenShot2's raw ARGB pipe data to PNG. The Docker visual QA suite also has an explicit test-only X11 backend: when `KWIN_MCP_X11_SCREENSHOT=1` is set for a server connected to the nested KWin/Xvfb fixture, captures use `scrot`. Normal virtual and live Wayland sessions do not opt into this backend.
 
 ### Accessibility Tree
 
@@ -427,19 +427,45 @@ uv run kwin-mcp
 - **Touch input is EIS-emulated** -- Touch events are emulated through KWin's EIS interface, not from a real touchscreen device. Most applications handle emulated touch correctly, but some may behave differently from physical touch.
 - **Clipboard requires opt-in** -- Clipboard tools (`clipboard_get`, `clipboard_set`) are disabled by default because `wl-copy` can hang in isolated sessions. Enable with `enable_clipboard=true` in `session_start`, and ensure `wl-clipboard` is installed.
 - **QMenu (native context menus) may not appear in AT-SPI2** -- Qt's AT-SPI2 bridge has incomplete support for popup menus on Wayland. Context menus may not be visible in `accessibility_tree` or `find_ui_elements`. Workaround: click by coordinates derived from the parent widget's rectangle plus the client origin from `window_geometry`.
+- **Screen edge triggers ignore EIS pointer events** -- Auto-hide panels and layer-shell strips do not react when the pointer reaches a screen edge through EIS. Use `dbus_call` to invoke KWin scripting or a keyboard shortcut instead of trying to hover the edge.
 - **KWin claims multi-finger touch gestures** -- Three- and four-finger swipes are consumed by the compositor as global gestures and never reach the application; use `fingers=2` when the target is the app itself.
 - **AT-SPI2 coordinates are surface-local, not screen-global** -- Wayland clients do not know their global screen position (by design). Coordinates returned by `find_ui_elements` and `accessibility_tree` are relative to the window's top-left corner, while `mouse_click` and `touch_tap` take screen coordinates. Convert them by adding the client origin from `window_geometry`: clicking a reported rectangle verbatim lands on whatever occupies that screen position instead.
 
 ## End-to-End Testing
 
-`docker/e2e.Dockerfile` builds a reproducible KWin Wayland environment so headless GUI tests behave identically on a laptop and in CI (GitHub Actions workflow: `.github/workflows/e2e.yml`):
+The Docker suite currently collects 99 tests against the packaged application, not an editable source checkout. `docker/e2e.Dockerfile` builds a wheel, installs it with the locked MCP 1.x dependency set into `/opt/kwin-mcp-venv`, and runs both `AutomationEngine` tests and the installed `kwin-mcp` console entry point. The MCP tests initialize a real client/server session over stdio JSON-RPC.
+
+Run the complete suite from the repository root:
 
 ```bash
-docker build -f docker/e2e.Dockerfile -t kwin-mcp-e2e .
-docker run --rm kwin-mcp-e2e
+scripts/run-e2e-docker.sh
 ```
 
-The suite in `tests/e2e` starts a virtual session, launches `kcalc` inside it, observes the app through `list_windows` and `find_ui_elements`, and verifies that a keystroke injected over KWin EIS reaches it. No `--privileged`, `--cap-add` or X server is needed. See [docker/README.md](docker/README.md) for coverage details and the container's known limitations.
+The runner builds the image for Docker's native architecture, creates `artifacts/e2e/<UTC-timestamp>-<pid>/`, runs pytest, and prints the artifact path. Additional arguments pass directly to pytest:
+
+```bash
+scripts/run-e2e-docker.sh -- tests/e2e/test_mcp_protocol.py -v
+scripts/run-e2e-docker.sh -- -k "visual or screenshot" -v
+```
+
+Coverage includes:
+
+- virtual KWin engine tests for session lifecycle, AT-SPI2 observation, window geometry and control, EIS pointer/keyboard/touch input, clipboard, cleanup, and error handling;
+- exact input-schema checks for all 31 registered tools, plus installed-server stdio calls through every MCP wrapper;
+- nested visual tests that start Xvfb and a test-owned KWin compositor inside the container, connect the installed MCP server to it, and verify pixels as well as accessibility state;
+- KCalc before/after pixel transitions and a deterministic GUI probe for mouse hover, cursor inclusion, animation frame bursts, and CJK text (`GUI 검증 42`) rendered differently from a tofu control (`□□`);
+- screenshot retention and failure behavior, environment provenance, installed distribution metadata, console entry points, and process/socket cleanup.
+
+The container uses software rendering and needs no `--privileged`, `--cap-add`, GPU, or device flags. Its nested Xvfb server is part of the visual fixture; the host does not need an X server. CI runs the same image natively on both architectures:
+
+| Architecture | GitHub Actions runner |
+|---|---|
+| `amd64` | `ubuntu-24.04` |
+| `arm64` | `ubuntu-24.04-arm` |
+
+A completed run retains `environment.json`, `junit.xml`, `pytest.log`, nested-KWin/Xvfb/MCP logs, and visual PNG evidence below its artifact directory. Failed runs also collect Docker inspect, container log, and process-list diagnostics.
+
+One legacy success test for ScreenShot2 on KWin's exact `--virtual` backend remains intentionally skipped because that backend does not return capture data in this container. Error propagation for that path is tested at both engine and MCP stdio levels; screenshot success, cursor pixels, and frame bursts are tested through the explicit nested X11/scrot visual mode. See [docker/README.md](docker/README.md) for the process topology, complete test-file inventory, evidence layout, and targeted commands.
 
 ## Contributing
 

@@ -133,6 +133,58 @@ _SCROLL_STEP_PIXELS = 15.0
 # libei expresses discrete scrolling in 120ths of a wheel detent.
 _SCROLL_DISCRETE_UNIT = 120
 
+_X11_POINTER_MIRROR_TIMEOUT_SECONDS = 5
+
+
+def _mirror_x11_pointer(x: int, y: int) -> None:
+    """Mirror an absolute EIS move to the X display used for scrot screenshots."""
+    if os.environ.get("KWIN_MCP_X11_SCREENSHOT") != "1":
+        return
+
+    display = os.environ.get("DISPLAY")
+    if not display:
+        return
+
+    xdotool = shutil.which("xdotool")
+    if xdotool is None:
+        raise RuntimeError(
+            "KWIN_MCP_X11_SCREENSHOT=1 requires xdotool to mirror the screenshot cursor"
+        )
+
+    env = {"DISPLAY": display}
+    for name in ("HOME", "XAUTHORITY"):
+        if value := os.environ.get(name):
+            env[name] = value
+
+    try:
+        result = subprocess.run(
+            [xdotool, "mousemove", str(x), str(y)],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=_X11_POINTER_MIRROR_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "KWIN_MCP_X11_SCREENSHOT=1 requires xdotool to mirror the screenshot cursor"
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            "xdotool timed out while mirroring the screenshot cursor "
+            f"to ({x}, {y}) on DISPLAY={display}"
+        ) from exc
+
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(
+            "xdotool failed to mirror the screenshot cursor "
+            f"to ({x}, {y}) on DISPLAY={display} (exit {result.returncode}){suffix}"
+        )
+
 
 def _load_libei() -> ctypes.CDLL:
     """Load libei shared library and set up function prototypes."""
@@ -514,6 +566,7 @@ class InputBackend:
     def mouse_move(self, x: int, y: int) -> None:
         """Move mouse to absolute coordinates (hover)."""
         self._client.pointer_move_absolute(float(x), float(y))
+        _mirror_x11_pointer(x, y)
 
     def mouse_click(
         self,
@@ -646,43 +699,52 @@ class InputBackend:
         self.mouse_move(from_x, from_y)
         time.sleep(0.05)
 
-        # Press modifier keys
-        for mod in mod_codes:
-            self._client.keyboard_key(mod, _PRESSED)
-            time.sleep(0.01)
-
-        self._client.pointer_button(btn_code, _PRESSED)
-        time.sleep(0.02)
-
-        # Build full path: start -> waypoints -> end
-        segments: list[tuple[int, int, int, int, int]] = []  # (fx, fy, tx, ty, dwell_ms)
-        prev_x, prev_y = from_x, from_y
-        if waypoints:
-            for wx, wy, dwell_ms in waypoints:
-                segments.append((prev_x, prev_y, wx, wy, dwell_ms))
-                prev_x, prev_y = wx, wy
-        segments.append((prev_x, prev_y, to_x, to_y, 0))
-
-        for seg_fx, seg_fy, seg_tx, seg_ty, dwell_ms in segments:
-            dx = seg_tx - seg_fx
-            dy = seg_ty - seg_fy
-            steps = max(10, int((dx**2 + dy**2) ** 0.5 / 10))
-            for i in range(1, steps + 1):
-                frac = i / steps
-                cx = seg_fx + dx * frac
-                cy = seg_fy + dy * frac
-                self._client.pointer_move_absolute(cx, cy)
+        pressed_mod_codes: list[int] = []
+        button_pressed = False
+        try:
+            # Press modifier keys
+            for mod in mod_codes:
+                self._client.keyboard_key(mod, _PRESSED)
+                pressed_mod_codes.append(mod)
                 time.sleep(0.01)
-            if dwell_ms > 0:
-                time.sleep(dwell_ms / 1000.0)
 
-        time.sleep(0.02)
-        self._client.pointer_button(btn_code, _RELEASED)
+            self._client.pointer_button(btn_code, _PRESSED)
+            button_pressed = True
+            time.sleep(0.02)
 
-        # Release modifier keys in reverse order
-        for mod in reversed(mod_codes):
-            time.sleep(0.01)
-            self._client.keyboard_key(mod, _RELEASED)
+            # Build full path: start -> waypoints -> end
+            segments: list[tuple[int, int, int, int, int]] = []  # (fx, fy, tx, ty, dwell_ms)
+            prev_x, prev_y = from_x, from_y
+            if waypoints:
+                for wx, wy, dwell_ms in waypoints:
+                    segments.append((prev_x, prev_y, wx, wy, dwell_ms))
+                    prev_x, prev_y = wx, wy
+            segments.append((prev_x, prev_y, to_x, to_y, 0))
+
+            for seg_fx, seg_fy, seg_tx, seg_ty, dwell_ms in segments:
+                dx = seg_tx - seg_fx
+                dy = seg_ty - seg_fy
+                steps = max(10, int((dx**2 + dy**2) ** 0.5 / 10))
+                for i in range(1, steps + 1):
+                    frac = i / steps
+                    cx = seg_fx + dx * frac
+                    cy = seg_fy + dy * frac
+                    self._client.pointer_move_absolute(cx, cy)
+                    time.sleep(0.01)
+                if dwell_ms > 0:
+                    time.sleep(dwell_ms / 1000.0)
+        finally:
+            try:
+                if button_pressed:
+                    time.sleep(0.02)
+                    self._client.pointer_button(btn_code, _RELEASED)
+            finally:
+                # Release modifier keys in reverse order
+                for mod in reversed(pressed_mod_codes):
+                    time.sleep(0.01)
+                    self._client.keyboard_key(mod, _RELEASED)
+
+        _mirror_x11_pointer(to_x, to_y)
 
     def mouse_button_down(self, x: int, y: int, button: MouseButton = MouseButton.LEFT) -> None:
         """Move to coordinates and press a mouse button without releasing.
@@ -737,7 +799,8 @@ class InputBackend:
         """
         modifiers, keycode = _parse_key_combo(key)
         if keycode is None:
-            return
+            msg = f"Unknown key: {key}"
+            raise ValueError(msg)
 
         # Press modifiers
         for mod in modifiers:
@@ -763,14 +826,16 @@ class InputBackend:
             key: Key to press (e.g., "ctrl", "shift+a", "alt").
         """
         modifiers, keycode = _parse_key_combo(key)
+        if keycode is None:
+            msg = f"Unknown key: {key}"
+            raise ValueError(msg)
 
         for mod in modifiers:
             self._client.keyboard_key(mod, _PRESSED)
             time.sleep(0.01)
 
-        if keycode is not None:
-            self._client.keyboard_key(keycode, _PRESSED)
-            time.sleep(0.01)
+        self._client.keyboard_key(keycode, _PRESSED)
+        time.sleep(0.01)
 
     def keyboard_key_up(self, key: str) -> None:
         """Release a previously pressed key combination.
@@ -781,10 +846,12 @@ class InputBackend:
             key: Key to release (e.g., "ctrl", "shift+a", "alt").
         """
         modifiers, keycode = _parse_key_combo(key)
+        if keycode is None:
+            msg = f"Unknown key: {key}"
+            raise ValueError(msg)
 
-        if keycode is not None:
-            self._client.keyboard_key(keycode, _RELEASED)
-            time.sleep(0.01)
+        self._client.keyboard_key(keycode, _RELEASED)
+        time.sleep(0.01)
 
         for mod in reversed(modifiers):
             self._client.keyboard_key(mod, _RELEASED)
@@ -995,17 +1062,20 @@ def _parse_key_combo(key: str) -> tuple[list[int], int | None]:
     """
     parts = key.split("+")
     modifiers: list[int] = []
-    main_key: str | None = None
+    keycode: int | None = None
 
     for part in parts:
-        part_lower = part.strip().lower()
-        if part_lower in _MODIFIER_KEYS:
-            modifiers.append(_MODIFIER_KEYS[part_lower])
-        else:
-            main_key = part.strip()
+        key_name = part.strip()
+        modifier_code = _MODIFIER_KEYS.get(key_name.lower())
+        if modifier_code is not None:
+            modifiers.append(modifier_code)
+            continue
 
-    keycode: int | None = None
-    if main_key is not None:
-        keycode = _key_name_to_evdev(main_key)
+        keycode = _key_name_to_evdev(key_name)
+        if keycode is None:
+            return modifiers, None
+
+    if keycode is None and modifiers:
+        keycode = modifiers.pop()
 
     return modifiers, keycode

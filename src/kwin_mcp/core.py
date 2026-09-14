@@ -10,6 +10,8 @@ import json
 import os
 import shlex
 import shutil
+import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -250,6 +252,30 @@ class AutomationEngine:
             bus.get_object("org.kde.KWin", "/org/kde/KWin")
         except dbus_module.DBusException as exc:
             return f"Cannot reach KWin on D-Bus ({dbus_addr}): {exc}"
+
+        display_path = Path(wayland_disp)
+        if not display_path.is_absolute():
+            runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+            if not runtime_dir:
+                return f"Cannot reach Wayland display ({wayland_disp}): XDG_RUNTIME_DIR is not set"
+            display_path = Path(runtime_dir) / display_path
+
+        try:
+            display_mode = display_path.stat().st_mode
+        except OSError as exc:
+            return f"Cannot reach Wayland display ({wayland_disp}): {exc}"
+        if not stat.S_ISSOCK(display_mode):
+            return (
+                f"Cannot reach Wayland display ({wayland_disp}): "
+                f"{display_path} is not a Unix socket"
+            )
+
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+                probe.settimeout(0.5)
+                probe.connect(str(display_path))
+        except OSError as exc:
+            return f"Cannot reach Wayland display ({wayland_disp}): {exc}"
 
         screenshot_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-screenshots-"))
 
@@ -722,14 +748,17 @@ class AutomationEngine:
 
     def _run_kwin_query(self, request: dict[str, object]) -> dict:
         """Run a KWin scripting query in a subprocess bound to the session bus."""
-        result = subprocess.run(
-            [sys.executable, "-m", "kwin_mcp.geometry"],
-            input=json.dumps(request),
-            env=self._session_env(),
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "kwin_mcp.geometry"],
+                input=json.dumps(request),
+                env=self._session_env(),
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": "KWin query timed out after 30s"}
         if result.returncode != 0:
             return {"ok": False, "error": f"exit {result.returncode}: {result.stderr[:200]}"}
         try:

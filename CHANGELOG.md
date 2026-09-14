@@ -9,14 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Containerized end-to-end test environment (`docker/e2e.Dockerfile`) running a virtual KWin Wayland session on Debian trixie, plus the `E2E` GitHub Actions workflow that builds it and runs `tests/e2e` on every push and pull request. No `--privileged`, `--cap-add` or X server required.
-- `tests/e2e` QA suite covering session lifecycle (double start, teardown, isolated home, live `session_connect`), AT-SPI2 observation (tree role filter, query and state filters, multi-window listing, app logs, `wayland_info`), window geometry, and EIS input injection. Screenshot capture is covered by an opt-in test (`KWIN_MCP_E2E_SCREENSHOT=1`); see `docker/README.md` for what the container cannot exercise.
+- Containerized installed-package E2E suite (`docker/e2e.Dockerfile`, `tests/e2e`) collecting 99 tests: engine-level virtual-session coverage plus the installed `kwin-mcp` console entry point over real MCP stdio. Protocol tests verify the exact JSON schemas and wrapper behavior of all 31 tools, including lifecycle and error propagation.
+- Nested visual QA that starts Xvfb and a nested KWin Wayland compositor, connects through `session_connect`, and selects the explicit X11/scrot capture backend with `KWIN_MCP_X11_SCREENSHOT=1`. Pixel oracles verify rendered CJK text, `screenshot(include_cursor=...)` cursor localization, material repaint transitions, and `screenshot_after_ms` action-frame sequences.
+- `scripts/run-e2e-docker.sh` for reproducible local runs on Docker's native architecture, with retained `environment.json`, `junit.xml`, `pytest.log`, screenshots, and nested Xvfb, KWin, MCP server, and application logs under `artifacts/e2e/`.
 - `window_geometry` tool reporting window frame and client rectangles in global screen coordinates via KWin scripting. Accessibility rectangles are surface-local, so until now nothing in the public API could turn a located element into clickable coordinates — the core "find an element, then click it" loop was not expressible with the tools alone. Tool count increased from 30 to 31.
 - Element text content in `find_ui_elements`, `wait_for_element` and `accessibility_tree` output (`text='...'`, capped at 200 characters). Editors and entries keep their content in the AT-SPI2 Text interface rather than in the element name, so until now the tools could locate a text widget but never read what it contained.
 - Scrollbar and slider positions in element output (`value=current/max`), read from the AT-SPI2 Value interface. Without it a caller could see that a scrollbar exists but not where it sits, which is the only way to observe scrolling.
 
+### Changed
+
+- `docker/e2e.Dockerfile` now builds the project wheel and installs it into `/opt/kwin-mcp-venv` with hash-checked dependencies exported from `uv.lock`, including MCP 1.26.0. The uv builder and Debian trixie base are pinned by digest, and APT resolves against a dated Debian snapshot.
+- The `E2E` GitHub Actions workflow now runs Docker natively on `ubuntu-24.04` amd64 and `ubuntu-24.04-arm` arm64. Neither CI nor the local runner requires privileged mode, added capabilities, GPU/DRM device access, or host display access.
+- Screenshot success coverage now uses the explicit nested X11/scrot visual mode. One legacy exact-virtual KWin ScreenShot2 success test remains intentionally skipped because KWin's virtual backend does not answer capture requests; its MCP error path remains covered.
+
 ### Fixed
 
+- `session_connect` now validates explicit D-Bus and Wayland endpoints, including the requested `$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY` socket, before attaching to a live KWin session.
+- `list_windows` now filters AT-SPI2 applications with zero top-level windows instead of reporting empty application entries.
+- `keyboard_key`, `keyboard_key_down`, and `keyboard_key_up` now return explicit MCP tool errors for unknown key names without terminating the stdio server; invalid mouse button names receive the same error treatment.
+- Held EIS state no longer leaks between clients: KWin clears emulated modifiers and pointer buttons when the EIS connection disconnects, as proved by reconnecting to the same nested session and observing lowercase text and an unmodified single click. `mouse_drag` also releases its own pressed button and modifiers in `finally` when an exception interrupts the drag.
 - Segfault on Python 3.14 caused by missing `argtypes` on variadic `ei_seat_bind_capabilities` ctypes call
 - KWin crashed on startup in minimal environments (containers, CI) because `KDE_FULL_SESSION` / `KDE_SESSION_VERSION` pushed it onto the full Plasma session path; both are now stripped from the compositor's environment only, so launched apps still see them
 - `session_start` could hang forever when KWin died during startup: the wrapper script waited on the Wayland socket in an unbounded loop, so the `READY` handshake never returned. The wait is now bounded, reports `FAILED`, and the resulting error includes KWin's stderr
@@ -24,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `session_start` aborted with a `dbus.DBusException` instead of degrading gracefully when KWin exposes no EIS interface; the input backend is now reported as unavailable, as intended
 - `screenshot` shelled out to spectacle unconditionally; it now uses the KWin ScreenShot2 D-Bus interface first (as documented) and falls back to spectacle, reporting the original D-Bus error when the fallback is unusable
 - KWin ScreenShot2 capture read the pixel pipe only after the D-Bus call returned, so a frame larger than the pipe buffer could stall the call; the pipe is now drained concurrently while the call is in flight
+- ScreenShot2 calls that never reply now have an explicit capture timeout; failed captures stop and join the pipe reader and close both pipe file descriptors, preventing thread and descriptor accumulation across retries.
+- `window_geometry` and `focus_window` now use a bounded KWin geometry helper query and report a clear timeout instead of hanging when KWin does not answer.
+- With `KWIN_MCP_X11_SCREENSHOT=1`, absolute EIS pointer moves are mirrored to X11 with `xdotool`, keeping the cursor captured by `scrot` synchronized with the automated Wayland pointer and surfacing mirror failures or timeouts.
+- E2E artifacts are now readable across container, host, and CI UID boundaries: the runner creates a container-writable artifact root, environment evidence uses mode `0644`, and CI grants recursive read and directory traversal access before upload.
 - EIS input injection started emulating before the compositor had resumed the devices, which libei rejects (`ei_device_keyboard_key: device is not emulating`) and which silently dropped every injected event; `_negotiate_devices` now waits for `EI_EVENT_DEVICE_RESUMED` on the pointer and keyboard before calling `ei_device_start_emulating`, falling back to the previous unconditional start if a device does not resume within the handshake budget
 - `focus_window` reported success while doing nothing on Wayland: it asked AT-SPI2 to grab focus, which neither raises nor activates a window there. It now activates through KWin scripting, and the `[active]` marker in `list_windows` follows it
 - `mouse_scroll(discrete=True)` was silently dropped: libei counts discrete scrolling in 120ths of a wheel detent, so a click count was rejected as a suspicious fraction. Detents are now scaled and split correctly, including for negative deltas with `steps`

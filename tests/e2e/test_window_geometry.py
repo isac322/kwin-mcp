@@ -8,13 +8,30 @@ pinned here rather than only exercised indirectly through the input tests.
 from __future__ import annotations
 
 import re
+import subprocess
 from typing import TYPE_CHECKING
 
+import kwin_mcp.core as core
+
 if TYPE_CHECKING:
+    import pytest
+
     from kwin_mcp.core import AutomationEngine
 
 _RECT = r"\((\d+), (\d+), (\d+)x(\d+)\)"
 KCALC_SIZE = (640, 480)
+
+
+def _engine_with_timed_out_kwin_query(monkeypatch: pytest.MonkeyPatch) -> AutomationEngine:
+    engine = core.AutomationEngine()
+    monkeypatch.setattr(engine, "_get_session", lambda: object())
+    monkeypatch.setattr(engine, "_session_env", lambda: {})
+
+    def time_out(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd="kwin_mcp.geometry", timeout=30)
+
+    monkeypatch.setattr(core.subprocess, "run", time_out)
+    return engine
 
 
 def _rect(output: str, kind: str) -> tuple[int, int, int, int]:
@@ -71,3 +88,20 @@ def test_accessibility_rectangles_are_relative_to_the_client_origin(
 def test_unknown_app_name_reports_no_windows(kcalc_session: AutomationEngine) -> None:
     output = kcalc_session.window_geometry(app_name="no-such-application")
     assert output == "No windows found for 'no-such-application'.", output[:500]
+
+
+def test_focus_window_reports_kwin_query_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = _engine_with_timed_out_kwin_query(monkeypatch)
+
+    assert engine.focus_window(app_name="kcalc") == (
+        "Failed to focus 'kcalc': KWin query timed out after 30s"
+    )
+
+
+def test_window_geometry_reports_kwin_query_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = _engine_with_timed_out_kwin_query(monkeypatch)
+
+    assert (
+        engine.window_geometry(app_name="kcalc")
+        == "Window geometry unavailable: KWin query timed out after 30s"
+    )

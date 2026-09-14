@@ -37,6 +37,11 @@ _BTN_CODES: dict[MouseButton, int] = {
     MouseButton.MIDDLE: 0x112,  # BTN_MIDDLE
 }
 
+# Give KWin enough time to dispatch each button transition while keeping
+# consecutive presses comfortably inside GTK's multi-click recognition window.
+_CLICK_PRESS_SECONDS = 0.025
+_MULTI_CLICK_GAP_SECONDS = 0.06
+
 # Linux evdev keycodes for special keys
 _EVDEV_KEY_MAP: dict[str, int] = {
     "return": 28,
@@ -605,12 +610,12 @@ class InputBackend:
 
         for i in range(click_count):
             if i > 0:
-                time.sleep(0.05)
+                time.sleep(_MULTI_CLICK_GAP_SECONDS)
             self._client.pointer_button(btn_code, _PRESSED)
             if hold_ms > 0 and i == click_count - 1:
-                time.sleep(max(0.01, hold_ms / 1000.0))
+                time.sleep(max(_CLICK_PRESS_SECONDS, hold_ms / 1000.0))
             else:
-                time.sleep(0.01)
+                time.sleep(_CLICK_PRESS_SECONDS)
             self._client.pointer_button(btn_code, _RELEASED)
 
         # Release modifier keys in reverse order

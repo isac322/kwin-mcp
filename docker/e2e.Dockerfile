@@ -25,7 +25,11 @@ RUN printf '%s\n' \
         'Components: main' \
         'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
         > /etc/apt/sources.list.d/debian.sources \
-    && printf 'Acquire::Check-Valid-Until "false";\n' \
+    && printf '%s\n' \
+        'Acquire::Check-Valid-Until "false";' \
+        'Acquire::Retries "5";' \
+        'Acquire::http::Timeout "120";' \
+        'Acquire::http::Pipeline-Depth "0";' \
         > /etc/apt/apt.conf.d/99debian-snapshot
 
 FROM debian-snapshot AS wheel-builder

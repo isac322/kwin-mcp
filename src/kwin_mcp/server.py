@@ -744,6 +744,23 @@ def focus_window(
     return _engine.focus_window(app_name=app_name)
 
 
+@mcp.tool()
+def window_geometry(
+    app_name: Annotated[
+        str,
+        Field(description="Only report windows whose app name contains this string."),
+    ] = "",
+) -> str:
+    """Report window positions and sizes in global screen coordinates.
+
+    Accessibility rectangles from accessibility_tree and find_ui_elements are
+    surface-local, because a Wayland client cannot know where the compositor
+    placed it. Add the window's client origin reported here to turn them into
+    the global coordinates that mouse_click and touch_tap expect.
+    """
+    return _engine.window_geometry(app_name=app_name)
+
+
 # ── D-Bus tools ──────────────────────────────────────────────────────────
 
 

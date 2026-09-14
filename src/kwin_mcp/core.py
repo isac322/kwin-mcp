@@ -10,6 +10,8 @@ import json
 import os
 import shlex
 import shutil
+import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -251,6 +253,30 @@ class AutomationEngine:
         except dbus_module.DBusException as exc:
             return f"Cannot reach KWin on D-Bus ({dbus_addr}): {exc}"
 
+        display_path = Path(wayland_disp)
+        if not display_path.is_absolute():
+            runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+            if not runtime_dir:
+                return f"Cannot reach Wayland display ({wayland_disp}): XDG_RUNTIME_DIR is not set"
+            display_path = Path(runtime_dir) / display_path
+
+        try:
+            display_mode = display_path.stat().st_mode
+        except OSError as exc:
+            return f"Cannot reach Wayland display ({wayland_disp}): {exc}"
+        if not stat.S_ISSOCK(display_mode):
+            return (
+                f"Cannot reach Wayland display ({wayland_disp}): "
+                f"{display_path} is not a Unix socket"
+            )
+
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+                probe.settimeout(0.5)
+                probe.connect(str(display_path))
+        except OSError as exc:
+            return f"Cannot reach Wayland display ({wayland_disp}): {exc}"
+
         screenshot_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-screenshots-"))
 
         session = LiveSession(dbus_addr, wayland_disp, screenshot_dir)
@@ -356,9 +382,16 @@ class AutomationEngine:
         lines = [f"Found {len(elements)} elements matching {search_desc}:\n"]
         for el in elements:
             actions_str = f" [actions: {', '.join(el['actions'])}]" if el["actions"] else ""
+            text_str = f" text={el['text']!r}" if el.get("text") else ""
+            value_str = (
+                f" value={el['value']:g}/{el['value_max']:g}"
+                if el.get("value") is not None and el.get("value_max") is not None
+                else ""
+            )
             lines.append(
                 f'- [{el["role"]}] "{el["name"]}" '
-                f"@ ({el['x']}, {el['y']}, {el['width']}x{el['height']}){actions_str}"
+                f"@ ({el['x']}, {el['y']}, {el['width']}x{el['height']})"
+                f"{text_str}{value_str}{actions_str}"
             )
         return "\n".join(lines)
 
@@ -498,9 +531,9 @@ class AutomationEngine:
                 "wl-clipboard (e.g. 'sudo pacman -S wl-clipboard')."
             )
         inp = self._get_input()
-        session = self._get_session()
-        dbus_addr = session.info.dbus_address if session.info else None
-        ok = inp.keyboard_type_unicode(text, dbus_address=dbus_addr)
+        # wl-copy is a Wayland client: without the session's WAYLAND_DISPLAY it
+        # exits immediately and the clipboard fallback silently does nothing.
+        ok = inp.keyboard_type_unicode(text, env=self._session_env())
         result = f"Typed unicode: {text!r}" if ok else f"Failed to type unicode: {text!r}"
         return self._with_frame_capture(result, screenshot_after_ms)
 
@@ -685,9 +718,16 @@ class AutomationEngine:
         lines = [f"Found {len(elements)} elements matching {search_desc}:\n"]
         for el in elements:
             actions_str = f" [actions: {', '.join(el['actions'])}]" if el["actions"] else ""
+            text_str = f" text={el['text']!r}" if el.get("text") else ""
+            value_str = (
+                f" value={el['value']:g}/{el['value_max']:g}"
+                if el.get("value") is not None and el.get("value_max") is not None
+                else ""
+            )
             lines.append(
                 f'- [{el["role"]}] "{el["name"]}" '
-                f"@ ({el['x']}, {el['y']}, {el['width']}x{el['height']}){actions_str}"
+                f"@ ({el['x']}, {el['y']}, {el['width']}x{el['height']})"
+                f"{text_str}{value_str}{actions_str}"
             )
         return "\n".join(lines)
 
@@ -706,11 +746,66 @@ class AutomationEngine:
         resp = self._run_atspi("list_windows")
         return resp["result"]
 
+    def _run_kwin_query(self, request: dict[str, object]) -> dict:
+        """Run a KWin scripting query in a subprocess bound to the session bus."""
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "kwin_mcp.geometry"],
+                input=json.dumps(request),
+                env=self._session_env(),
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": "KWin query timed out after 30s"}
+        if result.returncode != 0:
+            return {"ok": False, "error": f"exit {result.returncode}: {result.stderr[:200]}"}
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return {"ok": False, "error": f"invalid JSON: {result.stdout[:200]}"}
+
     def focus_window(self, app_name: str) -> str:
-        """Attempt to focus a window by application name."""
+        """Activate a window by application name.
+
+        Activation goes through KWin: AT-SPI2's grab_focus neither raises nor
+        activates windows on Wayland, so it reported success while the previously
+        active window kept both focus and the foreground.
+        """
         self._get_session()
-        resp = self._run_atspi("focus_window", app_name=app_name)
-        return resp["result"]
+        resp = self._run_kwin_query({"op": "activate", "app_name": app_name})
+        if not resp["ok"]:
+            return f"Failed to focus '{app_name}': {resp['error']}"
+        activated = str(resp["result"]).strip()
+        return f"Focused: {activated}" if activated else f"No window matches '{app_name}'."
+
+    def window_geometry(self, app_name: str = "") -> str:
+        """Report window positions in global screen coordinates.
+
+        AT-SPI2 rectangles are surface-local — a Wayland client cannot know where
+        the compositor placed it — so element coordinates must be offset by the
+        window's client origin before they can be clicked.
+        """
+        self._get_session()
+        resp = self._run_kwin_query({"app_name": app_name})
+        if not resp["ok"]:
+            return f"Window geometry unavailable: {resp['error']}"
+
+        windows = resp["result"]
+        if not windows:
+            return "No windows found." if not app_name else f"No windows found for '{app_name}'."
+
+        lines = [f"Windows ({len(windows)}):"]
+        for window in windows:
+            frame, client = window["frame"], window["client"]
+            lines.append(
+                f'- {window["app"]} "{window["caption"]}"\n'
+                f"    frame:  ({frame['x']}, {frame['y']}, {frame['width']}x{frame['height']})\n"
+                f"    client: ({client['x']}, {client['y']}, "
+                f"{client['width']}x{client['height']})"
+            )
+        return "\n".join(lines)
 
     # ── D-Bus tools ───────────────────────────────────────────────────────
 

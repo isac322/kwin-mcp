@@ -5,7 +5,7 @@ description: Use when the user asks to launch, click, type, screenshot, or other
 
 # kwin-desktop-automation
 
-Drive Linux KDE Plasma 6 Wayland desktops through the `kwin-mcp` MCP server. The MCP server provides 30 capabilities; this skill provides the operational discipline to use them efficiently, in the right order, and without falling into platform-specific traps.
+Drive Linux KDE Plasma 6 Wayland desktops through the `kwin-mcp` MCP server. The MCP server provides 31 capabilities; this skill provides the operational discipline to use them efficiently, in the right order, and without falling into platform-specific traps.
 
 ## When to apply
 
@@ -54,7 +54,7 @@ Pick the cheapest tool that answers the question. Do not start with `screenshot`
 
 **Action tools:**
 
-- Click coordinates returned by `find_ui_elements` / `accessibility_tree` directly with `mouse_click`.
+- Rectangles from `find_ui_elements` / `accessibility_tree` are always surface-local. Before `mouse_click` or `touch_tap`, call `window_geometry` for the target app and add the reported client origin to the rectangle coordinates. For a rectangle `(x, y, width, height)` and client origin `(client_x, client_y)`, use screen point `(client_x + x + width / 2, client_y + y + height / 2)`.
 - `keyboard_type` is **ASCII / US-QWERTY only**. It maps characters to evdev keycodes; non-ASCII silently breaks.
 - `keyboard_type_unicode` for Korean / CJK / emoji / any non-ASCII. Internally uses `wtype` first, falls back to `wl-copy` + Ctrl+V. Requires `wtype` or `wl-clipboard` installed.
 
@@ -62,11 +62,12 @@ Branch typing by string content — never assume the input is ASCII.
 
 **Verify after every meaningful action.** Typical pattern:
 
-1. `find_ui_elements(query="OK", states=["enabled"])` — locate.
-2. `mouse_click(x, y)` — act.
-3. `wait_for_element(query="Settings saved", timeout_ms=3000)` — confirm.
+1. `find_ui_elements(query="OK", states=["enabled"])` — locate the surface-local rectangle.
+2. `window_geometry(app_name="target-app")` — get the client origin in screen coordinates.
+3. `mouse_click(client_x + x + width / 2, client_y + y + height / 2)` — convert and act.
+4. `wait_for_element(query="Settings saved", timeout_ms=3000)` — confirm.
 
-For animation-heavy or transient UI, pass `screenshot_after_ms=[0, 100, 300]` to a single action call instead of three round-trips — kwin-mcp captures frames server-side via the fast ScreenShot2 D-Bus interface (~30–70 ms per frame).
+For animation-heavy or transient UI, pass `screenshot_after_ms=[0, 100, 300]` to a single action call instead of making three round-trips. kwin-mcp uses the best supported capture backend. High-frequency timing requires ScreenShot2; the Docker nested visual QA explicitly selects X11/scrot for pixel verification, so do not treat its frame timing as ScreenShot2 performance.
 
 ## 3. Pitfalls
 
@@ -74,10 +75,10 @@ These are properties of the Wayland / AT-SPI2 / EIS stack, not bugs. Know them o
 
 - **`keyboard_type` is US QWERTY only.** Non-ASCII text must go through `keyboard_type_unicode`. Always check the input.
 - **Clipboard is opt-in on virtual sessions.** Pass `enable_clipboard=true` to `session_start` AND ensure `wl-clipboard` is installed. Live sessions always have clipboard.
-- **AT-SPI2 coordinates are surface-local on Wayland.** Each app's coordinates are relative to its own window's top-left, not the virtual screen — Wayland clients do not know their global position by design. Single-window scenarios are fine. For multi-window layouts, cross-reference with `screenshot` to disambiguate.
-- **QMenu and native context menus may be invisible to AT-SPI2.** Qt's AT-SPI2 bridge has incomplete popup-menu support on Wayland. Workaround: take a `screenshot`, locate the menu item visually, click by coordinates.
+- **AT-SPI2 coordinates are always surface-local on Wayland.** Rectangles returned by `find_ui_elements` and `accessibility_tree` are relative to the window's client area, while `mouse_click` and `touch_tap` require screen coordinates. Call `window_geometry` for the target app and add its client origin before every pointer or touch action. Never pass an accessibility rectangle directly, even in a single-window session.
+- **QMenu and native context menus may be invisible to AT-SPI2.** Qt's AT-SPI2 bridge has incomplete popup-menu support on Wayland. Take a `screenshot` to identify the menu item, derive its surface-local position from the parent widget's rectangle, then add the owning window's client origin from `window_geometry` before clicking.
 - **Screen edge triggers (auto-hide panels, layer-shell strips) ignore EIS pointer events.** Use `dbus_call` to invoke KWin scripting or a keyboard shortcut instead of trying to hover the edge.
-- **Live sessions inside containers need Wayland + D-Bus mounted in.** Symptom: `session_connect` fails with "no Wayland display" or "no session bus". The user must mount `$XDG_RUNTIME_DIR/wayland-*` and propagate `DBUS_SESSION_BUS_ADDRESS` into the container.
+- **Live sessions inside containers need reachable Wayland and D-Bus endpoints.** `session_connect` rejects missing, non-socket, or unreachable Wayland sockets, as well as an unreachable KWin D-Bus. Mount the target Wayland socket under the container's `$XDG_RUNTIME_DIR` (or pass its absolute path), and propagate `DBUS_SESSION_BUS_ADDRESS`.
 - **Touch is EIS-emulated, not from a real touchscreen.** Most apps handle this correctly, but a few may behave differently from a physical touch device.
 
 ## 4. Cleanup
@@ -95,10 +96,11 @@ These are properties of the Wayland / AT-SPI2 / EIS stack, not bugs. Know them o
 
 **"Click the Save button in kate"** (virtual):
 1. `session_start(app_command="kate")`
-2. `wait_for_element(query="Save", app_name="kate", timeout_ms=5000)`
-3. `mouse_click(x, y)` using coords from step 2.
-4. `wait_for_element(query="Save File", timeout_ms=3000)` to confirm the dialog appeared.
-5. `session_stop()`.
+2. `wait_for_element(query="Save", app_name="kate", timeout_ms=5000)` — get the surface-local rectangle.
+3. `window_geometry(app_name="kate")` — get the client origin.
+4. `mouse_click(client_x + x + width / 2, client_y + y + height / 2)`.
+5. `wait_for_element(query="Save File", timeout_ms=3000)` to confirm the dialog appeared.
+6. `session_stop()`.
 
 **"Type 안녕하세요 into the active text field"**:
 1. (Session already open.)

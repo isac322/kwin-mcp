@@ -21,6 +21,7 @@ import time
 from enum import Enum
 
 import dbus
+import dbus.bus
 from dbus.mainloop.glib import DBusGMainLoop
 
 

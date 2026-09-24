@@ -46,7 +46,8 @@ def _result_text(result: object) -> str:
 def _single_rect(output: str, pattern: str) -> tuple[int, int, int, int]:
     matches = re.findall(pattern, output, re.MULTILINE)
     assert len(matches) == 1, output[:2000]
-    return tuple(int(value) for value in matches[0])  # type: ignore[return-value]
+    x, y, width, height = matches[0]
+    return int(x), int(y), int(width), int(height)
 
 
 async def _global_element_rect(
@@ -133,7 +134,8 @@ def _bounds_field(status: str, name: str = "bounds") -> tuple[int, int, int, int
         _field(status, name),
     )
     assert match is not None, status
-    return tuple(int(value) for value in match.groups())  # type: ignore[return-value]
+    x, y, width, height = match.groups()
+    return int(x), int(y), int(width), int(height)
 
 
 async def _keyboard_text(client: McpTestClient) -> str:

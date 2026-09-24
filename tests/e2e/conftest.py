@@ -6,7 +6,7 @@ the container built from docker/e2e.Dockerfile (see docker/README.md).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 import pytest
 from _asserts import element_count
@@ -15,9 +15,20 @@ from kwin_mcp.core import AutomationEngine
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
+    from typing import Unpack
 
 SCREEN_WIDTH = 1280
 SCREEN_HEIGHT = 800
+
+
+class _SessionStartKwargs(TypedDict, total=False):
+    """Optional ``AutomationEngine.session_start`` keywords forwarded by ``start_session``."""
+
+    enable_clipboard: bool
+    keep_screenshots: bool
+    isolate_home: bool
+    keep_home: bool
+    env: dict[str, str] | None
 
 
 @pytest.fixture
@@ -40,12 +51,12 @@ def engine() -> Iterator[AutomationEngine]:
 def start_session(engine: AutomationEngine) -> Callable[..., str]:
     """Start a virtual session at the fixed test resolution."""
 
-    def _start(app_command: str = "", **kwargs: object) -> str:
+    def _start(app_command: str = "", **kwargs: Unpack[_SessionStartKwargs]) -> str:
         return engine.session_start(
             app_command=app_command,
             screen_width=SCREEN_WIDTH,
             screen_height=SCREEN_HEIGHT,
-            **kwargs,  # type: ignore[arg-type]
+            **kwargs,
         )
 
     return _start

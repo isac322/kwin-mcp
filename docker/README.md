@@ -9,19 +9,17 @@ The image fixes the inputs that define the test environment:
 - the build helper is `ghcr.io/astral-sh/uv:0.10.8@sha256:88234bc9e09c2b2f6d176a3daf411419eb0370d450a08129257410de9cfafd2a`;
 - the runtime base is `debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132`;
 - APT reads Debian trixie, trixie-updates, and trixie-security from snapshot `20260913T000000Z`;
-- `uv export --locked` derives hashed Python requirements from `uv.lock`; the lock currently resolves the supported MCP 1.x range to `mcp` 1.26.0;
-- the project is built as a wheel and installed into `/opt/kwin-mcp-venv` with its locked dependencies. Tests import that installed distribution and launch its `kwin-mcp` and `kwin-mcp-cli` console entry points.
+- the project is built as a wheel and installed into `/opt/kwin-mcp-venv` with standard `Requires-Dist` resolution. Tests import that installed distribution and launch its `kwin-mcp` and `kwin-mcp-cli` console entry points.
 
-PyGObject, dbus-python, Pillow, and the desktop stack come from the same Debian snapshot through the virtual environment's system site packages. `environment.json` records the architecture, base digest, snapshot, Python and KWin versions, installed Debian package versions, and installed `kwin-mcp` and `mcp` distribution metadata for each run.
+All Python dependencies — `mcp` within the declared 1.x range, PyGObject, pycairo, dbus-python, Pillow, and their transitives — resolve fresh from the package index at image-build time, so Python dependency versions vary within the declared ranges between builds. PyGObject, pycairo, and dbus-python compile from source in the isolated `venv-builder` stage; the runtime image adds only the `libgirepository-2.0-0` shared library they need and carries no compiler or development headers. The virtual environment keeps system site packages so distro-only modules such as NumPy stay importable, and the dev dependency group is installed separately from `pyproject.toml`; `uv.lock` is not used inside the image. `environment.json` records the architecture, base digest, snapshot, Python and KWin versions, installed Debian package versions, and installed `kwin-mcp` and `mcp` distribution metadata for each run, so the resolved Python versions remain part of the retained provenance.
 
 ## Process topology
 
 ```text
 scripts/run-e2e-docker.sh
   |-- docker build
-  |     |-- export hashed dependencies from uv.lock
   |     |-- build the kwin-mcp wheel
-  |     +-- install dependencies and wheel in /opt/kwin-mcp-venv
+  |     +-- install wheel with resolved dependencies in /opt/kwin-mcp-venv
   |
   +-- docker run (tester, UID 1000)
         |-- e2e-entrypoint.sh

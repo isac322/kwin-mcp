@@ -79,7 +79,8 @@ async def _virtual_session(
 def _rect(output: str, pattern: str) -> tuple[int, int, int, int]:
     matches = re.findall(pattern, output)
     assert len(matches) == 1, output[:500]
-    return tuple(int(value) for value in matches[0])  # type: ignore[return-value]
+    x, y, width, height = matches[0]
+    return int(x), int(y), int(width), int(height)
 
 
 async def _wait_for_app(client: McpClient, app_name: str, query: str = "") -> str:

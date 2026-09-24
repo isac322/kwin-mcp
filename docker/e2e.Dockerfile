@@ -42,16 +42,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY pyproject.toml uv.lock README.md ./
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv export \
-        --locked \
-        --group dev \
-        --no-emit-project \
-        --prune dbus-python \
-        --prune pillow \
-        --prune pygobject \
-        --output-file /build/runtime-requirements.txt
+COPY pyproject.toml README.md ./
 COPY src/ ./src/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv build --wheel --out-dir /build/dist
@@ -78,6 +69,7 @@ RUN apt-get update \
         libcap2-bin \
         libegl-mesa0 \
         libei1 \
+        libgirepository-2.0-0 \
         libgl1-mesa-dri \
         libglx-mesa0 \
         mesa-utils \
@@ -109,19 +101,26 @@ RUN apt-get update \
 FROM runtime-base AS venv-builder
 
 COPY --from=uv-bin /uv /usr/local/bin/uv
-COPY --from=wheel-builder /build/runtime-requirements.txt /tmp/runtime-requirements.txt
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        build-essential \
+        libdbus-1-dev \
+        libcairo2-dev \
+        libgirepository-2.0-dev \
+        pkg-config \
+        python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=wheel-builder /build/pyproject.toml /tmp/pyproject.toml
 COPY --from=wheel-builder /build/dist/ /tmp/wheels/
 RUN --mount=type=cache,target=/root/.cache/uv \
     python3 -m venv --system-site-packages /opt/kwin-mcp-venv \
     && uv pip install \
         --python /opt/kwin-mcp-venv/bin/python \
-        --require-hashes \
-        --no-deps \
-        --requirement /tmp/runtime-requirements.txt \
+        /tmp/wheels/*.whl \
     && uv pip install \
         --python /opt/kwin-mcp-venv/bin/python \
-        --no-deps \
-        /tmp/wheels/*.whl
+        --group /tmp/pyproject.toml:dev
 
 FROM runtime-base AS runtime
 ARG DEBIAN_SNAPSHOT

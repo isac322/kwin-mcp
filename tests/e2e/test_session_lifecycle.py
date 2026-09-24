@@ -24,6 +24,7 @@ from kwin_mcp.core import AutomationEngine
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
+    from typing import IO
 
 BAD_BINARY = "definitely-not-a-real-binary"
 SESSION_ALREADY_RUNNING = "Session already running. Call session_stop first."
@@ -97,10 +98,10 @@ def _kwin_pids() -> set[int]:
     return pids
 
 
-def _stderr_excerpt(stderr_file: object) -> str:
-    stderr_file.flush()  # type: ignore[attr-defined]
-    stderr_file.seek(0)  # type: ignore[attr-defined]
-    return stderr_file.read().decode(errors="replace")[:500]  # type: ignore[attr-defined]
+def _stderr_excerpt(stderr_file: IO[bytes]) -> str:
+    stderr_file.flush()
+    stderr_file.seek(0)
+    return stderr_file.read().decode(errors="replace")[:500]
 
 
 def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:

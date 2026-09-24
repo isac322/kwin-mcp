@@ -46,7 +46,8 @@ def _text_area(engine: AutomationEngine, app: str, name: str) -> tuple[int, int,
     elements = engine.find_ui_elements(query=name, app_name=app)
     match = re.search(rf'\[text\] "{name}" @ \((\d+), (\d+), (\d+)x(\d+)\)', elements)
     assert match is not None, elements[:500]
-    return tuple(int(value) for value in match.groups())  # type: ignore[return-value]
+    x, y, width, height = match.groups()
+    return int(x), int(y), int(width), int(height)
 
 
 def _scroll_position(engine: AutomationEngine, app: str) -> float:

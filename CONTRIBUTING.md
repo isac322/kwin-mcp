@@ -120,9 +120,12 @@ Pass pytest selectors after `--` when you need a focused run:
 scripts/run-e2e-docker.sh -- -k screenshot -v
 ```
 
-The full command builds `docker/e2e.Dockerfile`, builds a wheel from the checkout, installs that
-wheel into the runtime virtual environment, and installs the locked MCP 1.x dependency set with
-hash checking. The image pins both its Debian base-image digest and its dated Debian package
+The full command builds `docker/e2e.Dockerfile`, builds a wheel from the checkout, and installs
+that wheel into the runtime virtual environment with standard `Requires-Dist` resolution:
+PyGObject, pycairo, and dbus-python compile from source in a builder-only stage, while `mcp`,
+Pillow, and the remaining dependencies resolve fresh from PyPI within the declared ranges. The
+dev dependency group is installed separately from `pyproject.toml`; `uv.lock` is not used inside
+the image. The image pins both its Debian base-image digest and its dated Debian package
 snapshot.
 
 The suite currently collects 99 tests. Together they prove:
@@ -184,7 +187,7 @@ src/kwin_mcp/
 └── input.py           # Input injection via KWin EIS D-Bus + libei
 
 docker/
-├── e2e.Dockerfile     # Pinned installed-package E2E image
+├── e2e.Dockerfile     # Reproducible installed-package E2E image
 ├── e2e-entrypoint.sh  # Records environment evidence, then executes the test command
 ├── e2e-environment.py # Writes allowlisted environment.json provenance
 └── README.md          # Container backends, coverage, and limitations

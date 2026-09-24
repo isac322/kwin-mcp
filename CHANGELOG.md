@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `docker/e2e.Dockerfile` no longer exports hashed requirements from `uv.lock`. The built wheel is installed with standard `Requires-Dist` resolution: all Python dependencies resolve fresh from the package index within the declared ranges, so their versions can vary between image builds. PyGObject, pycairo, and dbus-python compile from source in a builder-only stage, and the runtime image adds only the `libgirepository-2.0-0` shared library. The dev dependency group is installed separately from `pyproject.toml`. The Debian base-image digest and dated APT snapshot remain pinned, and `uv.lock` continues to pin development environments outside the container.
+
+### Fixed
+
+- E2E test helpers now declare explicit type annotations — tuple return types, fixture keyword arguments, and startup stderr handles — so the suite type-checks under the current `ty` release; test behavior and count are unchanged.
+
 ## [0.8.0] - 2026-09-24
 
 ### Added

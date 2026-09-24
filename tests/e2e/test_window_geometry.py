@@ -37,7 +37,8 @@ def _engine_with_timed_out_kwin_query(monkeypatch: pytest.MonkeyPatch) -> Automa
 def _rect(output: str, kind: str) -> tuple[int, int, int, int]:
     match = re.search(rf"{kind}:\s+{_RECT}", output)
     assert match is not None, output[:500]
-    return tuple(int(value) for value in match.groups())  # type: ignore[return-value]
+    x, y, width, height = match.groups()
+    return int(x), int(y), int(width), int(height)
 
 
 def test_client_geometry_is_centred_on_the_screen(

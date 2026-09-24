@@ -484,7 +484,7 @@ uv run kwin-mcp
 
 ## End-to-End Testing
 
-The Docker suite currently collects 99 tests against the packaged application, not an editable source checkout. `docker/e2e.Dockerfile` builds a wheel, installs it with the locked MCP 1.x dependency set into `/opt/kwin-mcp-venv`, and runs both `AutomationEngine` tests and the installed `kwin-mcp` console entry point. The MCP tests initialize a real client/server session over stdio JSON-RPC.
+The Docker suite currently collects 99 tests against the packaged application, not an editable source checkout. `docker/e2e.Dockerfile` builds a wheel and installs it into `/opt/kwin-mcp-venv` with standard `Requires-Dist` resolution: PyGObject, pycairo, and dbus-python compile from source in a builder-only stage, while `mcp`, Pillow, and the remaining dependencies resolve fresh from PyPI within the declared ranges. The suite runs both `AutomationEngine` tests and the installed `kwin-mcp` console entry point. The MCP tests initialize a real client/server session over stdio JSON-RPC.
 
 Run the complete suite from the repository root:
 

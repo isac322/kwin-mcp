@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-24
+
 ### Added
 
 - Containerized installed-package E2E suite (`docker/e2e.Dockerfile`, `tests/e2e`) collecting 99 tests: engine-level virtual-session coverage plus the installed `kwin-mcp` console entry point over real MCP stdio. Protocol tests verify the exact JSON schemas and wrapper behavior of all 31 tools, including lifecycle and error propagation.
@@ -24,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The published package metadata now declares `mcp>=1.0.0,<2`. The 0.7.0 release on PyPI left `mcp` unbounded, so a fresh install could resolve `mcp` 2.x and the server failed at startup with `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`; the constraint already present in the source tree now ships in the released distribution.
 - `session_connect` now validates explicit D-Bus and Wayland endpoints, including the requested `$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY` socket, before attaching to a live KWin session.
 - `list_windows` now filters AT-SPI2 applications with zero top-level windows instead of reporting empty application entries.
 - `keyboard_key`, `keyboard_key_down`, and `keyboard_key_up` now return explicit MCP tool errors for unknown key names without terminating the stdio server; invalid mouse button names receive the same error treatment.
@@ -44,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `mouse_scroll(discrete=True)` was silently dropped: libei counts discrete scrolling in 120ths of a wheel detent, so a click count was rejected as a suspicious fraction. Detents are now scaled and split correctly, including for negative deltas with `steps`
 - `keyboard_type_unicode` gave up when `wtype` failed instead of falling back to the documented wl-copy + Ctrl+V path. KWin does not implement the virtual-keyboard Wayland protocol, so `wtype` always fails there and non-ASCII input never worked on Plasma
 - `session_stop` left applications started by `launch_app` running: they are children of the caller, not of the session's process group, so the group signal never reached them. A surviving app also kept writing into an isolated home and defeated its removal, which surfaced as a leaked directory on slower machines. Apps are now terminated and reaped first, and the home removal retries instead of ignoring errors
+- Installation docs omitted the native build prerequisites needed when installing kwin-mcp builds `pygobject` and `dbus-python` from source, as happens in the isolated environments created by `uv tool install kwin-mcp`, `uvx kwin-mcp`, and `uv sync`. The README now lists these build dependencies alongside the runtime system dependencies, including the Debian 13 runtime package `kde-spectacle`; CONTRIBUTING.md links to that list instead of duplicating it, and the AI agent integration guide separates `uvx: command not found` from native build failures
 
 ## [0.7.0] - 2026-03-29
 
@@ -159,7 +163,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keyboard input: text typing and key combinations via KWin EIS
 - FastMCP-based MCP server with stdio transport
 
-[Unreleased]: https://github.com/isac322/kwin-mcp/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/isac322/kwin-mcp/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/isac322/kwin-mcp/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/isac322/kwin-mcp/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/isac322/kwin-mcp/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/isac322/kwin-mcp/compare/v0.5.0...v0.5.1

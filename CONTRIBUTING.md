@@ -12,34 +12,9 @@ Thank you for your interest in contributing to kwin-mcp, an MCP server for Linux
 
 ### System Dependencies
 
-Install the required system packages for your distribution:
+Install the runtime packages and native build dependencies described in the README's [Installing System Dependencies](README.md#installing-system-dependencies) section before running `uv sync`. That section is the single maintained source; this guide does not duplicate its package lists.
 
-**Arch Linux / Manjaro:**
-
-```bash
-sudo pacman -S kwin spectacle at-spi2-core python-gobject dbus-python-common
-
-# Optional: for clipboard and Unicode input
-sudo pacman -S wl-clipboard wtype wayland-utils
-```
-
-**Fedora (KDE Spin):**
-
-```bash
-sudo dnf install kwin-wayland spectacle at-spi2-core python3-gobject dbus-python
-
-# Optional
-sudo dnf install wl-clipboard wtype wayland-utils
-```
-
-**Kubuntu / KDE Neon:**
-
-```bash
-sudo apt install kwin-wayland spectacle at-spi2-core python3-gi gir1.2-atspi-2.0 python3-dbus
-
-# Optional
-sudo apt install wl-clipboard wtype wayland-utils
-```
+The build dependencies matter for development too: `uv sync` creates an isolated `.venv` that cannot import the distribution's `gi` (PyGObject) or `dbus` Python modules, so uv builds `pygobject` and `dbus-python` from source there. Without a C compiler, `pkg-config`, Python headers, and the cairo, GObject Introspection, and D-Bus development files, that build fails.
 
 ### Clone and Install
 

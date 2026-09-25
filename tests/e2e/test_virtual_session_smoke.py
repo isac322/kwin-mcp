@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import os
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from _asserts import coordinate_spaces, screenshot_path
 from PIL import Image
 
 if TYPE_CHECKING:
@@ -81,10 +81,10 @@ def test_screenshot_captures_the_session(
     assert SCREENSHOT_SERVICE in bus_names, bus_names
 
     output = kcalc_session.screenshot()
-    assert "Screenshot saved" in output, output
-
-    path = Path(output.removeprefix("Screenshot saved: ").rsplit(" (", 1)[0])
+    path = screenshot_path(output)
     assert path.stat().st_size > MIN_SCREENSHOT_BYTES, output
+    # One output at scale 1: the logical workspace is the configured size at (0, 0).
+    assert [(s.origin, s.size) for s in coordinate_spaces(output)] == [((0, 0), screen_size)]
 
     with Image.open(path) as image:
         assert image.size == screen_size

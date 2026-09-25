@@ -180,9 +180,10 @@ class AutomationEngine:
         )
 
         lines = [action_result, f"Captured {len(frames)} frames:"]
-        for delay_ms, path in zip(sorted(screenshot_after_ms), frames, strict=True):
+        for delay_ms, (path, mapping) in zip(sorted(screenshot_after_ms), frames, strict=True):
             size_kb = path.stat().st_size / 1024
             lines.append(f"  {delay_ms}ms: {path} ({size_kb:.1f} KB)")
+            lines.append(f"    {mapping.describe()}")
         return "\n".join(lines)
 
     # ── Session management ────────────────────────────────────────────────
@@ -355,14 +356,14 @@ class AutomationEngine:
             msg = "No session info available"
             raise RuntimeError(msg)
 
-        path = capture_screenshot_to_file(
+        path, mapping = capture_screenshot_to_file(
             dbus_address=info.dbus_address,
             wayland_socket=info.wayland_socket,
             include_cursor=include_cursor,
             output_dir=info.screenshot_dir,
         )
         size_kb = path.stat().st_size / 1024
-        return f"Screenshot saved: {path} ({size_kb:.1f} KB)"
+        return f"Screenshot saved: {path} ({size_kb:.1f} KB)\n{mapping.describe()}"
 
     def accessibility_tree(self, app_name: str = "", max_depth: int = 15, role: str = "") -> str:
         """Get the accessibility tree of apps in the isolated session."""

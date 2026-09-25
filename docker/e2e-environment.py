@@ -47,6 +47,7 @@ DEBIAN_PACKAGES = (
     "libei1",
     "libgl1-mesa-dri",
     "libglx-mesa0",
+    "libkscreen-bin",
     "mesa-utils",
     "python3",
     "python3-dbus",

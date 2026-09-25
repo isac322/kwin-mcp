@@ -6,8 +6,9 @@ hand the numbers back over D-Bus.
 
 Two entry points share one script round-trip:
 
-- ``query()`` / ``activate()`` run in a subprocess (`python -m kwin_mcp.geometry`)
-  for the public ``window_geometry`` / ``focus_window`` tools.
+- ``query()`` / ``activate()`` / ``outputs()`` run in a subprocess
+  (`python -m kwin_mcp.geometry`) for the public ``window_geometry`` /
+  ``focus_window`` tools and for screenshot coordinate mapping.
 - ``collect_windows()`` runs in-process inside the AT-SPI2 query subprocess so
   `accessibility.py` can translate element rectangles into screen coordinates.
 
@@ -106,6 +107,28 @@ for (var i = 0; i < windows.length; i++) {
     }
 }
 callDBus("{sink}", "{path}", "{sink}", "Report", activated);
+"""
+
+# Output topology for screenshot coordinate mapping. Geometry is logical (the
+# space EIS input and window geometry use); devicePixelRatio is the output
+# scale. virtualScreenGeometry is the exact rectangle ScreenShot2
+# CaptureWorkspace renders, so it is reported separately from the union.
+_OUTPUTS_SCRIPT = """
+var screens = [];
+var list = workspace.screens;
+for (var i = 0; i < list.length; i++) {
+    var s = list[i];
+    var g = s.geometry;
+    screens.push({
+        name: String(s.name), scale: s.devicePixelRatio,
+        geometry: [g.x, g.y, g.width, g.height]
+    });
+}
+var v = workspace.virtualScreenGeometry;
+callDBus("{sink}", "{path}", "{sink}", "Report", JSON.stringify({
+    screens: screens,
+    virtual: v ? [v.x, v.y, v.width, v.height] : null
+}));
 """
 
 
@@ -242,6 +265,20 @@ def activate(app_name: str, timeout: float = 5.0) -> str:
     return run_kwin_script(script, timeout)
 
 
+def outputs(timeout: float = 5.0) -> dict[str, object]:
+    """Ask KWin for every output's logical geometry and scale.
+
+    Returns ``{"screens": [{"name", "scale", "geometry": [x, y, w, h]}],
+    "virtual": [x, y, w, h] | None}`` with geometry in global logical
+    coordinates exactly as KWin reports them (qreal, not rounded).
+    """
+    payload = json.loads(run_kwin_script(_OUTPUTS_SCRIPT, timeout))
+    if not isinstance(payload, dict) or not isinstance(payload.get("screens"), list):
+        msg = f"KWin returned a malformed output list: {payload!r}"
+        raise RuntimeError(msg)
+    return payload
+
+
 def main() -> None:
     """Entry point for `python -m kwin_mcp.geometry`."""
     try:
@@ -252,8 +289,11 @@ def main() -> None:
         if request.get("op") == "activate":
             print(json.dumps({"ok": True, "result": activate(str(request.get("app_name", "")))}))
             return
+        if request.get("op") == "outputs":
+            print(json.dumps({"ok": True, "result": outputs()}))
+            return
         print(json.dumps({"ok": True, "result": query(app_name=str(request.get("app_name", "")))}))
-    except (RuntimeError, dbus.DBusException) as exc:
+    except (RuntimeError, ValueError, dbus.DBusException) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}))
 
 

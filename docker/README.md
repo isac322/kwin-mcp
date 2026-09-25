@@ -45,6 +45,7 @@ scripts/run-e2e-docker.sh
                                 |-- Wayland applications
                                 +-- installed `kwin-mcp` via session_connect
                                       +-- explicit X11/scrot pixel capture
+                                          (output scale set by kscreen-doctor)
 ```
 
 The virtual and nested compositors use Mesa llvmpipe software rendering. The container requires no `--privileged`, `--cap-add`, `/dev/dri`, GPU, or other device flags. Xvfb is installed and started inside the container only for nested visual tests; the Docker host does not need an X server.
@@ -108,7 +109,7 @@ Additional arguments after the image command can select a file, node ID, marker,
 | `test_mcp_session_observation.py` | Installed stdio session, app launch, accessibility, windows, geometry, logs, Wayland, D-Bus, focus, polling, lifecycle, and virtual screenshot-error paths. |
 | `test_mcp_touch_clipboard.py` | Clipboard and touch wrappers over installed stdio, including observable GUI changes and compositor gesture limits. |
 | `test_observation_tools.py` | Accessibility filters and depth, element queries and states, polling, multi-window focus, app logs, Wayland protocol filtering, and generic D-Bus calls. |
-| `test_screenshot_behavior.py` | Explicit nested X11/scrot capture, cursor pixels, action frame paths, screenshot retention, exact-virtual backend errors, and server survival. |
+| `test_screenshot_behavior.py` | Explicit nested X11/scrot capture, cursor pixels, action frame paths, logical-coordinate click targets at output scales 1.0 and 1.45, screenshot retention, exact-virtual backend errors, and server survival. |
 | `test_session_lifecycle.py` | Start/stop idempotence, environment and geometry, isolated HOME, artifact retention, socket/process cleanup, live-session ownership, and connection errors; plus `PATH`-stub lifecycle regressions for bounded `session_start` failure (stderr + stray stdout diagnostics) and process-group teardown across a reaped leader or `SIGTERM`-ignoring descendant. |
 | `test_unicode_clipboard_lifecycle.py` | `keyboard_type_unicode` clipboard paste: byte-for-byte restoration of every prior MIME type, empty prior selections, the secret-hint transient offer, a concurrent user copy that must survive, failure before paste with a stalled prior owner, a single restore owner across repeated calls, and the restored selection surviving a live-session disconnect. |
 | `test_virtual_session_smoke.py` | Minimum virtual KWin contract: KCalc launch, AT-SPI2 visibility and widgets, EIS keyboard delivery, plus the intentionally skipped exact-virtual ScreenShot2 success probe. |
@@ -126,6 +127,7 @@ Visual tests do not infer success from process exit alone. They preserve PNGs an
 - moving the pointer over the GUI probe changes both its AT-SPI2 status and the hover target's pixels;
 - captures with and without `include_cursor` must differ near the requested pointer coordinates rather than elsewhere on the frame;
 - `screenshot_after_ms` returns distinct animation frames for the requested delays;
+- at output scales 1.0 and 1.45, a probe button located by pixel color in a screenshot and clicked at the reported origin plus that pixel must activate, the image size must equal the logical workspace, burst frames must report the same mapping, and the `include_cursor` difference must appear at the logical pointer position;
 - the CJK sample `GUI 검증 42` must render with materially different pixels and color content from the same-sized tofu control `□□`.
 
 The screenshot behavior tests also drive frame-producing mouse, keyboard, touch, and drag wrappers through installed MCP stdio.
@@ -148,6 +150,7 @@ artifacts/e2e/<UTC-timestamp>-<pid>/
     kwin.stdout.log
     kwin.stderr.log
     mcp-server.stderr.log
+    kscreen-doctor.log        (fractional-scale fixtures only)
     *.png
     additional probe logs and text evidence
 ```
@@ -170,8 +173,8 @@ CI stores the same evidence under `artifacts/e2e/amd64/` or `artifacts/e2e/arm64
 
 ## Screenshot backends and exact-virtual limitation
 
-ScreenShot2 and Spectacle remain the normal Wayland screenshot backends. The nested visual fixture explicitly sets `KWIN_MCP_X11_SCREENSHOT=1` and supplies its Xvfb `DISPLAY`, selecting the test-only X11/scrot path so pixel assertions do not depend on KWin's exact virtual screenshot behavior.
+ScreenShot2 and Spectacle remain the normal Wayland screenshot backends. The nested visual fixture explicitly sets `KWIN_MCP_X11_SCREENSHOT=1` and supplies its Xvfb `DISPLAY`, selecting the test-only X11/scrot path so pixel assertions do not depend on KWin's exact virtual screenshot behavior. That path finds each KWin output's X window with `xwininfo` and rescales it to logical pixels, and it mirrors the EIS pointer to the matching physical X position so cursor captures line up. For fractional-scale tests, the fixture sets every nested output's scale through `kscreen-doctor` (package `libkscreen-bin`) and waits until KWin reports it; the command and its output are kept in `kscreen-doctor.log` in the visual artifact directory.
 
 KWin's `kwin_wayland --virtual` backend in this image does not return ScreenShot2 capture data. The legacy `test_screenshot_captures_the_session` success probe therefore remains skipped in normal runs; setting `KWIN_MCP_E2E_SCREENSHOT=1` only re-enables that exact-backend probe and is not the supported visual-test path. The suite still verifies that ScreenShot2/Spectacle failures become actionable tool errors without killing the engine or installed MCP server.
 
-Screenshot success is covered through the nested KWin/Xvfb fixture with explicit scrot selection, including cursor pixels, action frame bursts, retention, and image oracles. This separates the known exact-virtual ScreenShot2 limitation from screenshot behavior that the suite can verify deterministically.
+Screenshot success is covered through the nested KWin/Xvfb fixture with explicit scrot selection, including cursor pixels, action frame bursts, retention, image oracles, and the reported `Coordinate space` mapping. This separates the known exact-virtual ScreenShot2 limitation from screenshot behavior that the suite can verify deterministically. Because the container has one nested output and no working ScreenShot2 capture, multi-output layouts, negative origins, ScreenShot2 `CaptureWorkspace` normalization, and Spectacle partial coverage are not tested here.

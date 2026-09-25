@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, cast
 
 import anyio
 import pytest
+from _asserts import coordinate_spaces, screenshot_path
 from mcp_harness import running_mcp_server
 from PIL import Image, ImageChops, ImageStat
 from visual_harness import nested_visual_kwin
@@ -71,10 +72,11 @@ def _center(rect: tuple[int, int, int, int]) -> tuple[int, int]:
 
 
 def _screenshot_source(output: str) -> Path:
-    prefix = "Screenshot saved: "
-    assert output.startswith(prefix), output
-    path = Path(output.removeprefix(prefix).rsplit(" (", 1)[0])
+    path = screenshot_path(output)
     assert path.is_file(), output
+    assert [(s.origin, s.size) for s in coordinate_spaces(output)] == [((0, 0), SCREEN_SIZE)], (
+        output
+    )
     return path
 
 
@@ -559,6 +561,11 @@ async def test_gui_probe_visual_semantics_pixels_cursor_and_frame_burst() -> Non
                 assert len(frame_matches) == len(requested_delays), burst_output
                 sorted_delays = sorted(requested_delays)
                 assert [int(delay) for delay, _, _ in frame_matches] == sorted_delays, burst_output
+                # Frames are cropped below with logical element rectangles, which is
+                # only valid because every frame reports the logical workspace at (0, 0).
+                assert [(s.origin, s.size) for s in coordinate_spaces(burst_output)] == [
+                    ((0, 0), SCREEN_SIZE)
+                ] * len(requested_delays), burst_output
 
                 frame_images: list[Image.Image] = []
                 for index, (delay_text, path_text, _) in enumerate(frame_matches):

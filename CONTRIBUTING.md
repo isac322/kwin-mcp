@@ -138,6 +138,8 @@ The suite collects every test under `tests/e2e`. Together they prove:
 - AT-SPI2 observation and KWin EIS keyboard, pointer, touch, clipboard, window, and D-Bus paths;
 - GUI pixels, cursor capture, repaint changes, and frame bursts in test-owned nested Xvfb/KWin
   sessions using the explicitly selected X11 `scrot` capture mode;
+- screenshot coordinate mapping at output scales 1.0 and 1.45: pixels read from a screenshot,
+  offset by its reported origin, must click the intended widget;
 - lifecycle, error propagation, input-state reset, process/session teardown, temporary artifact
   retention rules, and container cleanup;
 - failing-compositor lifecycle regressions driven by `PATH` stubs for `kwin_wayland` and
@@ -150,7 +152,9 @@ KWin's exact virtual backend with llvmpipe. Visual tests start Xvfb and a nested
 inside the same container, then connect the installed MCP server to that session. One legacy
 exact-virtual ScreenShot2 success test remains intentionally skipped because that backend does
 not return captures. Exact-virtual failure behavior is covered, while screenshot success is
-proved through the nested X11 `scrot` mode.
+proved through the nested X11 `scrot` mode. Multi-output layouts, negative origins, ScreenShot2
+`CaptureWorkspace` normalization, and Spectacle partial coverage are not exercised in the
+container.
 
 The runner always removes its named container, including after a failure or handled signal, and
 prints the retained artifact directory:
@@ -187,9 +191,9 @@ src/kwin_mcp/
 ├── server.py          # MCP server (thin wrappers around AutomationEngine)
 ├── cli.py             # Interactive REPL + pipe mode
 ├── session.py         # KWin session management (isolated virtual + live desktop)
-├── screenshot.py      # Screenshot capture via KWin ScreenShot2 D-Bus
+├── screenshot.py      # ScreenShot2, Spectacle, and X11/scrot capture normalized to logical pixels
 ├── accessibility.py   # AT-SPI2 accessibility tree inspection
-├── geometry.py        # Global window geometry and activation via KWin scripting
+├── geometry.py        # Window geometry, activation, and output topology via KWin scripting
 ├── clipboard.py       # Private Wayland data-control helper for keyboard_type_unicode paste
 └── input.py           # Input injection via KWin EIS D-Bus + libei
 

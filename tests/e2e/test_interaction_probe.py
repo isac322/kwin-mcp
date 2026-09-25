@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 import anyio
 import pytest
+from _asserts import coordinate_spaces, screenshot_path
 from mcp_harness import running_mcp_server
 from PIL import Image
 from visual_harness import nested_visual_kwin
@@ -160,10 +161,11 @@ async def _wait_for_keyboard_text(client: McpTestClient, expected: str) -> None:
 
 
 def _screenshot_source(output: str) -> Path:
-    prefix = "Screenshot saved: "
-    assert output.startswith(prefix), output
-    source = Path(output.removeprefix(prefix).rsplit(" (", 1)[0])
+    source = screenshot_path(output)
     assert source.is_file(), output
+    spaces = coordinate_spaces(output)
+    assert len(spaces) == 1, output
+    assert spaces[0].origin == (0, 0) and spaces[0].size == SCREEN_SIZE, output
     return source
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import select
 import shutil
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
 _SCREEN_WIDTH = 1280
 _SCREEN_HEIGHT = 800
 _X_READY_TIMEOUT = 10.0
+_SCALE_READY_TIMEOUT = 15.0
 _KWIN_READY_TIMEOUT = 30.0
 _SCREENSHOT_BUS_NAME = "org.kde.KWin.ScreenShot2"
 _REQUIRED_BUS_NAMES = {
@@ -45,6 +47,8 @@ class NestedVisualKWin:
     kwin_stdout_path: Path
     kwin_stderr_path: Path
     screenshot_service_available: bool | None = None
+    scale: float = 1.0
+    screen_size: tuple[int, int] = (_SCREEN_WIDTH, _SCREEN_HEIGHT)
 
 
 class _StartupError(RuntimeError):
@@ -253,6 +257,72 @@ def _wait_for_kwin(
     raise _StartupError(f"nested KWin did not become ready ({state})")
 
 
+def _kscreen_outputs(kscreen_doctor: str, env: dict[str, str]) -> list[dict[str, object]]:
+    result = subprocess.run(
+        [kscreen_doctor, "--json"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise _StartupError(f"kscreen-doctor --json failed: {result.stderr.strip()[-500:]}")
+    try:
+        outputs = json.loads(result.stdout)["outputs"]
+    except (KeyError, json.JSONDecodeError) as error:
+        raise _StartupError(f"kscreen-doctor --json was unreadable: {error}") from error
+    return [o for o in outputs if o.get("enabled", True)]
+
+
+def _apply_output_scale(
+    *,
+    dbus_address: str,
+    wayland_display: str,
+    scale: float,
+    log_path: Path,
+    isolated_home: dict[str, str],
+) -> None:
+    """Scale every nested KWin output through KScreen and wait until KWin applies it."""
+    kscreen_doctor = _executable("kscreen-doctor")
+    env = {
+        **os.environ,
+        **isolated_home,
+        "DBUS_SESSION_BUS_ADDRESS": dbus_address,
+        "WAYLAND_DISPLAY": wayland_display,
+        "QT_QPA_PLATFORM": "wayland",
+    }
+    env.pop("DISPLAY", None)
+    outputs = _kscreen_outputs(kscreen_doctor, env)
+    if not outputs:
+        raise _StartupError("kscreen-doctor reported no enabled outputs")
+    arguments = [f"output.{output['name']}.scale.{scale:g}" for output in outputs]
+    result = subprocess.run(
+        [kscreen_doctor, *arguments],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    log_path.write_text(
+        f"$ kscreen-doctor {' '.join(arguments)}\nexit {result.returncode}\n"
+        f"{result.stdout}{result.stderr}",
+        encoding="utf-8",
+    )
+    if result.returncode != 0:
+        raise _StartupError(f"kscreen-doctor could not set scale {scale:g}: {result.stderr}")
+
+    deadline = time.monotonic() + _SCALE_READY_TIMEOUT
+    scales: list[object] = []
+    while time.monotonic() < deadline:
+        scales = [output.get("scale") for output in _kscreen_outputs(kscreen_doctor, env)]
+        if all(isinstance(s, int | float) and abs(s - scale) < 1e-3 for s in scales):
+            return
+        time.sleep(0.2)
+    raise _StartupError(f"nested KWin output scale stayed {scales}, expected {scale:g}")
+
+
 def _log_excerpt(path: Path, limit: int = 2000) -> str:
     try:
         text = path.read_text(encoding="utf-8", errors="replace").strip()
@@ -275,8 +345,18 @@ def _startup_message(reason: str, paths: tuple[Path, ...]) -> str:
 
 
 @contextmanager
-def nested_visual_kwin() -> Iterator[NestedVisualKWin]:
-    """Run Xvfb and nested KWin, yielding connection details for ``session_connect``."""
+def nested_visual_kwin(
+    *,
+    scale: float = 1.0,
+    screen_size: tuple[int, int] = (_SCREEN_WIDTH, _SCREEN_HEIGHT),
+) -> Iterator[NestedVisualKWin]:
+    """Run Xvfb and nested KWin, yielding connection details for ``session_connect``.
+
+    ``screen_size`` is the physical X11 output size; ``scale`` is applied to the
+    KWin output through kscreen-doctor before the fixture is yielded, so the
+    logical workspace is ``screen_size / scale``.
+    """
+    screen_width, screen_height = screen_size
     artifact_root_value = os.environ.get("KWIN_MCP_ARTIFACT_DIR")
     if not artifact_root_value:
         raise RuntimeError("KWIN_MCP_ARTIFACT_DIR is required for visual KWin evidence")
@@ -288,6 +368,19 @@ def nested_visual_kwin() -> Iterator[NestedVisualKWin]:
     runtime_dir = Path(os.environ.get("XDG_RUNTIME_DIR", ""))
     if not runtime_dir.is_dir():
         raise RuntimeError("XDG_RUNTIME_DIR must name the existing runtime directory")
+    # Isolate KDE state per fixture: kscreen-doctor persists the applied output
+    # scale under $HOME, and the next session's KWin would silently restore it,
+    # shrinking a 1280x800 scale-1.0 workspace to 883x552. XDG_RUNTIME_DIR stays
+    # shared because it owns the Wayland socket directory.
+    home_dir = artifact_dir / "home"
+    for subdir in (".config", ".local/share", ".local/state"):
+        (home_dir / subdir).mkdir(parents=True, exist_ok=True)
+    isolated_home = {
+        "HOME": str(home_dir),
+        "XDG_CONFIG_HOME": str(home_dir / ".config"),
+        "XDG_DATA_HOME": str(home_dir / ".local" / "share"),
+        "XDG_STATE_HOME": str(home_dir / ".local" / "state"),
+    }
 
     suffix = f"{os.getpid()}-{uuid4().hex[:12]}"
     wayland_display = f"wayland-visual-{suffix}"
@@ -337,7 +430,7 @@ def nested_visual_kwin() -> Iterator[NestedVisualKWin]:
                     str(display_write_fd),
                     "-screen",
                     "0",
-                    f"{_SCREEN_WIDTH}x{_SCREEN_HEIGHT}x24",
+                    f"{screen_width}x{screen_height}x24",
                     "-nolisten",
                     "tcp",
                     "-noreset",
@@ -373,11 +466,12 @@ def nested_visual_kwin() -> Iterator[NestedVisualKWin]:
             "VISUAL_DBUS_ADDRESS_PATH": str(address_path),
             "VISUAL_WAYLAND_DISPLAY": wayland_display,
             "VISUAL_KWIN_WAYLAND": kwin_wayland,
-            "VISUAL_SCREEN_HEIGHT": str(_SCREEN_HEIGHT),
-            "VISUAL_SCREEN_WIDTH": str(_SCREEN_WIDTH),
+            "VISUAL_SCREEN_HEIGHT": str(screen_height),
+            "VISUAL_SCREEN_WIDTH": str(screen_width),
             "XDG_CURRENT_DESKTOP": "KDE",
             "XDG_SESSION_TYPE": "wayland",
         }
+        environment.update(isolated_home)
         environment.pop("DBUS_SESSION_BUS_ADDRESS", None)
         environment.pop("WAYLAND_DISPLAY", None)
 
@@ -397,6 +491,14 @@ def nested_visual_kwin() -> Iterator[NestedVisualKWin]:
             address_path=address_path,
             socket_path=socket_path,
         )
+        if scale != 1.0:
+            _apply_output_scale(
+                dbus_address=dbus_address,
+                wayland_display=wayland_display,
+                scale=scale,
+                log_path=artifact_dir / "kscreen-doctor.log",
+                isolated_home=isolated_home,
+            )
 
         yield NestedVisualKWin(
             dbus_address=dbus_address,
@@ -409,6 +511,8 @@ def nested_visual_kwin() -> Iterator[NestedVisualKWin]:
             kwin_stdout_path=kwin_stdout_path,
             kwin_stderr_path=kwin_stderr_path,
             screenshot_service_available=screenshot_service_available,
+            scale=scale,
+            screen_size=screen_size,
         )
     except _StartupError as error:
         _terminate_process_group(kwin_process)

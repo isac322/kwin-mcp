@@ -818,3 +818,177 @@ async def test_virtual_screenshot_failures_name_each_attempt_and_server_survives
         finally:
             if session_running:
                 assert await client.call_text("session_stop") == "Session stopped."
+
+
+# Issue #65: a real mixed-scale Spectacle capture under QEMU TCG completed
+# successfully in 11.3 s while the fallback was killed at a fixed 10 s. The stub
+# stands in for that slow but healthy Spectacle: it answers after this delay
+# with a valid full-workspace PNG, exactly once per capture.
+SLOW_SPECTACLE_SECONDS = 12.0
+# Topology observations and the kill of a stuck capture fit well inside this.
+STUCK_CAPTURE_SLACK_SECONDS = 10.0
+_SLOW_SPECTACLE_STUB = """#!/usr/bin/env python3
+import struct
+import sys
+import time
+import zlib
+from pathlib import Path
+
+args = sys.argv[1:]
+with Path(sys.argv[0] + ".calls").open("a", encoding="utf-8") as calls:
+    calls.write(" ".join(args) + "\\n")
+time.sleep({delay})
+width, height = {width}, {height}
+
+
+def chunk(tag, data):
+    body = tag + data
+    return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+
+rows = (b"\\x00" + b"\\x1f\\x5f\\x9f" * width) * height
+Path(args[args.index("-o") + 1]).write_bytes(
+    b"\\x89PNG\\r\\n\\x1a\\n"
+    + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+    + chunk(b"IDAT", zlib.compress(rows))
+    + chunk(b"IEND", b"")
+)
+"""
+
+
+def _install_spectacle_stub(directory: Path, delay: float) -> Path:
+    """Put a ``spectacle`` that answers after ``delay`` first on a PATH; return its call log."""
+    stub = directory / "spectacle"
+    stub.write_text(
+        _SLOW_SPECTACLE_STUB.format(delay=delay, width=SCREEN_SIZE[0], height=SCREEN_SIZE[1]),
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    return directory / "spectacle.calls"
+
+
+@pytest.mark.anyio
+async def test_virtual_spectacle_fallback_waits_for_slow_healthy_capture(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A Spectacle capture slower than 10 s but inside the deadline is returned (#65)."""
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("KWIN_MCP_X11_SCREENSHOT", raising=False)
+    calls = _install_spectacle_stub(tmp_path, SLOW_SPECTACLE_SECONDS)
+
+    async with running_mcp_server(
+        env={"PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"}
+    ) as client:
+        session_running = False
+        try:
+            start = await client.call_text(
+                "session_start",
+                {"screen_width": SCREEN_SIZE[0], "screen_height": SCREEN_SIZE[1]},
+            )
+            session_running = True
+            assert "Session started." in start, start
+
+            # Headless virtual KWin exposes no ScreenShot2 object (see the test
+            # above), so this exercises the real Spectacle fallback end to end.
+            started = time.monotonic()
+            result = await client.call_result("screenshot")
+            elapsed = time.monotonic() - started
+            output = _result_text(result)
+            assert result.isError is not True, output
+            spaces = coordinate_spaces(output)
+            assert [(s.origin, s.size, s.backend, s.coverage) for s in spaces] == [
+                ((0, 0), SCREEN_SIZE, "spectacle", "full")
+            ], output
+            _assert_png(screenshot_path(output))
+            # One slow capture, not a retry that happened to fit a short bound.
+            invocations = calls.read_text(encoding="utf-8").splitlines()
+            assert len(invocations) == 1, invocations
+            assert elapsed >= SLOW_SPECTACLE_SECONDS, elapsed
+        finally:
+            if session_running:
+                assert await client.call_text("session_stop") == "Session stopped."
+
+
+@pytest.mark.anyio
+async def test_virtual_spectacle_fallback_bounds_stuck_capture(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A Spectacle that never finishes is killed at the reported deadline (#65)."""
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("KWIN_MCP_X11_SCREENSHOT", raising=False)
+    calls = _install_spectacle_stub(tmp_path, 3600)
+
+    async with running_mcp_server(
+        env={"PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"}
+    ) as client:
+        session_running = False
+        try:
+            start = await client.call_text(
+                "session_start",
+                {"screen_width": SCREEN_SIZE[0], "screen_height": SCREEN_SIZE[1]},
+            )
+            session_running = True
+            assert "Session started." in start, start
+
+            started = time.monotonic()
+            result = await client.call_result("screenshot")
+            elapsed = time.monotonic() - started
+            error = _result_text(result)
+            assert result.isError is True, error
+            match = re.search(r"Spectacle \(spectacle timed out after (\d+(?:\.\d+)?)s", error)
+            assert match is not None, error
+            deadline = float(match.group(1))
+            # The deadline must leave room for the recorded slow capture, and the
+            # reported value must be the one actually enforced.
+            assert deadline > SLOW_SPECTACLE_SECONDS, error
+            assert deadline <= elapsed < deadline + STUCK_CAPTURE_SLACK_SECONDS, (elapsed, error)
+            assert len(calls.read_text(encoding="utf-8").splitlines()) == 1
+
+            assert await client.session.send_ping() is not None
+            moved = await client.call_text(
+                "mouse_move", {"x": SCREEN_SIZE[0] // 2, "y": SCREEN_SIZE[1] // 2}
+            )
+            assert moved.startswith("Mouse moved to"), moved
+        finally:
+            if session_running:
+                assert await client.call_text("session_stop") == "Session stopped."
+
+
+# Spectacle 6.3's own failure mode observed on the mixed-scale QEMU session
+# (#65): its CaptureScreen request misses its 4 s reply window, it prints the
+# reason and exits 0 without writing the file.
+_SILENT_SPECTACLE_REASON = (
+    "KWin screenshot request failed: Did not receive a reply. - Method: CaptureScreen"
+)
+
+
+@pytest.mark.anyio
+async def test_virtual_spectacle_fallback_reports_why_no_file_was_written(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A Spectacle exit 0 without output surfaces Spectacle's own reason (#65)."""
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("KWIN_MCP_X11_SCREENSHOT", raising=False)
+    stub = tmp_path / "spectacle"
+    stub.write_text(f"#!/bin/sh\necho '{_SILENT_SPECTACLE_REASON}' >&2\nexit 0\n", encoding="utf-8")
+    stub.chmod(0o755)
+
+    async with running_mcp_server(
+        env={"PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"}
+    ) as client:
+        session_running = False
+        try:
+            start = await client.call_text(
+                "session_start",
+                {"screen_width": SCREEN_SIZE[0], "screen_height": SCREEN_SIZE[1]},
+            )
+            session_running = True
+            assert "Session started." in start, start
+
+            result = await client.call_result("screenshot")
+            error = _result_text(result)
+            assert result.isError is True, error
+            assert f"Spectacle (spectacle produced no output: {_SILENT_SPECTACLE_REASON})" in error
+        finally:
+            if session_running:
+                assert await client.call_text("session_stop") == "Session stopped."

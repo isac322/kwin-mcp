@@ -20,9 +20,14 @@ Backends deliver different pixel spaces, verified against upstream sources:
   is the common scale, or ``ceil(max scale)`` for mixed scales, and each
   screen is drawn at ``logicalXY * d``, *without* subtracting the union's
   top-left (Spectacle 6.3 and master ``combinedImage``). Pixel ``p`` is
-  therefore logical ``p / d``, and screens at negative (or beyond-canvas)
-  logical positions are clipped upstream. Clipped regions are reported as
-  partial coverage and left transparent; they are never reconstructed.
+  therefore logical ``p / d``. With one common scale, screens at negative (or
+  beyond-canvas) logical positions are clipped upstream by QPainter; clipped
+  regions are reported as partial coverage and left transparent, never
+  reconstructed. With mixed scales, Spectacle before 6.7.90 (including every
+  Gear-numbered release such as 24.12) places screens
+  through OpenCV ROIs instead, and a screen outside the canvas aborts
+  Spectacle or is distorted, so such layouts are refused before Spectacle
+  starts (issue #67).
 - ``scrot`` on a nested X11 display captures the X root, where each KWin
   output is an X window of ``logical size * scale`` physical pixels.
 
@@ -35,6 +40,7 @@ image dimensions are never treated as proof of unchanged coordinates.
 
 from __future__ import annotations
 
+import functools
 import json
 import math
 import os
@@ -508,6 +514,144 @@ def _spectacle_layout(
     return [placement], extents, source
 
 
+# First Spectacle release whose ``combinedImage`` places mixed-scale screens
+# with QPainter instead of an OpenCV ROI resize (upstream commit 5003d04e,
+# "Remove OpenCV dependency", first tagged v6.7.90).
+_SPECTACLE_QPAINTER_COMPOSE = (6, 7, 90)
+# Spectacle shipped with KDE Gear (``yy.mm.patch``, e.g. 24.12.3) until it
+# moved to Plasma numbering with 6.3; every Gear release predates 5003d04e.
+_SPECTACLE_FIRST_GEAR_MAJOR = 20
+_SPECTACLE_VERSION = re.compile(r"\bspectacle\s+(\d+)\.(\d+)\.(\d+)")
+_SPECTACLE_VERSION_TIMEOUT_S = 10.0
+
+
+def _spectacle_compose_defect(topology: WorkspaceTopology) -> str | None:
+    """Name the outputs Spectacle's OpenCV mixed-scale compositor cannot place.
+
+    Before 6.7.90, ``combinedImage`` composes screens of *different* scales by
+    ``cv::resize``-ing each one into an ROI at ``logicalXY * ceil(max scale)``
+    of a canvas sized like the union but anchored at logical (0, 0). An
+    output outside that canvas (a negative origin, or a union whose top-left
+    is positive) gets no valid ROI:
+
+    - upstream 6.3.x without commit b437ca39 asserts in ``cv::Mat`` (KDE bug
+      503682);
+    - releases carrying b437ca39 (upstream 6.3.90+, Debian 4:6.3.5-2) clip
+      the ROI to the canvas: an output wholly outside becomes a zero-size ROI
+      and ``cv::resize`` asserts ``inv_scale_x > 0``, one partly outside is
+      squeezed whole into the clipped ROI.
+
+    Either way the uncaught ``cv::Exception`` aborts Spectacle or the pixels
+    are distorted, so no mapping can be proven. Uniform-scale layouts use
+    QPainter, which clips without distortion (modeled by ``_spectacle_layout``).
+    """
+    outputs = topology.outputs
+    if len(outputs) < 2 or len({o.scale for o in outputs}) == 1:
+        return None
+    scale, (canvas_w, canvas_h), _ = _spectacle_canvas(topology)
+    # The canvas is anchored at logical (0, 0) with this scale. An edge inside
+    # half a device pixel rounds to the canvas edge in QRectF -> QRect, so it
+    # is treated as on the canvas; anything further out loses real pixels.
+    edge = 0.5
+    outside = [
+        f"{o.name} ({o.x:g}, {o.y:g}, {o.width:g}x{o.height:g})"
+        for o in outputs
+        if o.x * scale < -edge
+        or o.y * scale < -edge
+        or (o.x + o.width) * scale > canvas_w + edge
+        or (o.y + o.height) * scale > canvas_h + edge
+    ]
+    if not outside:
+        return None
+    return (
+        f"mixed output scales with {', '.join(outside)} outside its canvas anchored at "
+        "logical (0, 0); Spectacle's OpenCV compositor aborts on or distorts such outputs"
+    )
+
+
+def _spectacle_version() -> tuple[int, int, int] | None:
+    """Installed Spectacle version from ``spectacle --version``, or ``None`` if unknown.
+
+    Runs on the offscreen Qt platform so the probe never connects to, or
+    captures from, the session's compositor.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in ("DISPLAY", "WAYLAND_DISPLAY")}
+    env["QT_QPA_PLATFORM"] = "offscreen"
+    try:
+        result = subprocess.run(
+            ["spectacle", "--version"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=_SPECTACLE_VERSION_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    match = _SPECTACLE_VERSION.search(result.stdout)
+    if match is None:
+        return None
+    major, minor, patch = (int(group) for group in match.groups())
+    return major, minor, patch
+
+
+def _spectacle_composes_off_canvas(version: tuple[int, int, int] | None) -> bool:
+    """Whether this Spectacle composes mixed scales with QPainter (6.7.90+).
+
+    Unknown versions and Gear-numbered releases use the OpenCV compositor.
+    """
+    if version is None or version[0] >= _SPECTACLE_FIRST_GEAR_MAJOR:
+        return False
+    return version >= _SPECTACLE_QPAINTER_COMPOSE
+
+
+def _require_spectacle_can_compose(
+    topology: WorkspaceTopology, version: Callable[[], tuple[int, int, int] | None]
+) -> None:
+    """Refuse, before starting Spectacle, a layout it cannot compose (issue #67).
+
+    ``version`` is only called for a layout the OpenCV compositor cannot place.
+    """
+    defect = _spectacle_compose_defect(topology)
+    if defect is None or shutil.which("spectacle") is None:
+        # A missing binary is reported by ``_capture_via_spectacle`` itself.
+        return
+    installed = version()
+    if _spectacle_composes_off_canvas(installed):
+        return
+    shown = ".".join(str(part) for part in installed) if installed else "of unknown version"
+    msg = f"Spectacle {shown} cannot capture this layout: {defect}; Spectacle was not started"
+    raise RuntimeError(msg)
+
+
+def _capture_spectacle_checked(
+    observed: WorkspaceTopology | None,
+    version: Callable[[], tuple[int, int, int] | None],
+    dbus_address: str,
+    wayland_socket: str,
+    output_path: Path,
+    *,
+    include_cursor: bool,
+) -> None:
+    """Start Spectacle unless the just-observed layout is one it cannot compose.
+
+    ``observed`` is the topology read immediately before this capture attempt:
+    the composition guard and the capture deadline are both sized from it, the
+    same observation that proves the frame's coordinate mapping. A ``None``
+    observation (its query failed) skips the guard and bounds the capture by
+    the maximum deadline, since the canvas is unknown.
+    """
+    if observed is not None:
+        _require_spectacle_can_compose(observed, version)
+    _capture_via_spectacle(
+        dbus_address,
+        wayland_socket,
+        output_path=output_path,
+        include_cursor=include_cursor,
+        timeout_s=_spectacle_deadline_s(observed),
+    )
+
+
 def _x11_layout(
     image_size: tuple[int, int],
     topology: WorkspaceTopology,
@@ -840,14 +984,17 @@ def _capture_spectacle_file(
     *,
     include_cursor: bool,
 ) -> FrameMapping:
+    # The version is probed at most once per call, including the retry.
+    spectacle_version = functools.cache(_spectacle_version)
     topology, _ = _capture_with_state(
         lambda: query_topology(dbus_address),
-        lambda before: _capture_via_spectacle(
+        lambda before: _capture_spectacle_checked(
+            before,
+            spectacle_version,
             dbus_address,
             wayland_socket,
-            output_path=output_path,
+            output_path,
             include_cursor=include_cursor,
-            timeout_s=_spectacle_deadline_s(before),
         ),
     )
     mapping = _normalize_spectacle(output_path, topology)
@@ -1202,6 +1349,7 @@ def _capture_frame_burst_spectacle(
 ) -> list[tuple[Path, FrameMapping]]:
     """Capture frames using spectacle CLI (slower but always authorized)."""
     frames: list[tuple[Path, FrameMapping]] = []
+    spectacle_version = functools.cache(_spectacle_version)
     start = time.monotonic()
     for i, delay_ms in enumerate(sorted_delays):
         target_time = start + delay_ms / 1000.0
@@ -1212,12 +1360,13 @@ def _capture_frame_burst_spectacle(
         frame_path = output_dir / f"frame_{i:03d}_{delay_ms}ms.png"
         mapping, _ = _burst_frame(
             lambda: query_topology(dbus_address),
-            lambda before, path=frame_path: _capture_via_spectacle(
+            lambda before, path=frame_path: _capture_spectacle_checked(
+                before,
+                spectacle_version,
                 dbus_address,
                 wayland_socket,
-                output_path=path,
+                path,
                 include_cursor=include_cursor,
-                timeout_s=_spectacle_deadline_s(before),
             ),
             lambda topology, _, path=frame_path: (
                 _normalize_spectacle(path, topology)

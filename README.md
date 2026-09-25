@@ -332,6 +332,8 @@ Mouse, keyboard, and touch events are injected through KWin's private `org.kde.K
 
 The normal Wayland capture path tries KWin's `org.kde.KWin.ScreenShot2` D-Bus interface first and uses the `spectacle` CLI as a fallback. Both capture the whole workspace across all outputs. Action tools with `screenshot_after_ms` use the same path for frame bursts, and Pillow converts ScreenShot2's raw pipe frames (RGB32, ARGB32, or RGBX8888 depending on the KWin version) to PNG. The Docker visual QA suite also has an explicit test-only X11 backend: when `KWIN_MCP_X11_SCREENSHOT=1` is set for a server connected to the nested KWin/Xvfb fixture, captures use `scrot`. Normal virtual and live Wayland sessions do not opt into this backend.
 
+Each Spectacle capture has a deadline derived from the image Spectacle must produce, the workspace canvas at the output scale (on mixed-scale layouts, every output is upscaled to the next whole scale above the largest): 15 seconds plus 1 second per canvas megapixel, capped at 120 seconds. A 1920x1080 output gets 18 seconds; a mixed-scale 1.45 + 1.0 layout (a 6490x2160 canvas) gets 30 seconds. A capture that does not finish in time fails with `spectacle timed out after <N>s`.
+
 Saved PNGs are normalized to KWin's global logical coordinate space, so a screenshot taken on a fractionally scaled output has one image pixel per logical pixel. The result states the mapping, for example on two outputs where a 1280x1024 screen sits left of a 1920x1080 screen:
 
 ```text

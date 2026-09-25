@@ -64,8 +64,23 @@ _CAPTURE_TIMEOUT_S = 5.0
 _READER_POLL_INTERVAL_S = 0.1
 _READER_JOIN_TIMEOUT_S = 1.0
 
+# scrot and the xwininfo/xdpyinfo mapping queries: one local X11 round trip.
 _SUBPROCESS_CAPTURE_TIMEOUT_S = 10.0
 _TOPOLOGY_TIMEOUT_S = 15.0
+
+# Spectacle capture deadline, derived from the work a capture must do (#65).
+# Spectacle 6.3 starts, sends one ScreenShot2 CaptureScreen per output
+# concurrently (bounding each wait at 4 s itself), then composites them and
+# PNG-encodes the result; the last two stages grow with the canvas pixels (see
+# _spectacle_canvas). Profiled under QEMU TCG (2 vCPUs): startup <= 3.8 s,
+# KWin reply <= 2.9 s, compositing + encoding ~0.26 s/Mpx. A mixed-scale
+# 3245x1080 workspace is a 6490x2160 (14 Mpx) canvas and took 9.9-11.3 s, so a
+# fixed 10 s bound killed healthy captures. The base keeps ~2x headroom over the
+# fixed stages, the per-Mpx term ~4x over the measured slope, and the cap keeps
+# a stuck Spectacle bounded.
+_SPECTACLE_TIMEOUT_BASE_S = 15.0
+_SPECTACLE_TIMEOUT_PER_MPX_S = 1.0
+_SPECTACLE_TIMEOUT_MAX_S = 120.0
 
 # Rounding slack when comparing pixel sizes derived from qreal geometry.
 _SIZE_TOLERANCE_PX = 2
@@ -414,26 +429,53 @@ def _mapping_from(
     return mapping, covered
 
 
+def _spectacle_canvas(
+    topology: WorkspaceTopology,
+) -> tuple[float, tuple[float, float], tuple[float, float]]:
+    """Scale, device-pixel size, and logical anchor of the image Spectacle writes.
+
+    One output is saved at its own scale. Several outputs go through Spectacle's
+    ``combinedImage``: the logical union is painted at the shared scale when
+    every output has the same one, otherwise at ``ceil`` of the largest scale
+    (every output is resampled up to it), with canvas pixel 0 at logical 0.
+    """
+    outputs = topology.outputs
+    if len(outputs) == 1:
+        output = outputs[0]
+        scale = output.scale
+        return scale, (output.width * scale, output.height * scale), (output.x, output.y)
+    _, _, union_w, union_h = _union(outputs)
+    scales = {o.scale for o in outputs}
+    top_scale = max(scales)
+    scale = top_scale if len(scales) == 1 else float(math.ceil(top_scale))
+    # combinedImage draws at logicalXY * scale without subtracting the union's
+    # top-left, so canvas pixel 0 is logical 0.
+    return scale, (round(union_w) * scale, round(union_h) * scale), (0.0, 0.0)
+
+
+def _spectacle_deadline_s(topology: WorkspaceTopology | None) -> float:
+    """Wall-clock budget for one Spectacle capture of ``topology``'s canvas.
+
+    A fixed part covers Spectacle's startup, its own bounded ScreenShot2 wait,
+    and exit; the rest grows with the canvas Spectacle must composite and
+    PNG-encode. With no observed topology the canvas is unknown, so the cap
+    applies.
+    """
+    if topology is None:
+        return _SPECTACLE_TIMEOUT_MAX_S
+    _, (width, height), _ = _spectacle_canvas(topology)
+    megapixels = width * height / 1_000_000
+    budget = _SPECTACLE_TIMEOUT_BASE_S + megapixels * _SPECTACLE_TIMEOUT_PER_MPX_S
+    return float(min(_SPECTACLE_TIMEOUT_MAX_S, math.ceil(budget)))
+
+
 def _spectacle_layout(
     image_size: tuple[int, int], topology: WorkspaceTopology
 ) -> tuple[list[_Placement], list[tuple[float, float, float, float]], str] | None:
     """Mirror Spectacle's single-screen / ``combinedImage`` placement."""
     width, height = image_size
     outputs = topology.outputs
-    if len(outputs) == 1:
-        output = outputs[0]
-        scale = output.scale
-        expected = (output.width * scale, output.height * scale)
-        anchor = (output.x, output.y)
-    else:
-        _, _, union_w, union_h = _union(outputs)
-        scales = {o.scale for o in outputs}
-        top_scale = max(scales)
-        scale = top_scale if len(scales) == 1 else float(math.ceil(top_scale))
-        expected = (round(union_w) * scale, round(union_h) * scale)
-        # combinedImage draws at logicalXY * scale without subtracting the
-        # union's top-left, so canvas pixel 0 is logical 0.
-        anchor = (0.0, 0.0)
+    scale, expected, anchor = _spectacle_canvas(topology)
     if not _close(image_size, expected):
         return None
     canvas = (0, 0, width, height)
@@ -559,7 +601,7 @@ def _image_size(path: Path) -> tuple[int, int]:
         return image.size
 
 
-def _capture_with_state[T, R](state: Callable[[], T], capture: Callable[[], R]) -> tuple[T, R]:
+def _capture_with_state[T, R](state: Callable[[], T], capture: Callable[[T], R]) -> tuple[T, R]:
     """Run ``capture`` bracketed by ``state`` observations.
 
     KWin scripting exposes no topology generation counter, so a frame is
@@ -567,11 +609,12 @@ def _capture_with_state[T, R](state: Callable[[], T], capture: Callable[[], R]) 
     observed immediately before the capture and immediately after it returns.
     A changed state means the saved pixels may belong to either layout; the
     capture is retried once, then the mapping is reported unprovable rather
-    than guessed.
+    than guessed. ``capture`` receives the state observed just before it, so it
+    can size its own work (e.g. a subprocess deadline) from that layout.
     """
     for _ in range(2):
         before = state()
-        result = capture()
+        result = capture(before)
         after = state()
         if before == after:
             return before, result
@@ -581,7 +624,7 @@ def _capture_with_state[T, R](state: Callable[[], T], capture: Callable[[], R]) 
 
 def _burst_frame[S, R](
     state: Callable[[], S],
-    capture: Callable[[], R],
+    capture: Callable[[S | None], R],
     map_frame: Callable[[S, R], FrameMapping],
     backend: str,
     changed: str,
@@ -592,15 +635,17 @@ def _burst_frame[S, R](
     are metadata failures: the captured pixels are kept, the requested timing
     stands, and the frame reports ``unavailable`` with the real reason instead
     of being recaptured or replaying the whole burst. Errors from ``capture``
-    itself are real backend failures and propagate unchanged.
+    itself are real backend failures and propagate unchanged. ``capture``
+    receives the state observed just before it, or ``None`` when that
+    observation failed.
     """
     try:
         before = state()
     except RuntimeError as exc:
         # The before-observation failed, so no mapping can ever be proven for
         # these pixels; still capture once at the requested time and keep them.
-        return _unavailable(backend, str(exc)), capture()
-    result = capture()
+        return _unavailable(backend, str(exc)), capture(None)
+    result = capture(before)
     try:
         after = state()
     except RuntimeError as exc:
@@ -797,11 +842,12 @@ def _capture_spectacle_file(
 ) -> FrameMapping:
     topology, _ = _capture_with_state(
         lambda: query_topology(dbus_address),
-        lambda: _capture_via_spectacle(
+        lambda before: _capture_via_spectacle(
             dbus_address,
             wayland_socket,
             output_path=output_path,
             include_cursor=include_cursor,
+            timeout_s=_spectacle_deadline_s(before),
         ),
     )
     mapping = _normalize_spectacle(output_path, topology)
@@ -819,7 +865,7 @@ def _capture_x11_file(
     display = os.environ.get("DISPLAY", "")
     state, _ = _capture_with_state(
         lambda: _x11_state(dbus_address, display),
-        lambda: _capture_via_scrot(output_path, include_cursor=include_cursor),
+        lambda _: _capture_via_scrot(output_path, include_cursor=include_cursor),
     )
     mapping = _normalize_x11(output_path, state)
     if mapping is None:
@@ -861,7 +907,7 @@ def capture_screenshot_dbus(
     options = {"include-cursor": dbus.Boolean(include_cursor)}
     topology, frame = _capture_with_state(
         lambda: query_topology(dbus_address),
-        lambda: _capture_raw_frame(iface, options),
+        lambda _: _capture_raw_frame(iface, options),
     )
     mapping = _dbus_mapping(frame, topology)
     if mapping is None:
@@ -1133,7 +1179,7 @@ def _capture_frame_burst_dbus(
         frame_path = output_dir / f"frame_{i:03d}_{delay_ms}ms.png"
         mapping, frame = _burst_frame(
             lambda: query_topology(dbus_address),
-            lambda: _capture_raw_frame(iface, options),
+            lambda _: _capture_raw_frame(iface, options),
             lambda topology, raw: (
                 _dbus_mapping(raw, topology)
                 or _unavailable("screenshot2", _dbus_mismatch(raw, topology))
@@ -1166,11 +1212,12 @@ def _capture_frame_burst_spectacle(
         frame_path = output_dir / f"frame_{i:03d}_{delay_ms}ms.png"
         mapping, _ = _burst_frame(
             lambda: query_topology(dbus_address),
-            lambda path=frame_path: _capture_via_spectacle(
+            lambda before, path=frame_path: _capture_via_spectacle(
                 dbus_address,
                 wayland_socket,
                 output_path=path,
                 include_cursor=include_cursor,
+                timeout_s=_spectacle_deadline_s(before),
             ),
             lambda topology, _, path=frame_path: (
                 _normalize_spectacle(path, topology)
@@ -1204,7 +1251,7 @@ def _capture_frame_burst_x11(
         frame_path = output_dir / f"frame_{i:03d}_{delay_ms}ms.png"
         mapping, _ = _burst_frame(
             lambda: _x11_state(dbus_address, display),
-            lambda path=frame_path: _capture_via_scrot(path, include_cursor=include_cursor),
+            lambda _, path=frame_path: _capture_via_scrot(path, include_cursor=include_cursor),
             lambda state, _, path=frame_path: (
                 _normalize_x11(path, state) or _unavailable("x11-scrot", _x11_mismatch(path, state))
             ),
@@ -1268,8 +1315,13 @@ def _capture_via_spectacle(
     *,
     output_path: Path,
     include_cursor: bool = False,
+    timeout_s: float,
 ) -> None:
-    """Capture screenshot using spectacle CLI in background mode."""
+    """Capture screenshot using spectacle CLI in background mode.
+
+    ``timeout_s`` comes from ``_spectacle_deadline_s`` for the topology
+    observed just before the capture.
+    """
     cmd = ["spectacle", "-b", "-f", "-n", "-o", str(output_path)]
     if include_cursor:
         cmd.append("-p")
@@ -1288,7 +1340,7 @@ def _capture_via_spectacle(
             cmd,
             env=env,
             capture_output=True,
-            timeout=_SUBPROCESS_CAPTURE_TIMEOUT_S,
+            timeout=timeout_s,
             check=False,
         )
     except FileNotFoundError:
@@ -1304,7 +1356,7 @@ def _capture_via_spectacle(
             else (exc.stderr or "")
         )
         detail = f": {stderr.strip()}" if stderr.strip() else ""
-        msg = f"spectacle timed out after {_SUBPROCESS_CAPTURE_TIMEOUT_S:g}s{detail}"
+        msg = f"spectacle timed out after {timeout_s:g}s{detail}"
         raise RuntimeError(msg) from None
 
     if result.returncode != 0:
@@ -1313,5 +1365,9 @@ def _capture_via_spectacle(
         raise RuntimeError(msg)
 
     if not output_path.exists() or output_path.stat().st_size == 0:
-        msg = "spectacle produced no output"
+        # Spectacle 6.3 exits 0 without writing when its own ScreenShot2 request
+        # fails (e.g. KWin missing its 4 s reply window); the reason is on stderr.
+        stderr = result.stderr.decode(errors="replace").strip()
+        detail = f": {stderr}" if stderr else ""
+        msg = f"spectacle produced no output{detail}"
         raise RuntimeError(msg)

@@ -36,6 +36,7 @@ from session_harness import live_kwin
 
 from kwin_mcp.clipboard import (
     MAX_COPY_BYTES,
+    MAX_HEADER_BYTES,
     RESTORE_ROUNDTRIP_S,
     SET_ROUNDTRIP_S,
     SNAPSHOT_DEADLINE_S,
@@ -334,6 +335,123 @@ def test_oversized_copy_frame_is_terminal_without_backpressure(
     assert not writer.is_alive()
     assert len(outcome) == 1 and isinstance(outcome[0], BrokenPipeError), outcome
     assert _paste(env) == b"KEEP-45-oversized"
+
+
+# Command-shaped filler well past MAX_INBUF_BYTES: none of it may be buffered
+# as payload or interpreted once the header in front of it is rejected.
+_CONNECT_FILLER = b"ARM\nRESTORE\nQUIT\n" * 65536
+
+
+@pytest.mark.parametrize(
+    ("header", "why"),
+    [
+        (b"COPY %d\n" % (MAX_COPY_BYTES + 1), "copy length out of bounds"),
+        (b"COPY 12x\n", "bad copy length"),
+        (b"hunter2-69\n", "unknown command"),
+        (b"A" * (MAX_HEADER_BYTES + 1), "command line too long"),
+    ],
+    ids=["oversized-length", "malformed-length", "unknown-command", "overlong-line"],
+)
+def test_bad_header_is_rejected_while_connecting(
+    kwin: LiveKWin, helpers: list[_Proc], header: bytes, why: str
+) -> None:
+    """Issue #69: headers are validated while connect roundtrips drain stdin.
+
+    KWin is stopped before the helper starts, so its connect roundtrips stay
+    unanswered for the whole exchange. The bad header must still be rejected
+    on arrival, not by the generic MAX_INBUF_BYTES bound after about 1 MiB of
+    payload: one ``ERR protocol <why>``, exit 2, and a writer that is still
+    sending gets EPIPE, all before KWin is resumed.
+    """
+    env = _client_env(kwin)
+    _copy(env, "KEEP-69-connecting")
+    frame = header + _CONNECT_FILLER
+    compositor = _Compositor(_kwin_pid(kwin))
+    compositor.stop()
+    try:
+        helper = _spawn_helper(env)
+        helpers.append(helper)
+        assert helper.popen.stdin is not None
+        fd = helper.popen.stdin.fileno()
+        state: dict[str, Any] = {"accepted": 0, "outcome": None}
+
+        def write() -> None:
+            view = memoryview(frame)
+            try:
+                while state["accepted"] < len(frame):
+                    state["accepted"] += os.write(fd, view[state["accepted"] :])
+            except BrokenPipeError as exc:
+                state["outcome"] = exc
+
+        writer = threading.Thread(target=write, daemon=True)
+        writer.start()
+        assert helper.lines_until_eof() == [f"ERR protocol {why}"]
+        assert helper.wait() == 2
+        writer.join(timeout=WAIT_TIMEOUT_SECONDS)
+        assert not writer.is_alive()
+        assert isinstance(state["outcome"], BrokenPipeError), state
+        # Bounded consumption past the header: at most a read chunk plus the
+        # pipe buffer, never payload up to MAX_INBUF_BYTES.
+        assert state["accepted"] < MAX_COPY_BYTES, state["accepted"]
+    finally:
+        compositor.resume()
+    assert _paste(env) == b"KEEP-69-connecting"
+
+
+def test_bad_header_after_connect_prints_a_single_error(
+    kwin: LiveKWin, helpers: list[_Proc]
+) -> None:
+    """Issue #69 follow-up: post-connect idle framing errors print one ERR.
+
+    ARM first is a semantic error answered while the helper is in its main
+    loop, so the bogus line that follows is guaranteed to be handled by the
+    post-connect pump path. The recorded framing failure ends the helper with
+    exactly one ERR protocol line and exit 2 — not a second ERR.
+    """
+    env = _client_env(kwin)
+    _copy(env, "KEEP-69-after-connect")
+    helper = _spawn_helper(env)
+    helpers.append(helper)
+    helper.send(b"ARM\n")
+    assert helper.read_line() == "ERR cannot arm now"  # connected, in main loop
+    helper.send(b"hunter2-69-after-connect\n")
+    assert helper.lines_until_eof() == ["ERR protocol unknown command"]
+    assert helper.wait() == 2
+    assert _paste(env) == b"KEEP-69-after-connect"
+
+
+def test_bad_header_during_quit_restore_stays_terminal(
+    kwin: LiveKWin, helpers: list[_Proc]
+) -> None:
+    """Issue #69 follow-up: a framing failure stays exit 2 past QUIT's restore.
+
+    The compositor is stopped after READY, so QUIT's restore roundtrip runs
+    unanswered. The trace's second set_selection proves _cmd_quit consumed QUIT
+    and is inside the restore; only then is the bad header sent, so eager
+    validation records the protocol error while the restore is pending. The
+    helper must still exit 2 — a later _cmd_quit completion must not turn the
+    recorded framing failure into a clean exit.
+    """
+    env = _client_env(kwin)
+    _copy(env, "PRIOR-69-quit-restore")
+    helper = _spawn_helper(env, trace=True)
+    helpers.append(helper)
+    helper.send(b"COPY %d\n" % len(SECRET) + SECRET)
+    assert helper.read_line() == "READY"
+    compositor = _Compositor(_kwin_pid(kwin))
+    compositor.stop()
+    try:
+        helper.send(b"QUIT\n")
+        # Second set_selection in the trace = the restore request; the helper
+        # is now blocked in the restore roundtrip with the compositor stopped.
+        assert helper.wait_stderr(
+            SET_SELECTION_REQUEST, 2, RESTORE_ROUNDTRIP_S + WAIT_TIMEOUT_SECONDS
+        ), helper.stderr[-2000:].decode(errors="replace")
+        helper.send(b"BOGUS-69\n")
+        assert helper.lines_until_eof() == ["ERR protocol unknown command"]
+        assert helper.wait() == 2
+    finally:
+        compositor.resume()
 
 
 @pytest.mark.parametrize(

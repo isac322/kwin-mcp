@@ -215,6 +215,7 @@ tests/e2e/
 ├── visual_harness.py                   # Nested Xvfb/KWin lifecycle and logs
 ├── session_harness.py                  # Test-owned live KWin for live-session and helper tests
 ├── gui_probe.py                        # Deterministic visual oracle application
+├── counted_gui_probe.py                # GUI probe with a persistent click counter
 ├── interaction_probe.py                # Input and screenshot probe application
 ├── test_installed_package.py           # Wheel, dependencies, and entry points
 ├── test_environment_evidence.py        # Safe environment.json provenance
@@ -233,6 +234,7 @@ tests/e2e/
 ├── test_observation_tools.py           # Accessibility, window, log, and Wayland tools
 ├── test_window_geometry.py             # Global window geometry and element coordinate space
 ├── test_window_control.py              # Focus, scroll, drag, and touch behavior
+├── test_pointer_reconnect.py           # Clicks reach a window mapped under a parked pointer
 └── test_input_injection.py             # Engine-level EIS input behavior
 
 integrations/

@@ -365,8 +365,8 @@ class GuiProbeApplication(Gtk.Application):
         self._window.present()
 
 
-def main() -> int:
-    """Run the GUI probe until its window is closed."""
+def main(application_class: type[GuiProbeApplication] = GuiProbeApplication) -> int:
+    """Run the GUI probe (or a subclass of its application) until its window is closed."""
     GLib.set_application_name(APP_NAME)
     style_provider = Gtk.CssProvider()
     style_provider.load_from_data(_CSS)
@@ -377,7 +377,7 @@ def main() -> int:
             style_provider,
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
         )
-    application = GuiProbeApplication()
+    application = application_class()
     return application.run(sys.argv)
 
 

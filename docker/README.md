@@ -98,7 +98,7 @@ Additional arguments after the image command can select a file, node ID, marker,
 
 | Test file | Coverage |
 |---|---|
-| `test_clipboard_helper_protocol.py` | The private `kwin_mcp.clipboard` helper driven directly against a test-owned KWin over data-control: a READY timeout that restores the prior selection and keeps serving it, oversized and malformed COPY framing that ends the helper without echoing its input, and a framing error while the helper owns the selection that still restores and keeps serving the prior selection. |
+| `test_clipboard_helper_protocol.py` | The private `kwin_mcp.clipboard` helper driven directly against a test-owned KWin over data-control: a READY timeout that restores the prior selection and keeps serving it, oversized and malformed COPY framing that ends the helper without echoing its input, bad headers rejected on arrival while KWin is stopped during the helper's connect roundtrips, a framing failure staying single-ERR/exit-2 when recorded post-connect or while QUIT's restore is pending, and a framing error while the helper owns the selection that still restores and keeps serving the prior selection. |
 | `test_environment_evidence.py` | Allowlisted `environment.json` provenance, installed versions, and atomic replacement. |
 | `test_input_cleanup.py` | Held EIS modifier/button cleanup across fresh connections, invalid input errors, and installed-server survival. |
 | `test_input_injection.py` | Engine-level mouse aim/click/press/release, keyboard input and modifiers, Unicode, clipboard paste, and touch tap with observable KCalc/KWrite results. |

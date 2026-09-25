@@ -61,7 +61,10 @@ stdin command protocol (binary-safe framing):
 
 Framing errors are terminal: a malformed or oversized COPY header, an
 unknown command, a command line over MAX_HEADER_BYTES, or buffered input over
-MAX_INBUF_BYTES prints a single ``ERR protocol <why>``. Every remaining byte
+MAX_INBUF_BYTES prints a single ``ERR protocol <why>``. Command headers are
+validated as soon as a complete line is buffered, including while the helper
+is still connecting to the compositor, so a bad COPY header is rejected
+before its payload is buffered. Every remaining byte
 is discarded and never parsed as a command, and stdin is swapped for
 /dev/null so a parent that is still writing gets EPIPE instead of blocking.
 If nothing is owned, the helper exits 2. If the injected secret is owned, it
@@ -438,6 +441,7 @@ class _ClipboardHelper:
         self._err = sys.stderr
         self._inbuf = bytearray()
         self._stdin_open = True
+        self._scan_pos = 0
         self._pending_copy_len: int | None = None
         self._abort_pending: str | None = None
         self._sig_pending = False
@@ -593,6 +597,49 @@ class _ClipboardHelper:
         self._inbuf += chunk
         if len(self._inbuf) > MAX_INBUF_BYTES:
             self._protocol_error("stdin input exceeds bound")
+            return
+        self._validate_headers()
+
+    def _validate_headers(self) -> None:
+        """Fail fast on bad framing as soon as a header line is buffered.
+
+        Scans complete command lines in ``_inbuf`` without consuming them;
+        ``_parse_commands`` still parses and executes them in order once it
+        runs. This also fires while ``_connect()`` roundtrips are still
+        draining stdin, so a malformed, oversized or unknown header is
+        rejected (and stdin swapped for /dev/null) at header availability
+        instead of after up to MAX_INBUF_BYTES of payload. A COPY header ends
+        the scan: everything after it is payload, never command lines.
+        ``_scan_pos`` marks the first unvalidated byte so re-scans are O(new
+        input), not O(buffered input); front deletions must shift it.
+        """
+        if self._pending_copy_len is not None or self._protocol_failed:
+            return
+        pos = self._scan_pos
+        while True:
+            # Record progress first: a _protocol_error below resets it to 0.
+            self._scan_pos = pos
+            idx = self._inbuf.find(b"\n", pos, pos + MAX_HEADER_BYTES + 1)
+            if idx < 0:
+                if len(self._inbuf) - pos > MAX_HEADER_BYTES:
+                    self._protocol_error("command line too long")
+                return
+            line = bytes(self._inbuf[pos:idx]).strip()
+            pos = idx + 1
+            if not line:
+                continue
+            parts = line.split(None, 1)
+            cmd = parts[0].upper()
+            if cmd == b"COPY":
+                n = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else -1
+                if n < 0:
+                    self._protocol_error("bad copy length")
+                elif n > MAX_COPY_BYTES:
+                    self._protocol_error("copy length out of bounds")
+                return  # a valid COPY header is followed by payload, not lines
+            if cmd not in (b"ARM", b"RESTORE", b"QUIT"):
+                self._protocol_error("unknown command")
+                return
 
     def _protocol_error(self, why: str) -> None:
         """Unrecoverable stdin framing error: stop interpreting input at once.
@@ -607,6 +654,7 @@ class _ClipboardHelper:
         self._protocol_failed = True
         self._inbuf[:] = bytes(len(self._inbuf))
         self._inbuf.clear()
+        self._scan_pos = 0
         self._pending_copy_len = None
         if self._stdin_open:
             self._stdin_open = False
@@ -635,6 +683,11 @@ class _ClipboardHelper:
                 raise _AbortError(self._display_error())
             if self._abort_pending:
                 raise _AbortError(self._abort_pending)
+            if self._protocol_failed and self.phase == "idle":
+                # A framing error found while draining stdin (e.g. during a
+                # connect roundtrip) is terminal before READY: stop pumping
+                # instead of waiting out the roundtrip deadline.
+                raise _AbortError("stdin protocol error")
             if self._sig_pending:
                 self._sig_pending = False
                 raise _TerminateError()
@@ -682,6 +735,8 @@ class _ClipboardHelper:
                 raise _AbortError(self._display_error())
             if self._abort_pending:
                 raise _AbortError(self._abort_pending)
+            if self._protocol_failed and self.phase == "idle":
+                raise _AbortError("stdin protocol error")
             return ready
 
     def _display_error(self) -> str:
@@ -923,7 +978,8 @@ class _ClipboardHelper:
         except _AbortError as exc:
             for _m, d in prior:
                 d[:] = bytes(len(d))
-            self._fail(f"snapshot {exc}")
+            if not self._protocol_failed:
+                self._fail(f"snapshot {exc}")  # a protocol error already printed
             return False
         finally:
             self._snapshot_offer = 0
@@ -1117,7 +1173,8 @@ class _ClipboardHelper:
                 self._stdin_open = False
                 return
         self._done = True
-        self._exit_code = 0
+        if not self._protocol_failed:
+            self._exit_code = 0  # a recorded protocol failure stays exit 2
 
     def _parse_commands(self) -> None:
         while True:
@@ -1128,6 +1185,7 @@ class _ClipboardHelper:
                 payload = bytearray(self._inbuf[:need])
                 self._inbuf[:need] = bytes(need)
                 del self._inbuf[:need]
+                self._scan_pos = max(0, self._scan_pos - need)
                 self._pending_copy_len = None
                 self._cmd_copy(payload)
                 continue
@@ -1140,6 +1198,7 @@ class _ClipboardHelper:
                 return
             line = bytes(self._inbuf[:idx]).strip()
             del self._inbuf[: idx + 1]
+            self._scan_pos = max(0, self._scan_pos - (idx + 1))
             if not line:
                 continue
             parts = line.split(None, 1)
@@ -1214,6 +1273,7 @@ class _ClipboardHelper:
             self._prior = None
         self._inbuf[:] = bytes(len(self._inbuf))
         self._inbuf.clear()
+        self._scan_pos = 0
 
     # -- abort paths ------------------------------------------------------------
 
@@ -1235,9 +1295,11 @@ class _ClipboardHelper:
         try:
             self._connect()
         except _AbortError as exc:
-            self._fail(str(exc))
+            if not self._protocol_failed:
+                self._fail(str(exc))  # a protocol error already printed its ERR
+                self._exit_code = 1
             self._cleanup()
-            return 1
+            return self._exit_code
 
         try:
             while not self._done:
@@ -1289,9 +1351,11 @@ class _ClipboardHelper:
                 "restoring",
             ):
                 self._abort_owned(persist=False)
-            self._exit_code = 0
+            if not self._protocol_failed:
+                self._exit_code = 0  # a recorded protocol failure stays exit 2
         except _AbortError as exc:
-            self._fail(str(exc))
+            if not self._protocol_failed:
+                self._fail(str(exc))  # a protocol error already printed its ERR
             self._exit_code = 2
         finally:
             self._wipe_all()

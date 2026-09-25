@@ -112,7 +112,7 @@ Additional arguments after the image command can select a file, node ID, marker,
 | `test_virtual_session_smoke.py` | Minimum virtual KWin contract: KCalc launch, AT-SPI2 visibility and widgets, EIS keyboard delivery, plus the intentionally skipped exact-virtual ScreenShot2 success probe. |
 | `test_visual_qa.py` | Pixel-backed GUI probe and KCalc oracles: hover repaint, cursor localization, animation bursts, CJK-versus-tofu rendering, and binary-value transitions. |
 | `test_window_control.py` | Focus, smooth/discrete scroll, drag selection, touch swipe/multi-swipe/pinch delivery, and scrollbar values. |
-| `test_window_geometry.py` | Global client/frame geometry, centered placement, surface-local accessibility offsets, and unknown-window behavior. |
+| `test_window_geometry.py` | Global client/frame geometry, centered placement, element rectangles reported in screen coordinates, and unknown-window behavior. |
 
 Together, the installed MCP files exercise every server wrapper over a real MCP 1.x stdio client/server connection. The engine-level files retain direct coverage of lower-level behavior and cleanup.
 

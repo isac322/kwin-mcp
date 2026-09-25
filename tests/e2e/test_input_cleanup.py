@@ -54,13 +54,12 @@ async def _global_element_center(client: McpTestClient, name: str) -> tuple[int,
         "find_ui_elements",
         {"query": name, "app_name": PROBE_SELECTOR},
     )
-    local_x, local_y, width, height = _single_rect(
+    # find_ui_elements already reports global screen coordinates.
+    x, y, width, height = _single_rect(
         elements,
-        rf'^- \[[^]]+] "{re.escape(name)}" @ {_RECT}(?:\s|$)',
+        rf'^- \[[^]]+] "{re.escape(name)}" @ screen {_RECT}(?:\s|$)',
     )
-    geometry = await client.call_text("window_geometry", {"app_name": PROBE_SELECTOR})
-    client_x, client_y, _, _ = _single_rect(geometry, rf"client:\s+{_RECT}")
-    return client_x + local_x + width // 2, client_y + local_y + height // 2
+    return x + width // 2, y + height // 2
 
 
 def _status_name(tree: str, prefix: str) -> str:

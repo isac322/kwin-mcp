@@ -58,15 +58,13 @@ async def _global_element_rect(
         "find_ui_elements",
         {"query": name, "app_name": PROBE_SELECTOR},
     )
-    local_x, local_y, width, height = _single_rect(
+    # find_ui_elements already reports global screen coordinates.
+    x, y, width, height = _single_rect(
         elements,
-        rf'^- \[[^]]+] "{re.escape(name)}" @ {_RECT}(?:\s|$)',
+        rf'^- \[[^]]+] "{re.escape(name)}" @ screen {_RECT}(?:\s|$)',
     )
     assert width > 0 and height > 0, elements[:2000]
-
-    geometry = await client.call_text("window_geometry", {"app_name": PROBE_SELECTOR})
-    client_x, client_y, _, _ = _single_rect(geometry, rf"client:\s+{_RECT}")
-    return client_x + local_x, client_y + local_y, width, height
+    return x, y, width, height
 
 
 def _center(rect: tuple[int, int, int, int]) -> tuple[int, int]:

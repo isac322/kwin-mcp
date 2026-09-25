@@ -251,7 +251,7 @@ kwin-mcp-cli --default-live-session
 | `launch_app` | `command` `str`, `env?` `dict` | Launch an application inside the running session. Returns PID and log path. |
 | `list_windows` | _(none)_ | List all accessible application windows with per-window titles and active/focused state markers via AT-SPI2 |
 | `focus_window` | `app_name` `str` | Activate and raise a window by application name (case-insensitive match), via KWin scripting |
-| `window_geometry` | `app_name?` `str` | Report window frame and client rectangles in **global screen coordinates** via KWin scripting. Accessibility rectangles are surface-local, so add the reported client origin before passing them to `mouse_click` / `touch_tap`. |
+| `window_geometry` | `app_name?` `str` | Report window frame and client rectangles in **global screen coordinates** via KWin scripting — the same space `find_ui_elements` / `accessibility_tree` report and `mouse_click` / `touch_tap` take. |
 
 ### UI Polling (1 tool)
 
@@ -477,10 +477,10 @@ uv run kwin-mcp
 - **AT-SPI2 availability varies** -- Some applications may not fully expose their widget tree via AT-SPI2.
 - **Touch input is EIS-emulated** -- Touch events are emulated through KWin's EIS interface, not from a real touchscreen device. Most applications handle emulated touch correctly, but some may behave differently from physical touch.
 - **Clipboard requires opt-in** -- Clipboard tools (`clipboard_get`, `clipboard_set`) are disabled by default because `wl-copy` can hang in isolated sessions. Enable with `enable_clipboard=true` in `session_start`, and ensure `wl-clipboard` is installed.
-- **QMenu (native context menus) may not appear in AT-SPI2** -- Qt's AT-SPI2 bridge has incomplete support for popup menus on Wayland. Context menus may not be visible in `accessibility_tree` or `find_ui_elements`. Workaround: click by coordinates derived from the parent widget's rectangle plus the client origin from `window_geometry`.
+- **QMenu (native context menus) may not appear in AT-SPI2** -- Qt's AT-SPI2 bridge has incomplete support for popup menus on Wayland. Context menus may not be visible in `accessibility_tree` or `find_ui_elements`. Workaround: click by coordinates derived from the parent widget's reported screen rectangle.
 - **Screen edge triggers ignore EIS pointer events** -- Auto-hide panels and layer-shell strips do not react when the pointer reaches a screen edge through EIS. Use `dbus_call` to invoke KWin scripting or a keyboard shortcut instead of trying to hover the edge.
 - **KWin claims multi-finger touch gestures** -- Three- and four-finger swipes are consumed by the compositor as global gestures and never reach the application; use `fingers=2` when the target is the app itself.
-- **AT-SPI2 coordinates are surface-local, not screen-global** -- Wayland clients do not know their global screen position (by design). Coordinates returned by `find_ui_elements` and `accessibility_tree` are relative to the window's top-left corner, while `mouse_click` and `touch_tap` take screen coordinates. Convert them by adding the client origin from `window_geometry`: clicking a reported rectangle verbatim lands on whatever occupies that screen position instead.
+- **Element coordinates are screen-global, or unavailable** -- `find_ui_elements`, `accessibility_tree` and `wait_for_element` report rectangles in the same global screen coordinates `mouse_click` and `touch_tap` take (`@ screen (x, y, wxh)`). When the element's window cannot be matched to exactly one KWin window — an app that masks its real process id (e.g. a D-Bus proxy), several identical windows of one process, or a window set that changed mid-query — the element reports `@ unavailable (reason)` with no coordinates rather than a position that could click the wrong window.
 
 ## End-to-End Testing
 

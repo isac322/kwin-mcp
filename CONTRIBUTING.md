@@ -217,7 +217,7 @@ tests/e2e/
 ├── test_session_lifecycle.py           # Ownership, teardown, and retention semantics
 ├── test_virtual_session_smoke.py       # Minimum isolated KWin contract
 ├── test_observation_tools.py           # Accessibility, window, log, and Wayland tools
-├── test_window_geometry.py             # Client/frame coordinate conversion
+├── test_window_geometry.py             # Global window geometry and element coordinate space
 ├── test_window_control.py              # Focus, scroll, drag, and touch behavior
 └── test_input_injection.py             # Engine-level EIS input behavior
 

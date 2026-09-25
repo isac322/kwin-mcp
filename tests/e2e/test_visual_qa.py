@@ -51,25 +51,18 @@ async def _global_element_rect(
     client: McpTestClient,
     accessibility_app_name: str,
     name: str,
-    *,
-    window_selector: str | None = None,
 ) -> tuple[int, int, int, int]:
     elements = await client.call_text(
         "find_ui_elements",
         {"query": name, "app_name": accessibility_app_name},
     )
-    local_x, local_y, width, height = _single_rect(
+    # find_ui_elements already reports global screen coordinates.
+    x, y, width, height = _single_rect(
         elements,
-        rf'^- \[[^]]+] "{re.escape(name)}" @ {_RECT}(?:\s|$)',
+        rf'^- \[[^]]+] "{re.escape(name)}" @ screen {_RECT}(?:\s|$)',
     )
     assert width > 0 and height > 0, elements[:1500]
-
-    geometry = await client.call_text(
-        "window_geometry",
-        {"app_name": window_selector or accessibility_app_name},
-    )
-    client_x, client_y, _, _ = _single_rect(geometry, rf"client:\s+{_RECT}")
-    return client_x + local_x, client_y + local_y, width, height
+    return x, y, width, height
 
 
 def _center(rect: tuple[int, int, int, int]) -> tuple[int, int]:
@@ -443,7 +436,6 @@ async def test_gui_probe_visual_semantics_pixels_cursor_and_frame_burst() -> Non
                         client,
                         GUI_PROBE_ACCESSIBILITY_SELECTOR,
                         name,
-                        window_selector=GUI_PROBE_WINDOW_SELECTOR,
                     )
                     for name in exact_initial_names
                 }

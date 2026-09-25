@@ -1,8 +1,9 @@
 """End-to-end coverage for the window_geometry tool.
 
-It is the only tool reporting global screen coordinates, and every conversion
-from an accessibility rectangle to a click depends on it, so its output is
-pinned here rather than only exercised indirectly through the input tests.
+It reports window frame and client rectangles in global screen coordinates —
+the same space find_ui_elements and accessibility_tree now report — so its
+output is pinned here rather than only exercised indirectly through the
+input tests.
 """
 
 from __future__ import annotations
@@ -70,20 +71,22 @@ def test_frame_encloses_the_client_area(kcalc_session: AutomationEngine) -> None
     assert (frame_w, frame_h) != (client_w, client_h), output[:500]
 
 
-def test_accessibility_rectangles_are_relative_to_the_client_origin(
+def test_accessibility_rectangles_are_global_screen_coordinates(
     kcalc_session: AutomationEngine,
 ) -> None:
-    """The reason the tool exists: AT-SPI2 rectangles need this offset."""
+    """AT-SPI2 rectangles are translated to screen coordinates by kwin-mcp."""
     elements = kcalc_session.find_ui_elements(query="", app_name="kcalc")
-    frame = re.search(rf'\[frame\] "" @ {_RECT}', elements)
+    frame = re.search(rf'\[frame\] "" @ screen {_RECT}', elements)
     assert frame is not None, elements[:500]
-    local_x, local_y, local_w, local_h = (int(value) for value in frame.groups())
+    screen_x, screen_y, screen_w, screen_h = (int(value) for value in frame.groups())
 
-    # AT-SPI2 anchors the window at the origin because a Wayland client cannot
-    # know better, while the size still matches what KWin reports.
-    assert (local_x, local_y) == (0, 0), elements[:500]
-    _, _, client_w, client_h = _rect(kcalc_session.window_geometry(app_name="kcalc"), "client")
-    assert (local_w, local_h) == (client_w, client_h), elements[:500]
+    # The window's top-level rectangle lands exactly on the client origin KWin
+    # reports, with the same size.
+    client_x, client_y, client_w, client_h = _rect(
+        kcalc_session.window_geometry(app_name="kcalc"), "client"
+    )
+    assert (screen_x, screen_y) == (client_x, client_y), elements[:500]
+    assert (screen_w, screen_h) == (client_w, client_h), elements[:500]
 
 
 def test_unknown_app_name_reports_no_windows(kcalc_session: AutomationEngine) -> None:

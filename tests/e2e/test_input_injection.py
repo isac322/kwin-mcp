@@ -16,7 +16,8 @@ if TYPE_CHECKING:
 
 _RECT = r"\((-?\d+), (-?\d+), (\d+)x(\d+)\)"
 _DYNAMIC_LABEL = re.compile(
-    r'^\s*- \[label] "([^"]*)" \(enabled, sensitive, read-only\) @ \(0, 0, 0x0\)$'
+    r'^\s*- \[label] "([^"]*)" \(enabled, sensitive, read-only\) '
+    r"@ (?:screen \(-?\d+, -?\d+, \d+x\d+\)|unavailable \([^)]+\))$"
 )
 POLL_INTERVAL_SECONDS = 0.1
 INPUT_TIMEOUT_SECONDS = 3.0
@@ -35,14 +36,12 @@ def _global_element_center(
     elements = engine.find_ui_elements(query=name, app_name=app_name)
     assert element_count(elements) > 0, elements[:500]
     role_pattern = re.escape(role) if role is not None else r"[^]]+"
-    local_x, local_y, width, height = _rect(
+    # find_ui_elements already reports global screen coordinates.
+    x, y, width, height = _rect(
         elements,
-        rf'^- \[{role_pattern}] "{re.escape(name)}" @ {_RECT}(?:\s|$)',
+        rf'^- \[{role_pattern}] "{re.escape(name)}" @ screen {_RECT}(?:\s|$)',
     )
-
-    geometry = engine.window_geometry(app_name=app_name)
-    client_x, client_y, _, _ = _rect(geometry, rf"client:\s+{_RECT}")
-    return client_x + local_x + width // 2, client_y + local_y + height // 2
+    return x + width // 2, y + height // 2
 
 
 def _has_exact_accessible_name(output: str, name: str) -> bool:
@@ -103,7 +102,8 @@ def _focused_text(engine: AutomationEngine, app_name: str = "kwrite") -> str:
     )
     assert element_count(output) > 0, output[:500]
     matches = re.findall(
-        rf'^- \[text] "[^"]*" @ {_RECT}(?: text=(.*?))?(?: \[actions:.*])?$',
+        rf'^- \[text] "[^"]*" @ (?:screen {_RECT}|unavailable \([^)]+\))'
+        rf"(?: text=(.*?))?(?: \[actions:.*])?$",
         output,
         re.MULTILINE,
     )

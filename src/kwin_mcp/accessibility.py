@@ -10,8 +10,12 @@ import json
 import sys
 import time
 from dataclasses import asdict, dataclass
+from typing import TYPE_CHECKING
 
 import gi
+
+if TYPE_CHECKING:
+    from kwin_mcp.geometry import KWinWindow
 
 gi.require_version("Atspi", "2.0")
 from gi.repository import Atspi  # noqa: E402
@@ -23,7 +27,13 @@ _MAX_TEXT_CHARS = 200
 
 @dataclass
 class ElementInfo:
-    """Information about a single UI element."""
+    """Information about a single UI element.
+
+    ``x``/``y``/``width``/``height`` are global screen coordinates when
+    ``mapped`` is true. When ``mapped`` is false the rectangle could not be
+    placed on the screen with certainty; ``unavailable`` carries the reason
+    and the coordinates must not be used for input.
+    """
 
     role: str
     name: str
@@ -39,6 +49,29 @@ class ElementInfo:
     value_max: float | None
     children_count: int
     depth: int
+    has_extents: bool
+    mapped: bool
+    unavailable: str
+
+
+@dataclass
+class _WindowMapping:
+    """How one AT-SPI top-level maps to a KWin window.
+
+    ``window`` is the matched KWin window dict; ``offset`` is the translation
+    from AT-SPI window-local coordinates to screen coordinates. ``reason`` is
+    set whenever the mapping failed.
+    """
+
+    window: KWinWindow | None
+    reason: str
+    rect: tuple[int, int, int, int] | None = None
+    offset: tuple[int, int] | None = None
+
+
+# Shared mapping for elements that are not windows at all (the application
+# root node, or AT-SPI children that vanished mid-walk).
+_UNMAPPED = _WindowMapping(None, "not-a-window")
 
 
 def get_accessibility_tree(
@@ -57,9 +90,10 @@ def get_accessibility_tree(
     Returns:
         Formatted text representation of the accessibility tree.
     """
+    kwin_before, kwin_error = _kwin_windows()
     desktop = Atspi.get_desktop(0)
-    lines: list[str] = []
-    total = 0
+    entries: list[tuple[ElementInfo, _WindowMapping]] = []
+    mappings_by_pid: dict[int, list[_WindowMapping]] = {}
     role_filter = role.lower()
 
     for i in range(desktop.get_child_count()):
@@ -71,8 +105,23 @@ def get_accessibility_tree(
         if app_name and app_name.lower() not in name.lower():
             continue
 
-        count = _format_element(app, lines, depth=0, max_depth=max_depth, role_filter=role_filter)
-        total += count
+        pid, mappings, children = _resolve_app(app, kwin_before, kwin_error)
+        if pid is not None:
+            mappings_by_pid.setdefault(pid, []).extend(mappings)
+        entries.append((_extract_info(app, 0), _UNMAPPED))
+        for child, mapping in zip(children, mappings, strict=True):
+            if child is not None:
+                _collect_tree(child, mapping, entries, depth=1, max_depth=max_depth)
+
+    _apply_stability(mappings_by_pid, kwin_before, kwin_error)
+
+    lines: list[str] = []
+    total = 0
+    for info, mapping in entries:
+        if role_filter and role_filter != info.role.lower():
+            continue
+        lines.append(_format_line(_finalize(info, mapping)))
+        total += 1
 
     if not lines:
         return "(no accessible applications found)"
@@ -97,8 +146,10 @@ def find_elements(
     Returns:
         List of matching ElementInfo objects.
     """
+    kwin_before, kwin_error = _kwin_windows()
     desktop = Atspi.get_desktop(0)
-    results: list[ElementInfo] = []
+    results: list[tuple[ElementInfo, _WindowMapping]] = []
+    mappings_by_pid: dict[int, list[_WindowMapping]] = {}
     query_lower = query.lower()
 
     for i in range(desktop.get_child_count()):
@@ -110,9 +161,20 @@ def find_elements(
         if app_name and app_name.lower() not in name.lower():
             continue
 
-        _search_element(app, query_lower, results, depth=0, max_depth=15, required_states=states)
+        pid, mappings, children = _resolve_app(app, kwin_before, kwin_error)
+        if pid is not None:
+            mappings_by_pid.setdefault(pid, []).extend(mappings)
+        app_info = _extract_info(app, 0)
+        if _matches(app_info, query_lower, states):
+            results.append((app_info, _UNMAPPED))
+        for child, mapping in zip(children, mappings, strict=True):
+            if child is not None:
+                _search_element(
+                    child, mapping, query_lower, results, depth=1, required_states=states
+                )
 
-    return results
+    _apply_stability(mappings_by_pid, kwin_before, kwin_error)
+    return [_finalize(info, mapping) for info, mapping in results]
 
 
 def list_windows() -> str:
@@ -192,56 +254,33 @@ def wait_for_elements(
         time.sleep(interval)
 
 
-def _format_element(
+def _collect_tree(
     element: Atspi.Accessible,
-    lines: list[str],
+    mapping: _WindowMapping,
+    entries: list[tuple[ElementInfo, _WindowMapping]],
     depth: int,
     max_depth: int,
-    role_filter: str = "",
-) -> int:
-    """Recursively format an element and its children. Returns element count.
-
-    When role_filter is set, only elements with a matching role are displayed,
-    but children of non-matching elements are still traversed.
-    """
+) -> None:
+    """Collect an element and its children for later formatting."""
     if depth > max_depth:
-        return 0
+        return
 
     info = _extract_info(element, depth)
-    role_match = not role_filter or role_filter == info.role.lower()
+    entries.append((info, mapping))
 
-    count = 0
-    if role_match:
-        indent = "  " * depth
-        states_str = f" ({', '.join(info.states)})" if info.states else ""
-        pos_str = f" @ ({info.x}, {info.y}, {info.width}x{info.height})"
-        actions_str = f" [actions: {', '.join(info.actions)}]" if info.actions else ""
-        text_str = f" text={info.text!r}" if info.text else ""
-        has_value = info.value is not None and info.value_max is not None
-        value_str = f" value={info.value:g}/{info.value_max:g}" if has_value else ""
-
-        line = (
-            f'{indent}- [{info.role}] "{info.name}"{states_str}{pos_str}'
-            f"{text_str}{value_str}{actions_str}"
-        )
-        lines.append(line)
-        count = 1
-
-    # Always traverse children even when the current element is filtered out
     for i in range(info.children_count):
         child = element.get_child_at_index(i)
         if child is not None:
-            count += _format_element(child, lines, depth + 1, max_depth, role_filter)
-
-    return count
+            _collect_tree(child, mapping, entries, depth + 1, max_depth)
 
 
 def _search_element(
     element: Atspi.Accessible,
+    mapping: _WindowMapping,
     query: str,
-    results: list[ElementInfo],
+    results: list[tuple[ElementInfo, _WindowMapping]],
     depth: int,
-    max_depth: int,
+    max_depth: int = 15,
     required_states: list[str] | None = None,
 ) -> None:
     """Recursively search for elements matching the query and/or required states."""
@@ -250,24 +289,262 @@ def _search_element(
 
     info = _extract_info(element, depth)
 
-    # Check if element matches query (empty query matches everything)
-    query_match = (
-        query in info.name.lower()
-        or query in info.role.lower()
-        or query in info.description.lower()
-    )
-
-    # Check if element matches required states
-    states_match = required_states is None or all(s in info.states for s in required_states)
-
-    if query_match and states_match:
-        results.append(info)
+    if _matches(info, query, required_states):
+        results.append((info, mapping))
 
     # Search children
     for i in range(info.children_count):
         child = element.get_child_at_index(i)
         if child is not None:
-            _search_element(child, query, results, depth + 1, max_depth, required_states)
+            _search_element(child, mapping, query, results, depth + 1, max_depth, required_states)
+
+
+def _matches(info: ElementInfo, query: str, required_states: list[str] | None) -> bool:
+    """Query (name/role/description substring) and required-states check."""
+    query_match = (
+        query in info.name.lower()
+        or query in info.role.lower()
+        or query in info.description.lower()
+    )
+    states_match = required_states is None or all(s in info.states for s in required_states)
+    return query_match and states_match
+
+
+def _finalize(info: ElementInfo, mapping: _WindowMapping) -> ElementInfo:
+    """Turn window-local extents into screen coordinates, or mark unavailable.
+
+    Element-level problems (no extents at all, empty rectangle) win over
+    mapping problems: an element without a rectangle has no position to
+    translate regardless of whether its window was identified.
+    """
+    if not info.has_extents:
+        info.mapped = False
+        info.unavailable = "no-extents"
+    elif info.width <= 0 or info.height <= 0:
+        info.mapped = False
+        info.unavailable = "empty-extents"
+    elif mapping.offset is not None:
+        info.x += mapping.offset[0]
+        info.y += mapping.offset[1]
+        info.mapped = True
+        info.unavailable = ""
+    else:
+        info.mapped = False
+        info.unavailable = mapping.reason or "unmapped"
+    return info
+
+
+def _format_line(info: ElementInfo) -> str:
+    """Format one collected element as a tree line."""
+    indent = "  " * info.depth
+    states_str = f" ({', '.join(info.states)})" if info.states else ""
+    if info.mapped:
+        pos_str = f" @ screen ({info.x}, {info.y}, {info.width}x{info.height})"
+    else:
+        pos_str = f" @ unavailable ({info.unavailable})"
+    actions_str = f" [actions: {', '.join(info.actions)}]" if info.actions else ""
+    text_str = f" text={info.text!r}" if info.text else ""
+    has_value = info.value is not None and info.value_max is not None
+    value_str = f" value={info.value:g}/{info.value_max:g}" if has_value else ""
+
+    return (
+        f'{indent}- [{info.role}] "{info.name}"{states_str}{pos_str}'
+        f"{text_str}{value_str}{actions_str}"
+    )
+
+
+# ── AT-SPI top-level → KWin window mapping ───────────────────────────────
+#
+# AT-SPI reports window-local coordinates (CoordType.WINDOW); a Wayland
+# client cannot know where the compositor placed it. KWin does know, so each
+# AT-SPI top-level is matched to exactly one KWin window and the whole
+# subtree is translated by that window's client origin. Any uncertainty —
+# the KWin query failing, no candidate, several candidates, a window set
+# that changed mid-walk — fails closed: elements report "unavailable" with
+# a reason instead of coordinates that would click the wrong place.
+
+
+def _kwin_windows() -> tuple[list[KWinWindow], str]:
+    """Snapshot every KWin window. Returns (windows, error)."""
+    try:
+        from kwin_mcp import geometry
+
+        return geometry.collect_windows(), ""
+    except Exception as exc:
+        return [], f"{type(exc).__name__}: {exc}"
+
+
+def _window_key(window: KWinWindow) -> tuple[object, ...]:
+    """Identity + geometry of a KWin window for before/after comparison."""
+    return (
+        window["id"],
+        window["pid"],
+        window["caption"],
+        *window["client"],
+    )
+
+
+def _apply_stability(
+    mappings_by_pid: dict[int, list[_WindowMapping]],
+    kwin_before: list[KWinWindow],
+    kwin_error: str,
+) -> None:
+    """Unmap every top-level of a pid whose KWin window set changed mid-walk.
+
+    The AT-SPI traversal takes ~200ms; a window opening, closing or moving
+    during it would otherwise translate elements against stale geometry.
+    """
+    if kwin_error:
+        return
+    kwin_after, after_error = _kwin_windows()
+    if after_error:
+        # Cannot prove the snapshot was stable; fail closed for everything.
+        for mappings in mappings_by_pid.values():
+            for mapping in mappings:
+                if mapping.offset is not None:
+                    mapping.window, mapping.offset, mapping.reason = (
+                        None,
+                        None,
+                        "windows-changed",
+                    )
+        return
+    before_by_pid: dict[int, set[tuple[object, ...]]] = {}
+    for window in kwin_before:
+        before_by_pid.setdefault(window["pid"], set()).add(_window_key(window))
+    after_by_pid: dict[int, set[tuple[object, ...]]] = {}
+    for window in kwin_after:
+        after_by_pid.setdefault(window["pid"], set()).add(_window_key(window))
+    for pid, mappings in mappings_by_pid.items():
+        if before_by_pid.get(pid, set()) != after_by_pid.get(pid, set()):
+            for mapping in mappings:
+                mapping.window, mapping.offset, mapping.reason = None, None, "windows-changed"
+
+
+def _resolve_app(
+    app: Atspi.Accessible,
+    kwin: list[KWinWindow],
+    kwin_error: str,
+) -> tuple[int | None, list[_WindowMapping], list[Atspi.Accessible | None]]:
+    """Match every AT-SPI top-level of one application to a KWin window.
+
+    Returns (pid, mappings aligned with children, children). The mapping must
+    be a bijection: a child that vanished mid-walk, a top-level with no unique
+    match, or two top-levels claiming the same KWin window unmaps the whole
+    application — a partial mapping could silently click the wrong window.
+    """
+    try:
+        pid: int | None = int(app.get_process_id())
+    except Exception:
+        pid = None
+
+    children: list[Atspi.Accessible | None] = []
+    for j in range(app.get_child_count()):
+        children.append(app.get_child_at_index(j))
+
+    def _unmapped(reason: str) -> list[_WindowMapping]:
+        return [_WindowMapping(None, reason) for _ in children]
+
+    if pid is None or pid <= 0:
+        return pid, _unmapped("pid-unavailable"), children
+    if kwin_error:
+        return pid, _unmapped("kwin-query-failed"), children
+    if any(child is None for child in children):
+        return pid, _unmapped("window-set-mismatch"), children
+
+    mappings: list[_WindowMapping] = []
+    poisoned = False
+    for child in children:
+        assert child is not None
+        name = child.get_name() or ""
+        rect = _window_rect(child)
+        if rect is None:
+            # No extents at all: nothing to translate, and nothing to match.
+            mappings.append(_WindowMapping(None, "no-extents"))
+            continue
+        window, reason = _match_toplevel(pid, name, rect, kwin)
+        if window is None:
+            poisoned = True
+        mappings.append(_WindowMapping(window, reason, rect))
+
+    claimed: dict[str, int] = {}
+    for mapping in mappings:
+        if mapping.window is not None:
+            claimed[mapping.window["id"]] = claimed.get(mapping.window["id"], 0) + 1
+    if poisoned or any(count > 1 for count in claimed.values()):
+        for mapping in mappings:
+            if mapping.window is not None:
+                mapping.window, mapping.reason = None, "ambiguous-window-match"
+        return pid, mappings, children
+
+    for mapping in mappings:
+        if mapping.window is not None and mapping.rect is not None:
+            client = mapping.window["client"]
+            mapping.offset = (
+                client[0] - mapping.rect[0],
+                client[1] - mapping.rect[1],
+            )
+    return pid, mappings, children
+
+
+def _match_toplevel(
+    pid: int,
+    name: str,
+    rect: tuple[int, int, int, int],
+    kwin: list[KWinWindow],
+) -> tuple[KWinWindow | None, str]:
+    """Match one AT-SPI top-level to exactly one KWin window.
+
+    No singleton shortcut: every candidate must survive the caption and size
+    checks even when it is the only window of the process.
+    """
+    candidates = [w for w in kwin if w["pid"] == pid and _eligible(w)]
+    candidates = [w for w in candidates if _caption_consistent(w["caption"], name)]
+    size = (rect[2], rect[3])
+    candidates = [w for w in candidates if (w["client"][2], w["client"][3]) == size]
+    if len(candidates) == 1:
+        return candidates[0], ""
+    return None, "ambiguous" if candidates else "no-kwin-window"
+
+
+def _eligible(window: KWinWindow) -> bool:
+    """KWin windows that can own an AT-SPI top-level.
+
+    Popups stay eligible: GTK3 menus are separate AT-SPI top-levels backed by
+    KWin popup windows, and excluding them would leave a wrong singleton
+    match. They still must pass the caption and size checks.
+    """
+    return bool(
+        window["managed"]
+        and not window["deleted"]
+        and not window["desktop"]
+        and not window["dock"]
+        and not window["notification"]
+    )
+
+
+def _caption_consistent(caption: str, name: str) -> bool:
+    """Caption check applies only when both sides are non-empty.
+
+    Accepts exact equality or the KDE " — App" suffix KWin shows for KDE apps
+    (AT-SPI 'Open File' vs KWin 'Open File — KWrite'). A plain prefix is never
+    accepted: 'Document' must not match 'Document 2 — KWrite'.
+    """
+    n, c = name.strip(), caption.strip()
+    if not n or not c:
+        return True
+    return c == n or c.startswith(n + " — ")
+
+
+def _window_rect(element: Atspi.Accessible) -> tuple[int, int, int, int] | None:
+    """Window-local extents of an AT-SPI element, or None when unavailable."""
+    try:
+        component = element.get_component_iface()
+        if component is None:
+            return None
+        rect = component.get_extents(Atspi.CoordType.WINDOW)
+        return rect.x, rect.y, rect.width, rect.height
+    except Exception:
+        return None
 
 
 def _extract_info(element: Atspi.Accessible, depth: int) -> ElementInfo:
@@ -285,13 +562,18 @@ def _extract_info(element: Atspi.Accessible, depth: int) -> ElementInfo:
         if state_name:
             states.append(state_name)
 
-    # Get position and size
+    # Get position and size. WINDOW extents are window-local and reliable for
+    # both Qt and GTK; SCREEN extents are (0,0) on GTK4 and already include the
+    # output origin for Qt on a second output, so they cannot be used here.
+    # _finalize() adds the matched KWin window's client origin.
     x, y, width, height = 0, 0, 0, 0
+    has_extents = False
     try:
         component = element.get_component_iface()
         if component is not None:
-            rect = component.get_extents(Atspi.CoordType.SCREEN)
+            rect = component.get_extents(Atspi.CoordType.WINDOW)
             x, y, width, height = rect.x, rect.y, rect.width, rect.height
+            has_extents = True
     except Exception:
         pass
 
@@ -335,7 +617,6 @@ def _extract_info(element: Atspi.Accessible, depth: int) -> ElementInfo:
             value_max = float(Atspi.Value.get_maximum_value(value_iface))
     except Exception:
         pass
-
     return ElementInfo(
         role=role,
         name=name,
@@ -351,6 +632,9 @@ def _extract_info(element: Atspi.Accessible, depth: int) -> ElementInfo:
         value_max=value_max,
         children_count=element.get_child_count(),
         depth=depth,
+        has_extents=has_extents,
+        mapped=False,
+        unavailable="",
     )
 
 

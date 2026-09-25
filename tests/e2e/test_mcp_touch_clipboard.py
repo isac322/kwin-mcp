@@ -27,7 +27,9 @@ CLIPBOARD_DISABLED_HINT = (
     "or use session_connect (clipboard is always enabled for live sessions)."
 )
 _RECT = r"\((-?\d+), (-?\d+), (\d+)x(\d+)\)"
-_SCROLLBAR = re.compile(rf'\[scroll bar] "[^"]*" @ {_RECT} value=(\d+(?:\.\d+)?)/(\d+(?:\.\d+)?)')
+_SCROLLBAR = re.compile(
+    rf'\[scroll bar] "[^"]*" @ screen {_RECT} value=(\d+(?:\.\d+)?)/(\d+(?:\.\d+)?)'
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -108,13 +110,12 @@ async def _global_element_center(
         {"query": name, "app_name": app_name},
     )
     assert element_count(elements) > 0, elements[:500]
-    local_x, local_y, width, height = _rect(
+    # find_ui_elements already reports global screen coordinates.
+    x, y, width, height = _rect(
         elements,
-        rf'\[{re.escape(role)}\] "{re.escape(name)}" @ {_RECT}',
+        rf'\[{re.escape(role)}\] "{re.escape(name)}" @ screen {_RECT}',
     )
-    geometry = await client.call_text("window_geometry", {"app_name": app_name})
-    client_x, client_y, _, _ = _rect(geometry, rf"client:\s+{_RECT}")
-    return client_x + local_x + width // 2, client_y + local_y + height // 2
+    return x + width // 2, y + height // 2
 
 
 async def _wait_for_binary(client: McpClient, expected: str) -> None:
@@ -140,7 +141,8 @@ async def _focused_text(client: McpClient, app_name: str = "kwrite") -> str:
         return ""
     assert element_count(output) > 0, output[:500]
     matches = re.findall(
-        rf'^- \[text] "[^"]*" @ {_RECT}(?: text=(.*?))?(?: \[actions:.*])?$',
+        rf'^- \[text] "[^"]*" @ (?:screen {_RECT}|unavailable \([^)]+\))'
+        rf"(?: text=(.*?))?(?: \[actions:.*])?$",
         output,
         re.MULTILINE,
     )
@@ -160,12 +162,6 @@ async def _wait_for_text(client: McpClient, expected: str) -> None:
     assert actual == expected
 
 
-async def _client_origin(client: McpClient, app_name: str) -> tuple[int, int]:
-    geometry = await client.call_text("window_geometry", {"app_name": app_name})
-    client_x, client_y, _, _ = _rect(geometry, rf"client:\s+{_RECT}")
-    return client_x, client_y
-
-
 async def _text_area(
     client: McpClient,
     app_name: str,
@@ -175,7 +171,7 @@ async def _text_area(
         "find_ui_elements",
         {"query": name, "app_name": app_name},
     )
-    return _rect(elements, rf'\[text\] "{re.escape(name)}" @ {_RECT}')
+    return _rect(elements, rf'\[text\] "{re.escape(name)}" @ screen {_RECT}')
 
 
 async def _scroll_position(client: McpClient, app_name: str = "kwrite") -> float:
@@ -328,17 +324,15 @@ async def test_touch_wrappers_change_gui_state_and_report_kwin_limits(tmp_path: 
         await _wait_for_app(client, "kwrite", document.name)
         await client.call_text("focus_window", {"app_name": "kwrite"})
         await anyio.sleep(1.0)
-
-        origin_x, origin_y = await _client_origin(client, "kwrite")
         text_x, text_y, text_width, text_height = await _text_area(
             client,
             "kwrite",
             document.name,
         )
-        center_x = origin_x + text_x + text_width // 2
-        center_y = origin_y + text_y + text_height // 2
-        from_y = origin_y + text_y + (text_height * 3) // 4
-        to_y = origin_y + text_y + text_height // 4
+        center_x = text_x + text_width // 2
+        center_y = text_y + text_height // 2
+        from_y = text_y + (text_height * 3) // 4
+        to_y = text_y + text_height // 4
 
         assert await _scroll_position(client) == 0.0
         swipe_output = await client.call_text(

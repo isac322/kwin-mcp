@@ -174,7 +174,10 @@ def accessibility_tree(
     """Get the accessibility tree of apps in the isolated session.
 
     Returns a formatted text tree with each widget's role, name, states,
-    and bounding box coordinates. Use this to understand UI structure before
+    and bounding box in global screen coordinates ("@ screen (x, y, wxh)"),
+    the same space mouse_click and touch_tap take. Elements whose window
+    cannot be identified with certainty report "@ unavailable (reason)"
+    instead of coordinates. Use this to understand UI structure before
     interacting with elements.
     """
     return _engine.accessibility_tree(app_name=app_name, max_depth=max_depth, role=role)
@@ -205,8 +208,11 @@ def find_ui_elements(
     """Find UI elements matching a search query and/or required AT-SPI2 states.
 
     Returns a list of matching elements with their role, name, bounding box
-    (x, y, width, height), and available actions. Use this to locate specific
-    buttons, inputs, or labels before clicking or interacting.
+    in global screen coordinates ("@ screen (x, y, wxh)") — the same space
+    mouse_click and touch_tap take — and available actions. Elements whose
+    window cannot be identified with certainty report "@ unavailable (reason)"
+    instead of coordinates. Use this to locate specific buttons, inputs, or
+    labels before clicking or interacting.
     """
     return _engine.find_ui_elements(query=query, app_name=app_name, states=states)
 
@@ -684,8 +690,10 @@ def wait_for_element(
     """Wait for a UI element matching query and/or states to appear.
 
     Polls repeatedly until a matching element is found or the timeout expires.
-    Returns matching elements in the same format as find_ui_elements, or a
-    timeout error message.
+    Returns matching elements in the same format as find_ui_elements —
+    bounding boxes are global screen coordinates, or "@ unavailable (reason)"
+    when the element's window cannot be identified — or a timeout error
+    message.
     """
     return _engine.wait_for_element(
         query=query,
@@ -753,10 +761,9 @@ def window_geometry(
 ) -> str:
     """Report window positions and sizes in global screen coordinates.
 
-    Accessibility rectangles from accessibility_tree and find_ui_elements are
-    surface-local, because a Wayland client cannot know where the compositor
-    placed it. Add the window's client origin reported here to turn them into
-    the global coordinates that mouse_click and touch_tap expect.
+    Element rectangles from accessibility_tree and find_ui_elements are
+    already translated to this same coordinate space; this tool remains
+    useful for locating whole windows and diagnosing placement.
     """
     return _engine.window_geometry(app_name=app_name)
 

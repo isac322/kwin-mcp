@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 _RECT = r"\((-?\d+), (-?\d+), (\d+)x(\d+)\)"
 _SCROLLBAR = re.compile(
-    rf'\[scroll bar] "[^"]*" @ {_RECT} value=(-?\d+(?:\.\d+)?)/(-?\d+(?:\.\d+)?)'
+    rf'\[scroll bar] "[^"]*" @ screen {_RECT} value=(-?\d+(?:\.\d+)?)/(-?\d+(?:\.\d+)?)'
 )
 POLL_INTERVAL_SECONDS = 0.1
 INPUT_TIMEOUT_SECONDS = 5.0
@@ -42,13 +42,11 @@ async def _global_element_rect(
     client: McpTestClient, app_name: str, role: str, name: str
 ) -> tuple[int, int, int, int]:
     elements = await client.call_text("find_ui_elements", {"query": name, "app_name": app_name})
-    local_x, local_y, width, height = _single_rect(
+    # find_ui_elements already reports global screen coordinates.
+    return _single_rect(
         elements,
-        rf'\[{re.escape(role)}] "{re.escape(name)}" @ {_RECT}',
+        rf'\[{re.escape(role)}] "{re.escape(name)}" @ screen {_RECT}',
     )
-    geometry = await client.call_text("window_geometry", {"app_name": app_name})
-    client_x, client_y, _, _ = _single_rect(geometry, rf"client:\s+{_RECT}")
-    return client_x + local_x, client_y + local_y, width, height
 
 
 async def _global_element_center(
@@ -74,7 +72,8 @@ async def _wait_for_binary(client: McpTestClient, expected: str) -> None:
 
 def _focused_text(output: str) -> str:
     matches = re.findall(
-        rf'^- \[text] "[^"]*" @ {_RECT}(?: text=(.*?))?(?: \[actions:.*])?$',
+        rf'^- \[text] "[^"]*" @ (?:screen {_RECT}|unavailable \([^)]+\))'
+        rf"(?: text=(.*?))?(?: \[actions:.*])?$",
         output,
         re.MULTILINE,
     )

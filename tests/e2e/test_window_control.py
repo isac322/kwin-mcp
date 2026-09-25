@@ -1,7 +1,7 @@
 """End-to-end coverage for window activation, scrolling and dragging.
 
-These flows all need a window's global position, so they exercise the public
-`window_geometry` conversion instead of assuming where a window sits.
+These flows all need a window's global position, which find_ui_elements now
+reports directly in screen coordinates.
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ if TYPE_CHECKING:
     from kwin_mcp.core import AutomationEngine
 
 LONG_DOCUMENT = "/tmp/kwin-mcp-scroll.txt"
-_CLIENT = re.compile(r"client: \((\d+), (\d+),")
 _SCROLLBAR = re.compile(r"\[scroll bar\][^\n]*?value=(\d+(?:\.\d+)?)/(\d+(?:\.\d+)?)")
 
 
@@ -35,16 +34,9 @@ def _windows_of(engine: AutomationEngine, app: str) -> list[str]:
     return lines
 
 
-def _client_origin(engine: AutomationEngine, app: str) -> tuple[int, int]:
-    geometry = engine.window_geometry(app_name=app)
-    match = _CLIENT.search(geometry)
-    assert match is not None, geometry[:300]
-    return int(match.group(1)), int(match.group(2))
-
-
 def _text_area(engine: AutomationEngine, app: str, name: str) -> tuple[int, int, int, int]:
     elements = engine.find_ui_elements(query=name, app_name=app)
-    match = re.search(rf'\[text\] "{name}" @ \((\d+), (\d+), (\d+)x(\d+)\)', elements)
+    match = re.search(rf'\[text\] "{name}" @ screen \((\d+), (\d+), (\d+)x(\d+)\)', elements)
     assert match is not None, elements[:500]
     x, y, width, height = match.groups()
     return int(x), int(y), int(width), int(height)
@@ -65,9 +57,8 @@ def _swipe_span(engine: AutomationEngine) -> tuple[int, int, int]:
     Fixed pixel offsets around the centre can fall outside a short widget, and
     a touch that starts off the editor scrolls nothing.
     """
-    ox, oy = _client_origin(engine, "kwrite")
     tx, ty, tw, th = _text_area(engine, "kwrite", "kwin-mcp-scroll.txt")
-    return ox + tx + tw // 2, oy + ty + (th * 3) // 4, oy + ty + th // 4
+    return tx + tw // 2, ty + (th * 3) // 4, ty + th // 4
 
 
 def _open_editor(engine: AutomationEngine, wait_for_app: Callable[[str], str]) -> None:
@@ -80,9 +71,8 @@ def _open_editor(engine: AutomationEngine, wait_for_app: Callable[[str], str]) -
 
 
 def _scroll_target(engine: AutomationEngine) -> tuple[int, int]:
-    ox, oy = _client_origin(engine, "kwrite")
     tx, ty, tw, th = _text_area(engine, "kwrite", "kwin-mcp-scroll.txt")
-    return ox + tx + tw // 2, oy + ty + th // 2
+    return tx + tw // 2, ty + th // 2
 
 
 def test_focus_window_activates_the_requested_window(
@@ -140,10 +130,9 @@ def test_mouse_drag_selects_text(
     start_session(enable_clipboard=True)
     _open_editor(engine, wait_for_app)
 
-    ox, oy = _client_origin(engine, "kwrite")
     tx, ty, _, _ = _text_area(engine, "kwrite", "kwin-mcp-scroll.txt")
-    line_y = oy + ty + 12
-    engine.mouse_drag(from_x=ox + tx + 60, from_y=line_y, to_x=ox + tx + 170, to_y=line_y)
+    line_y = ty + 12
+    engine.mouse_drag(from_x=tx + 60, from_y=line_y, to_x=tx + 170, to_y=line_y)
     time.sleep(0.8)
     engine.keyboard_key(key="ctrl+c")
     time.sleep(0.8)
@@ -186,9 +175,8 @@ def test_touch_pinch_delivers_multitouch_to_the_app(
     """
     start_session(enable_clipboard=True)
     _open_editor(engine, wait_for_app)
-    ox, oy = _client_origin(engine, "kwrite")
     tx, ty, tw, th = _text_area(engine, "kwrite", "kwin-mcp-scroll.txt")
-    cx, cy = ox + tx + tw // 2, oy + ty + th // 2
+    cx, cy = tx + tw // 2, ty + th // 2
     engine.clipboard_set(text="no-selection-yet")
     engine.touch_pinch(
         center_x=cx, center_y=cy, start_distance=80, end_distance=320, duration_ms=400

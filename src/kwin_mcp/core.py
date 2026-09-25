@@ -50,6 +50,19 @@ _INSTALL_HINTS: dict[str, str] = {
 }
 
 
+def _element_position(el: dict) -> str:
+    """Format an element's position for find_ui_elements / wait_for_element.
+
+    Coordinates are global screen coordinates (the space mouse_click and
+    touch_tap take). Elements whose window could not be identified with
+    certainty report "unavailable" with a reason and no numbers, so callers
+    never click a plausible-looking wrong point.
+    """
+    if el.get("mapped"):
+        return f"@ screen ({el['x']}, {el['y']}, {el['width']}x{el['height']})"
+    return f"@ unavailable ({el.get('unavailable') or 'unmapped'})"
+
+
 class AutomationEngine:
     """Core automation engine encapsulating all tool logic.
 
@@ -390,8 +403,7 @@ class AutomationEngine:
             )
             lines.append(
                 f'- [{el["role"]}] "{el["name"]}" '
-                f"@ ({el['x']}, {el['y']}, {el['width']}x{el['height']})"
-                f"{text_str}{value_str}{actions_str}"
+                f"{_element_position(el)}{text_str}{value_str}{actions_str}"
             )
         return "\n".join(lines)
 
@@ -726,8 +738,7 @@ class AutomationEngine:
             )
             lines.append(
                 f'- [{el["role"]}] "{el["name"]}" '
-                f"@ ({el['x']}, {el['y']}, {el['width']}x{el['height']})"
-                f"{text_str}{value_str}{actions_str}"
+                f"{_element_position(el)}{text_str}{value_str}{actions_str}"
             )
         return "\n".join(lines)
 
@@ -783,9 +794,9 @@ class AutomationEngine:
     def window_geometry(self, app_name: str = "") -> str:
         """Report window positions in global screen coordinates.
 
-        AT-SPI2 rectangles are surface-local — a Wayland client cannot know where
-        the compositor placed it — so element coordinates must be offset by the
-        window's client origin before they can be clicked.
+        Element rectangles from find_ui_elements and accessibility_tree are
+        already translated to this same coordinate space; this tool remains
+        useful for locating whole windows and diagnosing placement.
         """
         self._get_session()
         resp = self._run_kwin_query({"app_name": app_name})

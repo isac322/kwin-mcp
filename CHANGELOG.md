@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - E2E test helpers now declare explicit type annotations — tuple return types, fixture keyword arguments, and startup stderr handles — so the suite type-checks under the current `ty` release; test behavior and count are unchanged.
+- `find_ui_elements`, `accessibility_tree` and `wait_for_element` reported window-local AT-SPI2 coordinates, so clicking a reported rectangle landed on whatever occupied that screen position instead of the element — and on GTK4 (which reports every element at `(0,0)`) even the documented `window_geometry` offset workaround missed. Element rectangles are now translated to global screen coordinates (`@ screen (x, y, wxh)`) by matching each AT-SPI2 top-level to exactly one KWin window by process id, caption, and client size. When no unique match exists — a masked process id, identical windows of one process, a window set that changed mid-query, or a failed KWin query — the element reports `@ unavailable (reason)` with no coordinates rather than a position that could click the wrong window.
 
 ## [0.8.0] - 2026-09-24
 

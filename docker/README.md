@@ -1,6 +1,6 @@
 # Containerized KWin session for end-to-end tests
 
-`e2e.Dockerfile` builds the installed-package end-to-end environment used locally and in `.github/workflows/e2e.yml`. The current suite collects 99 tests across engine-level virtual sessions, a real installed MCP server over stdio, and nested visual pixel QA.
+`e2e.Dockerfile` builds the installed-package end-to-end environment used locally and in `.github/workflows/e2e.yml`. The suite collects every test under `tests/e2e` across engine-level virtual sessions, a real installed MCP server over stdio, and nested visual pixel QA.
 
 ## Reproducibility
 
@@ -108,7 +108,7 @@ Additional arguments after the image command can select a file, node ID, marker,
 | `test_mcp_touch_clipboard.py` | Clipboard and touch wrappers over installed stdio, including observable GUI changes and compositor gesture limits. |
 | `test_observation_tools.py` | Accessibility filters and depth, element queries and states, polling, multi-window focus, app logs, Wayland protocol filtering, and generic D-Bus calls. |
 | `test_screenshot_behavior.py` | Explicit nested X11/scrot capture, cursor pixels, action frame paths, screenshot retention, exact-virtual backend errors, and server survival. |
-| `test_session_lifecycle.py` | Start/stop idempotence, environment and geometry, isolated HOME, artifact retention, socket/process cleanup, live-session ownership, and connection errors. |
+| `test_session_lifecycle.py` | Start/stop idempotence, environment and geometry, isolated HOME, artifact retention, socket/process cleanup, live-session ownership, and connection errors; plus `PATH`-stub lifecycle regressions for bounded `session_start` failure (stderr + stray stdout diagnostics) and process-group teardown across a reaped leader or `SIGTERM`-ignoring descendant. |
 | `test_virtual_session_smoke.py` | Minimum virtual KWin contract: KCalc launch, AT-SPI2 visibility and widgets, EIS keyboard delivery, plus the intentionally skipped exact-virtual ScreenShot2 success probe. |
 | `test_visual_qa.py` | Pixel-backed GUI probe and KCalc oracles: hover repaint, cursor localization, animation bursts, CJK-versus-tofu rendering, and binary-value transitions. |
 | `test_window_control.py` | Focus, smooth/discrete scroll, drag selection, touch swipe/multi-swipe/pinch delivery, and scrollbar values. |

@@ -128,7 +128,7 @@ dev dependency group is installed separately from `pyproject.toml`; `uv.lock` is
 the image. The image pins both its Debian base-image digest and its dated Debian package
 snapshot.
 
-The suite currently collects 99 tests. Together they prove:
+The suite collects every test under `tests/e2e`. Together they prove:
 
 - engine-level behavior in isolated virtual KWin sessions;
 - the installed `kwin-mcp` entry point over real MCP stdio JSON-RPC, including the exact schemas
@@ -137,7 +137,11 @@ The suite currently collects 99 tests. Together they prove:
 - GUI pixels, cursor capture, repaint changes, and frame bursts in test-owned nested Xvfb/KWin
   sessions using the explicitly selected X11 `scrot` capture mode;
 - lifecycle, error propagation, input-state reset, process/session teardown, temporary artifact
-  retention rules, and container cleanup.
+  retention rules, and container cleanup;
+- failing-compositor lifecycle regressions driven by `PATH` stubs for `kwin_wayland` and
+  `dbus-run-session`: startup must stay deadline-bounded, report the captured session stderr and
+  partial stdout, and leave the owned process group fully reaped — including when the session
+  leader was already reaped or a descendant ignores `SIGTERM`.
 
 The image needs no `--privileged`, GPU, `/dev/dri`, or other device flags. Engine tests use
 KWin's exact virtual backend with llvmpipe. Visual tests start Xvfb and a nested KWin compositor
@@ -214,7 +218,7 @@ tests/e2e/
 ├── test_visual_qa.py                   # Pixel-backed nested compositor oracles
 ├── test_interaction_probe.py           # Full probe interaction feedback loop
 ├── test_input_cleanup.py               # Input state reset across sessions and failures
-├── test_session_lifecycle.py           # Ownership, teardown, and retention semantics
+├── test_session_lifecycle.py           # Ownership, teardown, retention, and bounded-startup cleanup
 ├── test_virtual_session_smoke.py       # Minimum isolated KWin contract
 ├── test_observation_tools.py           # Accessibility, window, log, and Wayland tools
 ├── test_window_geometry.py             # Global window geometry and element coordinate space

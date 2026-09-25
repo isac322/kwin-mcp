@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import select
 import shutil
 import signal
 import subprocess
@@ -17,6 +18,17 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import IO
+
+# Upper bound for the startup handshake. The wrapper script itself gives up
+# after its own ~30 s socket wait, so this bound only covers cases the wrapper
+# cannot report: a leader killed while descendants keep stdout open, or a
+# partial line that never terminates. 60 s leaves the wrapper room to report
+# first so its FAILED diagnostics reach the caller.
+_STARTUP_READ_TIMEOUT = 60.0
 
 # at-spi-bus-launcher is not on PATH and its location is distro-specific:
 # /usr/lib on Arch, /usr/libexec on Debian/Ubuntu/Fedora.
@@ -109,6 +121,10 @@ class Session:
         self._app_counter: int = 0
         self._config: SessionConfig | None = None
         self._home_dir: Path | None = None
+        # The session's stderr is redirected to this file instead of a pipe so
+        # the compositor can never block on a full stderr buffer. Closed in
+        # stop() after the diagnostics it holds were consumed.
+        self._stderr_file: IO[bytes] | None = None
 
     @property
     def is_running(self) -> bool:
@@ -173,55 +189,75 @@ class Session:
         # Build the wrapper script that runs inside dbus-run-session
         wrapper_script = self._build_wrapper_script(config)
 
-        # Start the isolated session in its own process group
-        self._process = subprocess.Popen(
-            ["dbus-run-session", "bash", "-c", wrapper_script],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=self._build_env(config),
-            start_new_session=True,
-        )
+        # Start the isolated session in its own process group. stderr goes to a
+        # file, not a pipe: a pipe would let a descendant block forever once
+        # the parent stops draining it, and it re-opens the "process wedged on
+        # a full stderr buffer" failure this call is supposed to survive. The
+        # file is also the diagnostic sink read when startup fails.
+        self._stderr_file = tempfile.TemporaryFile()  # noqa: SIM115
+        try:
+            self._process = subprocess.Popen(
+                ["dbus-run-session", "bash", "-c", wrapper_script],
+                stdout=subprocess.PIPE,
+                stderr=self._stderr_file,
+                env=self._build_env(config),
+                start_new_session=True,
+            )
+        except BaseException:
+            self._stderr_file.close()
+            self._stderr_file = None
+            # _process is still None, so stop() would return early; undo the
+            # resource acquisition this method already performed.
+            self._cleanup_isolated_home()
+            raise
 
         # Read startup output from the wrapper script.
-        # Expected lines: DBUS_SESSION_BUS_ADDRESS=..., READY
-        # Any other lines (e.g. from D-Bus activation) are ignored.
-        dbus_address = ""
-        got_ready = False
-        if self._process.stdout:
-            while True:
-                line = self._process.stdout.readline().decode().strip()
-                if not line and self._process.poll() is not None:
-                    break
-                if line.startswith("DBUS_SESSION_BUS_ADDRESS="):
-                    dbus_address = line.split("=", 1)[1]
-                elif line == "READY":
-                    got_ready = True
-                    break
-                elif line == "FAILED":
-                    # KWin died during startup; stop reading so the caller can
-                    # surface the error instead of blocking on READY forever.
-                    break
+        # Expected lines: DBUS_SESSION_BUS_ADDRESS=..., READY or FAILED.
+        # Any other lines (e.g. from D-Bus activation) are kept as diagnostics.
+        dbus_address, got_ready, stdout_tail = self._read_startup_output()
 
-        # Wait for kwin to be ready (socket file appears)
+        # Wait for kwin to be ready (socket file appears). Without READY the
+        # start has already failed, so only probe the socket to pick the error
+        # reason instead of spending another full wait on a dead handshake.
         socket_path = Path(runtime_dir) / self._socket_name
-        socket_ready = self._wait_for_socket(socket_path, timeout=10.0)
+        if got_ready:
+            socket_ready = self._wait_for_socket(socket_path, timeout=10.0)
+        else:
+            socket_ready = socket_path.exists()
         if not socket_ready or not got_ready:
-            # stderr.read() blocks until EOF, so terminate the session first;
-            # stop() must come after, since it clears self._process.
-            self._signal_process_group(signal.SIGTERM)
-            try:
-                _, stderr_bytes = self._process.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
-                self._signal_process_group(signal.SIGKILL)
-                _, stderr_bytes = self._process.communicate(timeout=5)
-            stderr = stderr_bytes.decode(errors="replace")
-            self.stop()
             reason = (
                 "KWin failed to start"
                 if not socket_ready
                 else "Session setup failed: did not receive READY signal"
             )
-            msg = f"{reason}. stderr: {stderr}"
+            try:
+                # The session is failed but may still hold children; terminate
+                # the whole group before reading diagnostics or giving up.
+                self._signal_process_group(signal.SIGTERM)
+                try:
+                    self._process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self._signal_process_group(signal.SIGKILL)
+                    try:
+                        self._process.wait(timeout=5)
+                    except subprocess.TimeoutExpired as exc:
+                        stderr = self._read_stderr_log()
+                        detail = self._format_startup_diagnostics(stderr, stdout_tail)
+                        msg = (
+                            f"{reason}; session teardown timed out"
+                            f"{detail}. Causal exception: {exc!r}"
+                        )
+                        raise RuntimeError(msg) from exc
+                stderr = self._read_stderr_log()
+            finally:
+                # Runs even when the re-raise above fires or wait() throws:
+                # group teardown, fd closure, and directory cleanup must not be
+                # skipped just because diagnostics collection failed — and a
+                # cleanup hiccup must not mask the real startup error.
+                with contextlib.suppress(Exception):
+                    self.stop()
+            detail = self._format_startup_diagnostics(stderr, stdout_tail)
+            msg = f"{reason}.{detail}"
             raise RuntimeError(msg)
 
         if self._home_dir is not None:
@@ -343,18 +379,33 @@ class Session:
         # removal, which shows up as a leaked directory after session_stop.
         self._terminate_apps()
 
-        # Send SIGTERM to the entire process group (all children)
+        # Send SIGTERM to the entire process group (all children). This still
+        # reaches descendants when the leader was already reaped, because the
+        # group id is the leader's pid and stays allocated while any group
+        # member lives.
         self._signal_process_group(signal.SIGTERM)
 
         try:
             self._process.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            # Force kill the entire process group
-            self._signal_process_group(signal.SIGKILL)
-            with contextlib.suppress(ProcessLookupError):
-                self._process.kill()
+            self._process.kill()
             with contextlib.suppress(subprocess.TimeoutExpired):
                 self._process.wait(timeout=3)
+
+        # A returned leader wait only proves the leader exited. Descendants
+        # that ignored SIGTERM (or briefly outlive their parent) keep the
+        # session group alive, so check the group itself and escalate.
+        if self._group_alive():
+            self._signal_process_group(signal.SIGKILL)
+            self._wait_for_group_exit(timeout=5)
+
+        # The parent holds two handles created for the child: the stdout pipe
+        # and the stderr file. Close them so a failed start cannot leak fds.
+        if self._process.stdout is not None:
+            self._process.stdout.close()
+        if self._stderr_file is not None:
+            self._stderr_file.close()
+            self._stderr_file = None
 
         # Clean up home directory and/or screenshot directory
         if self._home_dir is not None:
@@ -383,12 +434,162 @@ class Session:
         self._info = None
         self._home_dir = None
 
+    def _cleanup_isolated_home(self) -> None:
+        """Release the isolated home created by start() when no session exists.
+
+        Only used on the Popen-failure path, where _process is None and stop()
+        cannot run; keep_home/keep_screenshots semantics mirror stop().
+        """
+        if self._home_dir is None:
+            return
+        keep_home = self._config is not None and self._config.keep_home
+        keep_screenshots = self._config is not None and self._config.keep_screenshots
+        with contextlib.suppress(OSError):
+            if not keep_home:
+                _remove_tree(self._home_dir)
+            elif not keep_screenshots:
+                shutil.rmtree(self._home_dir / ".screenshots", ignore_errors=True)
+        self._home_dir = None
+
     def _signal_process_group(self, sig: int) -> None:
-        """Signal the whole session process group, ignoring races."""
+        """Signal the whole session process group, ignoring races.
+
+        start_new_session=True makes the leader's pid the process group id, so
+        the pid doubles as the pgid and stays valid even after the leader was
+        reaped — os.getpgid(pid) would instead fail with ESRCH on a reaped
+        leader and silently skip the signal. This is bounded by the owned
+        lifecycle only: nothing prevents the kernel from recycling the pid
+        once every group member is gone, so callers must signal promptly.
+        """
         if self._process is None:
             return
         with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(os.getpgid(self._process.pid), sig)
+            os.killpg(self._process.pid, sig)
+
+    def _group_alive(self) -> bool:
+        """Return True while any live (non-zombie) member of the session group exists.
+
+        killpg(pgid, 0) also succeeds for unreaped zombies, which persist when
+        orphaned members are reparented to a PID 1 that never reaps (e.g. a
+        container whose entrypoint execs pytest). Treating those as alive would
+        make every teardown wait out its full timeout, so on Linux the group's
+        members are confirmed through /proc/<pid>/stat and zombies are ignored.
+        """
+        if self._process is None:
+            return False
+        pgid = self._process.pid
+        try:
+            os.killpg(pgid, 0)
+        except (ProcessLookupError, PermissionError):
+            return False
+        proc = Path("/proc")
+        if not (proc / "self" / "stat").exists():
+            # No procfs: killpg cannot tell zombies apart, so assume alive.
+            return True
+        for entry in proc.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                stat = (entry / "stat").read_text()
+            except OSError:
+                # The process exited (or is inaccessible) between listing and read.
+                continue
+            # Fields after the comm's closing ")" are: state ppid pgrp ...
+            fields = stat.rpartition(")")[2].split()
+            if len(fields) > 2 and fields[2] == str(pgid) and fields[0] not in ("Z", "X"):
+                return True
+        return False
+
+    def _wait_for_group_exit(self, timeout: float) -> None:
+        """Block until the session process group is empty or timeout elapses."""
+        deadline = time.monotonic() + timeout
+        while self._group_alive() and time.monotonic() < deadline:
+            time.sleep(0.05)
+
+    def _read_startup_output(self) -> tuple[str, bool, str]:
+        """Read the wrapper's stdout handshake with a hard deadline.
+
+        Returns (dbus_address, got_ready, tail) where tail contains a decoded
+        prefix of any unrecognized stdout output (a partial line counts). A
+        blocking readline() cannot be used: a reaped or killed leader with
+        surviving descendants keeps the pipe open without writing a newline,
+        which once wedged start() forever. Reads are chunk-based on a
+        non-blocking fd so a newline-free write also terminates the loop.
+        """
+        process = self._process
+        if process is None or process.stdout is None:
+            return "", False, ""
+        fd = process.stdout.fileno()
+        os.set_blocking(fd, False)
+        dbus_address = ""
+        got_ready = False
+        pending = bytearray()
+        tail = bytearray()
+        deadline = time.monotonic() + _STARTUP_READ_TIMEOUT
+
+        def remember(text: str) -> None:
+            # Keep only a bounded excerpt; stdout is diagnostics, not a stream.
+            tail.extend((text + "\n").encode(errors="replace")[: 4096 - min(len(tail), 4096)])
+
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            readable, _, _ = select.select([fd], [], [], min(remaining, 0.5))
+            if not readable:
+                # No complete line can arrive any more once the leader is gone;
+                # whatever bytes remain pending are a partial line. Breaking
+                # here is what keeps a SIGKILLed wrapper with pipe-holding
+                # descendants bounded.
+                if process.poll() is not None:
+                    break
+                continue
+            try:
+                chunk = os.read(fd, 65536)
+            except BlockingIOError:
+                continue
+            if not chunk:
+                break
+            pending.extend(chunk)
+            while True:
+                line, sep, rest = pending.partition(b"\n")
+                if not sep:
+                    # No newline yet: everything stays buffered in pending.
+                    break
+                pending = rest
+                text = line.decode(errors="replace").strip()
+                if text.startswith("DBUS_SESSION_BUS_ADDRESS="):
+                    dbus_address = text.split("=", 1)[1]
+                elif text == "READY":
+                    got_ready = True
+                elif text:
+                    # FAILED, warnings, and stray compositor output all become
+                    # diagnostics; FAILED additionally ends the handshake.
+                    remember(text)
+                    if text == "FAILED":
+                        return dbus_address, False, tail.decode(errors="replace").strip()
+            if got_ready:
+                break
+
+        if pending:
+            remember(pending.decode(errors="replace"))
+        return dbus_address, got_ready, tail.decode(errors="replace").strip()
+
+    def _read_stderr_log(self) -> str:
+        """Return what the session wrote to its file-backed stderr."""
+        if self._stderr_file is None:
+            return ""
+        self._stderr_file.flush()
+        self._stderr_file.seek(0)
+        return self._stderr_file.read().decode(errors="replace").strip()
+
+    @staticmethod
+    def _format_startup_diagnostics(stderr: str, stdout_tail: str) -> str:
+        """Combine captured stderr and stray stdout into an error suffix."""
+        parts = []
+        if stderr:
+            parts.append(f"stderr: {stderr}")
+        if stdout_tail:
+            parts.append(f"stdout: {stdout_tail}")
+        return f" {'; '.join(parts)}" if parts else ""
 
     def _build_wrapper_script(self, config: SessionConfig) -> str:
         """Build the bash script that runs inside dbus-run-session."""

@@ -47,7 +47,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 import dbus
 import dbus.bus
@@ -184,7 +184,22 @@ def query_topology(dbus_address: str) -> WorkspaceTopology:
     return _parse_topology(response["result"])
 
 
-def _parse_topology(payload: dict[str, object]) -> WorkspaceTopology:
+class _TopologyScreen(TypedDict):
+    """One entry of ``screens`` in the geometry helper's ``outputs`` payload."""
+
+    name: str
+    scale: float
+    geometry: list[float]
+
+
+class _TopologyPayload(TypedDict, total=False):
+    """JSON body the ``outputs`` op reports: ``{"screens": [...], "virtual": [...]}``."""
+
+    screens: list[_TopologyScreen]
+    virtual: list[float] | None
+
+
+def _parse_topology(payload: _TopologyPayload) -> WorkspaceTopology:
     outputs: list[OutputGeometry] = []
     screens = payload.get("screens")
     if not isinstance(screens, list):

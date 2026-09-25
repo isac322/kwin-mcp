@@ -487,6 +487,14 @@ async def test_interaction_options_change_visible_probe_state_and_preserve_evide
                     ),
                     "right-button down/up pair was not observed",
                 )
+                # A stationary press/release must not synthesize a drag path:
+                # any motion while the button is held reaches the client as a
+                # drag sample (the #66 refresh detour must stay outside it).
+                assert _integer_field(button_pair_status, "motions") == 0, button_pair_status
+                start_point = _field(button_pair_status, "start")
+                assert _field(button_pair_status, "end") == start_point, button_pair_status
+                min_x, min_y, max_x, max_y = _bounds_field(button_pair_status)
+                assert (min_x, min_y) == (max_x, max_y), button_pair_status
                 evidence.append(button_pair_status)
 
                 waypoint_one = (drag_x + drag_width - 28, drag_y + 14)

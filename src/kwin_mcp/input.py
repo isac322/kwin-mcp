@@ -718,9 +718,33 @@ class InputBackend:
     def __init__(self, dbus_address: str) -> None:
         self._dbus_address = dbus_address
         self._client = EISClient(dbus_address)
+        # Buttons pressed by mouse_button_down and not yet released. While any
+        # is held, pointer motion is part of a drag path the client records.
+        self._held_buttons: set[int] = set()
 
     def mouse_move(self, x: int, y: int) -> None:
-        """Move mouse to absolute coordinates (hover)."""
+        """Move mouse to absolute coordinates (hover).
+
+        In KWin 6.3.6, ``SeatInterface::notifyPointerMotion`` (``seat.cpp``)
+        returns early for an absolute motion that does not change the global
+        cursor position, and no ``wl_pointer.motion`` is sent when a surface is
+        mapped or moved under a stationary cursor. A client whose window
+        appeared or moved beneath a parked cursor therefore keeps a stale
+        surface-local pointer position, and a button sent after a same-position
+        move is dispatched at that stale spot (issue #66).
+
+        With no button held, the move first visits an adjacent pixel so the
+        final move to ``(x, y)`` is a position change and the focused client
+        receives a current enter/motion there. This restores coordinate sync
+        only when KWin accepts the adjacent point: output clamping, edge
+        barriers, or pointer confinement can pin it back onto ``(x, y)``, which
+        leaves the same-position move a no-op again. While a button pressed by
+        ``mouse_button_down`` is held, the move goes straight to ``(x, y)``: an
+        out-and-back detour would become part of the drag path the client sees.
+        """
+        if not self._held_buttons:
+            approach_x = x - 1 if x > 0 else x + 1
+            self._client.pointer_move_absolute(float(approach_x), float(y))
         self._client.pointer_move_absolute(float(x), float(y))
         _mirror_x11_pointer(self._dbus_address, x, y)
 
@@ -913,6 +937,7 @@ class InputBackend:
         self.mouse_move(x, y)
         time.sleep(0.02)
         self._client.pointer_button(btn_code, _PRESSED)
+        self._held_buttons.add(btn_code)
 
     def mouse_button_up(self, x: int, y: int, button: MouseButton = MouseButton.LEFT) -> None:
         """Move to coordinates and release a mouse button.
@@ -925,6 +950,7 @@ class InputBackend:
         self.mouse_move(x, y)
         time.sleep(0.02)
         self._client.pointer_button(btn_code, _RELEASED)
+        self._held_buttons.discard(btn_code)
 
     def keyboard_type(self, text: str) -> None:
         """Type a string of text character by character."""

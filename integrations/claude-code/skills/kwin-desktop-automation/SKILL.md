@@ -27,7 +27,7 @@ Opens an isolated `dbus-run-session + kwin_wayland --virtual` compositor. Nothin
 
 Useful arguments:
 - `app_command="..."` — launch the target app inside the session.
-- `enable_clipboard=true` — required for `clipboard_get` / `clipboard_set` and the Unicode-via-clipboard fallback. Off by default because `wl-copy` can hang on a freshly minted bus.
+- `enable_clipboard=true` — required for `clipboard_get` / `clipboard_set` (not for `keyboard_type_unicode`). Off by default because `wl-copy` can hang on a freshly minted bus.
 - `keep_screenshots=true` — preserves PNGs in `/tmp/kwin-mcp-screenshots-*` after `session_stop` (delete the directory yourself when done).
 - `isolate_home=true` — temp HOME with isolated XDG dirs; keeps host configuration untouched.
 
@@ -56,7 +56,7 @@ Pick the cheapest tool that answers the question. Do not start with `screenshot`
 
 - Rectangles from `find_ui_elements` / `accessibility_tree` are already global screen coordinates (`@ screen (x, y, wxh)`) — the same space `mouse_click` and `touch_tap` take. Click the centre directly: `(x + width / 2, y + height / 2)`. An element reported as `@ unavailable (reason)` has no trustworthy position; do not click it.
 - `keyboard_type` is **ASCII / US-QWERTY only**. It maps characters to evdev keycodes; non-ASCII silently breaks.
-- `keyboard_type_unicode` for Korean / CJK / emoji / any non-ASCII. Internally uses `wtype` first, falls back to `wl-copy` + Ctrl+V. Requires `wtype` or `wl-clipboard` installed.
+- `keyboard_type_unicode` for Korean / CJK / emoji / any non-ASCII. It tries `wtype` first; when `wtype` is unavailable or unsupported by the session, it pastes with Ctrl+V through a built-in temporary clipboard owner and then restores the previous clipboard in every format. A failure result means the clipboard could not be taken, nothing read the text after Ctrl+V, or the restore failed: verify the target field before retrying. Text over 1 MiB of UTF-8 is rejected.
 
 Branch typing by string content — never assume the input is ASCII.
 
@@ -73,7 +73,8 @@ For animation-heavy or transient UI, pass `screenshot_after_ms=[0, 100, 300]` to
 These are properties of the Wayland / AT-SPI2 / EIS stack, not bugs. Know them or get burned.
 
 - **`keyboard_type` is US QWERTY only.** Non-ASCII text must go through `keyboard_type_unicode`. Always check the input.
-- **Clipboard is opt-in on virtual sessions.** Pass `enable_clipboard=true` to `session_start` AND ensure `wl-clipboard` is installed. Live sessions always have clipboard.
+- **Clipboard tools are opt-in on virtual sessions.** Pass `enable_clipboard=true` to `session_start` AND ensure `wl-clipboard` is installed before calling `clipboard_get` / `clipboard_set`. Live sessions always have clipboard.
+- **`keyboard_type_unicode` briefly exposes the text on the clipboard.** Klipper keeps it out of history, but clipboard managers that ignore KDE's secret hint can record it, and Wayland cannot tell which client read it. Restoring the previous clipboard is best-effort: a copy made at the same moment can be overwritten. `clipboard_set` is different — its text intentionally stays on the clipboard.
 - **Element coordinates are screen-global, or unavailable.** Rectangles returned by `find_ui_elements` and `accessibility_tree` are already in the screen space `mouse_click` and `touch_tap` take. When the element's window cannot be matched to exactly one KWin window, the element reports `@ unavailable (reason)` with no coordinates — never click a guessed position.
 - **QMenu and native context menus may be invisible to AT-SPI2.** Qt's AT-SPI2 bridge has incomplete popup-menu support on Wayland. Take a `screenshot` to identify the menu item, derive its position from the parent widget's reported screen rectangle, then click.
 - **Screen edge triggers (auto-hide panels, layer-shell strips) ignore EIS pointer events.** Use `dbus_call` to invoke KWin scripting or a keyboard shortcut instead of trying to hover the edge.

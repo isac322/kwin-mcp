@@ -97,6 +97,7 @@ Additional arguments after the image command can select a file, node ID, marker,
 
 | Test file | Coverage |
 |---|---|
+| `test_clipboard_helper_protocol.py` | The private `kwin_mcp.clipboard` helper driven directly against a test-owned KWin over data-control: a READY timeout that restores the prior selection and keeps serving it, oversized and malformed COPY framing that ends the helper without echoing its input, and a framing error while the helper owns the selection that still restores and keeps serving the prior selection. |
 | `test_environment_evidence.py` | Allowlisted `environment.json` provenance, installed versions, and atomic replacement. |
 | `test_input_cleanup.py` | Held EIS modifier/button cleanup across fresh connections, invalid input errors, and installed-server survival. |
 | `test_input_injection.py` | Engine-level mouse aim/click/press/release, keyboard input and modifiers, Unicode, clipboard paste, and touch tap with observable KCalc/KWrite results. |
@@ -109,6 +110,7 @@ Additional arguments after the image command can select a file, node ID, marker,
 | `test_observation_tools.py` | Accessibility filters and depth, element queries and states, polling, multi-window focus, app logs, Wayland protocol filtering, and generic D-Bus calls. |
 | `test_screenshot_behavior.py` | Explicit nested X11/scrot capture, cursor pixels, action frame paths, screenshot retention, exact-virtual backend errors, and server survival. |
 | `test_session_lifecycle.py` | Start/stop idempotence, environment and geometry, isolated HOME, artifact retention, socket/process cleanup, live-session ownership, and connection errors; plus `PATH`-stub lifecycle regressions for bounded `session_start` failure (stderr + stray stdout diagnostics) and process-group teardown across a reaped leader or `SIGTERM`-ignoring descendant. |
+| `test_unicode_clipboard_lifecycle.py` | `keyboard_type_unicode` clipboard paste: byte-for-byte restoration of every prior MIME type, empty prior selections, the secret-hint transient offer, a concurrent user copy that must survive, failure before paste with a stalled prior owner, a single restore owner across repeated calls, and the restored selection surviving a live-session disconnect. |
 | `test_virtual_session_smoke.py` | Minimum virtual KWin contract: KCalc launch, AT-SPI2 visibility and widgets, EIS keyboard delivery, plus the intentionally skipped exact-virtual ScreenShot2 success probe. |
 | `test_visual_qa.py` | Pixel-backed GUI probe and KCalc oracles: hover repaint, cursor localization, animation bursts, CJK-versus-tofu rendering, and binary-value transitions. |
 | `test_window_control.py` | Focus, smooth/discrete scroll, drag selection, touch swipe/multi-swipe/pinch delivery, and scrollbar values. |

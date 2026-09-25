@@ -223,7 +223,7 @@ kwin-mcp-cli --default-live-session
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `keyboard_type` | `text` `str`, `screenshot_after_ms?` `list[int]` | Type a string of text character by character (US QWERTY layout) |
-| `keyboard_type_unicode` | `text` `str`, `screenshot_after_ms?` `list[int]` | Type arbitrary Unicode text (Korean, CJK, etc.) via `wtype` or clipboard fallback (`wl-copy` + Ctrl+V). Requires `wtype` or `wl-clipboard` installed. |
+| `keyboard_type_unicode` | `text` `str`, `screenshot_after_ms?` `list[int]` | Type arbitrary Unicode text (Korean, CJK, etc.) via `wtype`, or, when `wtype` is unavailable or unsupported by the session, a temporary clipboard paste (Ctrl+V). The previous clipboard content, in all its formats, is restored after the paste, and Klipper keeps the typed text out of its history. Reports failure if the clipboard cannot be taken, nothing reads the text after Ctrl+V, or the restore fails. Does not need `enable_clipboard`. |
 | `keyboard_key` | `key` `str`, `screenshot_after_ms?` `list[int]` | Press a key or key combination (e.g., `Return`, `ctrl+c`, `alt+F4`, `shift+Tab`) |
 | `keyboard_key_down` | `key` `str` | Press and hold a key without releasing. Useful for holding modifiers across multiple actions (e.g., hold Ctrl while clicking items). |
 | `keyboard_key_up` | `key` `str` | Release a previously held key |
@@ -298,7 +298,7 @@ kwin-mcp server  (31 tools)       kwin-mcp-cli (interactive REPL)
   |-- touch_* ------------------> KWin EIS D-Bus --> libei
   |    +-- screenshot_after_ms -> KWin ScreenShot2 D-Bus (fast frame capture)
   |
-  |-- keyboard_type_unicode ----> wtype / wl-copy + Ctrl+V
+  |-- keyboard_type_unicode ----> wtype, or temporary Wayland data-control clipboard owner + Ctrl+V
   |-- clipboard_* --------------> wl-copy / wl-paste (wl-clipboard)
   |
   |-- launch_app / list_windows / focus_window
@@ -344,6 +344,7 @@ The AT-SPI2 accessibility bus within the isolated session is queried via PyGObje
 | **Python** | 3.12 or later |
 | **KWin** | `kwin_wayland` with `--virtual` flag support (KDE Plasma 6.x) |
 | **libei** | Usually bundled with KWin 6.x (EIS input emulation) |
+| **libwayland-client** | Used by the `keyboard_type_unicode` clipboard paste; already installed as a KWin dependency |
 | **spectacle** | KDE screenshot tool (CLI mode); packaged as `kde-spectacle` on Debian and Ubuntu |
 | **AT-SPI2** | `at-spi2-core` for accessibility tree support |
 | **PyGObject** | GObject introspection Python bindings (built from source by uv/pip; see [build prerequisites](#build-prerequisites-for-uv-and-pip-installs)) |
@@ -354,8 +355,8 @@ The AT-SPI2 accessibility bus within the isolated session is queried via PyGObje
 
 | Package | Required for |
 |---------|-------------|
-| `wl-clipboard` (`wl-copy`, `wl-paste`) | `clipboard_get`, `clipboard_set`, and `keyboard_type_unicode` clipboard fallback |
-| `wtype` | `keyboard_type_unicode` (preferred over clipboard fallback) |
+| `wl-clipboard` (`wl-copy`, `wl-paste`) | `clipboard_get` and `clipboard_set` |
+| `wtype` | `keyboard_type_unicode` direct typing, tried first; when it is unavailable or unsupported by the session, the built-in clipboard paste is used instead |
 | `wayland-utils` (`wayland-info`) | `wayland_info` tool |
 
 ### Installing System Dependencies
@@ -472,7 +473,8 @@ uv run kwin-mcp
 
 ## Limitations
 
-- **US QWERTY keyboard layout only** -- `keyboard_type` supports US QWERTY only. For non-ASCII text (Korean, CJK, etc.), use `keyboard_type_unicode`, which requires `wtype` or `wl-clipboard` installed.
+- **US QWERTY keyboard layout only** -- `keyboard_type` supports US QWERTY only. For non-ASCII text (Korean, CJK, etc.), use `keyboard_type_unicode`.
+- **Unicode typing can paste through the clipboard** -- When `wtype` is unavailable or unsupported by the session, `keyboard_type_unicode` briefly puts the text on the clipboard, then restores the previous selection and keeps serving it until another copy replaces it, even after `session_stop` disconnects a live session. The restore is best-effort, not atomic: Wayland has no compare-and-swap for the selection, so a copy another client makes at the same moment as the restore can be overwritten. Wayland also does not tell the clipboard owner which client read the text, so a clipboard manager that reads it after Ctrl+V can be taken for the target app, and any client that read it keeps its copy. The `x-kde-passwordManagerHint` marker keeps the text out of Klipper's history, but clipboard managers that ignore the marker can still record it.
 - **KDE Plasma 6+ required** -- Older KDE versions or other Wayland compositors (GNOME, Sway) are not supported.
 - **AT-SPI2 availability varies** -- Some applications may not fully expose their widget tree via AT-SPI2.
 - **Touch input is EIS-emulated** -- Touch events are emulated through KWin's EIS interface, not from a real touchscreen device. Most applications handle emulated touch correctly, but some may behave differently from physical touch.

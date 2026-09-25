@@ -6,10 +6,12 @@ Can be used directly from the CLI or wrapped by the MCP server.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shlex
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -49,6 +51,10 @@ _INSTALL_HINTS: dict[str, str] = {
     ),
 }
 
+# wl-copy forks its selection owner and exits 0 once the compositor confirmed
+# the selection; a parent still running after this is treated as a failure.
+_CLIPBOARD_SET_TIMEOUT = 5.0
+
 
 def _element_position(el: dict) -> str:
     """Format an element's position for find_ui_elements / wait_for_element.
@@ -74,7 +80,6 @@ class AutomationEngine:
         self._session: Session | LiveSession | None = None
         self._input: InputBackend | None = None
         self._clipboard_enabled: bool = False
-        self._wl_copy_proc: subprocess.Popen[bytes] | None = None
         self._keep_screenshots: bool = False
 
     # ── Private helpers ───────────────────────────────────────────────────
@@ -324,14 +329,6 @@ class AutomationEngine:
         if self._session is None:
             return "No session running."
 
-        # Clean up wl-copy process if active
-        if self._wl_copy_proc is not None:
-            self._wl_copy_proc.terminate()
-            try:
-                self._wl_copy_proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                self._wl_copy_proc.kill()
-            self._wl_copy_proc = None
         self._clipboard_enabled = False
 
         if self._input is not None:
@@ -536,15 +533,9 @@ class AutomationEngine:
         screenshot_after_ms: list[int] | None = None,
     ) -> str:
         """Type arbitrary Unicode text including non-ASCII characters."""
-        if not shutil.which("wtype") and not shutil.which("wl-copy"):
-            return (
-                "Neither wtype nor wl-copy found. Install at least one: "
-                "wtype (e.g. 'sudo pacman -S wtype') or "
-                "wl-clipboard (e.g. 'sudo pacman -S wl-clipboard')."
-            )
         inp = self._get_input()
-        # wl-copy is a Wayland client: without the session's WAYLAND_DISPLAY it
-        # exits immediately and the clipboard fallback silently does nothing.
+        # Both routes are Wayland clients: without the session's WAYLAND_DISPLAY
+        # they would act on whatever compositor the server inherited.
         ok = inp.keyboard_type_unicode(text, env=self._session_env())
         result = f"Typed unicode: {text!r}" if ok else f"Failed to type unicode: {text!r}"
         return self._with_frame_capture(result, screenshot_after_ms)
@@ -671,27 +662,32 @@ class AutomationEngine:
                 "or use session_connect (clipboard is always enabled for live sessions)."
             )
 
-        # Terminate previous wl-copy process (replaced by new content)
-        if self._wl_copy_proc is not None:
-            self._wl_copy_proc.terminate()
-            try:
-                self._wl_copy_proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                self._wl_copy_proc.kill()
-            self._wl_copy_proc = None
-
         env = self._session_env()
         try:
-            self._wl_copy_proc = subprocess.Popen(
+            proc = subprocess.Popen(
                 ["wl-copy", "--", text],
                 env=env,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                start_new_session=True,
             )
         except FileNotFoundError:
             return _INSTALL_HINTS["wl-copy"]
-        time.sleep(0.1)  # Wait for fork to complete
+        # The exit is the readiness signal; the forked owner intentionally
+        # outlives this call and serves the text until something replaces it.
+        try:
+            returncode = proc.wait(timeout=_CLIPBOARD_SET_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+            return (
+                "Failed to set clipboard: wl-copy did not confirm the selection "
+                f"within {_CLIPBOARD_SET_TIMEOUT:g}s"
+            )
+        if returncode != 0:
+            return f"Failed to set clipboard: wl-copy exited with status {returncode}"
         return f"Clipboard set: {text!r}"
 
     # ── Wait-for-UI tools ─────────────────────────────────────────────────

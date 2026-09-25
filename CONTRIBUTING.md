@@ -16,6 +16,8 @@ Install the runtime packages and native build dependencies described in the READ
 
 The build dependencies matter for development too: `uv sync` creates an isolated `.venv` that cannot import the distribution's `gi` (PyGObject) or `dbus` Python modules, so uv builds `pygobject` and `dbus-python` from source there. Without a C compiler, `pkg-config`, Python headers, and the cairo, GObject Introspection, and D-Bus development files, that build fails.
 
+`src/kwin_mcp/clipboard.py` loads `libwayland-client` through `ctypes` at runtime and adds no Python dependency. KWin already depends on that library, so no extra package is needed.
+
 ### Clone and Install
 
 ```bash
@@ -188,6 +190,7 @@ src/kwin_mcp/
 ├── screenshot.py      # Screenshot capture via KWin ScreenShot2 D-Bus
 ├── accessibility.py   # AT-SPI2 accessibility tree inspection
 ├── geometry.py        # Global window geometry and activation via KWin scripting
+├── clipboard.py       # Private Wayland data-control helper for keyboard_type_unicode paste
 └── input.py           # Input injection via KWin EIS D-Bus + libei
 
 docker/
@@ -206,6 +209,7 @@ tests/e2e/
 ├── conftest.py                         # Engine fixtures and guaranteed teardown
 ├── mcp_harness.py                      # Installed MCP stdio client harness
 ├── visual_harness.py                   # Nested Xvfb/KWin lifecycle and logs
+├── session_harness.py                  # Test-owned live KWin for live-session and helper tests
 ├── gui_probe.py                        # Deterministic visual oracle application
 ├── interaction_probe.py                # Input and screenshot probe application
 ├── test_installed_package.py           # Wheel, dependencies, and entry points
@@ -219,6 +223,8 @@ tests/e2e/
 ├── test_interaction_probe.py           # Full probe interaction feedback loop
 ├── test_input_cleanup.py               # Input state reset across sessions and failures
 ├── test_session_lifecycle.py           # Ownership, teardown, retention, and bounded-startup cleanup
+├── test_unicode_clipboard_lifecycle.py # Unicode paste clipboard snapshot, restore, and cleanup
+├── test_clipboard_helper_protocol.py   # Private clipboard helper framing, timeouts, and restore
 ├── test_virtual_session_smoke.py       # Minimum isolated KWin contract
 ├── test_observation_tools.py           # Accessibility, window, log, and Wayland tools
 ├── test_window_geometry.py             # Global window geometry and element coordinate space

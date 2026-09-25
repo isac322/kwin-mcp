@@ -17,12 +17,17 @@ import os
 import select
 import shutil
 import subprocess
+import sys
+import threading
 import time
 from enum import Enum
 
 import dbus
 import dbus.bus
 from dbus.mainloop.glib import DBusGMainLoop
+
+# Protocol constants only; importing the helper module loads no C library.
+from kwin_mcp.clipboard import MAX_COPY_BYTES, READY_BUDGET_S, RESTORE_ROUNDTRIP_S
 
 
 class MouseButton(Enum):
@@ -559,6 +564,140 @@ class EISClient:
             self._ei = 0
 
 
+# Bounds for the transient clipboard helper (``python -m kwin_mcp.clipboard``).
+# Parent waits are the helper's own worst-case budgets plus a margin for
+# interpreter startup and pipe latency, so a slow but successful step is never
+# misreported. READY also covers writing the COPY request. The transfer bound
+# is how long the focused app gets to request the text after Ctrl+V before the
+# call reports failure; the prior selection is restored either way.
+_CLIPBOARD_MARGIN = 2.0
+_CLIPBOARD_READY_TIMEOUT = READY_BUDGET_S + _CLIPBOARD_MARGIN
+_CLIPBOARD_ARM_TIMEOUT = 2.0
+_CLIPBOARD_TRANSFER_TIMEOUT = 4.0
+_CLIPBOARD_RESTORE_TIMEOUT = RESTORE_ROUNDTRIP_S + _CLIPBOARD_MARGIN
+_CLIPBOARD_EVENTS = frozenset({"READY", "ARMED", "TRANSFERRED", "CANCELLED", "RESTORED", "ERR"})
+
+
+class _ClipboardHelper:
+    """Line-protocol driver for one transient clipboard helper process.
+
+    The helper takes the selection with the text, reports transfers, and puts
+    the snapshotted prior selection back on RESTORE. It is never signalled:
+    once it serves a restored selection, killing it would drop the user's
+    previous clipboard, so teardown only restores and closes stdin.
+    """
+
+    def __init__(self, env: dict[str, str]) -> None:
+        self._proc = subprocess.Popen(
+            [sys.executable, "-m", "kwin_mcp.clipboard"],
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        self._buffer = b""
+        self._eof = False
+        # True between READY and RESTORED/CANCELLED/exit: the text is the
+        # current selection and the prior one only lives in the helper.
+        self._owns_text = False
+        # Set by RESTORED (prior selection back) or CANCELLED (a newer copy
+        # replaced ours): the only outcomes that leave the clipboard correct.
+        self._settled = False
+        if self._proc.stdin is not None:
+            # Writes go through send(), bounded by the caller's deadline.
+            os.set_blocking(self._proc.stdin.fileno(), False)
+
+    def send(self, data: bytes, deadline: float) -> bool:
+        """Write ``data`` to the helper, giving up at ``deadline``."""
+        stdin = self._proc.stdin
+        if stdin is None:
+            return False
+        fd = stdin.fileno()
+        view = memoryview(data)
+        while view:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            _, writable, _ = select.select([], [fd], [], remaining)
+            if not writable:
+                return False
+            try:
+                written = os.write(fd, view)
+            except BlockingIOError:
+                continue
+            except OSError:
+                return False
+            view = view[written:]
+        return True
+
+    def next_event(self, timeout: float) -> str | None:
+        """Return the next protocol event, or None on timeout or helper exit."""
+        deadline = time.monotonic() + timeout
+        while True:
+            line = self._read_line(deadline)
+            if line is None:
+                if self._eof:
+                    self._owns_text = False
+                return None
+            event = line.split(" ", 1)[0]
+            if event not in _CLIPBOARD_EVENTS:
+                continue
+            if event == "READY":
+                self._owns_text = True
+            elif event in ("RESTORED", "CANCELLED"):
+                self._owns_text = False
+                self._settled = True
+            return event
+
+    def _read_line(self, deadline: float) -> str | None:
+        stdout = self._proc.stdout
+        if stdout is None:
+            return None
+        fd = stdout.fileno()
+        while b"\n" not in self._buffer:
+            if self._eof:
+                return None
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            ready, _, _ = select.select([fd], [], [], remaining)
+            if not ready:
+                return None
+            chunk = os.read(fd, 4096)
+            if not chunk:
+                self._eof = True
+                return None
+            self._buffer += chunk
+        line, self._buffer = self._buffer.split(b"\n", 1)
+        return line.decode("ascii", errors="replace").strip()
+
+    def release(self) -> bool:
+        """Put the prior selection back if needed and detach from the helper.
+
+        Returns True unless the helper owned the text and neither RESTORED nor
+        CANCELLED was confirmed (restore error, timeout, or helper exit).
+        """
+        if self._owns_text:
+            deadline = time.monotonic() + _CLIPBOARD_RESTORE_TIMEOUT
+            # A failed send may mean the helper already exited after
+            # CANCELLED; still read what it reported before judging.
+            self.send(b"RESTORE\n", deadline)
+            while self._owns_text:
+                event = self.next_event(max(0.0, deadline - time.monotonic()))
+                if event is None or event == "ERR":
+                    break
+        settled = self._settled or (not self._owns_text and not self._eof)
+        # EOF tells a helper that still owns the text to restore on its own;
+        # one serving the restored selection keeps running until replaced.
+        for pipe in (self._proc.stdin, self._proc.stdout):
+            if pipe is not None:
+                with contextlib.suppress(OSError):
+                    pipe.close()
+        threading.Thread(target=self._proc.wait, daemon=True).start()
+        return settled
+
+
 class InputBackend:
     """High-level input injection for an isolated KWin session.
 
@@ -985,48 +1124,80 @@ class InputBackend:
             self._client.touch_up(tid)
 
     def keyboard_type_unicode(self, text: str, env: dict[str, str] | None = None) -> bool:
-        """Type arbitrary Unicode text using wtype or clipboard fallback.
+        """Type arbitrary Unicode text using wtype or a temporary clipboard paste.
+
+        The clipboard route hands the text to ``kwin_mcp.clipboard``, which
+        snapshots the current selection, offers the text (marked as a secret
+        for KDE clipboard managers) and restores the snapshot after the paste.
+        Ctrl+V is sent only after the helper owns the selection and has armed
+        transfer counting, so a failed or slow copy never pastes stale content.
 
         Args:
             text: Text to type (supports non-ASCII, e.g. Korean, CJK).
-            env: Session environment. Both helpers are Wayland clients, so this
-                must carry WAYLAND_DISPLAY (and DBUS_SESSION_BUS_ADDRESS) of the
-                target session, otherwise they exit without doing anything.
+            env: Session environment. Both routes use Wayland clients, so this
+                must carry WAYLAND_DISPLAY of the target session.
 
         Returns:
-            True if text was typed successfully.
+            True if wtype succeeded, or if the text was transferred to a
+            client that requested it after Ctrl+V and the helper then confirmed
+            that the prior selection was restored or replaced by a newer copy.
+            False for text over the helper's 1 MiB limit (nothing is touched),
+            and when any step or the restoration fails or times out.
         """
         env = {**os.environ, **(env or {})}
 
         # Try wtype first. It needs the virtual-keyboard Wayland protocol, which
         # KWin does not implement, so a failure here is expected on Plasma and
-        # must fall through to the clipboard route rather than give up.
+        # must fall through to the clipboard route rather than give up. The text
+        # travels in argv, so a long one fails to launch (E2BIG); that is not a
+        # typing attempt either and falls through the same way.
         if shutil.which("wtype"):
-            result = subprocess.run(
-                ["wtype", "--", text],
-                env=env,
-                capture_output=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
+            try:
+                result = subprocess.run(
+                    ["wtype", "--", text],
+                    env=env,
+                    capture_output=True,
+                    timeout=5,
+                )
+            except OSError:
+                result = None
+            if result is not None and result.returncode == 0:
                 return True
 
-        # Fallback: clipboard paste via wl-copy + Ctrl+V
-        # Use Popen + DEVNULL to avoid pipe-blocking from wl-copy's forked child
-        if shutil.which("wl-copy"):
-            cp = subprocess.Popen(
-                ["wl-copy", "--", text],
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            time.sleep(0.1)  # Wait for fork to complete
-            if cp.poll() is None or cp.returncode == 0:
-                self.keyboard_key("ctrl+v")
-                return True
+        return self._paste_via_clipboard(text, env)
 
-        return False
+    def _paste_via_clipboard(self, text: str, env: dict[str, str]) -> bool:
+        try:
+            payload = text.encode()
+        except UnicodeEncodeError:
+            return False
+        if len(payload) > MAX_COPY_BYTES:
+            return False  # the helper would reject it; touch nothing
+        try:
+            helper = _ClipboardHelper(env)
+        except OSError:
+            return False
+        transferred = False
+        try:
+            # Writing the request shares the READY deadline, so a helper that
+            # stops reading stdin cannot block the call indefinitely.
+            deadline = time.monotonic() + _CLIPBOARD_READY_TIMEOUT
+            if not helper.send(b"COPY %d\n" % len(payload) + payload, deadline):
+                return False
+            if helper.next_event(deadline - time.monotonic()) != "READY":
+                return False
+            # Transfers finishing before ARMED (e.g. a clipboard manager that
+            # reads every new selection) are served but never counted.
+            deadline = time.monotonic() + _CLIPBOARD_ARM_TIMEOUT
+            if not helper.send(b"ARM\n", deadline):
+                return False
+            if helper.next_event(deadline - time.monotonic()) != "ARMED":
+                return False
+            self.keyboard_key("ctrl+v")
+            transferred = helper.next_event(_CLIPBOARD_TRANSFER_TIMEOUT) == "TRANSFERRED"
+        finally:
+            restored = helper.release()
+        return transferred and restored
 
     def close(self) -> None:
         """Close the EIS connection."""

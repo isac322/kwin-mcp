@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import ast
+import os
 import re
 import shlex
+import shutil
+import signal
+import subprocess
 import time
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Protocol
@@ -15,7 +19,7 @@ from _asserts import element_count
 from mcp_harness import running_mcp_server
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterator, Callable, Mapping
     from pathlib import Path
 
 SCREEN_WIDTH = 1280
@@ -26,6 +30,13 @@ CLIPBOARD_DISABLED_HINT = (
     "Clipboard not enabled. Pass enable_clipboard=True to session_start, "
     "or use session_connect (clipboard is always enabled for live sessions)."
 )
+UNICODE_MARKER = "비밀-45-한글"
+PRIOR_CLIPBOARD = "prior-45-clipboard"
+# Longer than the old 100 ms readiness guess, shorter than every product bound
+# (the helper's 3 s snapshot deadline and clipboard_set's 5 s readiness wait).
+SLOW_BOUNDARY_SECONDS = 1.5
+WL_COPY = shutil.which("wl-copy")
+WL_PASTE = shutil.which("wl-paste")
 _RECT = r"\((-?\d+), (-?\d+), (\d+)x(\d+)\)"
 _SCROLLBAR = re.compile(
     rf'\[scroll bar] "[^"]*" @ screen {_RECT} value=(\d+(?:\.\d+)?)/(\d+(?:\.\d+)?)'
@@ -59,7 +70,19 @@ async def _virtual_session(
     app_command: str = "",
     enable_clipboard: bool = False,
 ) -> AsyncIterator[McpClient]:
-    async with running_mcp_server() as client:
+    session = _socket_session(app_command=app_command, enable_clipboard=enable_clipboard)
+    async with session as (client, _socket):
+        yield client
+
+
+@asynccontextmanager
+async def _socket_session(
+    *,
+    app_command: str = "",
+    enable_clipboard: bool = True,
+    server_env: Mapping[str, str] | None = None,
+) -> AsyncIterator[tuple[McpClient, str]]:
+    async with running_mcp_server(env=server_env) as client:
         try:
             output = await client.call_text(
                 "session_start",
@@ -73,9 +96,62 @@ async def _virtual_session(
             )
             assert "Session started" in output, output
             assert "Input backend: KWin EIS" in output, output
-            yield client
+            socket_match = re.search(r"Wayland socket: (\S+)", output)
+            assert socket_match is not None, output
+            yield client, socket_match.group(1)
         finally:
             await client.call_result("session_stop")
+
+
+@asynccontextmanager
+async def _prior_clipboard_owner(socket: str, text: str) -> AsyncIterator[subprocess.Popen[bytes]]:
+    """Own the isolated selection with a real foreground wl-copy the test controls."""
+    assert WL_COPY is not None and WL_PASTE is not None
+    env = {**os.environ, "WAYLAND_DISPLAY": socket}
+    owner = subprocess.Popen(
+        [WL_COPY, "--foreground", "--", text],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.monotonic() + INPUT_TIMEOUT_SECONDS
+        while True:
+            pasted = subprocess.run(
+                [WL_PASTE, "--no-newline"], env=env, capture_output=True, timeout=5, check=False
+            )
+            if pasted.returncode == 0 and pasted.stdout == text.encode():
+                break
+            assert time.monotonic() < deadline, pasted
+            await anyio.sleep(POLL_INTERVAL_SECONDS)
+        yield owner
+    finally:
+        if owner.poll() is None:
+            owner.send_signal(signal.SIGCONT)
+            owner.terminate()
+            owner.wait(timeout=5)
+
+
+def _wl_copy_shim_env(tmp_path: Path, body: str) -> dict[str, str]:
+    """Put a wl-copy wrapper first on the server's PATH."""
+    shim_dir = tmp_path / "wl-copy-shim"
+    shim_dir.mkdir()
+    shim = shim_dir / "wl-copy"
+    shim.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+    shim.chmod(0o755)
+    return {"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"}
+
+
+async def _open_kwrite(client: McpClient, tmp_path: Path, name: str) -> None:
+    document = tmp_path / f"kwin-mcp-{name}.txt"
+    output = await client.call_text(
+        "launch_app", {"command": f"kwrite {shlex.quote(str(document))}"}
+    )
+    assert "PID" in output, output
+    await _wait_for_app(client, "kwrite", document.name)
+    await client.call_text("focus_window", {"app_name": "kwrite"})
+    assert await _focused_text(client) == ""
 
 
 def _rect(output: str, pattern: str) -> tuple[int, int, int, int]:
@@ -298,6 +374,124 @@ async def test_clipboard_roundtrip_and_paste_cross_stdio(tmp_path: Path) -> None
 
         await client.call_text("keyboard_key", {"key": "ctrl+v"})
         await _wait_for_text(client, payload)
+
+
+async def test_unicode_paste_restores_prior_clipboard_with_its_own_owner(tmp_path: Path) -> None:
+    async with _socket_session() as (client, socket):
+        await _open_kwrite(client, tmp_path, "unicode-restore")
+        async with _prior_clipboard_owner(socket, PRIOR_CLIPBOARD) as owner:
+            output = await client.call_text("keyboard_type_unicode", {"text": UNICODE_MARKER})
+
+            assert output == f"Typed unicode: {UNICODE_MARKER!r}"
+            await _wait_for_text(client, UNICODE_MARKER)
+            assert await client.call_text("clipboard_get") == PRIOR_CLIPBOARD
+            # The typed text replaced the original owner, so the restored
+            # selection must be served by a new owner that stays alive.
+            assert (
+                await anyio.to_thread.run_sync(lambda: owner.wait(timeout=INPUT_TIMEOUT_SECONDS))
+                == 0
+            )
+            assert await client.call_text("clipboard_get") == PRIOR_CLIPBOARD
+            await client.call_text("keyboard_key", {"key": "ctrl+v"})
+            await _wait_for_text(client, UNICODE_MARKER + PRIOR_CLIPBOARD)
+
+
+async def test_unicode_paste_clears_text_when_clipboard_was_empty(tmp_path: Path) -> None:
+    async with _socket_session() as (client, _socket):
+        await _open_kwrite(client, tmp_path, "unicode-empty")
+        assert (await client.call_text("clipboard_get")).startswith("Failed to read clipboard")
+
+        output = await client.call_text("keyboard_type_unicode", {"text": UNICODE_MARKER})
+
+        assert output == f"Typed unicode: {UNICODE_MARKER!r}"
+        await _wait_for_text(client, UNICODE_MARKER)
+        assert (await client.call_text("clipboard_get")).startswith("Failed to read clipboard")
+
+
+async def test_unicode_paste_waits_for_slow_prior_owner(tmp_path: Path) -> None:
+    async with _socket_session() as (client, socket):
+        await _open_kwrite(client, tmp_path, "unicode-slow-owner")
+        async with _prior_clipboard_owner(socket, PRIOR_CLIPBOARD) as owner:
+            owner.send_signal(signal.SIGSTOP)
+
+            async def resume_owner() -> None:
+                await anyio.sleep(SLOW_BOUNDARY_SECONDS)
+                owner.send_signal(signal.SIGCONT)
+
+            async with anyio.create_task_group() as group:
+                group.start_soon(resume_owner)
+                output = await client.call_text("keyboard_type_unicode", {"text": UNICODE_MARKER})
+
+            assert output == f"Typed unicode: {UNICODE_MARKER!r}"
+            await _wait_for_text(client, UNICODE_MARKER)
+            assert await client.call_text("clipboard_get") == PRIOR_CLIPBOARD
+
+
+async def test_unicode_paste_fails_without_pasting_when_prior_owner_never_answers(
+    tmp_path: Path,
+) -> None:
+    async with _socket_session() as (client, socket):
+        await _open_kwrite(client, tmp_path, "unicode-stuck-owner")
+        async with _prior_clipboard_owner(socket, PRIOR_CLIPBOARD) as owner:
+            owner.send_signal(signal.SIGSTOP)
+            try:
+                output = await client.call_text("keyboard_type_unicode", {"text": UNICODE_MARKER})
+                # No Ctrl+V was sent, so nothing can arrive late.
+                assert await _focused_text(client) == ""
+                assert owner.poll() is None
+            finally:
+                owner.send_signal(signal.SIGCONT)
+
+            assert output == f"Failed to type unicode: {UNICODE_MARKER!r}"
+            assert await client.call_text("clipboard_get") == PRIOR_CLIPBOARD
+
+
+async def test_unicode_paste_rejects_oversized_multiline_text_without_side_effects(
+    tmp_path: Path,
+) -> None:
+    # Public limit for the clipboard route is 1 MiB; 2 MiB of two-byte lines
+    # exceeds it no matter the implementation constant, and each line would be
+    # a protocol command if the payload ever reached the helper's stdin. It is
+    # also far past Linux's per-argument limit, so a wtype on PATH fails to
+    # launch and falls through.
+    oversized = "x\n" * (1024 * 1024)
+    async with _socket_session() as (client, socket):
+        await _open_kwrite(client, tmp_path, "unicode-oversized")
+        async with _prior_clipboard_owner(socket, PRIOR_CLIPBOARD) as owner:
+            with anyio.fail_after(INPUT_TIMEOUT_SECONDS):
+                output = await client.call_text("keyboard_type_unicode", {"text": oversized})
+
+            assert output == f"Failed to type unicode: {oversized!r}"
+            assert await _focused_text(client) == ""
+            # The original owner was never replaced, so nothing took the selection.
+            assert owner.poll() is None
+            assert await client.call_text("clipboard_get") == PRIOR_CLIPBOARD
+
+
+async def test_clipboard_set_waits_for_slow_wl_copy(tmp_path: Path) -> None:
+    assert WL_COPY is not None
+    server_env = _wl_copy_shim_env(
+        tmp_path, f'sleep {SLOW_BOUNDARY_SECONDS}\nexec {shlex.quote(WL_COPY)} "$@"'
+    )
+    async with _socket_session(server_env=server_env) as (client, _socket):
+        payload = "slow-45-클립보드"
+
+        assert await client.call_text("clipboard_set", {"text": payload}) == (
+            f"Clipboard set: {payload!r}"
+        )
+        assert await client.call_text("clipboard_get") == payload
+
+
+async def test_clipboard_set_reports_slow_wl_copy_failure(tmp_path: Path) -> None:
+    server_env = _wl_copy_shim_env(tmp_path, f"sleep {SLOW_BOUNDARY_SECONDS}\nexit 2")
+    async with (
+        _socket_session(server_env=server_env) as (client, socket),
+        _prior_clipboard_owner(socket, PRIOR_CLIPBOARD),
+    ):
+        output = await client.call_text("clipboard_set", {"text": "never-set-45"})
+
+        assert output == "Failed to set clipboard: wl-copy exited with status 2"
+        assert await client.call_text("clipboard_get") == PRIOR_CLIPBOARD
 
 
 async def test_touch_wrappers_change_gui_state_and_report_kwin_limits(tmp_path: Path) -> None:

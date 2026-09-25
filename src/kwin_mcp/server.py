@@ -446,8 +446,11 @@ def keyboard_type_unicode(
 ) -> str:
     """Type arbitrary Unicode text including non-ASCII characters.
 
-    Uses wtype if available, otherwise falls back to clipboard injection
-    (wl-copy + Ctrl+V). Requires wtype or wl-clipboard to be installed.
+    Uses wtype if it succeeds (KWin does not support it), otherwise pastes
+    through a temporary clipboard owner with Ctrl+V. The previous clipboard
+    content (all its formats) is restored after the paste, and the text is
+    marked as secret so KDE's clipboard history skips it. Returns a failure
+    when the clipboard could not be taken or nothing requested the text.
     Use this instead of keyboard_type when the text contains non-ASCII
     characters (e.g. Korean, CJK, emoji, accented characters).
     """

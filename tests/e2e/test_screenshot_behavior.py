@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 import anyio
 import pytest
+from _asserts import coordinate_spaces, screenshot_path
 from mcp_harness import running_mcp_server
 from PIL import Image, ImageChops
 from visual_harness import nested_visual_kwin
@@ -25,6 +26,18 @@ PROBE_SELECTOR = "interaction_probe.py"
 PROBE_TITLE = "Interaction Probe"
 POLL_INTERVAL_SECONDS = 0.1
 STATE_TIMEOUT_SECONDS = 5.0
+GUI_PROBE_COMMAND = "python3 /app/tests/e2e/gui_probe.py"
+GUI_PROBE_SELECTOR = "gui_probe.py"
+# gui_probe.py paints its Animation Target button #1f5f9f. TARGET_WIDTH/HEIGHT
+# are set_size_request minima: the homogeneous grid stretches the rendered
+# button wider (observed ~432x84 logical), so only a minimum width is asserted.
+ANIMATION_BLUE = (0x1F, 0x5F, 0x9F)
+ANIMATION_TARGET_MIN = (320, 84)
+ANIMATION_DONE = "animation_status: 12"
+COLOR_TOLERANCE = 12
+TARGET_SLACK_PX = 16
+FRAME_SLACK_PX = 3
+LOGICAL_SLACK_PX = 2
 _RECT = r"\((-?\d+), (-?\d+), (\d+)x(\d+)\)"
 _KEYBOARD_TARGET_LINE = re.compile(
     r'^\s*- \[[^]]+\] "Keyboard Target"(?:\s|$)',
@@ -85,10 +98,11 @@ def _single_rect(output: str, pattern: str) -> tuple[int, int, int, int]:
 async def _global_element_rect(
     client: McpTestClient,
     name: str,
+    app_name: str = PROBE_SELECTOR,
 ) -> tuple[int, int, int, int]:
     elements = await client.call_text(
         "find_ui_elements",
-        {"query": name, "app_name": PROBE_SELECTOR},
+        {"query": name, "app_name": app_name},
     )
     # find_ui_elements already reports global screen coordinates.
     return _single_rect(
@@ -103,18 +117,19 @@ def _center(rect: tuple[int, int, int, int]) -> tuple[int, int]:
 
 
 def _screenshot_source(output: str) -> Path:
-    prefix = "Screenshot saved: "
-    assert output.startswith(prefix), output
-    source = Path(output.removeprefix(prefix).rsplit(" (", 1)[0])
+    source = screenshot_path(output)
     assert source.is_file() and source.stat().st_size > 0, output
+    assert [(s.origin, s.size) for s in coordinate_spaces(output)] == [((0, 0), SCREEN_SIZE)], (
+        output
+    )
     return source
 
 
-def _assert_png(path: Path) -> None:
+def _assert_png(path: Path, screen_size: tuple[int, int] = SCREEN_SIZE) -> None:
     with Image.open(path) as image:
         image.load()
         assert image.format == "PNG", path
-        assert image.size == SCREEN_SIZE, (path, image.size)
+        assert image.size == screen_size, (path, image.size)
 
 
 def _preserve_png(source: Path, artifact_dir: Path, name: str) -> Path:
@@ -124,15 +139,21 @@ def _preserve_png(source: Path, artifact_dir: Path, name: str) -> Path:
     return destination
 
 
-def _frame_sources(output: str, expected_delays: list[int]) -> list[Path]:
+def _frame_sources(
+    output: str, expected_delays: list[int], screen_size: tuple[int, int] = SCREEN_SIZE
+) -> list[Path]:
     matches = _FRAME_LINE.findall(output)
     assert len(matches) == len(expected_delays), output
     assert [int(delay) for delay, _, _ in matches] == sorted(expected_delays), output
+    spaces = coordinate_spaces(output)
+    assert [(s.origin, s.size, s.coverage) for s in spaces] == [
+        ((0, 0), screen_size, "full")
+    ] * len(expected_delays), output
     sources = [Path(path_text) for _, path_text, _ in matches]
     assert len({source.parent for source in sources}) == 1, sources
     for source in sources:
         assert source.is_file() and source.stat().st_size > 0, source
-        _assert_png(source)
+        _assert_png(source, screen_size)
     return sources
 
 
@@ -158,11 +179,12 @@ async def _wait_for_status_change(
     client: McpTestClient,
     prefix: str,
     previous: str,
+    app_name: str = PROBE_SELECTOR,
 ) -> str:
     deadline = time.monotonic() + STATE_TIMEOUT_SECONDS
     tree = ""
     while time.monotonic() < deadline:
-        tree = await client.call_text("accessibility_tree", {"app_name": PROBE_SELECTOR})
+        tree = await client.call_text("accessibility_tree", {"app_name": app_name})
         current = _status_name(tree, prefix)
         if current != previous:
             return current
@@ -242,6 +264,266 @@ def _preserve_backend_record(artifact_dir: Path) -> None:
         "Requested screenshot capture backend: X11 scrot\n",
         encoding="utf-8",
     )
+
+
+async def _launch_gui_probe(client: McpTestClient) -> None:
+    output = await client.call_text(
+        "launch_app",
+        {
+            "command": GUI_PROBE_COMMAND,
+            "env": {
+                "GDK_BACKEND": "wayland",
+                "GTK_MODULES": "gail:atk-bridge",
+                "NO_AT_BRIDGE": "0",
+                "XDG_SESSION_TYPE": "wayland",
+            },
+        },
+    )
+    assert f"App launched: {GUI_PROBE_COMMAND}" in output, output
+    waited = await client.call_text(
+        "wait_for_element",
+        {"query": "Animation Target", "app_name": GUI_PROBE_SELECTOR, "timeout_ms": 15_000},
+    )
+    assert '"Animation Target"' in waited, waited[:1500]
+
+
+def _color_mask_bytes(path: Path, color: tuple[int, int, int]) -> tuple[tuple[int, int], bytes]:
+    """Raw bytes of pixels within COLOR_TOLERANCE of ``color`` on every channel."""
+    with Image.open(path) as image:
+        bands = image.convert("RGB").split()
+    masks = [
+        band.point(lambda v, t=target: 255 if abs(v - t) <= COLOR_TOLERANCE else 0)
+        for band, target in zip(bands, color, strict=True)
+    ]
+    mask = ImageChops.multiply(ImageChops.multiply(masks[0], masks[1]), masks[2])
+    return mask.size, mask.tobytes()
+
+
+def _largest_color_region(
+    path: Path, color: tuple[int, int, int]
+) -> tuple[int, int, int, int] | None:
+    """Bounding box of the largest connected region of pixels matching ``color``.
+
+    A global colour bbox is contaminated by tolerance hits on window edges and
+    glyph specks unrelated to the widget (observed: 1px decoration lines and the
+    Unicode/Tofu row widened the bbox far beyond the button, shifting the click
+    onto a non-target). Flood-filling 4-connected components keeps only the
+    solid painted surface of the unique #1f5f9f button.
+    """
+    (width, height), data = _color_mask_bytes(path, color)
+    remaining = bytearray(data)
+    best_count = 0
+    best_bbox: tuple[int, int, int, int] | None = None
+    scan = 0
+    while True:
+        start = remaining.find(255, scan)
+        if start < 0:
+            return best_bbox
+        stack = [start]
+        remaining[start] = 0
+        count = 0
+        min_x = max_x = start % width
+        min_y = max_y = start // width
+        while stack:
+            pixel = stack.pop()
+            count += 1
+            x, y = pixel % width, pixel // width
+            min_x, max_x = min(min_x, x), max(max_x, x)
+            min_y, max_y = min(min_y, y), max(max_y, y)
+            if y > 0 and remaining[pixel - width] == 255:
+                remaining[pixel - width] = 0
+                stack.append(pixel - width)
+            if y + 1 < height and remaining[pixel + width] == 255:
+                remaining[pixel + width] = 0
+                stack.append(pixel + width)
+            if x > 0 and remaining[pixel - 1] == 255:
+                remaining[pixel - 1] = 0
+                stack.append(pixel - 1)
+            if x + 1 < width and remaining[pixel + 1] == 255:
+                remaining[pixel + 1] = 0
+                stack.append(pixel + 1)
+        if count > best_count:
+            best_count = count
+            best_bbox = (min_x, min_y, max_x + 1, max_y + 1)
+
+
+async def _screenshot_showing(
+    client: McpTestClient, color: tuple[int, int, int], destination: Path
+) -> tuple[str, tuple[int, int, int, int]]:
+    """Take screenshots until the probe's colour is rendered; keep the last one."""
+    deadline = time.monotonic() + STATE_TIMEOUT_SECONDS
+    while True:
+        output = await client.call_text("screenshot")
+        shutil.copy2(screenshot_path(output), destination)
+        bbox = _largest_color_region(destination, color)
+        if bbox is not None:
+            return output, bbox
+        if time.monotonic() > deadline:
+            raise AssertionError(f"{color} never appeared in {destination}: {output}")
+        await anyio.sleep(POLL_INTERVAL_SECONDS)
+
+
+async def _wait_for_status(
+    client: McpTestClient, prefix: str, expected: str, app_name: str
+) -> None:
+    deadline = time.monotonic() + STATE_TIMEOUT_SECONDS
+    current = ""
+    while time.monotonic() < deadline:
+        tree = await client.call_text("accessibility_tree", {"app_name": app_name})
+        current = _status_name(tree, prefix)
+        if current == expected:
+            return
+        await anyio.sleep(POLL_INTERVAL_SECONDS)
+    raise AssertionError(f"{prefix} stayed {current!r}, expected {expected!r}")
+
+
+@pytest.mark.anyio
+@pytest.mark.visual
+@pytest.mark.parametrize(
+    ("scale", "screen_size"),
+    [
+        pytest.param(1.0, SCREEN_SIZE, id="scale-1.0"),
+        # 1920x1200 at 1.45 leaves a 1324x828 logical workspace, large enough
+        # for the 920x700 probe window.
+        pytest.param(1.45, (1920, 1200), id="scale-1.45"),
+    ],
+)
+async def test_x11_screenshot_pixels_are_logical_click_targets(
+    scale: float, screen_size: tuple[int, int]
+) -> None:
+    """A widget found by its pixels in a screenshot is a logical click target (issue #44).
+
+    At a fractional scale the capture holds device pixels on unfixed builds.
+    Under X11 the legacy input path still mirrors raw physical pixels, so a
+    pixel-derived click can accidentally succeed; the regression is therefore
+    asserted by comparing rendered pixel size against logical geometry, not by
+    requiring the click to miss.
+    """
+    expected_logical = (screen_size[0] / scale, screen_size[1] / scale)
+    with nested_visual_kwin(scale=scale, screen_size=screen_size) as visual:
+        _preserve_backend_record(visual.artifact_dir)
+        async with running_mcp_server(
+            env={"DISPLAY": visual.x_display, "KWIN_MCP_X11_SCREENSHOT": "1"},
+        ) as client:
+            connected = False
+            try:
+                await _connect(
+                    client,
+                    visual.dbus_address,
+                    visual.wayland_display,
+                    keep_screenshots=False,
+                )
+                connected = True
+                await _launch_gui_probe(client)
+                before = _status_name(
+                    await client.call_text("accessibility_tree", {"app_name": GUI_PROBE_SELECTOR}),
+                    "animation_status:",
+                )
+
+                shot = visual.artifact_dir / "scaled-before-click.png"
+                output, bbox = await _screenshot_showing(client, ANIMATION_BLUE, shot)
+                spaces = coordinate_spaces(output)
+                # A build without the coordinate line gets the assumption callers
+                # made before #44 (pixel == input coordinate). The pixel region
+                # is never derived from AT-SPI geometry: a wrong origin/scale is
+                # caught by the independent logical-geometry assertions below,
+                # not assumed to misclick.
+                origin = spaces[0].origin if spaces else (0, 0)
+                click_x = origin[0] + (bbox[0] + bbox[2]) // 2
+                click_y = origin[1] + (bbox[1] + bbox[3]) // 2
+                await client.call_text("mouse_click", {"x": click_x, "y": click_y})
+                await _wait_for_status_change(
+                    client, "animation_status:", before, GUI_PROBE_SELECTOR
+                )
+
+                # The button keeps its logical size in the image: pixel pixels,
+                # AT-SPI rect, and the CSS minimum all agree within slack. The
+                # rendered width exceeds the 320 minimum (homogeneous grid), so
+                # the width floor is a lower bound only.
+                rect = await _global_element_rect(client, "Animation Target", GUI_PROBE_SELECTOR)
+                rendered = (bbox[2] - bbox[0], bbox[3] - bbox[1])
+                assert rendered[0] >= ANIMATION_TARGET_MIN[0] - TARGET_SLACK_PX, bbox
+                assert abs(rendered[1] - ANIMATION_TARGET_MIN[1]) <= TARGET_SLACK_PX, bbox
+                assert abs(rendered[0] - rect[2]) <= TARGET_SLACK_PX, (bbox, rect)
+                assert abs(rendered[1] - rect[3]) <= TARGET_SLACK_PX, (bbox, rect)
+                assert rect[0] <= click_x < rect[0] + rect[2], (rect, click_x)
+                assert rect[1] <= click_y < rect[1] + rect[3], (rect, click_y)
+                await _wait_for_status(
+                    client, "animation_status:", ANIMATION_DONE, GUI_PROBE_SELECTOR
+                )
+
+                # #44 contract: the screenshot names one logical space whose
+                # origin, backend, coverage, and size drive the mapping.
+                assert len(spaces) == 1, output
+                space = spaces[0]
+                assert (space.origin, space.backend, space.coverage) == (
+                    (0, 0),
+                    "x11-scrot",
+                    "full",
+                ), output
+                assert all(
+                    abs(actual - expected) <= LOGICAL_SLACK_PX
+                    for actual, expected in zip(space.size, expected_logical, strict=True)
+                ), (space, expected_logical)
+                with Image.open(shot) as image:
+                    assert image.size == space.size, (image.size, space)
+
+                # Frame bursts share the mapping: same logical size, button in place.
+                delays = [0, 200, 900]
+                burst = await client.call_text(
+                    "mouse_click",
+                    {"x": click_x, "y": click_y, "screenshot_after_ms": delays},
+                )
+                frames = _frame_sources(burst, delays, space.size)
+                for index, frame in enumerate(frames):
+                    preserved = visual.artifact_dir / f"scaled-frame-{index:03d}.png"
+                    shutil.copy2(frame, preserved)
+                    frame_bbox = _largest_color_region(preserved, ANIMATION_BLUE)
+                    assert frame_bbox is not None, (index, burst)
+                    assert all(
+                        abs(a - b) <= FRAME_SLACK_PX for a, b in zip(frame_bbox, bbox, strict=True)
+                    ), (index, frame_bbox, bbox)
+                await _wait_for_status(
+                    client, "animation_status:", ANIMATION_DONE, GUI_PROBE_SELECTOR
+                )
+
+                # The mirrored X11 cursor lands on the logical point it was moved to.
+                await client.call_text("mouse_move", {"x": click_x, "y": click_y})
+                without_cursor = visual.artifact_dir / "scaled-without-cursor.png"
+                with_cursor = visual.artifact_dir / "scaled-with-cursor.png"
+                shutil.copy2(
+                    screenshot_path(
+                        await client.call_text("screenshot", {"include_cursor": False})
+                    ),
+                    without_cursor,
+                )
+                shutil.copy2(
+                    screenshot_path(await client.call_text("screenshot", {"include_cursor": True})),
+                    with_cursor,
+                )
+                with Image.open(without_cursor) as first, Image.open(with_cursor) as second:
+                    difference = ImageChops.difference(first.convert("RGB"), second.convert("RGB"))
+                red, green, blue = difference.split()
+                mask = ImageChops.lighter(ImageChops.lighter(red, green), blue)
+                image_x, image_y = click_x - origin[0], click_y - origin[1]
+                radius = 40
+                near = mask.crop(
+                    (image_x - radius, image_y - radius, image_x + radius, image_y + radius)
+                )
+                near_changed = sum(near.histogram()[11:])
+                total_changed = sum(mask.histogram()[11:])
+                assert near_changed >= 20, (near_changed, total_changed)
+                assert total_changed - near_changed <= max(10, total_changed // 50), (
+                    near_changed,
+                    total_changed,
+                )
+            finally:
+                (visual.artifact_dir / "mcp-server.stderr.log").write_text(
+                    client.stderr_text(), encoding="utf-8"
+                )
+                if connected:
+                    stop_output = await client.call_text("session_stop")
+                    assert stop_output == "Disconnected from live session.", stop_output
 
 
 @pytest.mark.anyio

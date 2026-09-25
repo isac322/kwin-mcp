@@ -147,14 +147,24 @@ _SCROLL_DISCRETE_UNIT = 120
 _X11_POINTER_MIRROR_TIMEOUT_SECONDS = 5
 
 
-def _mirror_x11_pointer(x: int, y: int) -> None:
-    """Mirror an absolute EIS move to the X display used for scrot screenshots."""
+def _mirror_x11_pointer(dbus_address: str, x: int, y: int) -> None:
+    """Mirror an absolute EIS move to the X display used for scrot screenshots.
+
+    EIS takes global logical coordinates while the X display holds each KWin
+    output at its physical size, so the point is mapped through the current
+    output topology. An unmappable point raises rather than moving the X
+    cursor to a wrong pixel.
+    """
     if os.environ.get("KWIN_MCP_X11_SCREENSHOT") != "1":
         return
 
     display = os.environ.get("DISPLAY")
     if not display:
         return
+
+    from kwin_mcp.screenshot import x11_physical_point
+
+    x, y = x11_physical_point(dbus_address, display, x, y)
 
     xdotool = shutil.which("xdotool")
     if xdotool is None:
@@ -706,12 +716,13 @@ class InputBackend:
     """
 
     def __init__(self, dbus_address: str) -> None:
+        self._dbus_address = dbus_address
         self._client = EISClient(dbus_address)
 
     def mouse_move(self, x: int, y: int) -> None:
         """Move mouse to absolute coordinates (hover)."""
         self._client.pointer_move_absolute(float(x), float(y))
-        _mirror_x11_pointer(x, y)
+        _mirror_x11_pointer(self._dbus_address, x, y)
 
     def mouse_click(
         self,
@@ -889,7 +900,7 @@ class InputBackend:
                     time.sleep(0.01)
                     self._client.keyboard_key(mod, _RELEASED)
 
-        _mirror_x11_pointer(to_x, to_y)
+        _mirror_x11_pointer(self._dbus_address, to_x, to_y)
 
     def mouse_button_down(self, x: int, y: int, button: MouseButton = MouseButton.LEFT) -> None:
         """Move to coordinates and press a mouse button without releasing.

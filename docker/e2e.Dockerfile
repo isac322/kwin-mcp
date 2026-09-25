@@ -72,6 +72,7 @@ RUN apt-get update \
         libgirepository-2.0-0 \
         libgl1-mesa-dri \
         libglx-mesa0 \
+        libkscreen-bin \
         mesa-utils \
         python3 \
         python3-dbus \

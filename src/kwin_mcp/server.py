@@ -149,8 +149,13 @@ def screenshot(
 ) -> str:
     """Capture a screenshot of the isolated session.
 
-    Requires an active session. Returns the file path to the saved PNG image
-    and its size in KB.
+    Requires an active session. Captures every output and returns the saved
+    PNG path and size plus a "Coordinate space" line. The image is in global
+    logical coordinates: pixel (px, py) shows the point (origin_x + px,
+    origin_y + py) that mouse and touch tools take, whatever the output
+    scale. The origin can be negative on multi-monitor layouts. "coverage
+    partial" lists the regions the capture backend delivered; other pixels
+    are transparent. Frames from screenshot_after_ms carry the same line.
     """
     return _engine.screenshot(include_cursor=include_cursor)
 
@@ -224,11 +229,11 @@ def find_ui_elements(
 def mouse_click(
     x: Annotated[
         int,
-        Field(description="X coordinate in pixels (0 = left edge of virtual screen)."),
+        Field(description="X coordinate in global logical screen pixels."),
     ],
     y: Annotated[
         int,
-        Field(description="Y coordinate in pixels (0 = top edge of virtual screen)."),
+        Field(description="Y coordinate in global logical screen pixels."),
     ],
     button: Annotated[
         str, Field(description='Mouse button: "left", "right", or "middle".')
@@ -253,8 +258,11 @@ def mouse_click(
 ) -> str:
     """Click at coordinates in the isolated session.
 
-    Coordinates use the virtual screen pixel grid where (0, 0) is the top-left
-    corner. Returns a description of the click performed. Optionally captures
+    Coordinates are global logical screen pixels, the space window_geometry
+    and find_ui_elements report. A screenshot pixel (px, py) is the point
+    (origin_x + px, origin_y + py), using the origin from the screenshot's
+    "Coordinate space" line; at scale 1 with one output the origin is (0, 0).
+    Returns a description of the click performed. Optionally captures
     screenshot frames after the click for visual feedback.
     """
     return _engine.mouse_click(

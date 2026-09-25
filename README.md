@@ -203,7 +203,7 @@ kwin-mcp-cli --default-live-session
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `screenshot` | `include_cursor?` `bool` (false) | Capture a screenshot of the virtual display (saved as PNG, returns file path) |
+| `screenshot` | `include_cursor?` `bool` (false) | Capture the whole workspace as a PNG. Returns the file path and a `Coordinate space` line with the image's logical origin, size, capture backend, and coverage. Image pixel `(px, py)` is the global logical point `(origin_x + px, origin_y + py)`, the same space `mouse_click` and `touch_tap` take. |
 | `accessibility_tree` | `app_name?` `str`, `max_depth?` `int` (15), `role?` `str` | Get the AT-SPI2 widget tree with roles, names, states, coordinates, the text content of editors and entries (`text='...'`, capped at 200 characters), and scrollbar/slider positions (`value=current/max`). Use `role` to filter to specific element types (e.g. `"button"`, `"check box"`). Non-matching elements are hidden but their children are still traversed. |
 | `find_ui_elements` | `query` `str`, `app_name?` `str`, `states?` `list[str]` | Search for UI elements by name, role, or description (case-insensitive); matches report their text content and scrollbar/slider value when they have one. Optionally filter by AT-SPI2 states (e.g. `["focused"]`, `["active", "visible"]`). `query` can be empty when filtering by states only. |
 
@@ -267,7 +267,7 @@ kwin-mcp-cli --default-live-session
 | `read_app_log` | `pid` `int`, `last_n_lines?` `int` (50) | Read stdout/stderr output of a launched app by PID. Set `last_n_lines=0` for all output. |
 | `wayland_info` | `filter_protocol?` `str` | List Wayland protocols available in the session. Useful for verifying protocol access (e.g., `plasma_window_management`). |
 
-> **Frame capture:** Many action tools accept an optional `screenshot_after_ms` parameter (e.g., `[0, 50, 100, 200, 500]`) that captures screenshots at specified delays (in milliseconds) after the action completes. This is useful for observing transient UI states like hover effects, click animations, and menu transitions without extra MCP round-trips. Frame capture uses the fast KWin ScreenShot2 D-Bus interface (~30-70ms per frame).
+> **Frame capture:** Many action tools accept an optional `screenshot_after_ms` parameter (e.g., `[0, 50, 100, 200, 500]`) that captures screenshots at specified delays (in milliseconds) after the action completes. This is useful for observing transient UI states like hover effects, click animations, and menu transitions without extra MCP round-trips. Frame capture uses the fast KWin ScreenShot2 D-Bus interface (~30-70ms per frame). Each frame is followed by its own `Coordinate space` line in the same format as `screenshot`. A frame whose mapping cannot be proven — a topology change or a failed observation during the capture — still writes its PNG but reports `Coordinate space: unavailable (reason)`; that PNG holds the backend's raw unnormalized pixels, so only its timing observation is meaningful.
 
 ## How It Works
 
@@ -323,14 +323,31 @@ kwin-mcp provides three layers of isolation from the host desktop:
 
 Mouse, keyboard, and touch events are injected through KWin's private `org.kde.KWin.EIS.RemoteDesktop` D-Bus interface. This returns a `libei` file descriptor that allows low-level input emulation without requiring the XDG RemoteDesktop portal (which would show a user authorization dialog). The connection uses:
 
-- **Absolute pointer positioning** for precise coordinate-based interaction
+- **Absolute pointer positioning** in KWin's global logical coordinates, the space `window_geometry`, element rectangles, and screenshot pixels (after adding the screenshot origin) share
 - **evdev keycodes** with full US QWERTY mapping for keyboard input
 - **Smooth drag interpolation** (10+ intermediate steps) for realistic drag operations
 - **EIS touch emulation** for multi-touch gestures (tap, swipe, pinch, multi-finger swipe)
 
 ### Screenshot Capture
 
-The normal Wayland capture path tries KWin's `org.kde.KWin.ScreenShot2` D-Bus interface first and uses the `spectacle` CLI as a fallback. Action tools with `screenshot_after_ms` use the same path for frame bursts, and Pillow converts ScreenShot2's raw ARGB pipe data to PNG. The Docker visual QA suite also has an explicit test-only X11 backend: when `KWIN_MCP_X11_SCREENSHOT=1` is set for a server connected to the nested KWin/Xvfb fixture, captures use `scrot`. Normal virtual and live Wayland sessions do not opt into this backend.
+The normal Wayland capture path tries KWin's `org.kde.KWin.ScreenShot2` D-Bus interface first and uses the `spectacle` CLI as a fallback. Both capture the whole workspace across all outputs. Action tools with `screenshot_after_ms` use the same path for frame bursts, and Pillow converts ScreenShot2's raw pipe frames (RGB32, ARGB32, or RGBX8888 depending on the KWin version) to PNG. The Docker visual QA suite also has an explicit test-only X11 backend: when `KWIN_MCP_X11_SCREENSHOT=1` is set for a server connected to the nested KWin/Xvfb fixture, captures use `scrot`. Normal virtual and live Wayland sessions do not opt into this backend.
+
+Saved PNGs are normalized to KWin's global logical coordinate space, so a screenshot taken on a fractionally scaled output has one image pixel per logical pixel. The result states the mapping, for example on two outputs where a 1280x1024 screen sits left of a 1920x1080 screen:
+
+```text
+Screenshot saved: <path> (<size> KB)
+Coordinate space: logical; origin (-1280, 0); size 3200x1080; backend screenshot2; coverage full; topology observed stable before/after capture
+```
+
+`origin` is the top-left of KWin's virtual screen geometry. It is negative when an output sits left of or above `(0, 0)`. To click image pixel `(px, py)`, pass `x = origin_x + px` and `y = origin_y + py` to `mouse_click`; no scale conversion is needed. On a single output at scale 1, the origin is `(0, 0)` and the size equals the screen size.
+
+Backends deliver different pixel spaces, and kwin-mcp normalizes each one:
+
+- **ScreenShot2** `CaptureWorkspace` already renders logical pixels for the whole virtual screen, including outputs at negative positions.
+- **Spectacle** captures device pixels, which kwin-mcp rescales to logical pixels. When Spectacle composites several screens, it clips outputs at negative logical positions. kwin-mcp cannot recreate those pixels: it leaves them transparent and reports `coverage partial` with the captured regions.
+- **X11/scrot** (test-only) captures the X root, where each KWin output is an X window of `logical size * scale` pixels. kwin-mcp locates those windows with `xwininfo` and rescales each one to logical pixels.
+
+kwin-mcp reads the output topology through KWin scripting immediately before and after each capture and checks the captured image against it, retrying once when the layout changed mid-capture. If the mapping still cannot be proven, `screenshot` fails with an error containing `coordinate mapping cannot be proven` rather than returning guessed coordinates; a burst frame keeps its raw PNG and reports `Coordinate space: unavailable (reason)` instead. Observed stability is not an atomicity guarantee: a topology change that reverted between the two observations can go unnoticed.
 
 ### Accessibility Tree
 
@@ -483,6 +500,7 @@ uv run kwin-mcp
 - **Screen edge triggers ignore EIS pointer events** -- Auto-hide panels and layer-shell strips do not react when the pointer reaches a screen edge through EIS. Use `dbus_call` to invoke KWin scripting or a keyboard shortcut instead of trying to hover the edge.
 - **KWin claims multi-finger touch gestures** -- Three- and four-finger swipes are consumed by the compositor as global gestures and never reach the application; use `fingers=2` when the target is the app itself.
 - **Element coordinates are screen-global, or unavailable** -- `find_ui_elements`, `accessibility_tree` and `wait_for_element` report rectangles in the same global screen coordinates `mouse_click` and `touch_tap` take (`@ screen (x, y, wxh)`). When the element's window cannot be matched to exactly one KWin window — an app that masks its real process id (e.g. a D-Bus proxy), several identical windows of one process, or a window set that changed mid-query — the element reports `@ unavailable (reason)` with no coordinates rather than a position that could click the wrong window.
+- **Spectacle fallback can return partial screenshots** -- When ScreenShot2 is unavailable and Spectacle composites several screens, Spectacle clips outputs at negative logical positions. Those regions stay transparent, and the `Coordinate space` line reports `coverage partial` with the regions that were captured. ScreenShot2 captures the whole workspace.
 
 ## End-to-End Testing
 
@@ -508,6 +526,7 @@ Coverage includes:
 - exact input-schema checks for all 31 registered tools, plus installed-server stdio calls through every MCP wrapper;
 - nested visual tests that start Xvfb and a test-owned KWin compositor inside the container, connect the installed MCP server to it, and verify pixels as well as accessibility state;
 - KCalc before/after pixel transitions and a deterministic GUI probe for mouse hover, cursor inclusion, animation frame bursts, and CJK text (`GUI 검증 42`) rendered differently from a tofu control (`□□`);
+- screenshot coordinate mapping at output scales 1.0 and 1.45 (the fractional scale is set through `kscreen-doctor`): a probe button found by pixel color in the screenshot is clicked at origin plus pixel and must activate, and single screenshots and frame bursts report the logical workspace as their coordinate space;
 - screenshot retention and failure behavior, environment provenance, installed distribution metadata, console entry points, and process/socket cleanup.
 
 The container uses software rendering and needs no `--privileged`, `--cap-add`, GPU, or device flags. Its nested Xvfb server is part of the visual fixture; the host does not need an X server. CI runs the same image natively on both architectures:
@@ -519,7 +538,7 @@ The container uses software rendering and needs no `--privileged`, `--cap-add`, 
 
 A completed run retains `environment.json`, `junit.xml`, `pytest.log`, nested-KWin/Xvfb/MCP logs, and visual PNG evidence below its artifact directory. Failed runs also collect Docker inspect, container log, and process-list diagnostics.
 
-One legacy success test for ScreenShot2 on KWin's exact `--virtual` backend remains intentionally skipped because that backend does not return capture data in this container. Error propagation for that path is tested at both engine and MCP stdio levels; screenshot success, cursor pixels, and frame bursts are tested through the explicit nested X11/scrot visual mode. See [docker/README.md](docker/README.md) for the process topology, complete test-file inventory, evidence layout, and targeted commands.
+One legacy success test for ScreenShot2 on KWin's exact `--virtual` backend remains intentionally skipped because that backend does not return capture data in this container. Error propagation for that path is tested at both engine and MCP stdio levels; screenshot success, cursor pixels, frame bursts, and fractional-scale coordinate mapping are tested through the explicit nested X11/scrot visual mode. Multi-output layouts, negative origins, ScreenShot2 `CaptureWorkspace` normalization, and Spectacle partial coverage are not part of the container suite. See [docker/README.md](docker/README.md) for the process topology, complete test-file inventory, evidence layout, and targeted commands.
 
 ## Contributing
 

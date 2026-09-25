@@ -55,6 +55,7 @@ Pick the cheapest tool that answers the question. Do not start with `screenshot`
 **Action tools:**
 
 - Rectangles from `find_ui_elements` / `accessibility_tree` are already global screen coordinates (`@ screen (x, y, wxh)`) — the same space `mouse_click` and `touch_tap` take. Click the centre directly: `(x + width / 2, y + height / 2)`. An element reported as `@ unavailable (reason)` has no trustworthy position; do not click it.
+- Screenshot pixels are logical too, but offset by the image origin. Read the `Coordinate space: logical; origin (ox, oy); ...` line in the `screenshot` result and click image pixel `(px, py)` at `(ox + px, oy + py)`. The origin can be negative on multi-monitor layouts. Never rescale by the display scale factor — kwin-mcp already did.
 - `keyboard_type` is **ASCII / US-QWERTY only**. It maps characters to evdev keycodes; non-ASCII silently breaks.
 - `keyboard_type_unicode` for Korean / CJK / emoji / any non-ASCII. It tries `wtype` first; when `wtype` is unavailable or unsupported by the session, it pastes with Ctrl+V through a built-in temporary clipboard owner and then restores the previous clipboard in every format. A failure result means the clipboard could not be taken, nothing read the text after Ctrl+V, or the restore failed: verify the target field before retrying. Text over 1 MiB of UTF-8 is rejected.
 
@@ -66,7 +67,7 @@ Branch typing by string content — never assume the input is ASCII.
 2. `mouse_click(x + width / 2, y + height / 2)` — act on it directly.
 3. `wait_for_element(query="Settings saved", timeout_ms=3000)` — confirm.
 
-For animation-heavy or transient UI, pass `screenshot_after_ms=[0, 100, 300]` to a single action call instead of making three round-trips. kwin-mcp uses the best supported capture backend. High-frequency timing requires ScreenShot2; the Docker nested visual QA explicitly selects X11/scrot for pixel verification, so do not treat its frame timing as ScreenShot2 performance.
+For animation-heavy or transient UI, pass `screenshot_after_ms=[0, 100, 300]` to a single action call instead of making three round-trips. Each frame has its own `Coordinate space` line. kwin-mcp uses the best supported capture backend. High-frequency timing requires ScreenShot2; the Docker nested visual QA explicitly selects X11/scrot for pixel verification, so do not treat its frame timing as ScreenShot2 performance.
 
 ## 3. Pitfalls
 
@@ -76,6 +77,7 @@ These are properties of the Wayland / AT-SPI2 / EIS stack, not bugs. Know them o
 - **Clipboard tools are opt-in on virtual sessions.** Pass `enable_clipboard=true` to `session_start` AND ensure `wl-clipboard` is installed before calling `clipboard_get` / `clipboard_set`. Live sessions always have clipboard.
 - **`keyboard_type_unicode` briefly exposes the text on the clipboard.** Klipper keeps it out of history, but clipboard managers that ignore KDE's secret hint can record it, and Wayland cannot tell which client read it. Restoring the previous clipboard is best-effort: a copy made at the same moment can be overwritten. `clipboard_set` is different — its text intentionally stays on the clipboard.
 - **Element coordinates are screen-global, or unavailable.** Rectangles returned by `find_ui_elements` and `accessibility_tree` are already in the screen space `mouse_click` and `touch_tap` take. When the element's window cannot be matched to exactly one KWin window, the element reports `@ unavailable (reason)` with no coordinates — never click a guessed position.
+- **A screenshot's coordinate space can be partial or unavailable.** `coverage partial` (Spectacle fallback with a screen at a negative position) means only the listed regions were captured; the rest of the image is transparent, not empty desktop. A frame reporting `Coordinate space: unavailable (reason)` kept its PNG but it holds the backend's raw unnormalized pixels — only its timing is meaningful. A `screenshot` error containing `coordinate mapping cannot be proven` has no trustworthy pixel-to-screen mapping at all — take a new screenshot instead of clicking a guessed position.
 - **QMenu and native context menus may be invisible to AT-SPI2.** Qt's AT-SPI2 bridge has incomplete popup-menu support on Wayland. Take a `screenshot` to identify the menu item, derive its position from the parent widget's reported screen rectangle, then click.
 - **Screen edge triggers (auto-hide panels, layer-shell strips) ignore EIS pointer events.** Use `dbus_call` to invoke KWin scripting or a keyboard shortcut instead of trying to hover the edge.
 - **Live sessions inside containers need reachable Wayland and D-Bus endpoints.** `session_connect` rejects missing, non-socket, or unreachable Wayland sockets, as well as an unreachable KWin D-Bus. Mount the target Wayland socket under the container's `$XDG_RUNTIME_DIR` (or pass its absolute path), and propagate `DBUS_SESSION_BUS_ADDRESS`.

@@ -49,8 +49,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 FROM debian-snapshot AS runtime-base
 
-RUN apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+# The recorder in docker/e2e-environment.py reports the installed version of
+# every package named here, so this list is the single source for both.
+ENV KWIN_MCP_SYSTEM_PACKAGES="\
         at-spi2-core \
         breeze-cursor-theme \
         ca-certificates \
@@ -90,7 +91,11 @@ RUN apt-get update \
         xauth \
         xdotool \
         xvfb \
-        xwayland \
+        xwayland"
+
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        $KWIN_MCP_SYSTEM_PACKAGES \
     && rm -rf /var/lib/apt/lists/* \
     && setcap -r /usr/bin/kwin_wayland \
     && groupadd --gid 1000 tester \
@@ -139,7 +144,7 @@ ENV PATH="/opt/kwin-mcp-venv/bin:${PATH}" \
     XDG_RUNTIME_DIR=/tmp/xdg-runtime \
     KWIN_MCP_ARTIFACT_DIR=/artifacts \
     KWIN_MCP_BASE_IMAGE="debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132" \
-    KWIN_MCP_DEBIAN_SNAPSHOT="${DEBIAN_SNAPSHOT}" \
+    KWIN_MCP_BASE_SNAPSHOT="debian-snapshot:${DEBIAN_SNAPSHOT}" \
     PYTHONUNBUFFERED=1 \
     LIBGL_ALWAYS_SOFTWARE=1
 

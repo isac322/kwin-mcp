@@ -7,6 +7,7 @@ import importlib.metadata
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -20,53 +21,10 @@ class EnvironmentRecord(TypedDict):
     architecture: str
     argv: list[str]
     container: dict[str, str | None]
-    debian_packages: dict[str, str | None]
+    system_packages: dict[str, str | None]
     distributions: dict[str, dict[str, str | None]]
     kwin_version: str | None
     python_version: str
-
-
-DEBIAN_PACKAGES = (
-    "at-spi2-core",
-    "breeze-cursor-theme",
-    "ca-certificates",
-    "dbus",
-    "fonts-dejavu-core",
-    "fonts-noto-cjk",
-    "fonts-noto-color-emoji",
-    "fonts-noto-core",
-    "gir1.2-atspi-2.0",
-    "gir1.2-gtk-3.0",
-    "kcalc",
-    "kde-spectacle",
-    "konsole",
-    "kwin-common",
-    "kwin-wayland",
-    "kwrite",
-    "libcap2-bin",
-    "libegl-mesa0",
-    "libei1",
-    "libgl1-mesa-dri",
-    "libglx-mesa0",
-    "libkscreen-bin",
-    "mesa-utils",
-    "python3",
-    "python3-dbus",
-    "python3-gi",
-    "python3-numpy",
-    "python3-pil",
-    "python3-venv",
-    "qt6-wayland",
-    "scrot",
-    "wayland-utils",
-    "wl-clipboard",
-    "wtype",
-    "x11-utils",
-    "xauth",
-    "xdotool",
-    "xvfb",
-    "xwayland",
-)
 
 
 def distribution_details(name: str) -> dict[str, str | None]:
@@ -108,18 +66,29 @@ def command_output(command: list[str]) -> str | None:
     return output or None
 
 
-def debian_package_versions() -> dict[str, str | None]:
-    """Return versions for the runtime packages that define the test environment."""
-    versions: dict[str, str | None] = dict.fromkeys(DEBIAN_PACKAGES)
-    output = command_output(
-        ["dpkg-query", "--show", "--showformat=${Package}\t${Version}\n", *DEBIAN_PACKAGES]
-    )
+def package_query_command(packages: list[str]) -> list[str] | None:
+    """Return a command printing `name<TAB or space>version` lines for installed packages."""
+    if shutil.which("dpkg-query"):
+        return ["dpkg-query", "--show", "--showformat=${Package}\t${Version}\n", *packages]
+    if shutil.which("pacman"):
+        return ["pacman", "--query", *packages]
+    if shutil.which("rpm"):
+        return ["rpm", "--query", "--queryformat=%{NAME}\t%{VERSION}-%{RELEASE}\n", *packages]
+    return None
+
+
+def system_package_versions() -> dict[str, str | None]:
+    """Return versions for the distro packages each image lists in KWIN_MCP_SYSTEM_PACKAGES."""
+    packages = os.environ.get("KWIN_MCP_SYSTEM_PACKAGES", "").split()
+    versions: dict[str, str | None] = dict.fromkeys(packages)
+    command = package_query_command(packages) if packages else None
+    output = command_output(command) if command else None
     if output is None:
         return versions
 
     for line in output.splitlines():
-        package, separator, version = line.partition("\t")
-        if separator and package in versions:
+        package, _, version = line.replace("\t", " ", 1).partition(" ")
+        if version and package in versions:
             versions[package] = version
     return versions
 
@@ -131,9 +100,9 @@ def environment_record(argv: list[str]) -> EnvironmentRecord:
         "argv": argv,
         "container": {
             "base_image": os.environ.get("KWIN_MCP_BASE_IMAGE"),
-            "debian_snapshot": os.environ.get("KWIN_MCP_DEBIAN_SNAPSHOT"),
+            "snapshot": os.environ.get("KWIN_MCP_BASE_SNAPSHOT"),
         },
-        "debian_packages": debian_package_versions(),
+        "system_packages": system_package_versions(),
         "distributions": {
             "kwin-mcp": distribution_details("kwin-mcp"),
             "mcp": {"version": distribution_version("mcp")},

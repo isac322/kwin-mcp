@@ -141,6 +141,43 @@ def test_session_start_propagates_environment_to_the_initial_app(
     assert _wait_for_app_log(engine, pid, f"env:{value}") == f"env:{value}"
 
 
+def test_virtual_session_apps_never_inherit_the_host_display(
+    engine: AutomationEngine,
+    start_session: Callable[..., str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A host X server the server process can see must stay out of the virtual
+    # session; X11 apps would otherwise open on the user's real desktop.
+    monkeypatch.setenv("DISPLAY", ":4242")
+    command = """sh -c 'printf "display:%s" "${DISPLAY-unset}"'"""
+
+    initial_pid = _launched_pid(start_session(command))
+    launched_pid = _launched_pid(engine.launch_app(command))
+    explicit_pid = _launched_pid(engine.launch_app(command, env={"DISPLAY": ":7"}))
+
+    assert _wait_for_app_log(engine, initial_pid, "display:") == "display:unset"
+    assert _wait_for_app_log(engine, launched_pid, "display:") == "display:unset"
+    # A caller that asks for a display on purpose still gets it.
+    assert _wait_for_app_log(engine, explicit_pid, "display:") == "display::7"
+
+
+def test_live_session_apps_keep_the_inherited_display(
+    engine: AutomationEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Only virtual sessions drop DISPLAY: launch_app after session_connect
+    # keeps the inherited value unchanged.
+    monkeypatch.setenv("DISPLAY", ":4242")
+    with live_kwin() as live:
+        engine.session_connect(dbus_address=live.dbus_address, wayland_display=live.wayland_display)
+        try:
+            pid = _launched_pid(
+                engine.launch_app("""sh -c 'printf "display:%s" "${DISPLAY-unset}"'""")
+            )
+            assert _wait_for_app_log(engine, pid, "display:") == "display::4242"
+        finally:
+            engine.session_stop()
+
+
 def test_custom_screen_geometry_is_reported_by_wayland(engine: AutomationEngine) -> None:
     expected_width = 937
     expected_height = 613

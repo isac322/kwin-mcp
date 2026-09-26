@@ -811,6 +811,7 @@ class AutomationEngine:
     ) -> str:
         """Type arbitrary Unicode text including non-ASCII characters."""
         inp = self._get_input()
+
         # Both routes are Wayland clients: without the session's WAYLAND_DISPLAY
         # they would act on whatever compositor the server inherited.
         # The paste chord depends on the focused app: an unbound Ctrl+V in a
@@ -821,9 +822,7 @@ class AutomationEngine:
             focus = self._run_kwin_query({"op": "active_class"})
             return str(focus["result"]) if focus["ok"] else None
 
-        ok = inp.keyboard_type_unicode(
-            text, env=self._session_env(), focused_class=focused_class
-        )
+        ok = inp.keyboard_type_unicode(text, env=self._session_env(), focused_class=focused_class)
         result = f"Typed unicode: {text!r}" if ok else f"Failed to type unicode: {text!r}"
         return self._with_frame_capture(result, screenshot_after_ms)
 

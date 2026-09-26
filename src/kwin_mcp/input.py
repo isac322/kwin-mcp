@@ -20,8 +20,8 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
 from enum import Enum
+from typing import TYPE_CHECKING
 
 import dbus
 import dbus.bus
@@ -29,6 +29,9 @@ from dbus.mainloop.glib import DBusGMainLoop
 
 # Protocol constants only; importing the helper module loads no C library.
 from kwin_mcp.clipboard import MAX_COPY_BYTES, READY_BUDGET_S, RESTORE_ROUNDTRIP_S
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class MouseButton(Enum):
@@ -1243,7 +1246,7 @@ class InputBackend:
         self,
         text: str,
         env: dict[str, str] | None = None,
-        focused_class: str | None | Callable[[], str | None] = None,
+        focused_class: str | Callable[[], str | None] | None = None,
     ) -> bool:
         """Type arbitrary Unicode text using wtype or a temporary clipboard paste.
 

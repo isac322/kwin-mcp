@@ -1,74 +1,63 @@
-# dbus_call Call Site Map
+# dbus_call argument reference
 
-## Summary
+`dbus_call` has exactly one internal call site: `server.py` wraps
+`AutomationEngine.dbus_call`. All arguments are pass-through from MCP clients,
+so the accepted grammar is the full public contract.
 
-- **Total internal code call sites**: 1 (`server.py` → `core.py`)
-- **Hard-coded arg patterns in source**: 0 (all args are pass-through from external callers)
-- **External API callers**: unlimited (LLM agents / MCP clients pass arbitrary dbus-send syntax)
-
-## Definition Sites
-
-| Location | Role | Current Args Type |
+| Location | Role | Args type |
 |---|---|---|
 | `src/kwin_mcp/core.py` `AutomationEngine.dbus_call` | Implementation | `args: list[str \| dict] \| None`, parsed by `kwin_mcp.dbus_args.parse_arg` and sent in-process with dbus-python |
 | `src/kwin_mcp/server.py` `dbus_call` | MCP tool schema + wrapper | Annotated `list[str \| dict] \| None`; the description documents both argument shapes |
 
-## Internal Call Sites
+## Argument grammar
 
-| Location | Caller | Service | Path | Interface | Method | Args | Type Complexity |
-|---|---|---|---|---|---|---|---|
-| `src/kwin_mcp/server.py` `dbus_call` | MCP tool handler | pass-through | pass-through | pass-through | pass-through | pass-through from MCP user | varies |
+Legacy arguments follow the `dbus-send(1)` syntax. Because agents may use any
+of it, `kwin_mcp.dbus_args` accepts all dbus-send types:
 
-**There are no internal call sites with hard-coded arg patterns.** All args originate from external MCP clients (LLM agents).
+| Type prefix | Example |
+|---|---|
+| `string:` | `string:hello` |
+| `int16:` `int32:` `int64:` | `int32:42` |
+| `uint16:` `uint32:` `uint64:` | `uint32:1234` |
+| `byte:` | `byte:255` |
+| `double:` | `double:3.14` |
+| `boolean:` | `boolean:true` |
+| `objpath:` | `objpath:/org/kde/KWin` |
+| `signature:` | `signature:s` |
+| `array:` | `array:string:a,b,c` (nested arrays separate elements with `:`) |
+| `dict:` | `dict:string:int32:k1,1,k2,2`, `dict:string:variant:k,string:v` |
+| `variant:` | `variant:string:hello` |
 
-## External Arg Patterns (from MCP tool docstring)
+Dict entries follow dbus-send's grammar: one comma-separated list alternating
+keys and values, and a `variant` value type makes each value a `TYPE:VALUE`
+pair with a basic type (an `a{sv}`). Integer literals accept an optional sign,
+`0x` hexadecimal, and decimals that do not start with `0`; the whole literal
+must parse and fit the type (dbus-send instead sends `12x3` as `12` and wraps
+overflows). Leading-zero octal such as `010` is rejected rather than
+reinterpreted. `unixfd` is not supported: dbus-send has no such type, and an
+fd number from an MCP client would not refer to a descriptor in the server
+process.
 
-Before the in-process rewrite, the `dbus_call` MCP tool description documented:
-```
-Method arguments in dbus-send format (e.g. "string:value", "int32:42", "boolean:true")
-```
-
-Examples that MCP clients are known to supply (from plan QA scenarios and typical agent behavior):
-- `[]` — no args (e.g., `org.freedesktop.DBus.GetId`, `org.kde.KWin.showDesktop`)
-- `["string:hello"]` — single basic string arg
-- `["int32:42"]` — integer arg
-- `["boolean:true"]` — boolean arg
-- `["string:hello", "int32:42"]` — mixed basic args
-
-## Required Parser Features
-
-Based on the zero internal hard-coded call sites and the MCP tool's documented usage, the parser in `dbus_args.py` **MUST support** all standard dbus-send basic types because external LLM agents may use any of them:
-
-| Type prefix | Example | Priority |
-|---|---|---|
-| `string:` | `string:hello` | **Required** — most common |
-| `int32:` | `int32:42` | **Required** — most common integer |
-| `boolean:` | `boolean:true` | **Required** — frequently used |
-| `uint32:` | `uint32:1234` | **Required** — KWin D-Bus methods use uint32 |
-| `uint64:` | `uint64:999` | **Required** — timestamps, PIDs |
-| `int64:` | `int64:-1` | **Required** — standard type |
-| `byte:` | `byte:255` | **Required** — protocol completeness |
-| `int16:` | `int16:10` | **Required** — protocol completeness |
-| `uint16:` | `uint16:10` | **Required** — protocol completeness |
-| `double:` | `double:3.14` | **Required** — used by KWin geometry |
-| `objpath:` | `objpath:/org/kde/KWin` | **Required** — object references |
-| `signature:` | `signature:s` | **Required** — introspection |
-| `array:` | `array:string:a,b,c` | **Required** — lists |
-| `dict:` | `dict:string:int32:k1,1,k2,2`, `dict:string:variant:k,string:v` | **Required** — D-Bus dicts, including `a{sv}` |
-| `variant:` | `variant:string:hello` | **Required** — polymorphic values |
-
-**No types from the dbus-send man page are deferred** — the MCP tool is a public API and agents may use any valid dbus-send syntax. Dict entries follow dbus-send's grammar: one comma-separated list alternating keys and values, and a `variant` value type makes each value a `TYPE:VALUE` pair with a basic type. `unixfd` is not supported: dbus-send has no such type either, and an fd number from an MCP client would not refer to a descriptor in the server process.
-
-## Scope Impact on Task 7 (Parser)
-
-Task 7 must implement a full recursive-descent parser for the dbus-send argument syntax. The scope is NOT reducible based on current callers because:
-
-1. The tool is an external API with no internal call sites to scope-cap from
-2. LLM agents generate diverse arg patterns based on D-Bus introspection output
-3. Supporting only 2-3 types would break real-world agent workflows
-
-**Minimum viable parser scope**: all basic types + `array:`, `dict:`, `variant:` containers + nested arrays.
+Typed JSON is the second shape: `{"type": <basic>, "value": ...}` for basic
+types, plus `array` (`element_type` + list `value`), `dict` (`key_type` +
+`value_type` + object `value`), and `variant` (`value_type` + `value`). Dict
+values may also be variants when `value_type` is `"variant"` and each entry is
+a `{"type", "value"}` pair.
 
 ## Argument checking
 
-`dbus_call` introspects the target object once per call. When the method is described, the argument count must match its input signature and the arguments are marshalled with that signature; mismatches and marshalling errors return `D-Bus call failed: ...` before anything is sent. When the object is not introspectable, the call goes out with dbus-python's inferred signature and the remote side validates it.
+`dbus_call` introspects the target object once per call. When the method is
+described, the arguments must match one of its declared input signatures and
+are marshalled with that signature: the count must fit, and each argument's
+written type must equal the declared complete type, except that a declared
+variant (`v`) accepts any value and an explicit `variant` argument only fits a
+`v` position. Qt exports overloaded slots and slots with default arguments as
+several `<method>` entries under one name (KWin's `org.kde.kwin.Scripting`
+`loadScript` is `s` and `ss`), so every signature is a candidate and the first
+fitting one is used; when none fits, the error lists every candidate. A
+top-level `variant` argument is marshalled as `v` (`variant_level` = 1), so it
+stays a variant on the wire even without introspection. When the object does
+not describe the method, each argument is sent with its own signature and the
+remote side validates it. Each D-Bus round trip (introspection, then the call)
+is bounded by `_DBUS_CALL_TIMEOUT` (10 s), so a call against a non-introspectable
+object may take up to two timeouts before it fails.

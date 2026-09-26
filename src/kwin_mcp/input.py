@@ -302,10 +302,22 @@ _libei: ctypes.CDLL | None = None
 
 
 def _get_libei() -> ctypes.CDLL:
-    """Return the process-wide libei handle, loading it on first call."""
+    """Return the process-wide libei handle, loading it on first call.
+
+    A library that is absent or fails to load raises RuntimeError so the
+    input backend stays optional (see AutomationEngine.session_start);
+    the handle stays unset, so a later call retries the load.
+    """
     global _libei
     if _libei is None:
-        _libei = _load_libei()
+        try:
+            _libei = _load_libei()
+        except OSError as exc:
+            msg = (
+                f"libei could not be loaded ({exc}); install libei "
+                "(e.g. 'sudo apt install libei1' or 'sudo pacman -S libei')"
+            )
+            raise RuntimeError(msg) from exc
     return _libei
 
 

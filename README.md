@@ -492,7 +492,7 @@ uv run kwin-mcp
 
 ## Limitations
 
-- **US QWERTY keyboard layout only** -- `keyboard_type` supports US QWERTY only. For non-ASCII text (Korean, CJK, etc.), use `keyboard_type_unicode`.
+- **US QWERTY keyboard layout only** -- `keyboard_type` supports US QWERTY only. For non-ASCII text (Korean, CJK, etc.), use `keyboard_type_unicode`. Virtual sessions pin the compositor keymap to US, so the host's keyboard layout settings do not change what is typed; a live session attached with `session_connect` keeps the desktop's own keymap, so its active layout must be US for `keyboard_type` and `keyboard_key` to produce the expected characters.
 - **Unicode typing can paste through the clipboard** -- When `wtype` is unavailable or unsupported by the session, `keyboard_type_unicode` briefly puts the text on the clipboard, then restores the previous selection and keeps serving it until another copy replaces it, even after `session_stop` disconnects a live session. The restore is best-effort, not atomic: Wayland has no compare-and-swap for the selection, so a copy another client makes at the same moment as the restore can be overwritten. Wayland also does not tell the clipboard owner which client read the text, so a clipboard manager that reads it after Ctrl+V can be taken for the target app, and any client that read it keeps its copy. The `x-kde-passwordManagerHint` marker keeps the text out of Klipper's history, but clipboard managers that ignore the marker can still record it.
 - **KDE Plasma 6+ required** -- Older KDE versions or other Wayland compositors (GNOME, Sway) are not supported.
 - **AT-SPI2 availability varies** -- Some applications may not fully expose their widget tree via AT-SPI2.

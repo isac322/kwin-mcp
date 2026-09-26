@@ -32,6 +32,7 @@ BAD_BINARY = "definitely-not-a-real-binary"
 SESSION_ALREADY_RUNNING = "Session already running. Call session_stop first."
 LAUNCHED_PID = re.compile(r"\(PID=(\d+)\)")
 PROCESS_EXIT_TIMEOUT_SECONDS = 5.0
+A11Y_BUS_NAME = "org.a11y.Bus"
 XDG_HOME_DIRECTORIES = (
     Path(".config"),
     Path(".local/share"),
@@ -297,6 +298,63 @@ def test_session_stop_terminates_and_reaps_launched_process(
         _wait_for_process_exit(pid)
     finally:
         engine.session_stop()
+
+
+def _a11y_bus_has_owner(engine: AutomationEngine) -> str:
+    return engine.dbus_call(
+        service="org.freedesktop.DBus",
+        path="/org/freedesktop/DBus",
+        interface="org.freedesktop.DBus",
+        method="NameHasOwner",
+        args=[f"string:{A11Y_BUS_NAME}"],
+    )
+
+
+def test_accessibility_bus_is_owned_when_session_start_returns(
+    engine: AutomationEngine, start_session: Callable[..., str]
+) -> None:
+    # Qt apps join the accessibility bus only when org.a11y.Bus already has an
+    # owner; otherwise the first accessibility_tree() finds no apps. Asking the
+    # bus daemon (no app, no AT-SPI2 query) cannot activate the name itself, so
+    # this observes exactly what session_start left behind.
+    output = start_session()
+    assert "Warning:" not in output, output
+
+    reply = _a11y_bus_has_owner(engine)
+    assert reply.split()[-1:] == ["true"], reply
+
+
+def test_session_start_reports_a_failed_accessibility_bus_activation(
+    engine: AutomationEngine,
+    start_session: Callable[..., str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Only the wrapper resolves dbus-send through the patched PATH; the stub
+    # stands in for a distro without an org.a11y.Bus service file.
+    _install_stub(
+        tmp_path,
+        monkeypatch,
+        "dbus-send",
+        "#!/bin/sh\n"
+        "echo 'Error org.freedesktop.DBus.Error.ServiceUnknown: stub has no a11y bus' >&2\n"
+        "echo 'second stderr line' >&2\n"
+        "exit 1\n",
+    )
+
+    output = start_session()
+
+    # The session stays usable for everything but accessibility, and the
+    # failure reaches the caller as one line carrying the D-Bus error.
+    assert "Session started. Wayland socket: " in output, output
+    warnings = [line for line in output.splitlines() if line.startswith("Warning: ")]
+    assert warnings == [
+        "Warning: AT-SPI bus activation failed, accessibility tools may be unavailable in this"
+        " session: Error org.freedesktop.DBus.Error.ServiceUnknown: stub has no a11y bus"
+    ], output
+
+    monkeypatch.undo()
+    assert _a11y_bus_has_owner(engine).split()[-1:] == ["false"]
 
 
 def test_connects_to_the_second_compositor_without_owning_it(

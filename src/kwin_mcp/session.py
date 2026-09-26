@@ -23,28 +23,13 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from typing import IO
 
-# Upper bound for the startup handshake. The wrapper script itself gives up
-# after its own ~30 s socket wait, so this bound only covers cases the wrapper
-# cannot report: a leader killed while descendants keep stdout open, or a
-# partial line that never terminates. 60 s leaves the wrapper room to report
-# first so its FAILED diagnostics reach the caller.
+# Upper bound for the startup handshake. The wrapper itself is bounded: the
+# AT-SPI bus activation call gives up after 10 s (--reply-timeout) and the
+# socket wait after ~30 s, about 40 s in the worst case. This bound only covers
+# cases the wrapper cannot report: a leader killed while descendants keep
+# stdout open, or a partial line that never terminates. 60 s leaves the wrapper
+# room to report first so its FAILED diagnostics reach the caller.
 _STARTUP_READ_TIMEOUT = 60.0
-
-# at-spi-bus-launcher is not on PATH and its location is distro-specific:
-# /usr/lib on Arch, /usr/libexec on Debian/Ubuntu/Fedora.
-_AT_SPI_LAUNCHER_CANDIDATES = (
-    "/usr/libexec/at-spi-bus-launcher",
-    "/usr/lib/at-spi-bus-launcher",
-    "/usr/lib/at-spi2-core/at-spi-bus-launcher",
-)
-
-
-def _at_spi_bus_launcher() -> str:
-    """Locate the AT-SPI bus launcher binary for the current distribution."""
-    for candidate in _AT_SPI_LAUNCHER_CANDIDATES:
-        if Path(candidate).exists():
-            return candidate
-    return shutil.which("at-spi-bus-launcher") or _AT_SPI_LAUNCHER_CANDIDATES[0]
 
 
 class SessionType(Enum):
@@ -91,6 +76,9 @@ class SessionInfo:
     wrapper_pid: int | None = None
     apps: dict[int, AppInfo] = field(default_factory=dict)
     session_type: SessionType = SessionType.VIRTUAL
+    # Degraded-but-running conditions reported by the startup wrapper, such as
+    # a failed AT-SPI bus activation. The session is usable; callers surface these.
+    startup_warnings: list[str] = field(default_factory=list)
 
 
 def _remove_tree(path: Path, attempts: int = 3) -> None:
@@ -213,7 +201,8 @@ class Session:
 
         # Read startup output from the wrapper script.
         # Expected lines: DBUS_SESSION_BUS_ADDRESS=..., READY or FAILED.
-        # Any other lines (e.g. from D-Bus activation) are kept as diagnostics.
+        # Any other lines (e.g. from D-Bus activation) are kept as diagnostics;
+        # "WARN: " lines additionally reach the caller of a successful start.
         dbus_address, got_ready, stdout_tail = self._read_startup_output()
 
         # Wait for kwin to be ready (socket file appears). Without READY the
@@ -271,6 +260,11 @@ class Session:
             kwin_pid=self._process.pid,
             screenshot_dir=screenshot_dir,
             home_dir=self._home_dir,
+            startup_warnings=[
+                line.removeprefix("WARN: ")
+                for line in stdout_tail.splitlines()
+                if line.startswith("WARN: ")
+            ],
         )
         return self._info
 
@@ -596,19 +590,41 @@ class Session:
         return f"""\
 echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
 
-# Ensure all child processes are cleaned up on exit
+# Ensure all child processes are cleaned up on exit.
+# The AT-SPI bus launcher and registryd are started via D-Bus
+# auto-activation below; they are terminated automatically when our
+# isolated session bus exits (dbus-run-session tears the bus down on
+# parent exit), so we only need to track KWin explicitly here.
 cleanup() {{
-    kill $KWIN_PID $AT_SPI_PID 2>/dev/null
-    wait $KWIN_PID $AT_SPI_PID 2>/dev/null
+    kill $KWIN_PID 2>/dev/null
+    wait $KWIN_PID 2>/dev/null
 }}
 trap cleanup EXIT TERM INT HUP
 
-# Start the AT-SPI accessibility bus.
-# ATSPI_DBUS_IMPLEMENTATION is set in _build_env() to force dbus-daemon
-# instead of dbus-broker (which reuses the host's AT-SPI bus).
-{_at_spi_bus_launcher()} --launch-immediately &
-AT_SPI_PID=$!
-sleep 0.2
+# Bring up the AT-SPI accessibility bus via synchronous D-Bus activation.
+# Calling org.a11y.Bus.GetAddress makes dbus-daemon resolve the distro-provided
+# service file (/usr/share/dbus-1/services/org.a11y.Bus.service) and exec the
+# launcher at whatever path the current distro uses — /usr/libexec on
+# Fedora/Debian/Ubuntu, /usr/libexec/at-spi2 on openSUSE, /app/libexec on
+# Flatpak, and so on. A hardcoded candidate list silently misses every layout
+# it does not name, and a backgrounded launcher hides the exec failure.
+# dbus-send ships in the same package as the dbus-update-activation-environment
+# the wrapper already requires, so no extra dependency is introduced.
+# ATSPI_DBUS_IMPLEMENTATION=dbus-daemon (set in _build_env) prevents
+# dbus-broker from sharing the host's a11y bus.
+# The registry daemon comes up on its own when apps first touch the a11y
+# bus, so no manual bootstrap is needed here. Activation failure is reported
+# to the caller instead of being hidden: without the bus the first AT-SPI2
+# query itself activates the launcher and always returns an empty result.
+if ! ATSPI_ERR=$(dbus-send --session --print-reply --reply-timeout=10000 \\
+    --dest=org.a11y.Bus /org/a11y/bus \\
+    org.a11y.Bus.GetAddress 2>&1 >/dev/null); then
+    # Keep the warning on one line: multi-line stderr would read as several
+    # unrelated diagnostics in the startup handshake.
+    ATSPI_ERR=${{ATSPI_ERR%%$'\\n'*}}
+    echo "WARN: AT-SPI bus activation failed, accessibility tools may be unavailable" \\
+        "in this session: ${{ATSPI_ERR:-unknown error}}"
+fi
 
 # Pre-set D-Bus activation environment BEFORE starting KWin.
 # When KWin triggers portal auto-activation, portal-kde will get

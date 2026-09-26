@@ -54,19 +54,15 @@ class SessionConfig:
 
 
 def _write_deterministic_session_config(config_dir: Path) -> None:
-    """Pre-seed an isolated config dir with settings that make sessions deterministic.
+    """Pre-seed the compositor's config dir with settings that keep sessions deterministic.
 
-    KWin builds its XKB keymap from ``$XDG_CONFIG_HOME/kxkbrc`` and falls back
-    to the environment (``XKB_DEFAULT_LAYOUT``), which on hosts configured with
-    a non-US primary layout (e.g. ``ru,us``) makes evdev keycodes typed by the
-    EIS keyboard produce the wrong characters (``hello`` → ``руддщ``).
-    Leaving ``kxkbrc`` absent from the isolated config dir keeps the default
-    US layout.
+    A wallet-enabled ``kwalletrc`` makes kwalletd open its popup when a client
+    requests the wallet, and that window takes compositor focus away from the
+    app under automation, breaking flows such as ``focus_window`` followed by
+    keyboard input. Seeding ``Enabled=false`` keeps the wallet closed.
 
-    The same directory silences the kwallet popup (ksecretd/kwalletd) that
-    steals compositor focus at session start, which otherwise breaks
-    focus-dependent automation flows such as ``focus_window`` + keyboard
-    verification.
+    The keyboard layout is not configured here: ``_build_env`` pins the
+    compositor keymap through the environment, so no ``kxkbrc`` is needed.
 
     Only writes files that do not exist yet so explicit pre-seeding wins.
     """
@@ -198,13 +194,16 @@ class Session:
             path = Path(runtime_dir) / f"{self._socket_name}{suffix}"
             path.unlink(missing_ok=True)
 
-        # Deterministic per-session config dir: without an isolated
-        # XDG_CONFIG_HOME, KWin inherits the host's kxkbrc and the virtual
-        # session runs with the host's XKB layout list (e.g. ru,us — the
-        # evdev keycodes then type Cyrillic instead of ASCII), and the
-        # kwallet popup steals focus at session start.
-        self._session_config_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-config-"))
-        _write_deterministic_session_config(self._session_config_dir)
+        # The compositor must not read the host's config dir: a wallet-enabled
+        # kwalletrc there lets the kwallet popup steal focus from the app under
+        # automation. An isolated home already gives it a private .config; seed
+        # that one, otherwise create a throwaway dir that _build_env points
+        # XDG_CONFIG_HOME at. The keymap is pinned separately in _build_env.
+        if self._home_dir is not None:
+            _write_deterministic_session_config(self._home_dir / ".config")
+        else:
+            self._session_config_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-config-"))
+            _write_deterministic_session_config(self._session_config_dir)
         # Deliberately NOT isolating XDG_DATA_HOME / XDG_CACHE_HOME: qtbase
         # crash-logs a fatal qFatal when a nonexistent standard data dir is
         # set (reproduced on qt6-base 6.10), and existing dirs already
@@ -232,7 +231,7 @@ class Session:
             self._stderr_file = None
             # _process is still None, so stop() would return early; undo the
             # resource acquisition this method already performed.
-            self._cleanup_isolated_home()
+            self._cleanup_start_dirs()
             raise
 
         # Read startup output from the wrapper script.
@@ -469,12 +468,15 @@ class Session:
         self._info = None
         self._home_dir = None
 
-    def _cleanup_isolated_home(self) -> None:
-        """Release the isolated home created by start() when no session exists.
+    def _cleanup_start_dirs(self) -> None:
+        """Release the directories created by start() when no session exists.
 
         Only used on the Popen-failure path, where _process is None and stop()
         cannot run; keep_home/keep_screenshots semantics mirror stop().
         """
+        if self._session_config_dir is not None:
+            shutil.rmtree(self._session_config_dir, ignore_errors=True)
+            self._session_config_dir = None
         if self._home_dir is None:
             return
         keep_home = self._config is not None and self._config.keep_home
@@ -734,28 +736,35 @@ wait $KWIN_PID
             # Safe in isolated virtual sessions where there is no user desktop to protect.
             "KWIN_WAYLAND_NO_PERMISSION_CHECKS": "1",
         }
-        # Per-session deterministic config dir (US keymap via absent kxkbrc,
-        # kwallet popup disabled). Set after os.environ so it always wins.
-        if self._session_config_dir is not None:
-            env["XDG_CONFIG_HOME"] = str(self._session_config_dir)
-            # Strip host XKB defaults: on hosts with a non-US primary layout
-            # (e.g. ru,us via locale1) KWin compiles that keymap even with an
-            # empty kxkbrc, and evdev keycodes from the EIS keyboard then
-            # produce the host layout's characters instead of ASCII.
-            # An empty XKB_DEFAULT_LAYOUT resets libxkbcommon to plain "us".
-            for var in (
-                "XKB_DEFAULT_LAYOUT",
-                "XKB_DEFAULT_VARIANT",
-                "XKB_DEFAULT_OPTIONS",
-                "XKB_DEFAULT_RULES",
-                "XKB_DEFAULT_MODEL",
-            ):
-                env.pop(var, None)
         # Remove host display references to avoid kwin connecting to host
         env.pop("WAYLAND_DISPLAY", None)
         env.pop("DISPLAY", None)
 
         env.update(self._xdg_isolation_env())
+        # Without an isolated home, point the compositor at the per-session
+        # config dir from start() instead of the host's (see there).
+        if self._session_config_dir is not None:
+            env["XDG_CONFIG_HOME"] = str(self._session_config_dir)
+
+        # Pin the compositor keymap to plain US. The EIS keyboard sends evdev
+        # keycodes computed from a US QWERTY table, and KWin translates them
+        # through its own keymap, so a host layout such as ru,us would type
+        # "руддщ" for "hello". KWIN_XKB_DEFAULT_KEYMAP makes Xkb::reconfigure()
+        # skip both kxkbrc and locale1 and build the keymap from XKB_DEFAULT_*
+        # alone (KWin 6.3 xkb.cpp, loadDefaultKeymap/applyEnvironmentRules),
+        # so every XKB_DEFAULT_* the host may set is replaced here: an unset
+        # rules/model/variant/options falls back to libxkbcommon's defaults.
+        env["KWIN_XKB_DEFAULT_KEYMAP"] = "1"
+        env["XKB_DEFAULT_LAYOUT"] = "us"
+        for var in (
+            "XKB_DEFAULT_VARIANT",
+            "XKB_DEFAULT_OPTIONS",
+            "XKB_DEFAULT_RULES",
+            "XKB_DEFAULT_MODEL",
+        ):
+            env.pop(var, None)
+
+        # Last, so callers can still override any of the above on purpose.
         env.update(config.extra_env)
         return env
 

@@ -31,6 +31,14 @@ if TYPE_CHECKING:
 # room to report first so its FAILED diagnostics reach the caller.
 _STARTUP_READ_TIMEOUT = 60.0
 
+# KWin creates its Wayland socket early in startup but owns org.kde.KWin on
+# the session bus only once its workspace exists, which took over 2 s on a
+# loaded host. Every D-Bus consumer (EIS input, screenshots, scripting)
+# needs that name, so the wrapper waits for it before printing READY; this
+# bounds that wait.
+_KWIN_BUS_NAME = "org.kde.KWin"
+_KWIN_BUS_NAME_TIMEOUT = 30
+
 
 class SessionType(Enum):
     """Type of KWin session."""
@@ -249,12 +257,12 @@ class Session:
             socket_ready = self._wait_for_socket(socket_path, timeout=10.0)
         else:
             socket_ready = socket_path.exists()
-        if not socket_ready or not got_ready:
-            reason = (
-                "KWin failed to start"
-                if not socket_ready
-                else "Session setup failed: did not receive READY signal"
-            )
+        reason = None
+        if not socket_ready:
+            reason = "KWin failed to start"
+        elif not got_ready:
+            reason = "Session setup failed: did not receive READY signal"
+        if reason is not None:
             try:
                 # The session is failed but may still hold children; terminate
                 # the whole group before reading diagnostics or giving up.
@@ -715,9 +723,43 @@ if [ ! -e "$XDG_RUNTIME_DIR/{self._socket_name}" ]; then
     echo "kwin_wayland exited before creating socket {self._socket_name}" >&2
     exit 1
 fi
-sleep 0.3
 
-# Signal parent that setup is complete
+
+# The socket appears before KWin owns org.kde.KWin (registered when the
+# workspace is built, followed by the EIS plugin). Every D-Bus consumer of
+# the session needs that name, so the wrapper waits for it here; READY only
+# means callers may talk to KWin immediately. The wait never hangs: stop as
+# soon as KWin dies, and give up after {_KWIN_BUS_NAME_TIMEOUT} s so a hung
+# bus name claim still reaches FAILED before the parent's handshake
+# deadline. dbus-send --reply-timeout bounds each probe reply; a bus that
+# stalls authentication leaves the parent deadline as the outer bound.
+KWIN_NAME_DEADLINE=$((SECONDS + {int(_KWIN_BUS_NAME_TIMEOUT)}))
+while true; do
+    kill -0 $KWIN_PID 2>/dev/null || break
+    if dbus-send --session --print-reply=literal --reply-timeout=500 \\
+        --dest=org.freedesktop.DBus /org/freedesktop/DBus \\
+        org.freedesktop.DBus.NameHasOwner string:{_KWIN_BUS_NAME} 2>/dev/null \\
+        | grep -q true; then
+        break
+    fi
+    [ "$SECONDS" -lt "$KWIN_NAME_DEADLINE" ] || break
+    sleep 0.1
+done
+if ! dbus-send --session --print-reply=literal --reply-timeout=500 \\
+    --dest=org.freedesktop.DBus /org/freedesktop/DBus \\
+    org.freedesktop.DBus.NameHasOwner string:{_KWIN_BUS_NAME} 2>/dev/null \\
+    | grep -q true; then
+    echo "FAILED"
+    if ! kill -0 $KWIN_PID 2>/dev/null; then
+        echo "kwin_wayland exited before registering {_KWIN_BUS_NAME} on the session bus" >&2
+    else
+        echo "kwin_wayland did not register {_KWIN_BUS_NAME} on the session bus" \\
+            "within {int(_KWIN_BUS_NAME_TIMEOUT)}s of creating its socket" >&2
+    fi
+    exit 1
+fi
+
+# Signal parent that KWin owns its bus name and the session is usable.
 echo "READY"
 
 # Block until kwin exits

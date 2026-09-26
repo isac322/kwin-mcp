@@ -531,6 +531,7 @@ Coverage includes:
 
 - virtual KWin engine tests for session lifecycle, AT-SPI2 observation, window geometry and control, closing one window by id (including ids that contain a quote), EIS pointer/keyboard/touch input, clipboard, cleanup, and error handling;
 - failing-session lifecycle regressions that stub `kwin_wayland`/`dbus-run-session` on `PATH`: `session_start` must fail within its startup deadline and surface the captured session stderr plus stray stdout (including a newline-free partial line), and teardown must reap the entire owned process group even when the session leader was already reaped or a descendant ignores `SIGTERM`;
+- a KWin bus-name readiness regression whose `kwin_wayland` stub creates the Wayland socket before starting the real compositor: `session_start` must wait until `org.kde.KWin` has an owner before it sets up EIS input, and must fail with a clear error when KWin exits first or never takes the name;
 - an accessibility-bus check that `org.a11y.Bus` has an owner as soon as `session_start` returns, before any app or AT-SPI2 query could activate it, and that a failed activation (a `dbus-send` stub on `PATH`) is reported as a `Warning:` line in the `session_start` output;
 - exact input-schema checks for all 33 registered tools, plus installed-server stdio calls through every MCP wrapper;
 - nested visual tests that start Xvfb and a test-owned KWin compositor inside the container, connect the installed MCP server to it, and verify pixels as well as accessibility state;

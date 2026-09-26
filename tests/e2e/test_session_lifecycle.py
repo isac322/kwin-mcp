@@ -368,12 +368,20 @@ def test_session_start_reports_a_failed_accessibility_bus_activation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Only the wrapper resolves dbus-send through the patched PATH; the stub
-    # stands in for a distro without an org.a11y.Bus service file.
+    # stands in for a distro without an org.a11y.Bus service file. The
+    # org.kde.KWin ownership probe below must pass through to the real
+    # dbus-send or start() could never see KWin register.
+    real_dbus_send = shutil.which("dbus-send")
+    assert real_dbus_send is not None, "dbus-send not found in PATH"
     _install_stub(
         tmp_path,
         monkeypatch,
         "dbus-send",
         "#!/bin/sh\n"
+        'case "$*" in\n'
+        "    *NameHasOwner*)\n"
+        f'        exec {shlex.quote(real_dbus_send)} "$@";;\n'
+        "esac\n"
         "echo 'Error org.freedesktop.DBus.Error.ServiceUnknown: stub has no a11y bus' >&2\n"
         "echo 'second stderr line' >&2\n"
         "exit 1\n",
@@ -1120,3 +1128,220 @@ def test_session_stop_kills_term_ignoring_descendants(
     finally:
         _recover(session, None, pgid, tag)
         _reap(neighbor)
+
+
+# ---------------------------------------------------------------------------
+# KWin bus-name readiness (issue #74)
+#
+# KWin creates its Wayland socket before it owns org.kde.KWin on the session
+# bus, and the EIS input interface lives under that name. These kwin_wayland
+# stubs widen the gap at the PATH boundary: they create the socket path first
+# and start the real compositor late, or never.
+# ---------------------------------------------------------------------------
+
+# How long session_start must keep waiting while KWin is held back. The old
+# startup asked for EIS about 1 s after the socket appeared.
+KWIN_NAME_HOLD_SECONDS = 5.0
+KWIN_BUS_NAME_TIMEOUT_SECONDS: float = getattr(session_module, "_KWIN_BUS_NAME_TIMEOUT", 30.0)
+
+
+def _early_socket_stub(pgid_file: Path, then: str) -> str:
+    """kwin_wayland stub that creates its socket path at once, then runs `then`."""
+    return (
+        "#!/bin/bash\n"
+        f"{_record_pgid(pgid_file)}"
+        'args=("$@")\n'
+        "for ((i = 0; i < ${#args[@]}; i++)); do\n"
+        '    [ "${args[i]}" = --socket ] && socket=${args[i + 1]}\n'
+        "done\n"
+        ': > "$XDG_RUNTIME_DIR/$socket"\n'
+        f"{then}"
+    )
+
+
+def test_session_start_waits_for_kwin_bus_name_before_input_setup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, engine: AutomationEngine
+) -> None:
+    """session_start must not request EIS before KWin owns org.kde.KWin."""
+    real_kwin = shutil.which("kwin_wayland")
+    assert real_kwin is not None, "kwin_wayland not found in PATH"
+    gate = tmp_path / "release-kwin"
+    pgid_file = tmp_path / "session.pgid"
+    _install_stub(
+        tmp_path,
+        monkeypatch,
+        "kwin_wayland",
+        _early_socket_stub(
+            pgid_file,
+            f"until [ -e {shlex.quote(str(gate))} ]; do sleep 0.05; done\n"
+            'rm -f "$XDG_RUNTIME_DIR/$socket"\n'
+            f'exec {shlex.quote(real_kwin)} "$@"\n',
+        ),
+    )
+    outcome: list[str | BaseException] = []
+
+    def run() -> None:
+        try:
+            outcome.append(engine.session_start())
+        except BaseException as exc:
+            outcome.append(exc)
+
+    worker = threading.Thread(target=run, name="session-start-kwin-name", daemon=True)
+    worker.start()
+    try:
+        stub_ran = _wait_until(
+            lambda: _read_pgid(pgid_file) is not None, STUB_TOPOLOGY_TIMEOUT_SECONDS
+        )
+        worker.join(timeout=KWIN_NAME_HOLD_SECONDS)
+        returned_while_held = not worker.is_alive()
+    finally:
+        gate.touch()
+        worker.join(timeout=STUB_START_BUDGET_SECONDS)
+
+    assert stub_ran, "kwin_wayland stub never ran"
+    assert not worker.is_alive(), "session_start still blocked after KWin was released"
+    assert not returned_while_held, f"returned before KWin owned org.kde.KWin: {outcome}"
+    assert len(outcome) == 1, outcome
+    assert isinstance(outcome[0], str), outcome
+    assert "Input backend: KWin EIS" in outcome[0], outcome[0]
+
+
+def test_session_start_fails_fast_when_kwin_exits_before_owning_its_bus_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    background_start: Callable[[Session, SessionConfig], _BackgroundStart],
+) -> None:
+    """KWin dies after its socket appeared but before owning org.kde.KWin."""
+    tag = f"stub-kwin-name-exit-{os.getpid()}"
+    pgid_file = tmp_path / "session.pgid"
+    _install_stub(
+        tmp_path,
+        monkeypatch,
+        "kwin_wayland",
+        _early_socket_stub(pgid_file, f"exec -a {tag} sleep infinity\n"),
+    )
+    session = Session()
+    run: _BackgroundStart | None = None
+    observed: _FailedStart | None = None
+    try:
+        run = background_start(session, SessionConfig(socket_name=f"mcpname-{os.getpid()}-exit"))
+        # The tagged process exists only after the socket path was created.
+        stub_running = _wait_until(lambda: bool(_tagged_pids(tag)), STUB_TOPOLOGY_TIMEOUT_SECONDS)
+        assert stub_running, "kwin_wayland stub never ran"
+        for pid in _tagged_pids(tag):
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGKILL)
+
+        observed = _observe_failed_start(run, pgid_file, tag)
+
+        _assert_failed_start_cleaned_up(observed)
+        assert observed.elapsed is not None
+        # The exit, not the bus-name deadline, must end startup.
+        assert observed.elapsed < KWIN_BUS_NAME_TIMEOUT_SECONDS, observed
+        assert "org.kde.KWin" in str(observed.error), observed
+    finally:
+        _recover(session, run, observed.pgid if observed else _read_pgid(pgid_file), tag)
+
+
+def test_session_start_fails_bounded_when_kwin_never_owns_its_bus_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    background_start: Callable[[Session, SessionConfig], _BackgroundStart],
+) -> None:
+    """A compositor that never takes org.kde.KWin fails start() at the deadline."""
+    bus_name_timeout = 2.0
+    monkeypatch.setattr(session_module, "_KWIN_BUS_NAME_TIMEOUT", bus_name_timeout, raising=False)
+    tag = f"stub-kwin-name-never-{os.getpid()}"
+    pgid_file = tmp_path / "session.pgid"
+    _install_stub(
+        tmp_path,
+        monkeypatch,
+        "kwin_wayland",
+        _early_socket_stub(pgid_file, f"exec -a {tag} sleep infinity\n"),
+    )
+    session = Session()
+    run: _BackgroundStart | None = None
+    observed: _FailedStart | None = None
+    try:
+        run = background_start(session, SessionConfig(socket_name=f"mcpname-{os.getpid()}-never"))
+        observed = _observe_failed_start(run, pgid_file, tag)
+
+        _assert_failed_start_cleaned_up(observed)
+        assert observed.elapsed is not None
+        # The wrapper's deadline is in whole $SECONDS plus a probe round, so
+        # it can fire almost two short of a tight patched budget.
+        assert observed.elapsed > bus_name_timeout - 2.0, observed
+        assert "org.kde.KWin" in str(observed.error), observed
+    finally:
+        _recover(session, run, observed.pgid if observed else _read_pgid(pgid_file), tag)
+
+
+def _bus_daemon_pid(leader_pid: int) -> int | None:
+    """PID of the dbus-daemon under a dbus-run-session leader, or None."""
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            if (entry / "comm").read_text().strip() != "dbus-daemon":
+                continue
+            stat = (entry / "stat").read_text()
+        except OSError:
+            continue
+        # Fields after the comm's ")" are: state ppid pgrp ...
+        fields = stat.rpartition(")")[2].split()
+        if len(fields) > 2 and int(fields[1]) == leader_pid:
+            return int(entry.name)
+    return None
+
+
+def test_session_start_stays_bounded_when_the_bus_stalls_during_startup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    background_start: Callable[[Session, SessionConfig], _BackgroundStart],
+) -> None:
+    """A bus that stalls while KWin registers its name fails at the deadline.
+
+    The kwin stub creates the socket then sleeps forever, so the wrapper is
+    inside its org.kde.KWin ownership loop. SIGSTOPping the session
+    dbus-daemon makes every further dbus-send probe hang; start() must still
+    fail through its startup-handshake deadline and tear the group down.
+    """
+    handshake_timeout = 8.0
+    monkeypatch.setattr(session_module, "_STARTUP_READ_TIMEOUT", handshake_timeout, raising=False)
+    tag = f"stub-bus-stall-{os.getpid()}"
+    pgid_file = tmp_path / "session.pgid"
+    _install_stub(
+        tmp_path,
+        monkeypatch,
+        "kwin_wayland",
+        _early_socket_stub(pgid_file, f"exec -a {tag} sleep infinity\n"),
+    )
+    session = Session()
+    daemon_pid: int | None = None
+    run: _BackgroundStart | None = None
+    observed: _FailedStart | None = None
+    try:
+        run = background_start(session, SessionConfig(socket_name=f"mcpname-{os.getpid()}-stall"))
+        # The stub appears after the wrapper entered the name-wait loop.
+        stub_running = _wait_until(
+            lambda: _read_pgid(pgid_file) is not None, STUB_TOPOLOGY_TIMEOUT_SECONDS
+        )
+        assert stub_running, "kwin_wayland stub never ran"
+        leader = session._process
+        assert leader is not None
+        daemon_pid = _bus_daemon_pid(leader.pid)
+        assert daemon_pid is not None, "session dbus-daemon not found"
+        os.kill(daemon_pid, signal.SIGSTOP)
+
+        observed = _observe_failed_start(run, pgid_file, tag)
+
+        _assert_failed_start_cleaned_up(observed)
+        assert observed.elapsed is not None
+        # The stalled daemon, not the wrapper's name deadline, ended startup.
+        assert observed.elapsed >= handshake_timeout, observed
+        assert "READY" in str(observed.error), observed
+    finally:
+        if daemon_pid is not None:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(daemon_pid, signal.SIGCONT)
+        _recover(session, run, observed.pgid if observed else _read_pgid(pgid_file), tag)

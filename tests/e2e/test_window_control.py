@@ -206,11 +206,12 @@ def test_touch_multi_swipe_delivers_both_fingers_to_the_app(
     assert "Input backend: KWin EIS" in output, output
     wait_for_app(PROBE_SELECTOR)
     x, y, width, height = _probe_rect(engine, "Drag Target")
-    row = y + height // 2
-    from_x, to_x = x + width // 3, x + width * 2 // 3
+    from_x, from_y = x + width // 4, y + (height * 3) // 4
+    to_x, to_y = x + width * 3 // 4, y + height // 4
+    dx, dy = to_x - from_x, from_y - to_y
 
     engine.touch_multi_swipe(
-        from_x=from_x, from_y=row, to_x=to_x, to_y=row, fingers=2, duration_ms=400
+        from_x=from_x, from_y=from_y, to_x=to_x, to_y=to_y, fingers=2, duration_ms=400
     )
     status = _wait_for_drag_release(engine)
 
@@ -219,9 +220,12 @@ def test_touch_multi_swipe_delivers_both_fingers_to_the_app(
     assert int(_probe_field(status, "fingers")) == 2, status
     assert int(_probe_field(status, "motions")) >= 20, status
     # bounds are (min_x,min_y,max_x,max_y) over both fingers in widget pixels.
+    # The spans prove the requested displacement arrived in both axes: the
+    # vertical span is the swipe's dy plus the fingers' 20px spacing, so a
+    # stream that loses Y motion cannot produce it.
     bounds = [int(v) for v in _probe_field(status, "bounds").strip("()").split(",")]
-    assert bounds[2] - bounds[0] >= (to_x - from_x) * 3 // 4, status
-    assert bounds[3] - bounds[1] >= 16, status
+    assert bounds[2] - bounds[0] >= dx * 3 // 4, status
+    assert bounds[3] - bounds[1] >= (dy + 20) * 3 // 4, status
 
 
 def test_touch_pinch_delivers_multitouch_to_the_app(

@@ -594,24 +594,24 @@ async def test_touch_wrappers_change_gui_state_and_report_kwin_limits(tmp_path: 
             )
 
         drag_x, drag_y, drag_width, drag_height = await _probe_rect(client, "Drag Target")
-        row = drag_y + drag_height // 2
-        swipe_from = drag_x + drag_width // 3
-        swipe_to = drag_x + drag_width * 2 // 3
+        swipe_from = (drag_x + drag_width // 4, drag_y + (drag_height * 3) // 4)
+        swipe_to = (drag_x + drag_width * 3 // 4, drag_y + drag_height // 4)
         for fingers in (2, 3, 4, 5):
             marker = await _probe_status(client, "drag_status")
             output = await client.call_text(
                 "touch_multi_swipe",
                 {
-                    "from_x": swipe_from,
-                    "from_y": row,
-                    "to_x": swipe_to,
-                    "to_y": row,
+                    "from_x": swipe_from[0],
+                    "from_y": swipe_from[1],
+                    "to_x": swipe_to[0],
+                    "to_y": swipe_to[1],
                     "fingers": fingers,
                     "duration_ms": 400,
                 },
             )
             assert output == (
-                f"{fingers}-finger swipe from ({swipe_from}, {row}) to ({swipe_to}, {row}) in 400ms"
+                f"{fingers}-finger swipe from ({swipe_from[0]}, {swipe_from[1]}) "
+                f"to ({swipe_to[0]}, {swipe_to[1]}) in 400ms"
             )
             status = await _wait_for_probe_status(
                 client,
@@ -627,6 +627,12 @@ async def test_touch_wrappers_change_gui_state_and_report_kwin_limits(tmp_path: 
                 assert _probe_field(status, "release") == "touch", status
                 assert observed == 2, status
                 assert int(_probe_field(status, "motions")) >= 20, status
+                # The bounds spans prove the requested diagonal displacement
+                # arrived in both axes; the vertical span is dy plus the 20px
+                # spacing between fingers.
+                bounds = [int(v) for v in _probe_field(status, "bounds").strip("()").split(",")]
+                assert bounds[2] - bounds[0] >= (swipe_to[0] - swipe_from[0]) * 3 // 4, status
+                assert bounds[3] - bounds[1] >= (swipe_from[1] - swipe_to[1] + 20) * 3 // 4, status
             else:
                 # KWin claims three or more fingers as a compositor gesture and
                 # cancels the fingers the application had already received.

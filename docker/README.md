@@ -26,7 +26,7 @@ All Python dependencies — `mcp` within the declared 1.x range, PyGObject, pyca
 
 ### Multi-touch oracles and Qt versions
 
-KWrite cannot show that a multi-finger touch reached it, so the multi-touch assertions in `test_window_control.py` and `test_mcp_touch_clipboard.py` read the GTK interaction probe (`interaction_probe.py`) instead. The probe records each touch sequence (`fingers`, `motions`, `release`) and runs a `GestureZoom`. KWrite remains the oracle for single-finger swipe scrolling.
+KWrite cannot show that a multi-finger touch reached it, so `test_touch_multi_swipe_delivers_both_fingers_to_the_app` in `test_window_control.py` and the multi-touch assertions in `test_mcp_touch_clipboard.py` read the GTK interaction probe (`interaction_probe.py`) instead. The probe records each touch sequence (`fingers`, `motions`, `release`) and runs a `GestureZoom`. KWrite remains the oracle for single-finger swipe scrolling; `test_touch_pinch_delivers_multitouch_to_the_app` still reads KWrite's clipboard response, which the last bullet caveats.
 
 - Both KWin 6.3.6 and 6.7.5 deliver the same `wl_touch` stream for a two-finger swipe (two `down`, paired `motion`, two `up`, no `cancel`). `GlobalShortcutFilter::touchDown` in KWin's `src/input.cpp` claims a touchscreen gesture only at three or more touch points, and both versions have that code.
 - KTextEditor scrolls through `QScroller::grabGesture` (`kateviewinternal.cpp`). `QFlickGestureRecognizer::recognize` in Qt's `qflickgesture.cpp` ignores any touchscreen `QTouchEvent` without exactly one point, the same in Qt 6.8.2 and 6.11.2.

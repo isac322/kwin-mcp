@@ -40,6 +40,7 @@ ENV KWIN_MCP_SYSTEM_PACKAGES="\
         dejavu-fonts \
         google-noto-coloremoji-fonts \
         google-noto-sans-cjk-fonts \
+        imlib2-loaders \
         kcalc \
         konsole \
         kwin6 \

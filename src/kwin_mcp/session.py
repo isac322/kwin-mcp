@@ -321,6 +321,11 @@ class Session:
             "QT_ACCESSIBILITY": "1",
         }
         env.update(self._xdg_isolation_env())
+        # Never leak the host DISPLAY into the isolated session: X11 apps would
+        # silently open on the user's real desktop instead of failing. The
+        # virtual compositor starts no Xwayland, so there is no session-local
+        # value to substitute. An explicit extra_env DISPLAY still applies.
+        env.pop("DISPLAY", None)
         if extra_env:
             env.update(extra_env)
         if self._info.dbus_address:

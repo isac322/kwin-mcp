@@ -349,7 +349,7 @@ def test_session_start_reports_a_failed_accessibility_bus_activation(
     assert "Session started. Wayland socket: " in output, output
     warnings = [line for line in output.splitlines() if line.startswith("Warning: ")]
     assert warnings == [
-        "Warning: AT-SPI bus activation failed, accessibility tools are unavailable in this"
+        "Warning: AT-SPI bus activation failed, accessibility tools may be unavailable in this"
         " session: Error org.freedesktop.DBus.Error.ServiceUnknown: stub has no a11y bus"
     ], output
 

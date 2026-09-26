@@ -23,11 +23,12 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from typing import IO
 
-# Upper bound for the startup handshake. The wrapper script itself gives up
-# after its own ~30 s socket wait, so this bound only covers cases the wrapper
-# cannot report: a leader killed while descendants keep stdout open, or a
-# partial line that never terminates. 60 s leaves the wrapper room to report
-# first so its FAILED diagnostics reach the caller.
+# Upper bound for the startup handshake. The wrapper itself is bounded: the
+# AT-SPI bus activation call gives up after 10 s (--reply-timeout) and the
+# socket wait after ~30 s, about 40 s in the worst case. This bound only covers
+# cases the wrapper cannot report: a leader killed while descendants keep
+# stdout open, or a partial line that never terminates. 60 s leaves the wrapper
+# room to report first so its FAILED diagnostics reach the caller.
 _STARTUP_READ_TIMEOUT = 60.0
 
 
@@ -615,13 +616,13 @@ trap cleanup EXIT TERM INT HUP
 # bus, so no manual bootstrap is needed here. Activation failure is reported
 # to the caller instead of being hidden: without the bus the first AT-SPI2
 # query itself activates the launcher and always returns an empty result.
-if ! ATSPI_ERR=$(dbus-send --session --print-reply \\
+if ! ATSPI_ERR=$(dbus-send --session --print-reply --reply-timeout=10000 \\
     --dest=org.a11y.Bus /org/a11y/bus \\
     org.a11y.Bus.GetAddress 2>&1 >/dev/null); then
     # Keep the warning on one line: multi-line stderr would read as several
     # unrelated diagnostics in the startup handshake.
     ATSPI_ERR=${{ATSPI_ERR%%$'\\n'*}}
-    echo "WARN: AT-SPI bus activation failed, accessibility tools are unavailable" \\
+    echo "WARN: AT-SPI bus activation failed, accessibility tools may be unavailable" \\
         "in this session: ${{ATSPI_ERR:-unknown error}}"
 fi
 

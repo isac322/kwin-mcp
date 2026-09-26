@@ -18,8 +18,8 @@ import select
 import shutil
 import subprocess
 import sys
-import threading
 import time
+from collections.abc import Callable
 from enum import Enum
 
 import dbus
@@ -616,13 +616,14 @@ _CLIPBOARD_RESTORE_TIMEOUT = RESTORE_ROUNDTRIP_S + _CLIPBOARD_MARGIN
 _CLIPBOARD_EVENTS = frozenset({"READY", "ARMED", "TRANSFERRED", "CANCELLED", "RESTORED", "ERR"})
 
 # Paste chord selection. GUI toolkits paste on Ctrl+V and ignore it otherwise,
-# but a terminal that does not bind Ctrl+V forwards it to the pty as ^V
+# but a terminal that does not bind the sent chord forwards it to the pty as ^V
 # (VLNEXT, or a line editor's quoted-insert), which alters the next keystroke
 # long after the call has reported failure. No follow-up key can cancel that
 # state without itself being inserted literally, so the chord must be right
 # before anything is pressed. Terminals listed here paste the clipboard on
-# Ctrl+Shift+V by default (Konsole: ACCEL | Qt::Key_V). Other terminals get no
-# chord at all: xterm, urxvt and st have no default clipboard paste chord, and
+# Ctrl+Shift+V by default (Konsole: ACCEL | Qt::Key_V; st: config.def.h
+# TERMMOD|XK_V -> clippaste). Terminal-like classes that are not listed get no
+# chord at all: xterm and urxvt have no default clipboard paste chord, and
 # Shift+Insert pastes the primary selection in VTE, xterm and foot, which the
 # helper does not own. Classes are compared lowercased.
 _CTRL_SHIFT_V_TERMINALS = frozenset(
@@ -639,11 +640,12 @@ _CTRL_SHIFT_V_TERMINALS = frozenset(
         "org.kde.konsole",
         "org.kde.yakuake",
         "org.wezfurlong.wezterm",
+        "st-256color",
         "terminator",
         "xfce4-terminal",
     }
 )
-_UNPASTEABLE_TERMINAL_MARKERS = ("term", "rxvt", "st-256color")
+_UNPASTEABLE_TERMINAL_MARKERS = ("term", "rxvt")
 
 
 def _paste_chord(resource_class: str | None) -> str | None:
@@ -1240,7 +1242,7 @@ class InputBackend:
         self,
         text: str,
         env: dict[str, str] | None = None,
-        focused_class: str | None = None,
+        focused_class: str | None | Callable[[], str | None] = None,
     ) -> bool:
         """Type arbitrary Unicode text using wtype or a temporary clipboard paste.
 
@@ -1249,16 +1251,19 @@ class InputBackend:
         for KDE clipboard managers) and restores the snapshot after the paste.
         The paste chord is sent only after the helper owns the selection and
         has armed transfer counting, so a failed or slow copy never pastes
-        stale content. The chord follows ``focused_class``: Ctrl+Shift+V for
-        terminals known to paste on it, none for other terminals or an unknown
-        target, and Ctrl+V otherwise (see ``_paste_chord``).
+        stale content. The chord follows the focused window's class: Ctrl+Shift+V
+        for terminals known to paste on it, none for other terminals or an
+        unknown target, and Ctrl+V otherwise (see ``_paste_chord``).
 
         Args:
             text: Text to type (supports non-ASCII, e.g. Korean, CJK).
             env: Session environment. Both routes use Wayland clients, so this
                 must carry WAYLAND_DISPLAY of the target session.
             focused_class: KWin resource class of the active window ("" when
-                none is active), or None when it could not be determined.
+                none is active), None when it could not be determined, or a
+                zero-argument callable returning one of those. A callable is
+                resolved only when the clipboard path is reached, so a session
+                where wtype succeeds never pays for the window query.
 
         Returns:
             True if wtype succeeded, or if the text was transferred to a
@@ -1289,7 +1294,8 @@ class InputBackend:
             if result is not None and result.returncode == 0:
                 return True
 
-        return self._paste_via_clipboard(text, env, _paste_chord(focused_class))
+        cls = focused_class() if callable(focused_class) else focused_class
+        return self._paste_via_clipboard(text, env, _paste_chord(cls))
 
     def _paste_via_clipboard(self, text: str, env: dict[str, str], chord: str | None) -> bool:
         if chord is None:

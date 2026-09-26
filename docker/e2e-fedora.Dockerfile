@@ -52,6 +52,7 @@ ENV KWIN_MCP_SYSTEM_PACKAGES="\
         mesa-dri-drivers \
         mesa-libEGL \
         mesa-libGL \
+        procps-ng \
         python3 \
         python3-dbus \
         python3-gobject \

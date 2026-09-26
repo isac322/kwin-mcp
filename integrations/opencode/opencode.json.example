@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "kwin-mcp": {
+      "type": "local",
+      "command": ["uvx", "kwin-mcp"],
+      "enabled": true
+    }
+  }
+}

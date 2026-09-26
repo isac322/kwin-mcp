@@ -13,14 +13,21 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import ctypes.util
+import os
 import select
 import shutil
 import subprocess
+import sys
+import threading
 import time
 from enum import Enum
 
 import dbus
+import dbus.bus
 from dbus.mainloop.glib import DBusGMainLoop
+
+# Protocol constants only; importing the helper module loads no C library.
+from kwin_mcp.clipboard import MAX_COPY_BYTES, READY_BUDGET_S, RESTORE_ROUNDTRIP_S
 
 
 class MouseButton(Enum):
@@ -35,6 +42,11 @@ _BTN_CODES: dict[MouseButton, int] = {
     MouseButton.RIGHT: 0x111,  # BTN_RIGHT
     MouseButton.MIDDLE: 0x112,  # BTN_MIDDLE
 }
+
+# Give KWin enough time to dispatch each button transition while keeping
+# consecutive presses comfortably inside GTK's multi-click recognition window.
+_CLICK_PRESS_SECONDS = 0.025
+_MULTI_CLICK_GAP_SECONDS = 0.06
 
 # Linux evdev keycodes for special keys
 _EVDEV_KEY_MAP: dict[str, int] = {
@@ -129,6 +141,70 @@ _EI_EVENT_DEVICE_RESUMED = 8
 
 # Scroll axis values (in libei, scroll is in pixels)
 _SCROLL_STEP_PIXELS = 15.0
+# libei expresses discrete scrolling in 120ths of a wheel detent.
+_SCROLL_DISCRETE_UNIT = 120
+
+_X11_POINTER_MIRROR_TIMEOUT_SECONDS = 5
+
+
+def _mirror_x11_pointer(dbus_address: str, x: int, y: int) -> None:
+    """Mirror an absolute EIS move to the X display used for scrot screenshots.
+
+    EIS takes global logical coordinates while the X display holds each KWin
+    output at its physical size, so the point is mapped through the current
+    output topology. An unmappable point raises rather than moving the X
+    cursor to a wrong pixel.
+    """
+    if os.environ.get("KWIN_MCP_X11_SCREENSHOT") != "1":
+        return
+
+    display = os.environ.get("DISPLAY")
+    if not display:
+        return
+
+    from kwin_mcp.screenshot import x11_physical_point
+
+    x, y = x11_physical_point(dbus_address, display, x, y)
+
+    xdotool = shutil.which("xdotool")
+    if xdotool is None:
+        raise RuntimeError(
+            "KWIN_MCP_X11_SCREENSHOT=1 requires xdotool to mirror the screenshot cursor"
+        )
+
+    env = {"DISPLAY": display}
+    for name in ("HOME", "XAUTHORITY"):
+        if value := os.environ.get(name):
+            env[name] = value
+
+    try:
+        result = subprocess.run(
+            [xdotool, "mousemove", str(x), str(y)],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=_X11_POINTER_MIRROR_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "KWIN_MCP_X11_SCREENSHOT=1 requires xdotool to mirror the screenshot cursor"
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            "xdotool timed out while mirroring the screenshot cursor "
+            f"to ({x}, {y}) on DISPLAY={display}"
+        ) from exc
+
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(
+            "xdotool failed to mirror the screenshot cursor "
+            f"to ({x}, {y}) on DISPLAY={display} (exit {result.returncode}){suffix}"
+        )
 
 
 def _load_libei() -> ctypes.CDLL:
@@ -162,7 +238,8 @@ def _load_libei() -> ctypes.CDLL:
     lib.ei_seat_has_capability.argtypes = [ctypes.c_void_p, ctypes.c_uint]
     lib.ei_seat_ref.restype = ctypes.c_void_p
     lib.ei_seat_ref.argtypes = [ctypes.c_void_p]
-    # ei_seat_bind_capabilities is variadic, argtypes not set
+    lib.ei_seat_bind_capabilities.restype = None
+    lib.ei_seat_bind_capabilities.argtypes = [ctypes.c_void_p]  # variadic: fixed param only
 
     # Device functions
     lib.ei_event_get_device.restype = ctypes.c_void_p
@@ -244,19 +321,26 @@ class EISClient:
 
     def _setup(self) -> None:
         """Connect to KWin EIS and negotiate devices."""
-        eis_obj = self._bus.get_object("org.kde.KWin", "/org/kde/KWin/EIS/RemoteDesktop")
-        self._eis_iface = dbus.Interface(eis_obj, "org.kde.KWin.EIS.RemoteDesktop")
+        # KWin only exposes the EIS interface when it supports remote input;
+        # translate the D-Bus failure so callers can treat the input backend as
+        # optional (see AutomationEngine.session_start).
+        try:
+            eis_obj = self._bus.get_object("org.kde.KWin", "/org/kde/KWin/EIS/RemoteDesktop")
+            self._eis_iface = dbus.Interface(eis_obj, "org.kde.KWin.EIS.RemoteDesktop")
 
-        # Request all relevant capabilities
-        caps = (
-            _EI_CAP_POINTER
-            | _EI_CAP_POINTER_ABSOLUTE
-            | _EI_CAP_KEYBOARD
-            | _EI_CAP_TOUCH
-            | _EI_CAP_BUTTON
-            | _EI_CAP_SCROLL
-        )
-        result = self._eis_iface.connectToEIS(dbus.Int32(caps))
+            # Request all relevant capabilities
+            caps = (
+                _EI_CAP_POINTER
+                | _EI_CAP_POINTER_ABSOLUTE
+                | _EI_CAP_KEYBOARD
+                | _EI_CAP_TOUCH
+                | _EI_CAP_BUTTON
+                | _EI_CAP_SCROLL
+            )
+            result = self._eis_iface.connectToEIS(dbus.Int32(caps))
+        except dbus.DBusException as exc:
+            msg = f"KWin EIS interface unavailable: {exc}"
+            raise RuntimeError(msg) from exc
         fd = result[0].take()
         self._cookie = int(result[1])
 
@@ -279,9 +363,16 @@ class EISClient:
         self._negotiate_devices()
 
     def _negotiate_devices(self, timeout: float = 5.0) -> None:
-        """Process EIS handshake events until we have pointer + keyboard."""
+        """Process EIS handshake events until pointer + keyboard are usable.
+
+        A libei device may only emulate once the server has resumed it. Calling
+        ei_device_start_emulating() earlier is rejected ("device is not
+        emulating") and every event sent afterwards is silently dropped, so wait
+        for EI_EVENT_DEVICE_RESUMED on each device before starting emulation.
+        """
         ei_fd = _libei.ei_get_fd(self._ei)
         start = time.monotonic()
+        resumed: set[int] = set()
 
         while time.monotonic() - start < timeout:
             readable, _, _ = select.select([ei_fd], [], [], 0.3)
@@ -309,11 +400,11 @@ class EISClient:
                     self._register_device(event)
 
                 elif etype == _EI_EVENT_DEVICE_RESUMED:
-                    pass  # Device ready for input
+                    resumed.add(int(_libei.ei_event_get_device(event)))
 
                 _libei.ei_event_unref(event)
 
-            if self._pointer and self._keyboard:
+            if self._pointer in resumed and self._keyboard in resumed:
                 break
 
         if not self._pointer:
@@ -323,12 +414,13 @@ class EISClient:
             msg = "No keyboard device available from EIS"
             raise RuntimeError(msg)
 
-        # Start emulating on all devices
-        _libei.ei_device_start_emulating(self._pointer, 0)
-        if self._keyboard != self._pointer:
-            _libei.ei_device_start_emulating(self._keyboard, 0)
-        if self._touch_device and self._touch_device not in (self._pointer, self._keyboard):
-            _libei.ei_device_start_emulating(self._touch_device, 0)
+        # Devices that never announced a resume are still started: emulating a
+        # paused device is no worse than the unconditional start this wait
+        # replaced, and losing a slow-to-resume device would drop input that
+        # used to work.
+        for device in {self._pointer, self._keyboard, self._touch_device}:
+            if device:
+                _libei.ei_device_start_emulating(device, 0)
 
     def _bind_seat_capabilities(self, event: int) -> None:
         """Bind to all available capabilities on the seat."""
@@ -482,6 +574,140 @@ class EISClient:
             self._ei = 0
 
 
+# Bounds for the transient clipboard helper (``python -m kwin_mcp.clipboard``).
+# Parent waits are the helper's own worst-case budgets plus a margin for
+# interpreter startup and pipe latency, so a slow but successful step is never
+# misreported. READY also covers writing the COPY request. The transfer bound
+# is how long the focused app gets to request the text after Ctrl+V before the
+# call reports failure; the prior selection is restored either way.
+_CLIPBOARD_MARGIN = 2.0
+_CLIPBOARD_READY_TIMEOUT = READY_BUDGET_S + _CLIPBOARD_MARGIN
+_CLIPBOARD_ARM_TIMEOUT = 2.0
+_CLIPBOARD_TRANSFER_TIMEOUT = 4.0
+_CLIPBOARD_RESTORE_TIMEOUT = RESTORE_ROUNDTRIP_S + _CLIPBOARD_MARGIN
+_CLIPBOARD_EVENTS = frozenset({"READY", "ARMED", "TRANSFERRED", "CANCELLED", "RESTORED", "ERR"})
+
+
+class _ClipboardHelper:
+    """Line-protocol driver for one transient clipboard helper process.
+
+    The helper takes the selection with the text, reports transfers, and puts
+    the snapshotted prior selection back on RESTORE. It is never signalled:
+    once it serves a restored selection, killing it would drop the user's
+    previous clipboard, so teardown only restores and closes stdin.
+    """
+
+    def __init__(self, env: dict[str, str]) -> None:
+        self._proc = subprocess.Popen(
+            [sys.executable, "-m", "kwin_mcp.clipboard"],
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        self._buffer = b""
+        self._eof = False
+        # True between READY and RESTORED/CANCELLED/exit: the text is the
+        # current selection and the prior one only lives in the helper.
+        self._owns_text = False
+        # Set by RESTORED (prior selection back) or CANCELLED (a newer copy
+        # replaced ours): the only outcomes that leave the clipboard correct.
+        self._settled = False
+        if self._proc.stdin is not None:
+            # Writes go through send(), bounded by the caller's deadline.
+            os.set_blocking(self._proc.stdin.fileno(), False)
+
+    def send(self, data: bytes, deadline: float) -> bool:
+        """Write ``data`` to the helper, giving up at ``deadline``."""
+        stdin = self._proc.stdin
+        if stdin is None:
+            return False
+        fd = stdin.fileno()
+        view = memoryview(data)
+        while view:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            _, writable, _ = select.select([], [fd], [], remaining)
+            if not writable:
+                return False
+            try:
+                written = os.write(fd, view)
+            except BlockingIOError:
+                continue
+            except OSError:
+                return False
+            view = view[written:]
+        return True
+
+    def next_event(self, timeout: float) -> str | None:
+        """Return the next protocol event, or None on timeout or helper exit."""
+        deadline = time.monotonic() + timeout
+        while True:
+            line = self._read_line(deadline)
+            if line is None:
+                if self._eof:
+                    self._owns_text = False
+                return None
+            event = line.split(" ", 1)[0]
+            if event not in _CLIPBOARD_EVENTS:
+                continue
+            if event == "READY":
+                self._owns_text = True
+            elif event in ("RESTORED", "CANCELLED"):
+                self._owns_text = False
+                self._settled = True
+            return event
+
+    def _read_line(self, deadline: float) -> str | None:
+        stdout = self._proc.stdout
+        if stdout is None:
+            return None
+        fd = stdout.fileno()
+        while b"\n" not in self._buffer:
+            if self._eof:
+                return None
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            ready, _, _ = select.select([fd], [], [], remaining)
+            if not ready:
+                return None
+            chunk = os.read(fd, 4096)
+            if not chunk:
+                self._eof = True
+                return None
+            self._buffer += chunk
+        line, self._buffer = self._buffer.split(b"\n", 1)
+        return line.decode("ascii", errors="replace").strip()
+
+    def release(self) -> bool:
+        """Put the prior selection back if needed and detach from the helper.
+
+        Returns True unless the helper owned the text and neither RESTORED nor
+        CANCELLED was confirmed (restore error, timeout, or helper exit).
+        """
+        if self._owns_text:
+            deadline = time.monotonic() + _CLIPBOARD_RESTORE_TIMEOUT
+            # A failed send may mean the helper already exited after
+            # CANCELLED; still read what it reported before judging.
+            self.send(b"RESTORE\n", deadline)
+            while self._owns_text:
+                event = self.next_event(max(0.0, deadline - time.monotonic()))
+                if event is None or event == "ERR":
+                    break
+        settled = self._settled or (not self._owns_text and not self._eof)
+        # EOF tells a helper that still owns the text to restore on its own;
+        # one serving the restored selection keeps running until replaced.
+        for pipe in (self._proc.stdin, self._proc.stdout):
+            if pipe is not None:
+                with contextlib.suppress(OSError):
+                    pipe.close()
+        threading.Thread(target=self._proc.wait, daemon=True).start()
+        return settled
+
+
 class InputBackend:
     """High-level input injection for an isolated KWin session.
 
@@ -490,11 +716,37 @@ class InputBackend:
     """
 
     def __init__(self, dbus_address: str) -> None:
+        self._dbus_address = dbus_address
         self._client = EISClient(dbus_address)
+        # Buttons pressed by mouse_button_down and not yet released. While any
+        # is held, pointer motion is part of a drag path the client records.
+        self._held_buttons: set[int] = set()
 
     def mouse_move(self, x: int, y: int) -> None:
-        """Move mouse to absolute coordinates (hover)."""
+        """Move mouse to absolute coordinates (hover).
+
+        In KWin 6.3.6, ``SeatInterface::notifyPointerMotion`` (``seat.cpp``)
+        returns early for an absolute motion that does not change the global
+        cursor position, and no ``wl_pointer.motion`` is sent when a surface is
+        mapped or moved under a stationary cursor. A client whose window
+        appeared or moved beneath a parked cursor therefore keeps a stale
+        surface-local pointer position, and a button sent after a same-position
+        move is dispatched at that stale spot (issue #66).
+
+        With no button held, the move first visits an adjacent pixel so the
+        final move to ``(x, y)`` is a position change and the focused client
+        receives a current enter/motion there. This restores coordinate sync
+        only when KWin accepts the adjacent point: output clamping, edge
+        barriers, or pointer confinement can pin it back onto ``(x, y)``, which
+        leaves the same-position move a no-op again. While a button pressed by
+        ``mouse_button_down`` is held, the move goes straight to ``(x, y)``: an
+        out-and-back detour would become part of the drag path the client sees.
+        """
+        if not self._held_buttons:
+            approach_x = x - 1 if x > 0 else x + 1
+            self._client.pointer_move_absolute(float(approach_x), float(y))
         self._client.pointer_move_absolute(float(x), float(y))
+        _mirror_x11_pointer(self._dbus_address, x, y)
 
     def mouse_click(
         self,
@@ -533,12 +785,12 @@ class InputBackend:
 
         for i in range(click_count):
             if i > 0:
-                time.sleep(0.05)
+                time.sleep(_MULTI_CLICK_GAP_SECONDS)
             self._client.pointer_button(btn_code, _PRESSED)
             if hold_ms > 0 and i == click_count - 1:
-                time.sleep(max(0.01, hold_ms / 1000.0))
+                time.sleep(max(_CLICK_PRESS_SECONDS, hold_ms / 1000.0))
             else:
-                time.sleep(0.01)
+                time.sleep(_CLICK_PRESS_SECONDS)
             self._client.pointer_button(btn_code, _RELEASED)
 
         # Release modifier keys in reverse order
@@ -567,27 +819,35 @@ class InputBackend:
         """
         self.mouse_move(x, y)
         time.sleep(0.02)
+        increments = max(steps, 1)
 
         if discrete:
-            dx = delta if horizontal else 0
-            dy = delta if not horizontal else 0
-            if steps > 1:
-                for i in range(steps):
-                    frac_dx = dx // steps + (1 if i < dx % steps else 0) if dx else 0
-                    frac_dy = dy // steps + (1 if i < dy % steps else 0) if dy else 0
-                    if frac_dx or frac_dy:
-                        self._client.pointer_scroll_discrete(frac_dx, frac_dy)
-                    time.sleep(0.01)
-            else:
-                self._client.pointer_scroll_discrete(dx, dy)
+            # libei counts discrete scrolling in 120ths of a wheel detent (the
+            # wl_pointer axis_value120 convention). Passing the caller's click
+            # count straight through makes libei reject it as a suspicious
+            # fraction of a click and the compositor drops the event, so split
+            # whole detents across the increments and scale each chunk. The
+            # split works on the magnitude: floor division on a negative delta
+            # would hand out more clicks than were asked for.
+            sign = 1 if delta >= 0 else -1
+            magnitude = abs(delta)
+            for index in range(increments):
+                clicks = magnitude // increments + (1 if index < magnitude % increments else 0)
+                if not clicks:
+                    continue
+                ticks = sign * clicks * _SCROLL_DISCRETE_UNIT
+                self._client.pointer_scroll_discrete(
+                    ticks if horizontal else 0, 0 if horizontal else ticks
+                )
+                time.sleep(0.01)
             self._client.pointer_scroll_stop()
         else:
             total_dx = float(delta) * _SCROLL_STEP_PIXELS if horizontal else 0.0
             total_dy = float(delta) * _SCROLL_STEP_PIXELS if not horizontal else 0.0
-            if steps > 1:
-                step_dx = total_dx / steps
-                step_dy = total_dy / steps
-                for _ in range(steps):
+            if increments > 1:
+                step_dx = total_dx / increments
+                step_dy = total_dy / increments
+                for _ in range(increments):
                     self._client.pointer_scroll(step_dx, step_dy)
                     time.sleep(0.01)
             else:
@@ -619,43 +879,52 @@ class InputBackend:
         self.mouse_move(from_x, from_y)
         time.sleep(0.05)
 
-        # Press modifier keys
-        for mod in mod_codes:
-            self._client.keyboard_key(mod, _PRESSED)
-            time.sleep(0.01)
-
-        self._client.pointer_button(btn_code, _PRESSED)
-        time.sleep(0.02)
-
-        # Build full path: start -> waypoints -> end
-        segments: list[tuple[int, int, int, int, int]] = []  # (fx, fy, tx, ty, dwell_ms)
-        prev_x, prev_y = from_x, from_y
-        if waypoints:
-            for wx, wy, dwell_ms in waypoints:
-                segments.append((prev_x, prev_y, wx, wy, dwell_ms))
-                prev_x, prev_y = wx, wy
-        segments.append((prev_x, prev_y, to_x, to_y, 0))
-
-        for seg_fx, seg_fy, seg_tx, seg_ty, dwell_ms in segments:
-            dx = seg_tx - seg_fx
-            dy = seg_ty - seg_fy
-            steps = max(10, int((dx**2 + dy**2) ** 0.5 / 10))
-            for i in range(1, steps + 1):
-                frac = i / steps
-                cx = seg_fx + dx * frac
-                cy = seg_fy + dy * frac
-                self._client.pointer_move_absolute(cx, cy)
+        pressed_mod_codes: list[int] = []
+        button_pressed = False
+        try:
+            # Press modifier keys
+            for mod in mod_codes:
+                self._client.keyboard_key(mod, _PRESSED)
+                pressed_mod_codes.append(mod)
                 time.sleep(0.01)
-            if dwell_ms > 0:
-                time.sleep(dwell_ms / 1000.0)
 
-        time.sleep(0.02)
-        self._client.pointer_button(btn_code, _RELEASED)
+            self._client.pointer_button(btn_code, _PRESSED)
+            button_pressed = True
+            time.sleep(0.02)
 
-        # Release modifier keys in reverse order
-        for mod in reversed(mod_codes):
-            time.sleep(0.01)
-            self._client.keyboard_key(mod, _RELEASED)
+            # Build full path: start -> waypoints -> end
+            segments: list[tuple[int, int, int, int, int]] = []  # (fx, fy, tx, ty, dwell_ms)
+            prev_x, prev_y = from_x, from_y
+            if waypoints:
+                for wx, wy, dwell_ms in waypoints:
+                    segments.append((prev_x, prev_y, wx, wy, dwell_ms))
+                    prev_x, prev_y = wx, wy
+            segments.append((prev_x, prev_y, to_x, to_y, 0))
+
+            for seg_fx, seg_fy, seg_tx, seg_ty, dwell_ms in segments:
+                dx = seg_tx - seg_fx
+                dy = seg_ty - seg_fy
+                steps = max(10, int((dx**2 + dy**2) ** 0.5 / 10))
+                for i in range(1, steps + 1):
+                    frac = i / steps
+                    cx = seg_fx + dx * frac
+                    cy = seg_fy + dy * frac
+                    self._client.pointer_move_absolute(cx, cy)
+                    time.sleep(0.01)
+                if dwell_ms > 0:
+                    time.sleep(dwell_ms / 1000.0)
+        finally:
+            try:
+                if button_pressed:
+                    time.sleep(0.02)
+                    self._client.pointer_button(btn_code, _RELEASED)
+            finally:
+                # Release modifier keys in reverse order
+                for mod in reversed(pressed_mod_codes):
+                    time.sleep(0.01)
+                    self._client.keyboard_key(mod, _RELEASED)
+
+        _mirror_x11_pointer(self._dbus_address, to_x, to_y)
 
     def mouse_button_down(self, x: int, y: int, button: MouseButton = MouseButton.LEFT) -> None:
         """Move to coordinates and press a mouse button without releasing.
@@ -668,6 +937,7 @@ class InputBackend:
         self.mouse_move(x, y)
         time.sleep(0.02)
         self._client.pointer_button(btn_code, _PRESSED)
+        self._held_buttons.add(btn_code)
 
     def mouse_button_up(self, x: int, y: int, button: MouseButton = MouseButton.LEFT) -> None:
         """Move to coordinates and release a mouse button.
@@ -680,6 +950,7 @@ class InputBackend:
         self.mouse_move(x, y)
         time.sleep(0.02)
         self._client.pointer_button(btn_code, _RELEASED)
+        self._held_buttons.discard(btn_code)
 
     def keyboard_type(self, text: str) -> None:
         """Type a string of text character by character."""
@@ -710,7 +981,8 @@ class InputBackend:
         """
         modifiers, keycode = _parse_key_combo(key)
         if keycode is None:
-            return
+            msg = f"Unknown key: {key}"
+            raise ValueError(msg)
 
         # Press modifiers
         for mod in modifiers:
@@ -736,14 +1008,16 @@ class InputBackend:
             key: Key to press (e.g., "ctrl", "shift+a", "alt").
         """
         modifiers, keycode = _parse_key_combo(key)
+        if keycode is None:
+            msg = f"Unknown key: {key}"
+            raise ValueError(msg)
 
         for mod in modifiers:
             self._client.keyboard_key(mod, _PRESSED)
             time.sleep(0.01)
 
-        if keycode is not None:
-            self._client.keyboard_key(keycode, _PRESSED)
-            time.sleep(0.01)
+        self._client.keyboard_key(keycode, _PRESSED)
+        time.sleep(0.01)
 
     def keyboard_key_up(self, key: str) -> None:
         """Release a previously pressed key combination.
@@ -754,10 +1028,12 @@ class InputBackend:
             key: Key to release (e.g., "ctrl", "shift+a", "alt").
         """
         modifiers, keycode = _parse_key_combo(key)
+        if keycode is None:
+            msg = f"Unknown key: {key}"
+            raise ValueError(msg)
 
-        if keycode is not None:
-            self._client.keyboard_key(keycode, _RELEASED)
-            time.sleep(0.01)
+        self._client.keyboard_key(keycode, _RELEASED)
+        time.sleep(0.01)
 
         for mod in reversed(modifiers):
             self._client.keyboard_key(mod, _RELEASED)
@@ -884,46 +1160,81 @@ class InputBackend:
         for tid in tids:
             self._client.touch_up(tid)
 
-    def keyboard_type_unicode(self, text: str, dbus_address: str | None = None) -> bool:
-        """Type arbitrary Unicode text using wtype or clipboard fallback.
+    def keyboard_type_unicode(self, text: str, env: dict[str, str] | None = None) -> bool:
+        """Type arbitrary Unicode text using wtype or a temporary clipboard paste.
+
+        The clipboard route hands the text to ``kwin_mcp.clipboard``, which
+        snapshots the current selection, offers the text (marked as a secret
+        for KDE clipboard managers) and restores the snapshot after the paste.
+        Ctrl+V is sent only after the helper owns the selection and has armed
+        transfer counting, so a failed or slow copy never pastes stale content.
 
         Args:
             text: Text to type (supports non-ASCII, e.g. Korean, CJK).
-            dbus_address: D-Bus address for the session (needed for wl-copy fallback).
+            env: Session environment. Both routes use Wayland clients, so this
+                must carry WAYLAND_DISPLAY of the target session.
 
         Returns:
-            True if text was typed successfully.
+            True if wtype succeeded, or if the text was transferred to a
+            client that requested it after Ctrl+V and the helper then confirmed
+            that the prior selection was restored or replaced by a newer copy.
+            False for text over the helper's 1 MiB limit (nothing is touched),
+            and when any step or the restoration fails or times out.
         """
-        env = dict(__import__("os").environ)
-        if dbus_address:
-            env["DBUS_SESSION_BUS_ADDRESS"] = dbus_address
+        env = {**os.environ, **(env or {})}
 
-        # Try wtype first
+        # Try wtype first. It needs the virtual-keyboard Wayland protocol, which
+        # KWin does not implement, so a failure here is expected on Plasma and
+        # must fall through to the clipboard route rather than give up. The text
+        # travels in argv, so a long one fails to launch (E2BIG); that is not a
+        # typing attempt either and falls through the same way.
         if shutil.which("wtype"):
-            result = subprocess.run(
-                ["wtype", "--", text],
-                env=env,
-                capture_output=True,
-                timeout=5,
-            )
-            return result.returncode == 0
-
-        # Fallback: clipboard paste via wl-copy + Ctrl+V
-        # Use Popen + DEVNULL to avoid pipe-blocking from wl-copy's forked child
-        if shutil.which("wl-copy"):
-            cp = subprocess.Popen(
-                ["wl-copy", "--", text],
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            time.sleep(0.1)  # Wait for fork to complete
-            if cp.poll() is None or cp.returncode == 0:
-                self.keyboard_key("ctrl+v")
+            try:
+                result = subprocess.run(
+                    ["wtype", "--", text],
+                    env=env,
+                    capture_output=True,
+                    timeout=5,
+                )
+            except OSError:
+                result = None
+            if result is not None and result.returncode == 0:
                 return True
 
-        return False
+        return self._paste_via_clipboard(text, env)
+
+    def _paste_via_clipboard(self, text: str, env: dict[str, str]) -> bool:
+        try:
+            payload = text.encode()
+        except UnicodeEncodeError:
+            return False
+        if len(payload) > MAX_COPY_BYTES:
+            return False  # the helper would reject it; touch nothing
+        try:
+            helper = _ClipboardHelper(env)
+        except OSError:
+            return False
+        transferred = False
+        try:
+            # Writing the request shares the READY deadline, so a helper that
+            # stops reading stdin cannot block the call indefinitely.
+            deadline = time.monotonic() + _CLIPBOARD_READY_TIMEOUT
+            if not helper.send(b"COPY %d\n" % len(payload) + payload, deadline):
+                return False
+            if helper.next_event(deadline - time.monotonic()) != "READY":
+                return False
+            # Transfers finishing before ARMED (e.g. a clipboard manager that
+            # reads every new selection) are served but never counted.
+            deadline = time.monotonic() + _CLIPBOARD_ARM_TIMEOUT
+            if not helper.send(b"ARM\n", deadline):
+                return False
+            if helper.next_event(deadline - time.monotonic()) != "ARMED":
+                return False
+            self.keyboard_key("ctrl+v")
+            transferred = helper.next_event(_CLIPBOARD_TRANSFER_TIMEOUT) == "TRANSFERRED"
+        finally:
+            restored = helper.release()
+        return transferred and restored
 
     def close(self) -> None:
         """Close the EIS connection."""
@@ -965,17 +1276,20 @@ def _parse_key_combo(key: str) -> tuple[list[int], int | None]:
     """
     parts = key.split("+")
     modifiers: list[int] = []
-    main_key: str | None = None
+    keycode: int | None = None
 
     for part in parts:
-        part_lower = part.strip().lower()
-        if part_lower in _MODIFIER_KEYS:
-            modifiers.append(_MODIFIER_KEYS[part_lower])
-        else:
-            main_key = part.strip()
+        key_name = part.strip()
+        modifier_code = _MODIFIER_KEYS.get(key_name.lower())
+        if modifier_code is not None:
+            modifiers.append(modifier_code)
+            continue
 
-    keycode: int | None = None
-    if main_key is not None:
-        keycode = _key_name_to_evdev(main_key)
+        keycode = _key_name_to_evdev(key_name)
+        if keycode is None:
+            return modifiers, None
+
+    if keycode is None and modifiers:
+        keycode = modifiers.pop()
 
     return modifiers, keycode

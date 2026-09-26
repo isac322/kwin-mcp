@@ -96,6 +96,14 @@ for FILE in "${FILES[@]}"; do
       TRIGGER_LABELS+=("manifest-update")
       MATCHED_FILES+=("$RELPATH")
       ;;
+    .claude-plugin/marketplace.json|integrations/claude-code/.claude-plugin/plugin.json|integrations/opencode/plugin/package.json)
+      TRIGGER_LABELS+=("plugin-manifest")
+      MATCHED_FILES+=("$RELPATH")
+      ;;
+    integrations/claude-code/skills/*/SKILL.md|integrations/opencode/plugin/skill/*/SKILL.md)
+      TRIGGER_LABELS+=("plugin-skill")
+      MATCHED_FILES+=("$RELPATH")
+      ;;
     *)
       # Also catch src/kwin_mcp/**/*.py with regex fallback
       if [[ "$RELPATH" =~ ^src/kwin_mcp/.*\.py$ ]]; then

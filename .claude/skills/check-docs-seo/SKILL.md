@@ -14,11 +14,24 @@ Automatically invoked at git commit time via the PostToolUse hook. Can also be i
 
 ### Step 1: Run the consistency checker
 
-Run `scripts/check_docs_seo.py` to detect missing SEO keywords and positioning terms:
+Run `scripts/check_docs_seo.py` to detect missing SEO keywords, positioning terms, plugin manifest keyword drift, SKILL.md identity violations, and tool-count drift:
 
 ```bash
 python3 scripts/check_docs_seo.py
 ```
+
+The checker covers documentation SEO, plugin manifest keyword sync (`.claude-plugin/marketplace.json` + `integrations/*/plugin.json` + `package.json` must include the required keyword subset), SKILL.md byte-identity (Claude Code source ↔ OpenCode plugin mirror), and tool-count consistency (auto-detected from `src/kwin_mcp/server.py`).
+
+### Step 1.5: Run the plugin version + SKILL sync checker
+
+If `check_docs_seo.py` reports SKILL.md drift or version mismatches, run the dedicated sync script. It is idempotent and can either repair (no flag) or just verify (`--check`):
+
+```bash
+python3 scripts/sync_plugin_version.py --check  # CI mode, no writes
+python3 scripts/sync_plugin_version.py          # writer mode
+```
+
+After repair, re-run `check_docs_seo.py` to confirm cleanliness.
 
 ### Step 2: Evaluate the result
 

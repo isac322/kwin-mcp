@@ -386,3 +386,44 @@ Summarize the self-update in your response:
 - Keywords added / removed / reclassified
 - Rules added or modified
 - Files changed (must be limited to `.claude/agents/docs-seo.md` and/or `CLAUDE.md`)
+
+---
+
+## Plugin & Integrations Management
+
+This section governs how the agent treats `integrations/*` (Claude Code plugin, OpenCode plugin) and `.claude-plugin/marketplace.json` as first-class documentation/SEO targets. It is separate from the Code Change → Documentation Update Protocol above (which targets project-level docs) and from the Self-Update Protocol (which targets this agent + CLAUDE.md SEO sections).
+
+### Trigger Conditions (Plugin-Change Focus)
+
+| Changed File Pattern | Trigger Label | Why It Matters |
+|---|---|---|
+| `.claude-plugin/marketplace.json` | **plugin-manifest** | Catalog `version` + `plugins[0].keywords` must match pyproject + positioning manifest |
+| `integrations/claude-code/.claude-plugin/plugin.json` | **plugin-manifest** | Plugin-level `version` + `keywords` sync |
+| `integrations/opencode/plugin/package.json` | **plugin-manifest** | npm package `version` + `keywords` sync |
+| `integrations/claude-code/skills/*/SKILL.md` | **plugin-skill** | Source-of-truth SKILL.md content (mirrored to OpenCode plugin/skill on build) |
+| `integrations/opencode/plugin/skill/*/SKILL.md` | **plugin-skill** | Auto-mirrored from Claude Code source — direct edits forbidden, CI fails on drift |
+| `scripts/sync_plugin_version.py` | **code-general** | Self-tests: run `--check` after editing the script itself |
+
+### Sync Rules (canonical from `.claude/positioning.yml § drift_detection`)
+
+1. **Version sync**: `pyproject.toml [project].version` is the single source. All three plugin manifests' `version` fields (and `marketplace.json § metadata.version`) must match. Use `python3 scripts/sync_plugin_version.py` to write or `--check` to verify.
+
+2. **Keyword subset rule**: every plugin manifest's `keywords` array must include at least `plugin_keywords_min_overlap` (default 10) keywords from `.claude/positioning.yml § keywords.plugin_manifest_required_keywords`. Plugin manifests may carry host-specific extras (`claude-code`, `opencode-plugin`). Enforced by `check_docs_seo.py::check_plugin_keywords_sync`.
+
+3. **SKILL identity rule**: `integrations/claude-code/skills/kwin-desktop-automation/SKILL.md` is the source of truth. `integrations/opencode/plugin/skill/kwin-desktop-automation/SKILL.md` must be byte-identical. The OpenCode plugin's `npm run build` automatically mirrors the source via its `build:skill` script; CI enforces equality via `check_docs_seo.py::check_skill_identical`.
+
+4. **Tool count consistency**: when `src/kwin_mcp/server.py` changes the `@mcp.tool()` count, all of `.claude/positioning.yml § product.tool_count`, `.claude/positioning.yml § drift_detection.tool_count_canonical`, `check_docs_seo.py § TOOL_COUNT_CANONICAL`, README tool tables, and the SKILL.md "30 capabilities" reference must update together.
+
+### Output Targets per Trigger
+
+**`plugin-manifest` output targets**
+- The plugin manifest itself (`.claude-plugin/marketplace.json`, `integrations/claude-code/.claude-plugin/plugin.json`, `integrations/opencode/plugin/package.json`): `keywords` array re-ordered/extended only if `check_docs_seo.py::check_plugin_keywords_sync` reports drift; `version` field repaired only via `scripts/sync_plugin_version.py`
+- _(Do not auto-edit `pyproject.toml` from a plugin manifest change — pyproject is upstream of plugins, not downstream)_
+
+**`plugin-skill` output targets**
+- `integrations/opencode/plugin/skill/kwin-desktop-automation/SKILL.md`: NEVER edit directly. Edit the Claude Code source instead and run `python3 scripts/sync_plugin_version.py` (or `npm run build` from `integrations/opencode/plugin/`)
+- `integrations/claude-code/skills/kwin-desktop-automation/SKILL.md`: edit only when adding/renaming/removing MCP tools or when canonical operational guidance changes (pitfalls, observability cost ordering, etc.). Tool count statements must match `.claude/positioning.yml § product.tool_count`
+
+### Self-Update Implications
+
+When a plugin-manifest or plugin-skill trigger fires, also evaluate whether `.claude/positioning.yml § files_to_audit` covers the changed file. If a new plugin location is introduced (e.g. a third host plugin), update the manifest's `files_to_audit` list and bump `manifest_version` accordingly — that change in turn cascades through the regular Self-Update Protocol.

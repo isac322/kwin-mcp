@@ -8,3 +8,12 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Local OpenCode plugin testing (symlink to integrations/opencode/plugin)
+.opencode/
+
+# Local CodeGraph cache
+.codegraph
+
+# Local E2E test evidence
+artifacts/

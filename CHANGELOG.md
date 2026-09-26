@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `dbus_call` accepts typed-JSON arguments (`{"type": "int32", "value": 42}`) alongside dbus-send strings (`"int32:42"`), mixed freely in one `args` list. Supported shapes: basic types, `array` of a basic type, `dict` with a basic key and a basic or `variant` value (so `a{sv}` is expressible as `{"type": "dict", "key_type": "string", "value_type": "variant", "value": {"k": {"type": "string", "value": "v"}}}`), and `variant` of a basic type. The tool schema's `args` items widen from `string` to `string | object`.
+- `window_close` asks exactly one window to close, addressed by its KWin id, through the same KWin scripting path as `focus_window`. Other windows of the same app stay open. The id reaches KWin only as a JSON string literal, so an id containing a quote is treated as data and never runs as KWin script. Closing is refused in live sessions (`session_connect`), where it could discard unsaved work on the real desktop.
+- `active_window` reports the window KWin currently treats as active, with its id, frame, and client rectangles, for example to confirm `focus_window`.
+- `window_geometry` now lists each window's KWin id (stable while the window exists) and marks the active window with `[active]`. The new optional `window_id` parameter selects one window by exact id; `app_name` keeps its behavior.
 
 ### Changed
 

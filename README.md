@@ -538,12 +538,12 @@ Coverage includes:
 - screenshot coordinate mapping at output scales 1.0 and 1.45 (the fractional scale is set through `kscreen-doctor`): a probe button found by pixel color in the screenshot is clicked at origin plus pixel and must activate, and single screenshots and frame bursts report the logical workspace as their coordinate space;
 - screenshot retention and failure behavior, environment provenance, installed distribution metadata, console entry points, and process/socket cleanup.
 
-The container uses software rendering and needs no `--privileged`, `--cap-add`, GPU, or device flags. Its nested Xvfb server is part of the visual fixture; the host does not need an X server. CI runs the same image natively on both architectures:
+The container uses software rendering and needs no `--privileged`, `--cap-add`, GPU, or device flags. Its nested Xvfb server is part of the visual fixture; the host does not need an X server. CI runs the suite natively in four images — Debian trixie (`docker/e2e.Dockerfile`), Fedora 44 (`docker/e2e-fedora.Dockerfile`), openSUSE Tumbleweed (`docker/e2e-opensuse.Dockerfile`), and Arch Linux (`docker/e2e-arch.Dockerfile`, amd64 only) — and a failure in any of them fails the workflow.
 
-| Architecture | GitHub Actions runner |
+| Jobs | GitHub Actions runner |
 |---|---|
-| `amd64` | `ubuntu-24.04` |
-| `arm64` | `ubuntu-24.04-arm` |
+| `amd64`, `fedora-amd64`, `opensuse-amd64`, `archlinux-amd64` | `ubuntu-24.04` |
+| `arm64`, `fedora-arm64`, `opensuse-arm64` | `ubuntu-24.04-arm` |
 
 A completed run retains `environment.json`, `junit.xml`, `pytest.log`, nested-KWin/Xvfb/MCP logs, and visual PNG evidence below its artifact directory. Failed runs also collect Docker inspect, container log, and process-list diagnostics.
 

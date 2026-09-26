@@ -25,6 +25,9 @@ NULLABLE_ARRAY_OF_STRINGS = ("nullable", ARRAY_OF_STRINGS)
 NULLABLE_ARRAY_OF_INTEGERS = ("nullable", ARRAY_OF_INTEGERS)
 NULLABLE_ARRAY_OF_INTEGER_ARRAYS = ("nullable", ARRAY_OF_INTEGER_ARRAYS)
 NULLABLE_STRING_OBJECT = ("nullable", STRING_OBJECT)
+# dbus_call args entries are dbus-send strings or typed-JSON objects.
+STRING_OR_OBJECT = ("anyOf", ("string", "object"))
+NULLABLE_ARRAY_OF_STRINGS_OR_OBJECTS = ("nullable", ("array", STRING_OR_OBJECT))
 
 EXPECTED_REQUIRED_FIELDS: dict[str, frozenset[str]] = {
     "accessibility_tree": frozenset(),
@@ -73,7 +76,7 @@ EXPECTED_TOOL_PROPERTIES: dict[str, dict[str, tuple[object, object]]] = {
         "path": ("string", NO_DEFAULT),
         "interface": ("string", NO_DEFAULT),
         "method": ("string", NO_DEFAULT),
-        "args": (NULLABLE_ARRAY_OF_STRINGS, None),
+        "args": (NULLABLE_ARRAY_OF_STRINGS_OR_OBJECTS, None),
     },
     "find_ui_elements": {
         "query": ("string", NO_DEFAULT),
@@ -228,6 +231,16 @@ def _assert_json_type(
         non_null_variants = [variant for variant in variants if variant.get("type") != "null"]
         assert len(non_null_variants) == 1, (context, property_schema)
         _assert_json_type(non_null_variants[0], nested_type, context)
+        return
+
+    if kind == "anyOf":
+        assert isinstance(nested_type, tuple), expected_type
+        variants = property_schema.get("anyOf")
+        assert isinstance(variants, list), (context, property_schema)
+        assert len(variants) == len(nested_type), (context, property_schema)
+        for variant, variant_type in zip(variants, nested_type, strict=True):
+            assert isinstance(variant, dict), (context, property_schema)
+            _assert_json_type(variant, variant_type, context)
         return
 
     assert property_schema.get("type") == kind, (context, property_schema)

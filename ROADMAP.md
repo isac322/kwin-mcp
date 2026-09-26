@@ -154,7 +154,7 @@ Triple isolation ensures no impact on the host desktop:
 - **Goal**: Support "share my screen" collaboration and container-based agent desktops ([#1](https://github.com/isac322/kwin-mcp/issues/1))
 
 ### M12: Pluggable CLI Backend (Auto-detect Alternatives)
-- [ ] Research functionally equivalent alternatives for each external CLI (`wl-copy`/`wl-paste`, `wtype`, `spectacle`, `dbus-send`)
+- [ ] Research functionally equivalent alternatives for each external CLI (`wl-copy`/`wl-paste`, `wtype`, `spectacle`); `dbus_call` no longer needs `dbus-send`
 - [ ] Implement auto-detection: discover available CLIs at runtime and select the best match
 - [ ] Ensure all alternatives are functionally identical (no behavioral differences)
 - [ ] Update `_INSTALL_HINTS` to suggest multiple options

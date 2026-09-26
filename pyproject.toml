@@ -120,6 +120,7 @@ include = [
     "src/kwin_mcp/geometry.py",
     "tests/e2e/gui_probe.py",
     "tests/e2e/interaction_probe.py",
+    "tests/e2e/test_dbus_call.py",
 ]
 [tool.ty.overrides.rules]
 unresolved-import = "ignore"

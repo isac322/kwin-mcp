@@ -263,7 +263,7 @@ kwin-mcp-cli --default-live-session
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `dbus_call` | `service` `str`, `path` `str`, `interface` `str`, `method` `str`, `args?` `list[str]` | Call any D-Bus method in the isolated session. Useful for controlling KWin scripting, app-specific D-Bus APIs, and system services. |
+| `dbus_call` | `service` `str`, `path` `str`, `interface` `str`, `method` `str`, `args?` `list[str \| dict]` | Call any D-Bus method in the isolated session. Useful for controlling KWin scripting, app-specific D-Bus APIs, and system services. Each argument is a dbus-send string (`"int32:42"`, `"dict:string:variant:k,string:v"`) or a typed-JSON object (`{"type": "int32", "value": 42}`). Malformed values, and arguments whose types or count fit none of the method's declared signatures, fail with `D-Bus call failed: ...` and nothing is sent. Replies are empty for void methods, the bare value for one basic value (`GetId` returns just the ID), and JSON otherwise. |
 | `read_app_log` | `pid` `int`, `last_n_lines?` `int` (50) | Read stdout/stderr output of a launched app by PID. Set `last_n_lines=0` for all output. |
 | `wayland_info` | `filter_protocol?` `str` | List Wayland protocols available in the session. Useful for verifying protocol access (e.g., `plasma_window_management`). |
 
@@ -305,7 +305,7 @@ kwin-mcp server  (31 tools)       kwin-mcp-cli (interactive REPL)
   |                                |-- subprocess spawn
   |                                +-- AT-SPI2 (via PyGObject)
   |
-  |-- dbus_call -----------------> dbus-send (generic D-Bus)
+  |-- dbus_call -----------------> dbus-python (in-process, introspected signature)
   |-- read_app_log --------------> log file read
   +-- wayland_info --------------> wayland-info
 ```

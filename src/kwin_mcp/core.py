@@ -21,6 +21,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from xml.etree import ElementTree
 
 from kwin_mcp.input import InputBackend, MouseButton
 from kwin_mcp.screenshot import capture_frame_burst, capture_screenshot_to_file
@@ -45,9 +46,6 @@ _INSTALL_HINTS: dict[str, str] = {
         "wtype not found. Install wtype "
         "(e.g. 'sudo pacman -S wtype' or build from https://github.com/atx/wtype)."
     ),
-    "dbus-send": (
-        "dbus-send not found. Install dbus (e.g. 'sudo pacman -S dbus' or 'sudo apt install dbus')."
-    ),
     "spectacle": (
         "spectacle not found. Install spectacle "
         "(e.g. 'sudo pacman -S spectacle' or 'sudo apt install kde-spectacle')."
@@ -62,6 +60,10 @@ _INSTALL_HINTS: dict[str, str] = {
 # the selection; a parent still running after this is treated as a failure.
 _CLIPBOARD_SET_TIMEOUT = 5.0
 
+# Upper bound for each D-Bus round trip made by dbus_call (introspection and the
+# method call), the same bound the former dbus-send subprocess had.
+_DBUS_CALL_TIMEOUT = 10.0
+
 
 def _element_position(el: dict) -> str:
     """Format an element's position for find_ui_elements / wait_for_element.
@@ -74,6 +76,146 @@ def _element_position(el: dict) -> str:
     if el.get("mapped"):
         return f"@ screen ({el['x']}, {el['y']}, {el['width']}x{el['height']})"
     return f"@ unavailable ({el.get('unavailable') or 'unmapped'})"
+
+
+def _introspected_in_signatures(xml_data: str, interface: str, method: str) -> list[str] | None:
+    """Return every input signature for ``interface.method`` in introspection XML.
+
+    Qt exports overloaded slots and slots with default arguments as several
+    ``<method>`` entries under one name (KWin's ``loadScript`` has ``s`` and
+    ``ss``), so a name can map to more than one candidate. Returns None when
+    the XML does not describe that method at all.
+    """
+    try:
+        root = ElementTree.fromstring(xml_data)
+    except ElementTree.ParseError:
+        return None
+    signatures: list[str] = []
+    for iface in root.findall("interface"):
+        if iface.get("name") != interface:
+            continue
+        for candidate in iface.findall("method"):
+            if candidate.get("name") == method:
+                signatures.append(
+                    "".join(
+                        arg.get("type", "")
+                        for arg in candidate.findall("arg")
+                        if arg.get("direction", "in") == "in"
+                    )
+                )
+    return signatures or None
+
+
+def _arg_signature(arg: object) -> str:
+    """Return the complete D-Bus signature of one parsed argument.
+
+    ``parse_arg`` returns values with ``variant_level=1`` for an explicit
+    ``variant`` argument; those marshal as ``v``. Everything else has a
+    fixed signature. Parsed args are always dbus types, so the final raise
+    is unreachable but keeps the checker honest if that changes.
+    """
+    import dbus
+
+    if getattr(arg, "variant_level", 0) > 0:
+        return "v"
+    if isinstance(arg, dbus.Boolean):
+        return "b"
+    if isinstance(arg, dbus.Byte):
+        return "y"
+    if isinstance(arg, dbus.Int16):
+        return "n"
+    if isinstance(arg, dbus.UInt16):
+        return "q"
+    if isinstance(arg, dbus.Int32):
+        return "i"
+    if isinstance(arg, dbus.UInt32):
+        return "u"
+    if isinstance(arg, dbus.Int64):
+        return "x"
+    if isinstance(arg, dbus.UInt64):
+        return "t"
+    if isinstance(arg, dbus.Double):
+        return "d"
+    if isinstance(arg, dbus.ObjectPath):
+        return "o"
+    if isinstance(arg, dbus.Signature):
+        return "g"
+    if isinstance(arg, dbus.String):
+        return "s"
+    if isinstance(arg, dbus.Array):
+        return "a" + str(arg.signature)
+    if isinstance(arg, dbus.Dictionary):
+        return "a{" + str(arg.signature) + "}"
+    raise TypeError(f"unsupported argument type {type(arg).__name__}")
+
+
+def _select_signature(parsed_args: list[object], candidates: list[str]) -> str | None:
+    """Pick the candidate input signature that exactly fits ``parsed_args``.
+
+    An argument fits a position when its own signature equals the candidate's
+    complete type there, or the candidate's type is ``v`` (a variant accepts
+    any value). Returns the first exact match, or None when no candidate fits.
+    """
+    import dbus
+
+    own = [_arg_signature(arg) for arg in parsed_args]
+    for signature in candidates:
+        candidate = [str(t) for t in dbus.Signature(signature)]
+        if len(candidate) != len(own):
+            continue
+        if all(c == "v" or c == o for c, o in zip(candidate, own, strict=True)):
+            return signature
+    return None
+
+
+def _dbus_to_json(value: object) -> object:
+    import dbus
+
+    if isinstance(value, dbus.Boolean):
+        return bool(value)
+    if isinstance(value, dbus.ObjectPath | dbus.Signature | dbus.String):
+        return str(value)
+    if isinstance(
+        value,
+        dbus.Byte | dbus.Int16 | dbus.UInt16 | dbus.Int32 | dbus.UInt32 | dbus.Int64 | dbus.UInt64,
+    ):
+        return int(value)
+    if isinstance(value, dbus.Double):
+        return float(value)
+    if isinstance(value, dbus.Array):
+        return [_dbus_to_json(x) for x in value]
+    if isinstance(value, dbus.Dictionary | dict):
+        return {_dbus_to_json(k): _dbus_to_json(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_dbus_to_json(x) for x in value]
+    if isinstance(value, bool | int | float | str):
+        return value
+    return str(value)
+
+
+def _format_dbus_result(result: object) -> str:
+    """Render a D-Bus reply for MCP clients.
+
+    Returns the empty string for void replies, the bare value for single
+    primitives (so ``GetId`` returns just the UUID), and JSON for
+    containers and multi-value tuples.
+    """
+    import dbus
+
+    if result is None:
+        return ""
+    if isinstance(result, dbus.Boolean):
+        return "true" if bool(result) else "false"
+    if isinstance(result, dbus.ObjectPath | dbus.Signature | dbus.String | str):
+        return str(result)
+    if isinstance(
+        result,
+        dbus.Byte | dbus.Int16 | dbus.UInt16 | dbus.Int32 | dbus.UInt32 | dbus.Int64 | dbus.UInt64,
+    ):
+        return str(int(result))
+    if isinstance(result, dbus.Double | float):
+        return str(float(result))
+    return json.dumps(_dbus_to_json(result))
 
 
 class AutomationEngine:
@@ -957,33 +1099,80 @@ class AutomationEngine:
         path: str,
         interface: str,
         method: str,
-        args: list[str] | None = None,
+        args: list[str | dict] | None = None,
     ) -> str:
-        """Call a D-Bus method in the isolated session using dbus-send."""
-        env = self._session_env()
-        cmd = [
-            "dbus-send",
-            "--session",
-            "--print-reply",
-            f"--dest={service}",
-            f"{path}",
-            f"{interface}.{method}",
-        ]
-        if args:
-            cmd.extend(args)
+        """Call a D-Bus method in the isolated session.
+
+        ``args`` accepts dbus-send strings (``"type:value"``) and/or
+        typed-JSON dicts (``{"type": ..., "value": ...}``); both shapes
+        may mix in one call. When the object is introspectable, the
+        arguments must match one of the method's declared input
+        signatures: argument types may differ only where the signature
+        expects a variant, so e.g. ``int32`` does not silently become
+        ``int64``. Qt overloads and slots with default arguments declare
+        several signatures; the first one that fits is used. Argument
+        errors are reported as ``D-Bus call failed: ...`` and nothing is
+        sent. When the object does not introspect, the call is sent with
+        each argument's own signature (an explicit ``variant`` argument
+        stays a variant) and the remote side validates it. The reply is
+        rendered via :func:`_format_dbus_result` (single primitives
+        become bare strings, containers and tuples become JSON).
+        """
+        import dbus
+        import dbus.bus
+
+        from kwin_mcp.dbus_args import parse_arg
+
+        info = self._get_session().info
+        if info is None or not info.dbus_address:
+            return "D-Bus call failed: session has no D-Bus address"
 
         try:
-            result = subprocess.run(
-                cmd,
-                env=env,
-                capture_output=True,
-                timeout=10,
+            parsed_args = [parse_arg(a) for a in (args or [])]
+        except ValueError as exc:
+            return f"D-Bus call failed: {exc}"
+
+        signature: str | None = None
+        try:
+            bus = dbus.bus.BusConnection(info.dbus_address)
+            # Introspect here rather than inside the proxy so the selection and
+            # the marshalling below use the same signature. dbus-python's own
+            # marshalling appends nothing for an empty signature, which would
+            # drop surplus arguments without an error.
+            obj = bus.get_object(service, path, introspect=False)
+            try:
+                xml_data = obj.Introspect(
+                    dbus_interface="org.freedesktop.DBus.Introspectable",
+                    timeout=_DBUS_CALL_TIMEOUT,
+                )
+            except dbus.DBusException:
+                # Not introspectable (or unreachable): the call below reports
+                # the real error, or the remote side checks the arguments.
+                xml_data = ""
+            if xml_data:
+                candidates = _introspected_in_signatures(str(xml_data), interface, method)
+                if candidates is not None:
+                    signature = _select_signature(parsed_args, candidates)
+                    if signature is None:
+                        shown = "/".join(repr(c) for c in candidates)
+                        sent = "".join(_arg_signature(a) for a in parsed_args)
+                        return (
+                            f"D-Bus call failed: {interface}.{method} takes "
+                            f"{shown}, got signature '{sent}'"
+                        )
+            result = obj.get_dbus_method(method, interface)(
+                *parsed_args, signature=signature, timeout=_DBUS_CALL_TIMEOUT
             )
-        except FileNotFoundError:
-            return _INSTALL_HINTS["dbus-send"]
-        if result.returncode != 0:
-            return f"D-Bus call failed: {result.stderr.decode(errors='replace')}"
-        return result.stdout.decode(errors="replace")
+        except dbus.DBusException as exc:
+            name = exc.get_dbus_name() or type(exc).__name__
+            msg = exc.get_dbus_message() or str(exc)
+            return f"D-Bus error: {name}: {msg}"
+        except (TypeError, ValueError, OverflowError) as exc:
+            # dbus-python raises these while validating names or marshalling
+            # arguments that do not fit the signature; nothing was sent.
+            expected_sig = f" (signature '{signature}')" if signature is not None else ""
+            return f"D-Bus call failed: {interface}.{method}{expected_sig}: {exc}"
+        return _format_dbus_result(result)
 
     def read_app_log(self, pid: int, last_n_lines: int = 50) -> str:
         """Read stdout/stderr output of a launched app."""

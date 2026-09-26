@@ -20,10 +20,16 @@ Dict entries use dbus-send's grammar: one comma-separated list that
 alternates keys and values. Dict keys must be basic types and dict values
 must be basic types or ``variant``; a variant value carries its own
 ``TYPE:VALUE`` (for example ``dict:string:variant:name,string:x,n,int32:3``
-builds an ``a{sv}``). Integers accept the same literal prefixes as
-dbus-send's ``strtol(value, NULL, 0)`` (decimal and ``0x`` hexadecimal),
-but unlike dbus-send the whole literal must parse and fit the type.
-``unixfd`` is not supported, matching dbus-send.
+builds an ``a{sv}``). A top-level ``variant:`` argument marshals as ``v``
+on the wire, as dbus-send sends it.
+
+Integer literals are an optional sign plus either ``0x`` hexadecimal or a
+decimal that does not start with ``0`` (``-0x10``, ``0xFF``, ``42``, ``0``,
+``-5`` are accepted; ``12x3``, ``0b11``, ``0o17``, ``1_000`` and ``010``
+are not). This is what dbus-send's ``strtol(value, NULL, 0)`` can express,
+except leading-zero octal (``010`` = 8 there), which is rejected instead of
+reinterpreted. Unlike dbus-send the whole literal must parse and fit the
+type's range. ``unixfd`` is not supported, matching dbus-send.
 
 When an array's element type is itself a container, elements are
 separated by ``':'`` instead of ``','`` to disambiguate the inner
@@ -43,6 +49,7 @@ starts with ``"dbus-send arg:"``.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, cast
 
 import dbus
@@ -88,12 +95,20 @@ def _split_once(s: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
+_INT_LITERAL = re.compile(r"[+-]?(0[xX][0-9a-fA-F]+|0|[1-9][0-9]*)\Z")
+
+
 def _parse_int(value: str, type_name: str, *, signed: bool, bits: int) -> int:
-    """Parse an integer literal and bounds-check it against the dbus type."""
-    try:
-        v = int(value, 0)
-    except ValueError as exc:
-        raise _err(f"invalid {type_name} value {value!r}") from exc
+    """Parse an integer literal and bounds-check it against the dbus type.
+
+    Accepts decimal and ``0x`` hexadecimal with an optional sign — the same
+    literals dbus-send's ``strtol`` parses, except ``0``-prefixed octal,
+    which is rejected rather than reinterpreted — and nothing else (no
+    ``0b``/``0o`` prefixes or underscores).
+    """
+    if not _INT_LITERAL.match(value):
+        raise _err(f"invalid {type_name} value {value!r}")
+    v = int(value, 0)
     if signed:
         lo, hi = -(1 << (bits - 1)), (1 << (bits - 1)) - 1
     else:
@@ -101,6 +116,20 @@ def _parse_int(value: str, type_name: str, *, signed: bool, bits: int) -> int:
     if not (lo <= v <= hi):
         raise _err(f"{type_name} value {v} out of range [{lo}, {hi}]")
     return v
+
+
+def _mark_variant(value: object) -> object:
+    """Return ``value`` marshalling as ``v`` (one more variant level).
+
+    ``variant_level`` is a constructor-only attribute on dbus types, so the
+    value is rebuilt through its own type; containers keep their element
+    signature.
+    """
+    if isinstance(value, dbus.Dictionary | dbus.Array):
+        return type(value)(
+            value, signature=value.signature, variant_level=value.variant_level + 1
+        )
+    return type(value)(value, variant_level=value.variant_level + 1)
 
 
 def _parse_double(value: str) -> float:
@@ -231,7 +260,10 @@ def parse_dbus_send_arg(s: str) -> object:
     if type_ == "dict":
         return _parse_dict_rest(rest)
     if type_ == "variant":
-        return parse_dbus_send_arg(rest)
+        # dbus-send sends a top-level variant argument as 'v' on the wire,
+        # which matters when the remote is not introspectable; an explicit
+        # introspected 'v' accepts an unmarked value too, so always mark.
+        return _mark_variant(parse_dbus_send_arg(rest))
     raise _err(f"unknown type {type_!r}")
 
 
@@ -417,7 +449,7 @@ def parse_typed_arg(d: Mapping[str, object]) -> object:
             raise _err(
                 f"typed-JSON variant requires 'value_type' = a basic type name; got {val_type!r}"
             )
-        return _coerce_basic(val_type, value)
+        return _mark_variant(_coerce_basic(val_type, value))
 
     raise _err(f"unknown typed-JSON type {type_name!r}")
 

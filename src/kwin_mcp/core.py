@@ -71,26 +71,95 @@ def _element_position(el: dict) -> str:
     return f"@ unavailable ({el.get('unavailable') or 'unmapped'})"
 
 
-def _introspected_in_signature(xml_data: str, interface: str, method: str) -> str | None:
-    """Return the input signature of ``interface.method`` from introspection XML.
+def _introspected_in_signatures(
+    xml_data: str, interface: str, method: str
+) -> list[str] | None:
+    """Return every input signature for ``interface.method`` in introspection XML.
 
-    Returns None when the XML does not describe that method; the caller then
-    sends the call without a known signature and the remote side decides.
+    Qt exports overloaded slots and slots with default arguments as several
+    ``<method>`` entries under one name (KWin's ``loadScript`` has ``s`` and
+    ``ss``), so a name can map to more than one candidate. Returns None when
+    the XML does not describe that method at all.
     """
     try:
         root = ElementTree.fromstring(xml_data)
     except ElementTree.ParseError:
         return None
+    signatures: list[str] = []
     for iface in root.findall("interface"):
         if iface.get("name") != interface:
             continue
         for candidate in iface.findall("method"):
             if candidate.get("name") == method:
-                return "".join(
-                    arg.get("type", "")
-                    for arg in candidate.findall("arg")
-                    if arg.get("direction", "in") == "in"
+                signatures.append(
+                    "".join(
+                        arg.get("type", "")
+                        for arg in candidate.findall("arg")
+                        if arg.get("direction", "in") == "in"
+                    )
                 )
+    return signatures or None
+
+
+def _arg_signature(arg: object) -> str:
+    """Return the complete D-Bus signature of one parsed argument.
+
+    ``parse_arg`` returns values with ``variant_level=1`` for an explicit
+    ``variant`` argument; those marshal as ``v``. Everything else has a
+    fixed signature. Parsed args are always dbus types, so the final raise
+    is unreachable but keeps the checker honest if that changes.
+    """
+    import dbus
+
+    if getattr(arg, "variant_level", 0) > 0:
+        return "v"
+    if isinstance(arg, dbus.Boolean):
+        return "b"
+    if isinstance(arg, dbus.Byte):
+        return "y"
+    if isinstance(arg, dbus.Int16):
+        return "n"
+    if isinstance(arg, dbus.UInt16):
+        return "q"
+    if isinstance(arg, dbus.Int32):
+        return "i"
+    if isinstance(arg, dbus.UInt32):
+        return "u"
+    if isinstance(arg, dbus.Int64):
+        return "x"
+    if isinstance(arg, dbus.UInt64):
+        return "t"
+    if isinstance(arg, dbus.Double):
+        return "d"
+    if isinstance(arg, dbus.ObjectPath):
+        return "o"
+    if isinstance(arg, dbus.Signature):
+        return "g"
+    if isinstance(arg, dbus.String):
+        return "s"
+    if isinstance(arg, dbus.Array):
+        return "a" + str(arg.signature)
+    if isinstance(arg, dbus.Dictionary):
+        return "a{" + str(arg.signature) + "}"
+    raise TypeError(f"unsupported argument type {type(arg).__name__}")
+
+
+def _select_signature(parsed_args: list[object], candidates: list[str]) -> str | None:
+    """Pick the candidate input signature that exactly fits ``parsed_args``.
+
+    An argument fits a position when its own signature equals the candidate's
+    complete type there, or the candidate's type is ``v`` (a variant accepts
+    any value). Returns the first exact match, or None when no candidate fits.
+    """
+    import dbus
+
+    own = [_arg_signature(arg) for arg in parsed_args]
+    for signature in candidates:
+        candidate = [str(t) for t in dbus.Signature(signature)]
+        if len(candidate) != len(own):
+            continue
+        if all(c == "v" or c == o for c, o in zip(candidate, own, strict=True)):
+            return signature
     return None
 
 
@@ -904,12 +973,18 @@ class AutomationEngine:
 
         ``args`` accepts dbus-send strings (``"type:value"``) and/or
         typed-JSON dicts (``{"type": ..., "value": ...}``); both shapes
-        may mix in one call. When the object is introspectable, the argument
-        count must match the method's input signature and the arguments are
-        marshalled with that signature. Argument errors are reported as
-        ``D-Bus call failed: ...`` and nothing is sent. The reply value is
-        rendered via :func:`_format_dbus_result` (single primitives become
-        bare strings, containers and tuples become JSON).
+        may mix in one call. When the object is introspectable, the
+        arguments must match one of the method's declared input
+        signatures: argument types may differ only where the signature
+        expects a variant, so e.g. ``int32`` does not silently become
+        ``int64``. Qt overloads and slots with default arguments declare
+        several signatures; the first one that fits is used. Argument
+        errors are reported as ``D-Bus call failed: ...`` and nothing is
+        sent. When the object does not introspect, the call is sent with
+        each argument's own signature (an explicit ``variant`` argument
+        stays a variant) and the remote side validates it. The reply is
+        rendered via :func:`_format_dbus_result` (single primitives
+        become bare strings, containers and tuples become JSON).
         """
         import dbus
         import dbus.bus
@@ -928,7 +1003,7 @@ class AutomationEngine:
         signature: str | None = None
         try:
             bus = dbus.bus.BusConnection(info.dbus_address)
-            # Introspect here rather than inside the proxy so the arity check and
+            # Introspect here rather than inside the proxy so the selection and
             # the marshalling below use the same signature. dbus-python's own
             # marshalling appends nothing for an empty signature, which would
             # drop surplus arguments without an error.
@@ -943,14 +1018,16 @@ class AutomationEngine:
                 # the real error, or the remote side checks the arguments.
                 xml_data = ""
             if xml_data:
-                signature = _introspected_in_signature(str(xml_data), interface, method)
-            if signature is not None:
-                expected = len(list(dbus.Signature(signature)))
-                if expected != len(parsed_args):
-                    return (
-                        f"D-Bus call failed: {interface}.{method} takes {expected} "
-                        f"argument(s) (signature '{signature}'), got {len(parsed_args)}"
-                    )
+                candidates = _introspected_in_signatures(str(xml_data), interface, method)
+                if candidates is not None:
+                    signature = _select_signature(parsed_args, candidates)
+                    if signature is None:
+                        shown = "/".join(repr(c) for c in candidates)
+                        sent = "".join(_arg_signature(a) for a in parsed_args)
+                        return (
+                            f"D-Bus call failed: {interface}.{method} takes "
+                            f"{shown}, got signature '{sent}'"
+                        )
             result = obj.get_dbus_method(method, interface)(
                 *parsed_args, signature=signature, timeout=_DBUS_CALL_TIMEOUT
             )

@@ -31,6 +31,7 @@ NULLABLE_ARRAY_OF_STRINGS_OR_OBJECTS = ("nullable", ("array", STRING_OR_OBJECT))
 
 EXPECTED_REQUIRED_FIELDS: dict[str, frozenset[str]] = {
     "accessibility_tree": frozenset(),
+    "active_window": frozenset(),
     "clipboard_get": frozenset(),
     "clipboard_set": frozenset({"text"}),
     "dbus_call": frozenset({"service", "path", "interface", "method"}),
@@ -60,6 +61,7 @@ EXPECTED_REQUIRED_FIELDS: dict[str, frozenset[str]] = {
     "touch_tap": frozenset({"x", "y"}),
     "wait_for_element": frozenset({"query"}),
     "wayland_info": frozenset(),
+    "window_close": frozenset({"window_id"}),
     "window_geometry": frozenset(),
 }
 
@@ -69,6 +71,7 @@ EXPECTED_TOOL_PROPERTIES: dict[str, dict[str, tuple[object, object]]] = {
         "max_depth": ("integer", 15),
         "role": ("string", ""),
     },
+    "active_window": {},
     "clipboard_get": {},
     "clipboard_set": {"text": ("string", NO_DEFAULT)},
     "dbus_call": {
@@ -206,7 +209,8 @@ EXPECTED_TOOL_PROPERTIES: dict[str, dict[str, tuple[object, object]]] = {
         "expected_states": (NULLABLE_ARRAY_OF_STRINGS, None),
     },
     "wayland_info": {"filter_protocol": ("string", "")},
-    "window_geometry": {"app_name": ("string", "")},
+    "window_close": {"window_id": ("string", NO_DEFAULT)},
+    "window_geometry": {"app_name": ("string", ""), "window_id": ("string", "")},
 }
 
 
@@ -266,7 +270,7 @@ def _result_text(result: CallToolResult) -> str:
 
 @pytest.mark.anyio
 async def test_installed_server_initializes_and_registers_exact_tool_schemas() -> None:
-    assert len(EXPECTED_TOOL_NAMES) == 31
+    assert len(EXPECTED_TOOL_NAMES) == 33
     assert frozenset(EXPECTED_REQUIRED_FIELDS) == EXPECTED_TOOL_NAMES
     assert frozenset(EXPECTED_TOOL_PROPERTIES) == EXPECTED_TOOL_NAMES
 
@@ -361,7 +365,7 @@ async def test_default_live_session_switches_session_tool_recommendations() -> N
         response = await client.session.list_tools()
 
     names = [tool.name for tool in response.tools]
-    assert len(names) == len(set(names)) == 31
+    assert len(names) == len(set(names)) == 33
     assert frozenset(names) == EXPECTED_TOOL_NAMES
     tools = {tool.name: tool for tool in response.tools}
 

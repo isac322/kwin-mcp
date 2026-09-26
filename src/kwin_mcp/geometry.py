@@ -6,9 +6,10 @@ hand the numbers back over D-Bus.
 
 Two entry points share one script round-trip:
 
-- ``query()`` / ``activate()`` / ``outputs()`` run in a subprocess
-  (`python -m kwin_mcp.geometry`) for the public ``window_geometry`` /
-  ``focus_window`` tools and for screenshot coordinate mapping.
+- ``query()`` / ``active()`` / ``activate()`` / ``close()`` / ``outputs()`` run
+  in a subprocess (`python -m kwin_mcp.geometry`) for the public
+  ``window_geometry`` / ``active_window`` / ``focus_window`` / ``window_close``
+  tools and for screenshot coordinate mapping.
 - ``collect_windows()`` runs in-process inside the AT-SPI2 query subprocess so
   `accessibility.py` can translate element rectangles into screen coordinates.
 
@@ -42,6 +43,8 @@ SINK_PATH = "/geometry"
 class KWinWindow(TypedDict):
     """One KWin window as reported by the geometry script.
 
+    ``id`` is KWin's ``internalId``: stable for the lifetime of the window and
+    never reused, so it can address one window among several of the same app.
     ``frame``/``client`` are ``[x, y, width, height]`` in global logical
     coordinates, rounded once from KWin's qreal values.
     """
@@ -57,6 +60,7 @@ class KWinWindow(TypedDict):
     desktop: bool
     dock: bool
     notification: bool
+    active: bool
     frame: list[int]
     client: list[int]
 
@@ -80,6 +84,7 @@ for (var i = 0; i < windows.length; i++) {
         normal: w.normalWindow, popup: w.popupWindow,
         managed: w.managed, deleted: w.deleted,
         desktop: w.desktopWindow, dock: w.dock, notification: w.notification,
+        active: w === workspace.activeWindow,
         frame: [f.x, f.y, f.width, f.height],
         client: [c.x, c.y, c.width, c.height]
     });
@@ -107,6 +112,33 @@ for (var i = 0; i < windows.length; i++) {
     }
 }
 callDBus("{sink}", "{path}", "{sink}", "Report", activated);
+"""
+
+# The id reaches the script only as a JSON string literal ({window_id} is
+# replaced with json.dumps output), so a quote or any other character in a
+# caller-supplied id stays data and can never run as KWin script.
+# closeWindow() asks the client to close, exactly like the titlebar button: the
+# app may still keep the window open (for example behind a "save changes?"
+# prompt), so the caller observes the result instead of trusting this reply.
+_CLOSE_SCRIPT_TEMPLATE = """
+var target = {window_id};
+var result = {found: false};
+var windows = workspace.windowList();
+for (var i = 0; i < windows.length; i++) {
+    var w = windows[i];
+    if (String(w.internalId) !== target) {
+        continue;
+    }
+    result = {
+        found: true, closeable: w.closeable,
+        app: String(w.resourceClass), caption: w.caption
+    };
+    if (w.closeable) {
+        w.closeWindow();
+    }
+    break;
+}
+callDBus("{sink}", "{path}", "{sink}", "Report", JSON.stringify(result));
 """
 
 # Output topology for screenshot coordinate mapping. Geometry is logical (the
@@ -154,6 +186,7 @@ def _parse_windows(payload: str) -> list[KWinWindow]:
                     desktop=bool(record["desktop"]),
                     dock=bool(record["dock"]),
                     notification=bool(record["notification"]),
+                    active=bool(record["active"]),
                     # KWin geometry is qreal (e.g. 325.5 for a centred dialog);
                     # round once here so every consumer sees integers.
                     frame=[round(float(v)) for v in record["frame"]],
@@ -231,38 +264,71 @@ def collect_windows(timeout: float = 5.0) -> list[KWinWindow]:
     return _parse_windows(run_kwin_script(_SCRIPT_TEMPLATE, timeout))
 
 
-def query(app_name: str = "", timeout: float = 5.0) -> list[dict[str, object]]:
-    """Ask KWin for the geometry of every normal window."""
-    windows: list[dict[str, object]] = [
-        {
-            "app": w["app"],
-            "caption": w["caption"],
-            "frame": {
-                "x": w["frame"][0],
-                "y": w["frame"][1],
-                "width": w["frame"][2],
-                "height": w["frame"][3],
-            },
-            "client": {
-                "x": w["client"][0],
-                "y": w["client"][1],
-                "width": w["client"][2],
-                "height": w["client"][3],
-            },
-        }
-        for w in collect_windows(timeout)
-        if w["normal"]
-    ]
+def _report(window: KWinWindow) -> dict[str, object]:
+    """Shape one window for the public geometry report."""
+    return {
+        "id": window["id"],
+        "app": window["app"],
+        "caption": window["caption"],
+        "active": window["active"],
+        "frame": {
+            "x": window["frame"][0],
+            "y": window["frame"][1],
+            "width": window["frame"][2],
+            "height": window["frame"][3],
+        },
+        "client": {
+            "x": window["client"][0],
+            "y": window["client"][1],
+            "width": window["client"][2],
+            "height": window["client"][3],
+        },
+    }
+
+
+def query(
+    app_name: str = "", window_id: str = "", timeout: float = 5.0
+) -> list[dict[str, object]]:
+    """Ask KWin for the geometry of every normal window.
+
+    ``app_name`` is a case-insensitive substring of the app name; ``window_id``
+    must equal a window id exactly. Both filters apply when both are given.
+    """
+    windows = [w for w in collect_windows(timeout) if w["normal"]]
     if app_name:
         needle = app_name.lower()
-        windows = [w for w in windows if needle in str(w["app"]).lower()]
-    return windows
+        windows = [w for w in windows if needle in w["app"].lower()]
+    if window_id:
+        windows = [w for w in windows if w["id"] == window_id]
+    return [_report(w) for w in windows]
+
+
+def active(timeout: float = 5.0) -> dict[str, object] | None:
+    """Return the window KWin currently treats as active, or None."""
+    for window in collect_windows(timeout):
+        if window["active"]:
+            return _report(window)
+    return None
 
 
 def activate(app_name: str, timeout: float = 5.0) -> str:
     """Activate the first window whose app name or caption matches."""
     script = _ACTIVATE_SCRIPT_TEMPLATE.replace("{needle}", json.dumps(app_name.lower()))
     return run_kwin_script(script, timeout)
+
+
+def close(window_id: str, timeout: float = 5.0) -> dict[str, object]:
+    """Ask KWin to close the window with exactly this id.
+
+    Returns ``{"found": False}`` when no window has the id, otherwise
+    ``{"found": True, "closeable", "app", "caption"}``.
+    """
+    script = _CLOSE_SCRIPT_TEMPLATE.replace("{window_id}", json.dumps(window_id))
+    payload = json.loads(run_kwin_script(script, timeout))
+    if not isinstance(payload, dict) or "found" not in payload:
+        msg = f"KWin returned a malformed close result: {payload!r}"
+        raise RuntimeError(msg)
+    return payload
 
 
 def outputs(timeout: float = 5.0) -> dict[str, object]:
@@ -286,13 +352,24 @@ def main() -> None:
     except json.JSONDecodeError:
         request = {}
     try:
-        if request.get("op") == "activate":
+        op = request.get("op")
+        if op == "activate":
             print(json.dumps({"ok": True, "result": activate(str(request.get("app_name", "")))}))
             return
-        if request.get("op") == "outputs":
+        if op == "outputs":
             print(json.dumps({"ok": True, "result": outputs()}))
             return
-        print(json.dumps({"ok": True, "result": query(app_name=str(request.get("app_name", "")))}))
+        if op == "active":
+            print(json.dumps({"ok": True, "result": active()}))
+            return
+        if op == "close":
+            print(json.dumps({"ok": True, "result": close(str(request.get("window_id", "")))}))
+            return
+        result = query(
+            app_name=str(request.get("app_name", "")),
+            window_id=str(request.get("window_id", "")),
+        )
+        print(json.dumps({"ok": True, "result": result}))
     except (RuntimeError, ValueError, dbus.DBusException) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}))
 

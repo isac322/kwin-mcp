@@ -1064,32 +1064,81 @@ class AutomationEngine:
         activated = str(resp["result"]).strip()
         return f"Focused: {activated}" if activated else f"No window matches '{app_name}'."
 
-    def window_geometry(self, app_name: str = "") -> str:
+    @staticmethod
+    def _format_window(window: dict) -> str:
+        """Render one window from the KWin geometry report."""
+        frame, client = window["frame"], window["client"]
+        marker = " [active]" if window["active"] else ""
+        return (
+            f'- {window["app"]} "{window["caption"]}"{marker}\n'
+            f"    id:     {window['id']}\n"
+            f"    frame:  ({frame['x']}, {frame['y']}, {frame['width']}x{frame['height']})\n"
+            f"    client: ({client['x']}, {client['y']}, "
+            f"{client['width']}x{client['height']})"
+        )
+
+    def window_geometry(self, app_name: str = "", window_id: str = "") -> str:
         """Report window positions in global screen coordinates.
 
         Element rectangles from find_ui_elements and accessibility_tree are
         already translated to this same coordinate space; this tool remains
-        useful for locating whole windows and diagnosing placement.
+        useful for locating whole windows and diagnosing placement. Each window
+        carries its KWin id, which window_id filters on and window_close takes.
         """
         self._get_session()
-        resp = self._run_kwin_query({"app_name": app_name})
+        resp = self._run_kwin_query({"app_name": app_name, "window_id": window_id})
         if not resp["ok"]:
             return f"Window geometry unavailable: {resp['error']}"
 
         windows = resp["result"]
         if not windows:
+            if window_id:
+                return f"No window with id {window_id!r}."
             return "No windows found." if not app_name else f"No windows found for '{app_name}'."
 
         lines = [f"Windows ({len(windows)}):"]
-        for window in windows:
-            frame, client = window["frame"], window["client"]
-            lines.append(
-                f'- {window["app"]} "{window["caption"]}"\n'
-                f"    frame:  ({frame['x']}, {frame['y']}, {frame['width']}x{frame['height']})\n"
-                f"    client: ({client['x']}, {client['y']}, "
-                f"{client['width']}x{client['height']})"
-            )
+        lines.extend(self._format_window(window) for window in windows)
         return "\n".join(lines)
+
+    def active_window(self) -> str:
+        """Report the window KWin currently treats as active (the one focus_window sets)."""
+        self._get_session()
+        resp = self._run_kwin_query({"op": "active"})
+        if not resp["ok"]:
+            return f"Active window unavailable: {resp['error']}"
+        window = resp["result"]
+        if window is None:
+            return "No active window."
+        return f"Active window:\n{self._format_window(window)}"
+
+    def window_close(self, window_id: str) -> str:
+        """Ask KWin to close one window, addressed by the id window_geometry reports.
+
+        Refused in live sessions: closing can discard unsaved work in the user's
+        own applications, and unlike input actions it cannot be watched and
+        interrupted step by step.
+        """
+        session = self._get_session()
+        if isinstance(session, LiveSession):
+            return (
+                "window_close is disabled in live sessions: it could discard unsaved work "
+                "on the real desktop. Close the window through the app's own UI instead."
+            )
+        if not window_id:
+            return "window_close needs a window_id (see window_geometry)."
+        resp = self._run_kwin_query({"op": "close", "window_id": window_id})
+        if not resp["ok"]:
+            return f"Failed to close window {window_id!r}: {resp['error']}"
+        result = resp["result"]
+        if not result["found"]:
+            return f"No window with id {window_id!r}."
+        name = f'{result["app"]} "{result["caption"]}"'
+        if not result["closeable"]:
+            return f"Window {name} ({window_id}) cannot be closed."
+        return (
+            f"Close requested: {name} ({window_id}). The app may keep the window open, "
+            "for example to ask about unsaved changes; check window_geometry."
+        )
 
     # ── D-Bus tools ───────────────────────────────────────────────────────
 

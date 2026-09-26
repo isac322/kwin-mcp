@@ -769,14 +769,47 @@ def window_geometry(
         str,
         Field(description="Only report windows whose app name contains this string."),
     ] = "",
+    window_id: Annotated[
+        str,
+        Field(description="Only report the window with exactly this id."),
+    ] = "",
 ) -> str:
-    """Report window positions and sizes in global screen coordinates.
+    """Report window ids, positions and sizes in global screen coordinates.
 
     Element rectangles from accessibility_tree and find_ui_elements are
     already translated to this same coordinate space; this tool remains
-    useful for locating whole windows and diagnosing placement.
+    useful for locating whole windows and diagnosing placement. Each window
+    lists its KWin id (stable while the window exists) and an [active] marker
+    on the active window. Pass the id to window_close.
     """
-    return _engine.window_geometry(app_name=app_name)
+    return _engine.window_geometry(app_name=app_name, window_id=window_id)
+
+
+@mcp.tool()
+def active_window() -> str:
+    """Report the window KWin currently treats as active.
+
+    Returns the same id, frame and client fields as window_geometry for the
+    one window that has focus, e.g. after focus_window.
+    """
+    return _engine.active_window()
+
+
+@mcp.tool()
+def window_close(
+    window_id: Annotated[
+        str,
+        Field(description="Id of the window to close, as reported by window_geometry."),
+    ],
+) -> str:
+    """Ask one window to close, like its titlebar close button.
+
+    Only the window with exactly this id is addressed, even when the same app
+    has several windows. The app may keep the window open (for example to ask
+    about unsaved changes), so confirm with window_geometry. Disabled in live
+    sessions (session_connect) to protect unsaved work on the real desktop.
+    """
+    return _engine.window_close(window_id=window_id)
 
 
 # ── D-Bus tools ──────────────────────────────────────────────────────────

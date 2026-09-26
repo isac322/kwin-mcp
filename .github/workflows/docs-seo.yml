@@ -77,8 +77,11 @@ jobs:
         run: python3 scripts/sync_plugin_version.py --check
 
       - name: Post PR comment with docs-seo findings
+        # Fork PRs get a read-only GITHUB_TOKEN, so createComment returns 403;
+        # the findings are still in the job log via tee above.
         if: >
           github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
           steps.changed.outputs.has_changes == 'true'
         uses: actions/github-script@v9
         with:

@@ -456,13 +456,13 @@ def keyboard_type_unicode(
 
     Uses wtype if it succeeds (KWin does not support it), otherwise pastes
     through a temporary clipboard owner: Ctrl+Shift+V in terminals known to
-    paste on it (Konsole, GNOME Terminal, kitty, foot, ...), Ctrl+V elsewhere.
-    The previous clipboard content (all its formats) is restored after the
-    paste, and the text is marked as secret so KDE's clipboard history skips
-    it. Returns a failure when the clipboard could not be taken or nothing
-    requested the text, and without pressing any key when the focused window
-    is a terminal with no clipboard paste chord (xterm, urxvt, st) or cannot
-    be identified.
+    paste on it (Konsole, GNOME Terminal, kitty, foot, st, ...), Ctrl+V
+    elsewhere. The previous clipboard content (all its formats) is restored
+    after the paste, and the text is marked as secret so KDE's clipboard
+    history skips it. Returns a failure when the clipboard could not be
+    taken or nothing requested the text, and without pressing any key when
+    the focused window is a recognized terminal with no clipboard paste
+    chord (xterm, urxvt) or cannot be identified.
     Use this instead of keyboard_type when the text contains non-ASCII
     characters (e.g. Korean, CJK, emoji, accented characters).
     """

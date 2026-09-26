@@ -58,3 +58,15 @@ def element_count(output: str) -> int:
     match = _FOUND.match(output)
     assert match is not None, f"unexpected AT-SPI2 query output: {output[:200]}"
     return int(match.group(1))
+
+
+def kcalc_binary_label(expected: str) -> re.Pattern[str]:
+    """Match a ``find_ui_elements`` line for KCalc's binary display showing ``expected``.
+
+    KCalc 26.08 groups binary digits in fours from the right (``100 0110``), older
+    releases show them ungrouped (``1000110``); either rendering of the same value
+    matches. Search with an empty query: a name query for the ungrouped digits
+    misses the grouped label.
+    """
+    digits = " ?".join(re.escape(digit) for digit in expected)
+    return re.compile(rf'^- \[label\] "{digits}"(?: |$)')

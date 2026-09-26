@@ -76,7 +76,8 @@ def test_accessibility_rectangles_are_global_screen_coordinates(
 ) -> None:
     """AT-SPI2 rectangles are translated to screen coordinates by kwin-mcp."""
     elements = kcalc_session.find_ui_elements(query="", app_name="kcalc")
-    frame = re.search(rf'\[frame\] "" @ screen {_RECT}', elements)
+    # KCalc 26.08 names its top-level "KCalc"; older releases leave it empty.
+    frame = re.search(rf'^- \[frame\] "[^"]*" @ screen {_RECT}', elements, re.MULTILINE)
     assert frame is not None, elements[:500]
     screen_x, screen_y, screen_w, screen_h = (int(value) for value in frame.groups())
 

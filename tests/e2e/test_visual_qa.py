@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, cast
 
 import anyio
 import pytest
-from _asserts import coordinate_spaces, screenshot_path
+from _asserts import coordinate_spaces, kcalc_binary_label, screenshot_path
 from mcp_harness import running_mcp_server
 from PIL import Image, ImageChops, ImageStat
 from visual_harness import nested_visual_kwin
@@ -225,11 +225,11 @@ async def _wait_for_accessible_name(
 async def _wait_for_binary(client: McpTestClient, expected: str) -> None:
     deadline = time.monotonic() + STATE_TIMEOUT_SECONDS
     elements = ""
-    exact_label = re.compile(rf'^- \[label] "{re.escape(expected)}"(?: |$)')
+    exact_label = kcalc_binary_label(expected)
     while time.monotonic() < deadline:
         elements = await client.call_text(
             "find_ui_elements",
-            {"query": expected, "app_name": "kcalc"},
+            {"query": "", "app_name": "kcalc"},
         )
         element_lines = [line for line in elements.splitlines() if line.startswith("- [")]
         if any(exact_label.match(line) for line in element_lines):

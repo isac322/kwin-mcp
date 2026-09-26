@@ -7,10 +7,12 @@ import re
 import time
 from typing import TYPE_CHECKING
 
+import pytest
 from _asserts import element_count
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
     from kwin_mcp.core import AutomationEngine
 
@@ -223,6 +225,38 @@ def test_keyboard_key_down_and_up_control_shift(
     engine.keyboard_key("a")
 
     _wait_for_text(engine, "Aa")
+
+
+@pytest.mark.parametrize(
+    ("host_layout", "isolate_home"),
+    [(None, False), ("ru,us", False), ("ru,us", True)],
+    ids=["host-default", "host-ru-us", "host-ru-us-isolated-home"],
+)
+def test_keyboard_type_ignores_host_keyboard_layout(
+    engine: AutomationEngine,
+    start_session: Callable[..., str],
+    wait_for_app: Callable[[str], str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    host_layout: str | None,
+    isolate_home: bool,
+) -> None:
+    # keyboard_type sends evdev keycodes from a US QWERTY table, and KWin maps
+    # them through its own keymap. A host whose first layout is not US, set in
+    # kxkbrc or in XKB_DEFAULT_LAYOUT, must not turn "hello" into "руддщ".
+    if host_layout is not None:
+        host_config = tmp_path / "host-config"
+        host_config.mkdir()
+        (host_config / "kxkbrc").write_text(f"[Layout]\nLayoutList={host_layout}\nUse=true\n")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(host_config))
+        monkeypatch.setenv("XKB_DEFAULT_LAYOUT", host_layout)
+
+    output = start_session("kwrite /tmp/kwin-mcp-host-layout.txt", isolate_home=isolate_home)
+    assert "Input backend: KWin EIS" in output, output
+    wait_for_app("kwrite")
+
+    engine.keyboard_type("hello")
+    _wait_for_text(engine, "hello")
 
 
 def test_keyboard_type_unicode_reaches_kwrite(

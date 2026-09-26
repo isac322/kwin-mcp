@@ -96,7 +96,10 @@ def test_failed_type_into_stalled_konsole_leaves_next_key_unaltered(
     Stopping Konsole holds the paste chord in its event queue until the call
     has timed out, restored the (empty) prior selection, and reported failure.
     Konsole then handles the chord like any late key, so what it does to the
-    following Return is exactly the residue a failed call leaves behind.
+    following Return is exactly the residue a failed call leaves behind. The
+    late chord can add a benign empty line while the window drains its queue;
+    what must never appear is the literal CR that a stray ^V quotes it into,
+    and the paste must not deliver the text after the call failed.
     """
     received, pid = _start_konsole_cat(engine, start_session, wait_for_app, tmp_path)
 
@@ -108,4 +111,7 @@ def test_failed_type_into_stalled_konsole_leaves_next_key_unaltered(
     assert output == f"Failed to type unicode: {TEXT!r}"
     _type_next_line(engine)
 
-    assert _wait_for_bytes(received, b"ok\n") == b"ready\n\nok\n"
+    data = _wait_for_bytes(received, b"ok\n")
+    assert data.startswith(b"ready\n")
+    assert TEXT.encode() not in data
+    assert b"\r" not in data, data

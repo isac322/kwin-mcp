@@ -121,12 +121,8 @@ def _kill_accessibility_bus() -> None:
     """Kill the AT-SPI bus trio so the next GetAddress relaunches it with a new guid."""
     # comm is truncated to 15 chars; matching the full name with -f would also
     # hit the dbus-run-session wrapper whose script text mentions the launcher.
-    subprocess.run(
-        ["pkill", "-KILL", "-x", "at-spi2-registr"], check=False, capture_output=True
-    )
-    subprocess.run(
-        ["pkill", "-KILL", "-x", "at-spi-bus-laun"], check=False, capture_output=True
-    )
+    subprocess.run(["pkill", "-KILL", "-x", "at-spi2-registr"], check=False, capture_output=True)
+    subprocess.run(["pkill", "-KILL", "-x", "at-spi-bus-laun"], check=False, capture_output=True)
     # The a11y dbus-daemon is distinguished from the session daemon by its config.
     listing = subprocess.run(
         ["pgrep", "-a", "-x", "dbus-daemon"], check=False, capture_output=True, text=True

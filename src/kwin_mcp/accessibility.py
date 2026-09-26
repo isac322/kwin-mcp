@@ -693,9 +693,7 @@ def _serve() -> None:
 
     # The worker's stderr is the server's stderr; silence the one library
     # warning that fires on every tree walk and is not actionable for users.
-    warnings.filterwarnings(
-        "ignore", message=r"Atspi\.Action\.get_action_name is deprecated"
-    )
+    warnings.filterwarnings("ignore", message=r"Atspi\.Action\.get_action_name is deprecated")
 
     # Keep the response stream private: anything a library prints lands on stderr.
     responses = os.fdopen(os.dup(sys.stdout.fileno()), "w", encoding="utf-8")

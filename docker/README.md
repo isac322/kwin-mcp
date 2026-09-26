@@ -24,6 +24,15 @@ All Python dependencies — `mcp` within the declared 1.x range, PyGObject, pyca
 - Package names differ from Debian: `kate` provides `/usr/bin/kwrite`, `libkscreen` provides `kscreen-doctor`, `xorg-server-xvfb` provides `Xvfb`, and `xorg-xwininfo`/`xorg-xdpyinfo` replace `x11-utils`.
 - `kwin_wayland` ships with the `cap_sys_nice=ep` file capability. Docker's `NoNewPrivileges` makes the kernel refuse to execute it for the unprivileged test user, so the image strips it with `setcap -r`, as the Debian image does.
 
+### Multi-touch oracles and Qt versions
+
+KWrite cannot show that a multi-finger touch reached it, so the multi-touch assertions in `test_window_control.py` and `test_mcp_touch_clipboard.py` read the GTK interaction probe (`interaction_probe.py`) instead. The probe records each touch sequence (`fingers`, `motions`, `release`) and runs a `GestureZoom`. KWrite remains the oracle for single-finger swipe scrolling.
+
+- Both KWin 6.3.6 and 6.7.5 deliver the same `wl_touch` stream for a two-finger swipe (two `down`, paired `motion`, two `up`, no `cancel`). `GlobalShortcutFilter::touchDown` in KWin's `src/input.cpp` claims a touchscreen gesture only at three or more touch points, and both versions have that code.
+- KTextEditor scrolls through `QScroller::grabGesture` (`kateviewinternal.cpp`). `QFlickGestureRecognizer::recognize` in Qt's `qflickgesture.cpp` ignores any touchscreen `QTouchEvent` without exactly one point, the same in Qt 6.8.2 and 6.11.2.
+- In Qt 6.8.2 (Debian trixie), `QApplicationPrivate::findClosestTouchPointTarget` could pick a point with no target, so the second finger was never grouped with the first. KWrite's view then received one-point `TouchUpdate` events, and the flick recognizer scrolled on the first finger. Qt fixed this in f66a34b9 and 8976c4cd (QTBUG-125197). Qt 6.11.2 (Arch, Fedora 44, openSUSE Tumbleweed) delivers two-point events, and the recognizer ignores them. A two-finger swipe no longer scrolls KWrite, and it only places the cursor where the first finger landed.
+- KWrite has no pinch. A pinch only moves its cursor, and Ctrl+C with no selection copies the whole current line, so a clipboard comparison measures cursor lines, not a selection.
+
 ## Process topology
 
 ```text
@@ -127,7 +136,7 @@ Additional arguments after the image command can select a file, node ID, marker,
 | `test_mcp_pointer_keyboard.py` | Pointer and keyboard wrappers crossing the installed MCP stdio transport and changing application state. |
 | `test_mcp_protocol.py` | Initialization, exact names and JSON input schemas for all 33 tools, invalid argument rejection, tool-error conversion, and server survival. |
 | `test_mcp_session_observation.py` | Installed stdio session, app launch, accessibility, windows, geometry, active window, closing one window by id, logs, Wayland, D-Bus, focus, polling, lifecycle, and virtual screenshot-error paths. |
-| `test_mcp_touch_clipboard.py` | Clipboard and touch wrappers over installed stdio, including observable GUI changes and compositor gesture limits. |
+| `test_mcp_touch_clipboard.py` | Clipboard and touch wrappers over installed stdio: touch tap on KCalc, single-finger swipe scrolling in KWrite, and, on the GTK interaction probe in a virtual session, pinch zoom, two-finger delivery, and KWin cancelling three- to five-finger swipes. |
 | `test_observation_tools.py` | Accessibility filters and depth, element queries and states, polling, multi-window focus, app logs, Wayland protocol filtering, and generic D-Bus calls. |
 | `test_pointer_reconnect.py` | A click after `session_stop` and `session_connect` to the same KWin must reach a new window whose button lies under the parked cursor, proved by the persistent `animation_clicks` counter of `counted_gui_probe.py` (#66). |
 | `test_screenshot_behavior.py` | Explicit nested X11/scrot capture, cursor pixels, action frame paths, logical-coordinate click targets at output scales 1.0 and 1.45, screenshot retention, exact-virtual backend errors, and server survival. |
@@ -138,7 +147,7 @@ Additional arguments after the image command can select a file, node ID, marker,
 | `test_virtual_session_smoke.py` | Minimum virtual KWin contract: KCalc launch, AT-SPI2 visibility and widgets, EIS keyboard delivery, plus the intentionally skipped exact-virtual ScreenShot2 success probe. |
 | `test_visual_qa.py` | Pixel-backed GUI probe and KCalc oracles: hover repaint, cursor localization, animation bursts, CJK-versus-tofu rendering, and binary-value transitions. |
 | `test_window_close.py` | `window_close` closing only the targeted one of two same-app windows, unknown ids, window ids containing a quote staying data rather than running as KWin script (`window_close` and `window_geometry`), `active_window` and the `[active]` marker following `focus_window`, and `window_close` refused in a live session. |
-| `test_window_control.py` | Focus, smooth/discrete scroll, drag selection, touch swipe/multi-swipe/pinch delivery, and scrollbar values. |
+| `test_window_control.py` | Focus, smooth/discrete scroll, drag selection, touch swipe and pinch delivery to KWrite, two-finger delivery to the GTK interaction probe, and scrollbar values. |
 | `test_window_geometry.py` | Global client/frame geometry, centered placement, element rectangles reported in screen coordinates, and unknown-window behavior. |
 
 Together, the installed MCP files exercise every server wrapper over a real MCP 1.x stdio client/server connection. The engine-level files retain direct coverage of lower-level behavior and cleanup.

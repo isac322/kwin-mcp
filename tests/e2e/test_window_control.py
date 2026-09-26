@@ -19,6 +19,16 @@ if TYPE_CHECKING:
 
 LONG_DOCUMENT = "/tmp/kwin-mcp-scroll.txt"
 _SCROLLBAR = re.compile(r"\[scroll bar\][^\n]*?value=(\d+(?:\.\d+)?)/(\d+(?:\.\d+)?)")
+PROBE_COMMAND = "python3 /app/tests/e2e/interaction_probe.py"
+PROBE_SELECTOR = "interaction_probe.py"
+PROBE_ENV = {
+    "GDK_BACKEND": "wayland",
+    "GTK_MODULES": "gail:atk-bridge",
+    "NO_AT_BRIDGE": "0",
+    "XDG_SESSION_TYPE": "wayland",
+}
+STATE_TIMEOUT_SECONDS = 5.0
+_RECT = r"\((-?\d+), (-?\d+), (\d+)x(\d+)\)"
 
 
 def _windows_of(engine: AutomationEngine, app: str) -> list[str]:
@@ -59,6 +69,43 @@ def _swipe_span(engine: AutomationEngine) -> tuple[int, int, int]:
     """
     tx, ty, tw, th = _text_area(engine, "kwrite", "kwin-mcp-scroll.txt")
     return tx + tw // 2, ty + (th * 3) // 4, ty + th // 4
+
+
+def _probe_rect(engine: AutomationEngine, name: str) -> tuple[int, int, int, int]:
+    """Global rectangle of a probe widget, once KWin has matched its window."""
+    pattern = re.compile(rf'^- \[[^]]+] "{re.escape(name)}" @ screen {_RECT}', re.MULTILINE)
+    deadline = time.monotonic() + STATE_TIMEOUT_SECONDS
+    elements = ""
+    while time.monotonic() < deadline:
+        elements = engine.find_ui_elements(query=name, app_name=PROBE_SELECTOR)
+        match = pattern.search(elements)
+        if match is not None:
+            x, y, width, height = (int(value) for value in match.groups())
+            return x, y, width, height
+        time.sleep(0.2)
+    raise AssertionError(elements[:500])
+
+
+def _probe_field(status: str, name: str) -> str:
+    match = re.search(rf"(?:^| ){re.escape(name)}=([^ ]+)", status)
+    assert match is not None, status
+    return match.group(1)
+
+
+def _wait_for_drag_release(engine: AutomationEngine) -> str:
+    """The probe's drag status once a touch sequence has ended."""
+    pattern = re.compile(r'^- \[label] "(drag_status:[^"]*)"', re.MULTILINE)
+    deadline = time.monotonic() + STATE_TIMEOUT_SECONDS
+    status = ""
+    while time.monotonic() < deadline:
+        match = pattern.search(
+            engine.find_ui_elements(query="drag_status:", app_name=PROBE_SELECTOR)
+        )
+        status = match.group(1) if match else ""
+        if status and _probe_field(status, "release") != "none":
+            return status
+        time.sleep(0.1)
+    raise AssertionError(f"touch sequence never ended on the probe: {status}")
 
 
 def _open_editor(engine: AutomationEngine, wait_for_app: Callable[[str], str]) -> None:
@@ -143,23 +190,38 @@ def test_mouse_drag_selects_text(
     assert selection in "line 000 ---------------------------", repr(selection)
 
 
-def test_touch_multi_swipe_scrolls_the_editor(
-    kcalc_session: AutomationEngine, wait_for_app: Callable[[str], str]
+def test_touch_multi_swipe_delivers_both_fingers_to_the_app(
+    engine: AutomationEngine,
+    start_session: Callable[..., str],
+    wait_for_app: Callable[[str], str],
 ) -> None:
-    _open_editor(kcalc_session, wait_for_app)
-    # Touch lands by position, so make sure kcalc is not stacked on the target.
-    kcalc_session.focus_window(app_name="kwrite")
-    time.sleep(1)
-    cx, from_y, to_y = _swipe_span(kcalc_session)
-    assert _scroll_position(kcalc_session, "kwrite") == 0.0
+    """Both touch sequences of a two-finger swipe reach the application.
 
-    # Two fingers reach the application; KWin claims three- and four-finger
-    # swipes as global gestures, so the app never sees those.
-    kcalc_session.touch_multi_swipe(
-        from_x=cx, from_y=from_y, to_x=cx, to_y=to_y, fingers=2, duration_ms=400
+    KWrite cannot show this: its QScroller only flicks on exactly one
+    touchscreen point, and once Qt groups the second finger with the first
+    (QTBUG-125197) a two-finger swipe no longer scrolls it. The GTK probe
+    counts the touch sequences it receives instead. See docker/README.md.
+    """
+    output = start_session(PROBE_COMMAND, env=PROBE_ENV)
+    assert "Input backend: KWin EIS" in output, output
+    wait_for_app(PROBE_SELECTOR)
+    x, y, width, height = _probe_rect(engine, "Drag Target")
+    row = y + height // 2
+    from_x, to_x = x + width // 3, x + width * 2 // 3
+
+    engine.touch_multi_swipe(
+        from_x=from_x, from_y=row, to_x=to_x, to_y=row, fingers=2, duration_ms=400
     )
-    time.sleep(1.5)
-    assert _scroll_position(kcalc_session, "kwrite") > 0.0, "two-finger swipe did not scroll"
+    status = _wait_for_drag_release(engine)
+
+    assert _probe_field(status, "source") == "touch", status
+    assert _probe_field(status, "release") == "touch", status
+    assert int(_probe_field(status, "fingers")) == 2, status
+    assert int(_probe_field(status, "motions")) >= 20, status
+    # bounds are (min_x,min_y,max_x,max_y) over both fingers in widget pixels.
+    bounds = [int(v) for v in _probe_field(status, "bounds").strip("()").split(",")]
+    assert bounds[2] - bounds[0] >= (to_x - from_x) * 3 // 4, status
+    assert bounds[3] - bounds[1] >= 16, status
 
 
 def test_touch_pinch_delivers_multitouch_to_the_app(

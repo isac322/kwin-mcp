@@ -38,6 +38,15 @@ SLOW_BOUNDARY_SECONDS = 1.5
 WL_COPY = shutil.which("wl-copy")
 WL_PASTE = shutil.which("wl-paste")
 _RECT = r"\((-?\d+), (-?\d+), (\d+)x(\d+)\)"
+PROBE_COMMAND = "python3 /app/tests/e2e/interaction_probe.py"
+PROBE_SELECTOR = "interaction_probe.py"
+PROBE_TITLE = "Interaction Probe"
+PROBE_ENV = {
+    "GDK_BACKEND": "wayland",
+    "GTK_MODULES": "gail:atk-bridge",
+    "NO_AT_BRIDGE": "0",
+    "XDG_SESSION_TYPE": "wayland",
+}
 _SCROLLBAR = re.compile(
     rf'\[scroll bar] "[^"]*" @ screen {_RECT} value=(\d+(?:\.\d+)?)/(\d+(?:\.\d+)?)'
 )
@@ -278,54 +287,54 @@ async def _wait_for_scroll(
         await anyio.sleep(POLL_INTERVAL_SECONDS)
 
 
-async def _reset_scroll(client: McpClient) -> None:
-    await client.call_text("keyboard_key", {"key": "ctrl+home"})
-    await _wait_for_scroll(client, lambda value: value == 0.0, "editor did not return to the top")
-
-
-async def _pinch_selection(
-    client: McpClient,
-    *,
-    center_x: int,
-    center_y: int,
-    start_distance: int,
-    end_distance: int,
-) -> str:
-    # Collapse any selection left by the previous pinch before measuring what
-    # Ctrl+C does with no selection under the current KWrite configuration.
-    await client.call_text("keyboard_key", {"key": "right"})
-    sentinel = f"no-selection-{start_distance}-{end_distance}"
-    assert await client.call_text("clipboard_set", {"text": sentinel}) == (
-        f"Clipboard set: {sentinel!r}"
-    )
-    await client.call_text("keyboard_key", {"key": "ctrl+c"})
-    await anyio.sleep(0.3)
-    no_selection_clipboard = await client.call_text("clipboard_get")
-
+async def _probe_status(client: McpClient, prefix: str) -> str:
     output = await client.call_text(
-        "touch_pinch",
-        {
-            "center_x": center_x,
-            "center_y": center_y,
-            "start_distance": start_distance,
-            "end_distance": end_distance,
-            "duration_ms": 400,
-        },
+        "find_ui_elements",
+        {"query": f"{prefix}:", "app_name": PROBE_SELECTOR},
     )
-    direction = "in" if end_distance < start_distance else "out"
-    assert output == (
-        f"Pinch {direction} at ({center_x}, {center_y}): {start_distance}→{end_distance}px"
-    )
-    await anyio.sleep(1.2)
-    await client.call_text("keyboard_key", {"key": "ctrl+c"})
-    await anyio.sleep(0.8)
+    matches = re.findall(rf'^- \[label] "({re.escape(prefix)}:[^"]*)"', output, re.MULTILINE)
+    assert len(matches) == 1, output[:500]
+    return matches[0]
 
-    selection = await client.call_text("clipboard_get")
-    assert selection != no_selection_clipboard, (
-        f"pinch {direction} produced no application selection"
-    )
-    assert len(selection) >= 8, repr(selection)
-    return selection
+
+async def _wait_for_probe_status(
+    client: McpClient,
+    prefix: str,
+    predicate: Callable[[str], bool],
+    message: str,
+) -> str:
+    deadline = time.monotonic() + INPUT_TIMEOUT_SECONDS
+    status = ""
+    while time.monotonic() < deadline:
+        status = await _probe_status(client, prefix)
+        if predicate(status):
+            return status
+        await anyio.sleep(POLL_INTERVAL_SECONDS)
+    raise AssertionError(f"{message}: {status}")
+
+
+def _probe_field(status: str, name: str) -> str:
+    match = re.search(rf"(?:^| ){re.escape(name)}=([^ ]+)", status)
+    assert match is not None, status
+    return match.group(1)
+
+
+async def _probe_rect(client: McpClient, name: str) -> tuple[int, int, int, int]:
+    """Global rectangle of a probe widget, once KWin has matched its window."""
+    pattern = rf'^- \[[^]]+] "{re.escape(name)}" @ screen {_RECT}'
+    deadline = time.monotonic() + INPUT_TIMEOUT_SECONDS
+    output = ""
+    while time.monotonic() < deadline:
+        output = await client.call_text(
+            "find_ui_elements", {"query": name, "app_name": PROBE_SELECTOR}
+        )
+        match = re.search(pattern, output, re.MULTILINE)
+        if match is not None:
+            x, y, width, height = (int(value) for value in match.groups())
+            return x, y, width, height
+        await anyio.sleep(POLL_INTERVAL_SECONDS)
+    raise AssertionError(output[:500])
+
 
 
 async def test_clipboard_disabled_guards_return_without_hanging() -> None:
@@ -522,7 +531,6 @@ async def test_touch_wrappers_change_gui_state_and_report_kwin_limits(tmp_path: 
             document.name,
         )
         center_x = text_x + text_width // 2
-        center_y = text_y + text_height // 2
         from_y = text_y + (text_height * 3) // 4
         to_y = text_y + text_height // 4
 
@@ -546,65 +554,83 @@ async def test_touch_wrappers_change_gui_state_and_report_kwin_limits(tmp_path: 
             "single-finger swipe did not scroll",
         )
 
-        # The image has no pinch-zoom application. KWrite exposes delivery through
-        # text selection, so run both directions and read each selection from the clipboard.
-        await _pinch_selection(
-            client,
-            center_x=center_x,
-            center_y=center_y,
-            start_distance=80,
-            end_distance=320,
+        # KWrite cannot report multi-touch: it has no pinch, and its QScroller only
+        # flicks on exactly one touchscreen point, so once Qt groups the second finger
+        # with the first (QTBUG-125197) two fingers leave it unscrolled. The GTK probe
+        # records every touch sequence and runs a GestureZoom, so it observes both.
+        launch_output = await client.call_text(
+            "launch_app", {"command": PROBE_COMMAND, "env": PROBE_ENV}
         )
-        await _pinch_selection(
-            client,
-            center_x=center_x,
-            center_y=center_y,
-            start_distance=320,
-            end_distance=80,
-        )
+        assert f"App launched: {PROBE_COMMAND}" in launch_output, launch_output
+        await _wait_for_app(client, PROBE_SELECTOR, "Zoom Target")
+        focus_output = await client.call_text("focus_window", {"app_name": PROBE_TITLE})
+        assert focus_output.startswith("Focused:"), focus_output
 
-        # KWin passes the two-finger stream to the app in this setup.
-        await _reset_scroll(client)
-        output = await client.call_text(
-            "touch_multi_swipe",
-            {
-                "from_x": center_x,
-                "from_y": from_y,
-                "to_x": center_x,
-                "to_y": to_y,
-                "fingers": 2,
-                "duration_ms": 400,
-            },
-        )
-        assert output == (
-            f"2-finger swipe from ({center_x}, {from_y}) to ({center_x}, {to_y}) in 400ms"
-        )
-        await _wait_for_scroll(
-            client,
-            lambda value: value > 0.0,
-            "2-finger application swipe did not scroll",
-        )
+        zoom_x, zoom_y, zoom_width, zoom_height = await _probe_rect(client, "Zoom Target")
+        zoom_center = (zoom_x + zoom_width // 2, zoom_y + zoom_height // 2)
+        pinch_distance = min(160, zoom_width - 40)
+        for start, end, direction, reached in (
+            (pinch_distance, 60, "in", lambda scale: scale < 0.8),
+            (60, pinch_distance, "out", lambda scale: scale > 1.2),
+        ):
+            output = await client.call_text(
+                "touch_pinch",
+                {
+                    "center_x": zoom_center[0],
+                    "center_y": zoom_center[1],
+                    "start_distance": start,
+                    "end_distance": end,
+                    "duration_ms": 500,
+                },
+            )
+            assert output == f"Pinch {direction} at {zoom_center}: {start}→{end}px"
+            await _wait_for_probe_status(
+                client,
+                "zoom_status",
+                lambda status, reached=reached: (
+                    _probe_field(status, "phase") == "completed"
+                    and reached(float(_probe_field(status, "scale")))
+                ),
+                f"pinch {direction} did not complete a zoom on the probe",
+            )
 
-        # KWin consumes three-, four-, and five-finger swipes as compositor gestures. The
-        # wrapper still reports each injected gesture, while KWrite's scroll value stays put.
-        for fingers in (3, 4, 5):
-            await _reset_scroll(client)
+        drag_x, drag_y, drag_width, drag_height = await _probe_rect(client, "Drag Target")
+        row = drag_y + drag_height // 2
+        swipe_from = drag_x + drag_width // 3
+        swipe_to = drag_x + drag_width * 2 // 3
+        for fingers in (2, 3, 4, 5):
+            marker = await _probe_status(client, "drag_status")
             output = await client.call_text(
                 "touch_multi_swipe",
                 {
-                    "from_x": center_x,
-                    "from_y": from_y,
-                    "to_x": center_x,
-                    "to_y": to_y,
+                    "from_x": swipe_from,
+                    "from_y": row,
+                    "to_x": swipe_to,
+                    "to_y": row,
                     "fingers": fingers,
                     "duration_ms": 400,
                 },
             )
             assert output == (
-                f"{fingers}-finger swipe from ({center_x}, {from_y}) "
-                f"to ({center_x}, {to_y}) in 400ms"
+                f"{fingers}-finger swipe from ({swipe_from}, {row}) "
+                f"to ({swipe_to}, {row}) in 400ms"
             )
-            await anyio.sleep(1.0)
-            assert await _scroll_position(client) == 0.0, (
-                f"KWin-reserved {fingers}-finger gesture unexpectedly reached KWrite"
+            status = await _wait_for_probe_status(
+                client,
+                "drag_status",
+                lambda status, marker=marker: (
+                    status != marker and _probe_field(status, "release") != "none"
+                ),
+                f"{fingers}-finger swipe never reached the probe",
             )
+            observed = int(_probe_field(status, "fingers"))
+            if fingers == 2:
+                # KWin passes two-finger streams to the application untouched.
+                assert _probe_field(status, "release") == "touch", status
+                assert observed == 2, status
+                assert int(_probe_field(status, "motions")) >= 20, status
+            else:
+                # KWin claims three or more fingers as a compositor gesture and
+                # cancels the fingers the application had already received.
+                assert _probe_field(status, "release") == "cancel", status
+                assert observed < fingers, status

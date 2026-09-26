@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ctypes
 import importlib.util
+import os
 import sys
 import time
 from pathlib import Path
@@ -75,6 +76,19 @@ def _live_kwin_pids() -> set[int]:
     return pids
 
 
+def _socket_fds() -> set[tuple[int, str]]:
+    """Open socket descriptors of this process as (fd, inode link) pairs."""
+    sockets: set[tuple[int, str]] = set()
+    for entry in Path("/proc/self/fd").iterdir():
+        try:
+            target = os.readlink(entry)
+        except OSError:
+            continue
+        if target.startswith("socket:"):
+            sockets.add((int(entry.name), target))
+    return sockets
+
+
 def test_import_does_not_load_libei(monkeypatch: pytest.MonkeyPatch) -> None:
     """Executing the module must not open libei at all."""
     _break_cdll(monkeypatch)
@@ -104,7 +118,10 @@ def test_get_libei_loads_once_and_caches(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_missing_libei_raises_runtime_error_with_hint(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A failed load is the optional-backend RuntimeError, names libei1, and is retried."""
+    """A failed load is the optional-backend RuntimeError naming libei1, and is not cached.
+
+    Once the library can be loaded, the next call succeeds without a restart.
+    """
     _break_cdll(monkeypatch)
     module = _exec_input_module()
 
@@ -114,16 +131,23 @@ def test_missing_libei_raises_runtime_error_with_hint(monkeypatch: pytest.Monkey
     assert isinstance(excinfo.value.__cause__, OSError)
     assert module._libei is None
 
+    sentinel = object()  # stands in for the handle of a now-installed libei
+    monkeypatch.setattr(module, "_load_libei", lambda: sentinel)
+
+    assert module._get_libei() is sentinel
+    assert module._libei is sentinel
+
 
 def test_session_start_without_libei_reports_no_input_backend(
     engine: AutomationEngine,
     start_session: Callable[..., str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """session_start completes without libei and leaves a session the caller can stop.
+    """session_start completes without libei and leaves nothing behind after session_stop.
 
     Before the fix the load OSError escaped session_start after KWin had
-    started: the tool failed while the compositor kept running.
+    started: the tool failed while the compositor kept running. Resolving libei
+    only after connectToEIS also leaked the EIS socket fd KWin handed over.
     """
 
     def _missing_libei() -> ctypes.CDLL:
@@ -133,6 +157,7 @@ def test_session_start_without_libei_reports_no_input_backend(
     monkeypatch.setattr(input_module, "_libei", None)
     monkeypatch.setattr(input_module, "_load_libei", _missing_libei)
     baseline = _live_kwin_pids()
+    baseline_sockets = _socket_fds()
 
     output = start_session()
 
@@ -151,3 +176,5 @@ def test_session_start_without_libei_reports_no_input_backend(
     while _live_kwin_pids() - baseline and time.monotonic() < deadline:
         time.sleep(0.05)
     assert not _live_kwin_pids() - baseline, "KWin outlived session_stop"
+    leaked = _socket_fds() - baseline_sockets
+    assert not leaked, f"socket fds outlived session_stop: {sorted(leaked)}"

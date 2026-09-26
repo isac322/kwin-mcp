@@ -63,13 +63,11 @@ def _write_deterministic_session_config(config_dir: Path) -> None:
 
     The keyboard layout is not configured here: ``_build_env`` pins the
     compositor keymap through the environment, so no ``kxkbrc`` is needed.
-
-    Only writes files that do not exist yet so explicit pre-seeding wins.
     """
     config_dir.mkdir(parents=True, exist_ok=True)
-    kwalletrc = config_dir / "kwalletrc"
-    if not kwalletrc.exists():
-        kwalletrc.write_text("[Wallet]\nEnabled=false\nFirst Use=false\nLaunch Manager=false\n")
+    (config_dir / "kwalletrc").write_text(
+        "[Wallet]\nEnabled=false\nFirst Use=false\nLaunch Manager=false\n"
+    )
 
 
 @dataclass
@@ -764,7 +762,9 @@ wait $KWIN_PID
         ):
             env.pop(var, None)
 
-        # Last, so callers can still override any of the above on purpose.
+        # Last, so SessionConfig.extra_env can replace values such as
+        # XKB_DEFAULT_LAYOUT. It cannot unset KWIN_XKB_DEFAULT_KEYMAP (KWin only
+        # checks that it is set), so kxkbrc and locale1 stay out of the keymap.
         env.update(config.extra_env)
         return env
 

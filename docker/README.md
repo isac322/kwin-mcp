@@ -31,7 +31,7 @@ scripts/run-e2e-docker.sh
               |           +-- dbus-run-session
               |                 |-- AT-SPI2 bus
               |                 +-- kwin_wayland --virtual
-              |                       +-- KCalc, KWrite, and test probes
+              |                       +-- KCalc, KWrite, Konsole, and test probes
               |
               |-- installed MCP stdio tests
               |     +-- MCP ClientSession <-> installed `kwin-mcp`
@@ -115,6 +115,7 @@ Additional arguments after the image command can select a file, node ID, marker,
 | `test_screenshot_behavior.py` | Explicit nested X11/scrot capture, cursor pixels, action frame paths, logical-coordinate click targets at output scales 1.0 and 1.45, screenshot retention, exact-virtual backend errors, and server survival. |
 | `test_session_lifecycle.py` | Start/stop idempotence, environment and geometry, isolated HOME, artifact retention, socket/process cleanup, live-session ownership, and connection errors; plus `PATH`-stub lifecycle regressions for bounded `session_start` failure (stderr + stray stdout diagnostics) and process-group teardown across a reaped leader or `SIGTERM`-ignoring descendant. |
 | `test_spectacle_composition.py` | Spectacle fallback decisions for synthetic KWin topologies (#67): a mixed-scale layout with a screen outside Spectacle's canvas is refused before Spectacle starts on affected versions (pre-6.7.90, Gear-numbered, unreadable), with `spectacle --version` probed once per screenshot or burst; single-output, uniform-scale negative-origin, and in-canvas mixed-scale controls still capture. Topology and the Spectacle binary are stubbed; real compositing is covered by the native QA, not this container. |
+| `test_terminal_unicode_paste.py` | `keyboard_type_unicode` in Konsole running `cat`: the text arrives byte for byte through Ctrl+Shift+V, and a failed call (Konsole stopped while the paste chord is queued) leaves the next Return unaltered instead of a literal CR from a stray `^V` (#53). |
 | `test_unicode_clipboard_lifecycle.py` | `keyboard_type_unicode` clipboard paste: byte-for-byte restoration of every prior MIME type, empty prior selections, the secret-hint transient offer, a concurrent user copy that must survive, failure before paste with a stalled prior owner, a single restore owner across repeated calls, and the restored selection surviving a live-session disconnect. |
 | `test_virtual_session_smoke.py` | Minimum virtual KWin contract: KCalc launch, AT-SPI2 visibility and widgets, EIS keyboard delivery, plus the intentionally skipped exact-virtual ScreenShot2 success probe. |
 | `test_visual_qa.py` | Pixel-backed GUI probe and KCalc oracles: hover repaint, cursor localization, animation bursts, CJK-versus-tofu rendering, and binary-value transitions. |

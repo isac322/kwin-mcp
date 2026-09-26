@@ -2,6 +2,8 @@
 
 `e2e.Dockerfile` builds the installed-package end-to-end environment used locally and in `.github/workflows/e2e.yml`. The suite collects every test under `tests/e2e` across engine-level virtual sessions, a real installed MCP server over stdio, and nested visual pixel QA. `e2e-arch.Dockerfile` builds the same environment on Arch Linux; see [Arch Linux variant](#arch-linux-variant).
 
+`e2e-fedora.Dockerfile` (Fedora 44) and `e2e-opensuse.Dockerfile` (openSUSE Tumbleweed) build the same layout from those distributions' packages and run the same suite. Their base images are pinned by digest, but neither distribution offers a dated package snapshot for both amd64 and arm64, so their packages resolve from the live repositories at build time and can change between builds; `environment.json` records the installed versions. The Reproducibility section below applies to the Debian image.
+
 ## Reproducibility
 
 The image fixes the inputs that define the test environment:
@@ -32,6 +34,14 @@ KWrite cannot show that a multi-finger touch reached it, so `test_touch_multi_sw
 - KTextEditor scrolls through `QScroller::grabGesture` (`kateviewinternal.cpp`). `QFlickGestureRecognizer::recognize` in Qt's `qflickgesture.cpp` ignores any touchscreen `QTouchEvent` without exactly one point, the same in Qt 6.8.2 and 6.11.2.
 - In Qt 6.8.2 (Debian trixie), `QApplicationPrivate::findClosestTouchPointTarget` could pick a point with no target, so the second finger was never grouped with the first. KWrite's view then received one-point `TouchUpdate` events, and the flick recognizer scrolled on the first finger. Qt fixed this in f66a34b9 and 8976c4cd (QTBUG-125197). Qt 6.11.2 (Arch, Fedora 44, openSUSE Tumbleweed) delivers two-point events, and the recognizer ignores them. A two-finger swipe no longer scrolls KWrite, and it only places the cursor where the first finger landed.
 - KWrite has no pinch. A pinch only moves its cursor, and Ctrl+C with no selection copies the whole current line, so a clipboard comparison measures cursor lines, not a selection.
+
+## Fedora and openSUSE Tumbleweed variants
+
+`e2e-fedora.Dockerfile` (Fedora 44) and `e2e-opensuse.Dockerfile` (openSUSE Tumbleweed) keep the same contract as `e2e.Dockerfile` — same stages, `/opt/kwin-mcp-venv`, `tester` user (UID 1000), entrypoint, `/artifacts` directory, and `pytest tests/e2e` command — so the unchanged suite checks kwin-mcp against KDE Gear 26.08 components (KWin 6.7.5, libei 1.6.0, Qt 6.11). Unlike the Debian and Arch images, neither distribution offers a dated package snapshot, so packages resolve from the live `fedora`/`updates` or Tumbleweed repositories at build time and can change between builds; `environment.json` records the installed versions through `rpm --query`.
+
+- Package names differ from Debian: Fedora `dbus-tools` provides `dbus-run-session`/`dbus-send`, `xdpyinfo`/`xwininfo` replace `x11-utils`, `xorg-x11-server-Xvfb` provides `Xvfb`, `xorg-x11-server-Xwayland` provides Xwayland, and `mesa-demos` provides `glxinfo`/`eglinfo`. On Tumbleweed the equivalents are `dbus-1-tools`, `Mesa-demo-x`, `xwayland`, and the Python stack is `python313-*`.
+- Tumbleweed needs `imlib2-loaders` for `scrot` to write PNGs, `typelib-1_0-Atspi-2_0`/`typelib-1_0-Gtk-3_0` plus `python313-gobject-Gdk` for the AT-SPI2 and GTK probe paths, and `libkscreen6-plugin` for `kscreen-doctor`; Fedora needs `gobject-introspection` for the AT-SPI2 typelibs and `libkscreen` for `kscreen-doctor`.
+- Both install `konsole` for the terminal Unicode-paste test plus `spectacle`, `wtype`, `wl-clipboard`, `scrot`, and `xdotool` for the same suite coverage as Debian.
 
 ## Process topology
 
@@ -98,10 +108,11 @@ A custom image tag:
 scripts/run-e2e-docker.sh --image-tag kwin-mcp-e2e-local
 ```
 
-The Arch Linux image (default tag `kwin-mcp-e2e-arch`):
+The other image variants (default tags `kwin-mcp-e2e-fedora`, `kwin-mcp-e2e-opensuse`, `kwin-mcp-e2e-arch`):
 
 ```bash
-scripts/run-e2e-docker.sh --distro archlinux
+scripts/run-e2e-docker.sh --distro fedora
+scripts/run-e2e-docker.sh --distro opensuse
 scripts/run-e2e-docker.sh --distro archlinux -- tests/e2e/test_input_injection.py -v
 ```
 
@@ -119,7 +130,7 @@ docker run --rm \
   --junitxml=/artifacts/junit.xml
 ```
 
-Additional arguments after the image command can select a file, node ID, marker, or `-k` expression. Replace `docker/e2e.Dockerfile` with `docker/e2e-arch.Dockerfile` to build the Arch Linux image.
+Additional arguments after the image command can select a file, node ID, marker, or `-k` expression. Replace `docker/e2e.Dockerfile` with `docker/e2e-arch.Dockerfile`, `docker/e2e-fedora.Dockerfile`, or `docker/e2e-opensuse.Dockerfile` to build another distro's image.
 
 ## Test-file inventory
 
@@ -128,6 +139,7 @@ Additional arguments after the image command can select a file, node ID, marker,
 | `test_atspi_worker.py` | The long-lived AT-SPI2 worker: accessibility answers come from the current bus after a crashed session is replaced by `session_start` or `session_connect` without `session_stop`, a killed worker is respawned on the next call, a `SIGSTOP`ped worker is still reaped by `session_stop`, and no helper process stays running after `session_stop`. |
 | `test_clipboard_helper_protocol.py` | The private `kwin_mcp.clipboard` helper driven directly against a test-owned KWin over data-control: a READY timeout that restores the prior selection and keeps serving it, oversized and malformed COPY framing that ends the helper without echoing its input, bad headers rejected on arrival while KWin is stopped during the helper's connect roundtrips, a framing failure staying single-ERR/exit-2 when recorded post-connect or while QUIT's restore is pending, and a framing error while the helper owns the selection that still restores and keeps serving the prior selection. |
 | `test_environment_evidence.py` | Allowlisted `environment.json` provenance, installed versions, and atomic replacement. |
+| `test_eis_handshake.py` | EIS device negotiation through a scripted libei whose `ei_dispatch` leaves a negative garbage value, as the void function does on some builds: the handshake must still bind the seat, register and resume the devices, and start emulation, and a server disconnect must still fail the handshake. |
 | `test_input_cleanup.py` | Held EIS modifier/button cleanup across fresh connections, invalid input errors, and installed-server survival. |
 | `test_input_injection.py` | Engine-level mouse aim/click/press/release, keyboard input and modifiers, typing under a hostile host keyboard layout (`kxkbrc` and `XKB_DEFAULT_LAYOUT=ru,us`), Unicode, clipboard paste, and touch tap with observable KCalc/KWrite results. |
 | `test_installed_package.py` | Runtime-venv imports, distribution ownership, system Python dependencies, installed console entry points, and CLI help. |
@@ -136,6 +148,7 @@ Additional arguments after the image command can select a file, node ID, marker,
 | `test_mcp_pointer_keyboard.py` | Pointer and keyboard wrappers crossing the installed MCP stdio transport and changing application state. |
 | `test_mcp_protocol.py` | Initialization, exact names and JSON input schemas for all 33 tools, invalid argument rejection, tool-error conversion, and server survival. |
 | `test_mcp_session_observation.py` | Installed stdio session, app launch, accessibility, windows, geometry, active window, closing one window by id, logs, Wayland, D-Bus, focus, polling, lifecycle, and virtual screenshot-error paths. |
+| `test_mcp_stdin_isolation.py` | The installed server's JSON-RPC stdin stays private: with a session running and a `launch_app` program that copies stdin to a file, no other process holds the server's stdin pipe, every follow-up `list_windows` call is answered, and the program reads nothing. |
 | `test_mcp_touch_clipboard.py` | Clipboard and touch wrappers over installed stdio: touch tap on KCalc, single-finger swipe scrolling in KWrite, and, on the GTK interaction probe in a virtual session, pinch zoom, two-finger delivery, and KWin cancelling three- to five-finger swipes. |
 | `test_observation_tools.py` | Accessibility filters and depth, element queries and states, polling, multi-window focus, app logs, Wayland protocol filtering, and generic D-Bus calls. |
 | `test_pointer_reconnect.py` | A click after `session_stop` and `session_connect` to the same KWin must reach a new window whose button lies under the parked cursor, proved by the persistent `animation_clicks` counter of `counted_gui_probe.py` (#66). |
@@ -203,11 +216,15 @@ CI stores the same evidence under `artifacts/e2e/<label>/` and uploads it as `e2
 |---|---|---|
 | `amd64` | `e2e.Dockerfile` (Debian) | `ubuntu-24.04` |
 | `arm64` | `e2e.Dockerfile` (Debian) | `ubuntu-24.04-arm` |
+| `fedora-amd64` | `e2e-fedora.Dockerfile` (Fedora 44) | `ubuntu-24.04` |
+| `fedora-arm64` | `e2e-fedora.Dockerfile` (Fedora 44) | `ubuntu-24.04-arm` |
+| `opensuse-amd64` | `e2e-opensuse.Dockerfile` (openSUSE Tumbleweed) | `ubuntu-24.04` |
+| `opensuse-arm64` | `e2e-opensuse.Dockerfile` (openSUSE Tumbleweed) | `ubuntu-24.04-arm` |
 | `archlinux-amd64` | `e2e-arch.Dockerfile` (Arch Linux) | `ubuntu-24.04` |
 
 The Arch Linux image has no arm64 row because no current Arch-family arm64 base image exists.
 
-Every row, including `archlinux-amd64`, fails the workflow on any test failure.
+Every row fails the workflow on any test failure.
 
 One test, `test_observation_tools.py::test_launch_app_rejects_a_missing_command`, fails only when the container runs on an emulated kernel such as an arm64 Docker host: qemu-user lets `execve` of a missing file report as exit 127 in the child instead of raising `FileNotFoundError`, so `launch_app` reports a launched process that immediately died. On a native amd64 runner the assertion holds.
 

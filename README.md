@@ -281,7 +281,7 @@ kwin-mcp server  (31 tools)       kwin-mcp-cli (interactive REPL)
   +--- both delegate to AutomationEngine (core.py) ---+
   |
   |-- session_start (virtual) ---> dbus-run-session
-  |                                 |-- at-spi-bus-launcher
+  |                                 |-- at-spi-bus-launcher (D-Bus activated)
   |                                 +-- kwin_wayland --virtual
   |                                       +-- [your app]
   |
@@ -525,6 +525,7 @@ Coverage includes:
 
 - virtual KWin engine tests for session lifecycle, AT-SPI2 observation, window geometry and control, EIS pointer/keyboard/touch input, clipboard, cleanup, and error handling;
 - failing-session lifecycle regressions that stub `kwin_wayland`/`dbus-run-session` on `PATH`: `session_start` must fail within its startup deadline and surface the captured session stderr plus stray stdout (including a newline-free partial line), and teardown must reap the entire owned process group even when the session leader was already reaped or a descendant ignores `SIGTERM`;
+- an accessibility-bus check that `org.a11y.Bus` has an owner as soon as `session_start` returns, before any app or AT-SPI2 query could activate it, and that a failed activation (a `dbus-send` stub on `PATH`) is reported as a `Warning:` line in the `session_start` output;
 - exact input-schema checks for all 31 registered tools, plus installed-server stdio calls through every MCP wrapper;
 - nested visual tests that start Xvfb and a test-owned KWin compositor inside the container, connect the installed MCP server to it, and verify pixels as well as accessibility state;
 - KCalc before/after pixel transitions and a deterministic GUI probe for mouse hover, cursor inclusion, animation frame bursts, and CJK text (`GUI 검증 42`) rendered differently from a tofu control (`□□`);

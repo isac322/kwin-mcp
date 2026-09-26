@@ -219,6 +219,8 @@ class AutomationEngine:
         result = f"Session started. Wayland socket: {info.wayland_socket}"
         if info.home_dir:
             result += f"\nIsolated home: {info.home_dir}"
+        for warning in info.startup_warnings:
+            result += f"\nWarning: {warning}"
 
         if app_command:
             cmd = shlex.split(app_command)

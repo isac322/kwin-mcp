@@ -1,6 +1,6 @@
 # Containerized KWin session for end-to-end tests
 
-`e2e.Dockerfile` builds the installed-package end-to-end environment used locally and in `.github/workflows/e2e.yml`. The suite collects every test under `tests/e2e` across engine-level virtual sessions, a real installed MCP server over stdio, and nested visual pixel QA.
+`e2e.Dockerfile` builds the installed-package end-to-end environment used locally and in `.github/workflows/e2e.yml`. The suite collects every test under `tests/e2e` across engine-level virtual sessions, a real installed MCP server over stdio, and nested visual pixel QA. `e2e-arch.Dockerfile` builds the same environment on Arch Linux; see [Arch Linux variant](#arch-linux-variant).
 
 ## Reproducibility
 
@@ -11,7 +11,18 @@ The image fixes the inputs that define the test environment:
 - APT reads Debian trixie, trixie-updates, and trixie-security from snapshot `20260913T000000Z`;
 - the project is built as a wheel and installed into `/opt/kwin-mcp-venv` with standard `Requires-Dist` resolution. Tests import that installed distribution and launch its `kwin-mcp` and `kwin-mcp-cli` console entry points.
 
-All Python dependencies — `mcp` within the declared 1.x range, PyGObject, pycairo, dbus-python, Pillow, and their transitives — resolve fresh from the package index at image-build time, so Python dependency versions vary within the declared ranges between builds. PyGObject, pycairo, and dbus-python compile from source in the isolated `venv-builder` stage; the runtime image adds only the `libgirepository-2.0-0` shared library they need and carries no compiler or development headers. The virtual environment keeps system site packages so distro-only modules such as NumPy stay importable, and the dev dependency group is installed separately from `pyproject.toml`; `uv.lock` is not used inside the image. `environment.json` records the architecture, base digest, snapshot, Python and KWin versions, installed Debian package versions, and installed `kwin-mcp` and `mcp` distribution metadata for each run, so the resolved Python versions remain part of the retained provenance.
+All Python dependencies — `mcp` within the declared 1.x range, PyGObject, pycairo, dbus-python, Pillow, and their transitives — resolve fresh from the package index at image-build time, so Python dependency versions vary within the declared ranges between builds. PyGObject, pycairo, and dbus-python compile from source in the isolated `venv-builder` stage; the runtime image adds only the `libgirepository-2.0-0` shared library they need and carries no compiler or development headers. The virtual environment keeps system site packages so distro-only modules such as NumPy stay importable, and the dev dependency group is installed separately from `pyproject.toml`; `uv.lock` is not used inside the image. `environment.json` records the architecture, base digest, package snapshot, Python and KWin versions, the installed version of every distro package the image lists in `KWIN_MCP_SYSTEM_PACKAGES` (the same list its package-manager step installs), and installed `kwin-mcp` and `mcp` distribution metadata for each run, so the resolved versions remain part of the retained provenance.
+
+## Arch Linux variant
+
+`e2e-arch.Dockerfile` keeps the contract of `e2e.Dockerfile`: the same build stages, `/opt/kwin-mcp-venv`, `tester` user (UID 1000), entrypoint, `/artifacts` directory, and `pytest tests/e2e` command. Only the distro layer differs, so the unchanged suite checks kwin-mcp against Arch's KWin, libei, Qt, Mesa, and tool versions, which are much newer than Debian stable's (for the pinned date: KWin 6.7.5, libei 1.6.0, Python 3.14).
+
+- The runtime base is `archlinux:base-20260920.0.596911@sha256:f3691b4dde62ba4c4b6f0ae2c1fbf28e8c0c8c4b9a35c7e06dc1f70e21aa29f6`.
+- pacman reads the Arch Linux Archive snapshot for `2026/09/20` (build argument `ARCH_ARCHIVE_DATE`), the equivalent of the Debian snapshot pin, and `pacman -Syyuu` moves the base packages to exactly that snapshot.
+- The image is `linux/amd64` only. The official Arch image has no arm64 build, and no maintained Arch-family arm64 image tracks current packages: Manjaro ARM's `arm-stable` branch still ships KWin 5.27 and Python 3.11. On an arm64 host, build and run it with `--platform linux/amd64` under emulation, which is several times slower.
+- pacman's download sandbox restricts syscalls with seccomp, which fails with `EINVAL` under qemu-user emulation, so the image enables `DisableSandboxSyscalls`. The base image already disables the filesystem part of the sandbox.
+- Package names differ from Debian: `kate` provides `/usr/bin/kwrite`, `libkscreen` provides `kscreen-doctor`, `xorg-server-xvfb` provides `Xvfb`, and `xorg-xwininfo`/`xorg-xdpyinfo` replace `x11-utils`.
+- `kwin_wayland` ships with the `cap_sys_nice=ep` file capability. Docker's `NoNewPrivileges` makes the kernel refuse to execute it for the unprivileged test user, so the image strips it with `setcap -r`, as the Debian image does.
 
 ## Process topology
 
@@ -78,6 +89,13 @@ A custom image tag:
 scripts/run-e2e-docker.sh --image-tag kwin-mcp-e2e-local
 ```
 
+The Arch Linux image (default tag `kwin-mcp-e2e-arch`):
+
+```bash
+scripts/run-e2e-docker.sh --distro archlinux
+scripts/run-e2e-docker.sh --distro archlinux -- tests/e2e/test_input_injection.py -v
+```
+
 To invoke Docker directly:
 
 ```bash
@@ -92,7 +110,7 @@ docker run --rm \
   --junitxml=/artifacts/junit.xml
 ```
 
-Additional arguments after the image command can select a file, node ID, marker, or `-k` expression.
+Additional arguments after the image command can select a file, node ID, marker, or `-k` expression. Replace `docker/e2e.Dockerfile` with `docker/e2e-arch.Dockerfile` to build the Arch Linux image.
 
 ## Test-file inventory
 
@@ -170,12 +188,15 @@ docker.log
 docker-processes.txt
 ```
 
-CI stores the same evidence under `artifacts/e2e/amd64/` or `artifacts/e2e/arm64/` and uploads it as `e2e-amd64` or `e2e-arm64`. The native runner matrix is:
+CI stores the same evidence under `artifacts/e2e/<label>/` and uploads it as `e2e-<label>`. Every row runs the full suite and fails the workflow on any test failure; lint and type checks run only in the Debian rows because they do not depend on the distro. The native runner matrix is:
 
-| Architecture | Runner |
-|---|---|
-| `amd64` | `ubuntu-24.04` |
-| `arm64` | `ubuntu-24.04-arm` |
+| Label | Image | Runner |
+|---|---|---|
+| `amd64` | `e2e.Dockerfile` (Debian) | `ubuntu-24.04` |
+| `arm64` | `e2e.Dockerfile` (Debian) | `ubuntu-24.04-arm` |
+| `archlinux-amd64` | `e2e-arch.Dockerfile` (Arch Linux) | `ubuntu-24.04` |
+
+The Arch Linux image has no arm64 row because no current Arch-family arm64 base image exists.
 
 ## Screenshot backends and exact-virtual limitation
 

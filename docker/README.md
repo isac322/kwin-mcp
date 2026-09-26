@@ -105,6 +105,7 @@ Additional arguments after the image command can select a file, node ID, marker,
 | `test_input_injection.py` | Engine-level mouse aim/click/press/release, keyboard input and modifiers, typing under a hostile host keyboard layout (`kxkbrc` and `XKB_DEFAULT_LAYOUT=ru,us`), Unicode, clipboard paste, and touch tap with observable KCalc/KWrite results. |
 | `test_installed_package.py` | Runtime-venv imports, distribution ownership, system Python dependencies, installed console entry points, and CLI help. |
 | `test_interaction_probe.py` | Installed stdio coverage for material click, scroll, drag, keyboard, touch hold, pinch, and multi-swipe options with retained state and image evidence. |
+| `test_lazy_libei.py` | `kwin_mcp.input` executes without opening libei and loads it once on first use; a missing `libei.so.1` becomes the optional-backend error naming `libei1`, and `session_start` then reports `No input backend available` with that reason while the session stays stoppable and KWin exits on `session_stop`. |
 | `test_mcp_pointer_keyboard.py` | Pointer and keyboard wrappers crossing the installed MCP stdio transport and changing application state. |
 | `test_mcp_protocol.py` | Initialization, exact names and JSON input schemas for all 33 tools, invalid argument rejection, tool-error conversion, and server survival. |
 | `test_mcp_session_observation.py` | Installed stdio session, app launch, accessibility, windows, geometry, active window, closing one window by id, logs, Wayland, D-Bus, focus, polling, lifecycle, and virtual screenshot-error paths. |

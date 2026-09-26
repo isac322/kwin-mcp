@@ -412,7 +412,9 @@ def nested_visual_kwin(
         at_spi_launcher = _executable(
             "at-spi-bus-launcher",
             "/usr/libexec/at-spi-bus-launcher",
+            "/usr/lib/at-spi-bus-launcher",
             "/usr/lib/at-spi2-core/at-spi-bus-launcher",
+            "/usr/libexec/at-spi2/at-spi-bus-launcher",
         )
 
         xvfb_stdout = xvfb_stdout_path.open("wb")

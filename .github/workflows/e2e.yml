@@ -10,20 +10,32 @@ permissions:
 
 jobs:
   virtual-session:
-    name: Virtual KWin session (${{ matrix.arch }})
+    name: Virtual KWin session (${{ matrix.label }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: amd64
+          - distro: debian
+            dockerfile: docker/e2e.Dockerfile
+            arch: amd64
+            label: amd64
             runner: ubuntu-24.04
-          - arch: arm64
+          - distro: debian
+            dockerfile: docker/e2e.Dockerfile
+            arch: arm64
+            label: arm64
             runner: ubuntu-24.04-arm
+          # Arch Linux publishes amd64 images only; see docker/e2e-arch.Dockerfile.
+          - distro: archlinux
+            dockerfile: docker/e2e-arch.Dockerfile
+            arch: amd64
+            label: archlinux-amd64
+            runner: ubuntu-24.04
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     env:
-      E2E_ARTIFACT_DIR: artifacts/e2e/${{ matrix.arch }}
-      E2E_CONTAINER_NAME: kwin-mcp-e2e-${{ matrix.arch }}
+      E2E_ARTIFACT_DIR: artifacts/e2e/${{ matrix.label }}
+      E2E_CONTAINER_NAME: kwin-mcp-e2e-${{ matrix.label }}
     steps:
       - uses: actions/checkout@v7
 
@@ -31,9 +43,12 @@ jobs:
         run: install -d -m 0777 "$E2E_ARTIFACT_DIR"
 
       - name: Build the KWin test image
-        run: docker build --file docker/e2e.Dockerfile --tag kwin-mcp-e2e .
+        run: docker build --file "${{ matrix.dockerfile }}" --tag kwin-mcp-e2e .
 
+      # Lint and type checks do not depend on the distro, so run them once per
+      # architecture in the Debian image.
       - name: Run quality checks
+        if: matrix.distro == 'debian'
         run: |
           docker run --rm \
             --volume "${{ github.workspace }}:/workspace:ro" \
@@ -90,6 +105,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: e2e-${{ matrix.arch }}
+          name: e2e-${{ matrix.label }}
           path: ${{ env.E2E_ARTIFACT_DIR }}
           if-no-files-found: warn

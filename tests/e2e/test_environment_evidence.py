@@ -17,12 +17,11 @@ ENVIRONMENT_FIELDS = {
     "architecture",
     "argv",
     "container",
-    "debian_packages",
+    "system_packages",
     "distributions",
     "kwin_version",
     "python_version",
 }
-REQUIRED_DEBIAN_PACKAGES = ("kwin-common", "kwin-wayland", "python3")
 SECRET_NAME = "KWIN_MCP_TEST_SECRET"
 SECRET_VALUE = "environment-recorder-must-not-expose-this"
 
@@ -80,9 +79,9 @@ def test_recorder_creates_allowlisted_provenance_with_installed_versions(
     assert isinstance(record["python_version"], str) and record["python_version"]
 
     container = record["container"]
-    assert set(container) == {"base_image", "debian_snapshot"}
+    assert set(container) == {"base_image", "snapshot"}
     assert isinstance(container["base_image"], str) and container["base_image"]
-    assert isinstance(container["debian_snapshot"], str) and container["debian_snapshot"]
+    assert isinstance(container["snapshot"], str) and container["snapshot"]
 
     distributions = record["distributions"]
     assert set(distributions) == {"kwin-mcp", "mcp"}
@@ -97,9 +96,12 @@ def test_recorder_creates_allowlisted_provenance_with_installed_versions(
 
     assert isinstance(record["kwin_version"], str) and record["kwin_version"]
     assert "kwin" in record["kwin_version"].lower()
-    packages = record["debian_packages"]
-    for package in REQUIRED_DEBIAN_PACKAGES:
-        assert isinstance(packages.get(package), str) and packages[package]
+    expected_packages = os.environ.get("KWIN_MCP_SYSTEM_PACKAGES", "").split()
+    assert expected_packages, "the image must list its distro packages in KWIN_MCP_SYSTEM_PACKAGES"
+    packages = record["system_packages"]
+    assert set(packages) == set(expected_packages)
+    missing = [package for package in expected_packages if not packages[package]]
+    assert missing == [], f"installed versions not recorded for: {missing}"
 
     assert SECRET_NAME not in contents
     assert SECRET_VALUE not in contents

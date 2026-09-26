@@ -130,6 +130,15 @@ dev dependency group is installed separately from `pyproject.toml`; `uv.lock` is
 the image. The image pins both its Debian base-image digest and its dated Debian package
 snapshot.
 
+To run the same suite on Arch Linux, pass `--distro archlinux`. It builds
+`docker/e2e-arch.Dockerfile`, a variant on the official `archlinux:base` image with the same stages, virtual environment,
+user, and test command; only the distro package layer differs. Use it when a change touches
+distro-sensitive behavior such as libei, KWin, Qt, or packaged tool versions:
+
+```bash
+scripts/run-e2e-docker.sh --distro archlinux
+```
+
 The suite collects every test under `tests/e2e`. Together they prove:
 
 - engine-level behavior in isolated virtual KWin sessions;
@@ -182,7 +191,8 @@ On failure, the runner also records Docker inspection, container log, and proces
 diagnostics.
 
 CI runs the same installed-package architecture natively on `ubuntu-24.04` amd64 and
-`ubuntu-24.04-arm` arm64 runners and uploads the artifact directory for each architecture.
+`ubuntu-24.04-arm` arm64 runners, plus the Arch Linux image on `ubuntu-24.04` amd64, and uploads
+the artifact directory for each job. Every job gates the workflow.
 
 See `docker/README.md` for backend details and test-by-test coverage.
 
@@ -202,10 +212,11 @@ src/kwin_mcp/
 └── input.py           # Input injection via KWin EIS D-Bus + libei
 
 docker/
-├── e2e.Dockerfile     # Reproducible installed-package E2E image
-├── e2e-entrypoint.sh  # Records environment evidence, then executes the test command
-├── e2e-environment.py # Writes allowlisted environment.json provenance
-└── README.md          # Container backends, coverage, and limitations
+├── e2e.Dockerfile      # Reproducible installed-package E2E image (Debian)
+├── e2e-arch.Dockerfile # Arch Linux (archlinux:base) variant of the same E2E image
+├── e2e-entrypoint.sh   # Records environment evidence, then executes the test command
+├── e2e-environment.py  # Writes allowlisted environment.json provenance
+└── README.md           # Container backends, coverage, and limitations
 
 scripts/
 ├── run-e2e-docker.sh      # Recommended local Docker E2E runner and artifact collector

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 import anyio
 import pytest
+from _asserts import kcalc_binary_label
 from mcp_harness import running_mcp_server
 
 if TYPE_CHECKING:
@@ -58,12 +59,10 @@ async def _global_element_center(
 
 async def _wait_for_binary(client: McpTestClient, expected: str) -> None:
     deadline = time.monotonic() + INPUT_TIMEOUT_SECONDS
-    expected_label = re.compile(rf'^- \[label\] "{re.escape(expected)}"(?: |$)')
+    expected_label = kcalc_binary_label(expected)
     output = ""
     while time.monotonic() < deadline:
-        output = await client.call_text(
-            "find_ui_elements", {"query": expected, "app_name": "kcalc"}
-        )
+        output = await client.call_text("find_ui_elements", {"query": "", "app_name": "kcalc"})
         if any(expected_label.match(line) for line in output.splitlines()):
             return
         await anyio.sleep(POLL_INTERVAL_SECONDS)

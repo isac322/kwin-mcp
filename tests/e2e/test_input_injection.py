@@ -79,7 +79,8 @@ def _binary_value(tree: str) -> str | None:
             continue
         match = _DYNAMIC_LABEL.match(lines[index - 1])
         assert match is not None, tree[:500]
-        return match.group(1)
+        # KCalc 26.08 groups binary digits ("100 0110"); older releases do not.
+        return match.group(1).replace(" ", "")
     return None
 
 

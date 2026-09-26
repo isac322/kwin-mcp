@@ -8,13 +8,13 @@
   },
   "metadata": {
     "description": "kwin-mcp marketplace — MCP server and skill for Linux KDE Plasma 6 Wayland desktop GUI automation (virtual sessions for headless testing, live sessions for real-desktop / container / kiosk control).",
-    "version": "0.7.0"
+    "version": "0.8.0"
   },
   "plugins": [
     {
       "name": "kwin-mcp",
       "source": "./integrations/claude-code",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "description": "Bundles the kwin-mcp MCP server (uvx kwin-mcp) plus the kwin-desktop-automation skill that teaches session-mode selection, the observe-act-verify loop, US-QWERTY vs Unicode typing, and platform pitfalls (surface-local coordinates, QMenu invisibility, EIS edge limits, clipboard opt-in).",
       "category": "automation",
       "keywords": [

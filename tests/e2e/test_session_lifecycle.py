@@ -357,7 +357,6 @@ def test_session_start_reports_a_failed_accessibility_bus_activation(
     assert _a11y_bus_has_owner(engine).split()[-1:] == ["false"]
 
 
-
 def test_connects_to_the_second_compositor_without_owning_it(
     engine: AutomationEngine, wait_for_app: Callable[[str], str]
 ) -> None:

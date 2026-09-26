@@ -19,6 +19,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from xml.etree import ElementTree
 
 from kwin_mcp.input import InputBackend, MouseButton
 from kwin_mcp.screenshot import capture_frame_burst, capture_screenshot_to_file
@@ -38,9 +39,6 @@ _INSTALL_HINTS: dict[str, str] = {
         "wtype not found. Install wtype "
         "(e.g. 'sudo pacman -S wtype' or build from https://github.com/atx/wtype)."
     ),
-    "dbus-send": (
-        "dbus-send not found. Install dbus (e.g. 'sudo pacman -S dbus' or 'sudo apt install dbus')."
-    ),
     "spectacle": (
         "spectacle not found. Install spectacle "
         "(e.g. 'sudo pacman -S spectacle' or 'sudo apt install kde-spectacle')."
@@ -55,6 +53,10 @@ _INSTALL_HINTS: dict[str, str] = {
 # the selection; a parent still running after this is treated as a failure.
 _CLIPBOARD_SET_TIMEOUT = 5.0
 
+# Upper bound for each D-Bus round trip made by dbus_call (introspection and the
+# method call), the same bound the former dbus-send subprocess had.
+_DBUS_CALL_TIMEOUT = 10.0
+
 
 def _element_position(el: dict) -> str:
     """Format an element's position for find_ui_elements / wait_for_element.
@@ -67,6 +69,29 @@ def _element_position(el: dict) -> str:
     if el.get("mapped"):
         return f"@ screen ({el['x']}, {el['y']}, {el['width']}x{el['height']})"
     return f"@ unavailable ({el.get('unavailable') or 'unmapped'})"
+
+
+def _introspected_in_signature(xml_data: str, interface: str, method: str) -> str | None:
+    """Return the input signature of ``interface.method`` from introspection XML.
+
+    Returns None when the XML does not describe that method; the caller then
+    sends the call without a known signature and the remote side decides.
+    """
+    try:
+        root = ElementTree.fromstring(xml_data)
+    except ElementTree.ParseError:
+        return None
+    for iface in root.findall("interface"):
+        if iface.get("name") != interface:
+            continue
+        for candidate in iface.findall("method"):
+            if candidate.get("name") == method:
+                return "".join(
+                    arg.get("type", "")
+                    for arg in candidate.findall("arg")
+                    if arg.get("direction", "in") == "in"
+                )
+    return None
 
 
 def _dbus_to_json(value: object) -> object:
@@ -879,9 +904,12 @@ class AutomationEngine:
 
         ``args`` accepts dbus-send strings (``"type:value"``) and/or
         typed-JSON dicts (``{"type": ..., "value": ...}``); both shapes
-        may mix in one call. The reply value is rendered via
-        :func:`_format_dbus_result` (single primitives become bare strings,
-        containers and tuples become JSON).
+        may mix in one call. When the object is introspectable, the argument
+        count must match the method's input signature and the arguments are
+        marshalled with that signature. Argument errors are reported as
+        ``D-Bus call failed: ...`` and nothing is sent. The reply value is
+        rendered via :func:`_format_dbus_result` (single primitives become
+        bare strings, containers and tuples become JSON).
         """
         import dbus
         import dbus.bus
@@ -897,15 +925,44 @@ class AutomationEngine:
         except ValueError as exc:
             return f"D-Bus call failed: {exc}"
 
+        signature: str | None = None
         try:
             bus = dbus.bus.BusConnection(info.dbus_address)
-            obj = bus.get_object(service, path)
-            iface = dbus.Interface(obj, interface)
-            result = iface.get_dbus_method(method)(*parsed_args)
+            # Introspect here rather than inside the proxy so the arity check and
+            # the marshalling below use the same signature. dbus-python's own
+            # marshalling appends nothing for an empty signature, which would
+            # drop surplus arguments without an error.
+            obj = bus.get_object(service, path, introspect=False)
+            try:
+                xml_data = obj.Introspect(
+                    dbus_interface="org.freedesktop.DBus.Introspectable",
+                    timeout=_DBUS_CALL_TIMEOUT,
+                )
+            except dbus.DBusException:
+                # Not introspectable (or unreachable): the call below reports
+                # the real error, or the remote side checks the arguments.
+                xml_data = ""
+            if xml_data:
+                signature = _introspected_in_signature(str(xml_data), interface, method)
+            if signature is not None:
+                expected = len(list(dbus.Signature(signature)))
+                if expected != len(parsed_args):
+                    return (
+                        f"D-Bus call failed: {interface}.{method} takes {expected} "
+                        f"argument(s) (signature '{signature}'), got {len(parsed_args)}"
+                    )
+            result = obj.get_dbus_method(method, interface)(
+                *parsed_args, signature=signature, timeout=_DBUS_CALL_TIMEOUT
+            )
         except dbus.DBusException as exc:
             name = exc.get_dbus_name() or type(exc).__name__
             msg = exc.get_dbus_message() or str(exc)
             return f"D-Bus error: {name}: {msg}"
+        except (TypeError, ValueError, OverflowError) as exc:
+            # dbus-python raises these while validating names or marshalling
+            # arguments that do not fit the signature; nothing was sent.
+            expected_sig = f" (signature '{signature}')" if signature is not None else ""
+            return f"D-Bus call failed: {interface}.{method}{expected_sig}: {exc}"
         return _format_dbus_result(result)
 
     def read_app_log(self, pid: int, last_n_lines: int = 50) -> str:

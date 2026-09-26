@@ -794,20 +794,24 @@ def dbus_call(
             description=(
                 "Method arguments. Two interchangeable shapes are accepted "
                 "and may be mixed in the same list: "
-                '(legacy) ["string:hello", "int32:42", "boolean:true"] OR '
+                '(dbus-send) ["string:hello", "int32:42", "boolean:true", '
+                '"array:string:a,b", "dict:string:variant:k,string:v,n,int32:3"] OR '
                 '(typed JSON) [{"type":"string","value":"hello"}, '
                 '{"type":"int32","value":42}, '
-                '{"type":"array","element_type":"string","value":["a","b"]}].'
+                '{"type":"array","element_type":"string","value":["a","b"]}]. '
+                "The argument count must match the method's introspected signature."
             )
         ),
     ] = None,
 ) -> str:
     """Call a D-Bus method in the isolated session.
 
-    Executes a D-Bus method call and returns the reply. Each entry in
-    ``args`` may use dbus-send notation (``"string:value"``, ``"int32:42"``,
-    ...) or the typed-JSON shape (``{"type":"string","value":"hello"}``).
-    Both shapes can mix in one call.
+    Executes a D-Bus method call in-process and returns the reply: nothing for
+    a void reply, the bare value for a single basic value, JSON otherwise.
+    Each entry in ``args`` may use dbus-send notation (``"string:value"``,
+    ``"int32:42"``, ``"dict:string:string:KEY,VALUE"``, ...) or the typed-JSON
+    shape (``{"type":"string","value":"hello"}``). Both shapes can mix in one
+    call. Malformed or mismatched arguments fail without sending anything.
     """
     return _engine.dbus_call(
         service=service, path=path, interface=interface, method=method, args=args

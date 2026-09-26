@@ -7,15 +7,25 @@ on ``subprocess.run(["dbus-send", ...])`` for the generic ``dbus_call``
 MCP tool while preserving the wire format the agent already knows.
 
 Supported types follow the ``dbus-send(1)`` man page, plus recursive
-container nesting:
+array nesting:
 
     string, int16, uint16, int32, uint32, int64, uint64, double, byte,
     boolean, objpath, signature
     array:TYPE:V1,V2,...
-    dict:KTYPE:VTYPE:K1:V1,K2:V2,...
+    dict:KTYPE:VTYPE:K1,V1,K2,V2,...
+    dict:KTYPE:variant:K1,TYPE:V1,K2,TYPE:V2,...
     variant:TYPE:VALUE
 
-When a container's element type is itself a container, elements are
+Dict entries use dbus-send's grammar: one comma-separated list that
+alternates keys and values. Dict keys must be basic types and dict values
+must be basic types or ``variant``; a variant value carries its own
+``TYPE:VALUE`` (for example ``dict:string:variant:name,string:x,n,int32:3``
+builds an ``a{sv}``). Integers accept the same literal prefixes as
+dbus-send's ``strtol(value, NULL, 0)`` (decimal and ``0x`` hexadecimal),
+but unlike dbus-send the whole literal must parse and fit the type.
+``unixfd`` is not supported, matching dbus-send.
+
+When an array's element type is itself a container, elements are
 separated by ``':'`` instead of ``','`` to disambiguate the inner
 comma-separated values.
 
@@ -40,7 +50,7 @@ import dbus
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-__all__ = ["parse_arg", "parse_dbus_send_arg", "parse_typed_arg", "to_dbus_send_string"]
+__all__ = ["parse_arg", "parse_dbus_send_arg", "parse_typed_arg"]
 
 
 # ── Type tables ────────────────────────────────────────────────────────────
@@ -81,7 +91,7 @@ def _split_once(s: str) -> tuple[str, str]:
 def _parse_int(value: str, type_name: str, *, signed: bool, bits: int) -> int:
     """Parse an integer literal and bounds-check it against the dbus type."""
     try:
-        v = int(value)
+        v = int(value, 0)
     except ValueError as exc:
         raise _err(f"invalid {type_name} value {value!r}") from exc
     if signed:
@@ -240,32 +250,46 @@ def _parse_array_rest(rest: str) -> object:
     return dbus.Array(items, signature=sig)
 
 
+def _parse_variant_basic(spec: str) -> object:
+    """Parse a ``TYPE:VALUE`` variant payload whose type must be basic."""
+    type_, value = _split_once(spec)
+    if type_ not in _BASIC_TYPES:
+        raise _err(f"dict variant value must have a basic type, got {type_!r}")
+    return _parse_basic(type_, value)
+
+
 def _parse_dict_rest(rest: str) -> object:
-    """Parse the substring after ``dict:`` into a ``dbus.Dictionary``."""
+    """Parse the substring after ``dict:`` into a ``dbus.Dictionary``.
+
+    Follows dbus-send's ``append_dict``: ``KTYPE:VTYPE:`` then a single
+    comma-separated list alternating keys and values. A ``variant`` value
+    type makes every value a ``TYPE:VALUE`` payload with a basic type.
+    """
     ktype, after_k = _split_once(rest)
     if ktype not in _BASIC_TYPES:
         raise _err(f"dict key type must be basic, got {ktype!r}")
-    vtype_prefix, values_str = _peel_element_type(after_k)
-    ksig = _BASIC_SIGNATURES[ktype]
-    vsig = _signature_of(vtype_prefix)
-    full_sig = f"{ksig}{vsig}"
+    vtype, values_str = _split_once(after_k)
+    if vtype == "variant":
+        vsig = "v"
+    elif vtype in _BASIC_TYPES:
+        vsig = _BASIC_SIGNATURES[vtype]
+    else:
+        raise _err(f"dict value type must be basic or variant, got {vtype!r}")
+    full_sig = _BASIC_SIGNATURES[ktype] + vsig
     if values_str == "":
         return dbus.Dictionary({}, signature=full_sig)
-    if _is_container_prefix(vtype_prefix):
-        # The dbus-send man page only documents basic value types here, and
-        # mixing comma-separated pairs with comma-separated container values
-        # is ambiguous to parse. Reject explicitly so callers fall back to
-        # building dicts programmatically (or, in the future, JSON).
-        raise _err("dict with container value type is not supported")
-    pairs = values_str.split(",")
+    items = values_str.split(",")
+    if len(items) % 2:
+        raise _err(
+            f"dict entries must alternate key,value separated by ',', got {values_str!r}"
+        )
     out: dict[object, object] = {}
-    for pair in pairs:
-        sub = pair.split(":", 1)
-        if len(sub) != 2:
-            raise _err(f"dict pair must be 'key:value', got {pair!r}")
-        key = _parse_basic(ktype, sub[0])
-        val = _parse_basic(vtype_prefix, sub[1])
-        out[key] = val
+    for raw_key, raw_value in zip(items[::2], items[1::2], strict=True):
+        key = _parse_basic(ktype, raw_key)
+        if vtype == "variant":
+            out[key] = _parse_variant_basic(raw_value)
+        else:
+            out[key] = _parse_basic(vtype, raw_value)
     return dbus.Dictionary(out, signature=full_sig)
 
 
@@ -283,12 +307,14 @@ def _parse_dict_rest(rest: str) -> object:
 #              "value": [<primitive>, ...]}
 #   Dict:     {"type": "dict", "key_type": "<basic>",
 #              "value_type": "<basic>", "value": {<key>: <value>, ...}}
+#   a{Kv}:    {"type": "dict", "key_type": "<basic>", "value_type": "variant",
+#              "value": {<key>: {"type": "<basic>", "value": <primitive>}}}
 #   Variant:  {"type": "variant", "value_type": "<basic>",
 #              "value": <primitive>}
 #
-# Container element/key/value types are restricted to basic types in v1
-# (mirrors what the dbus-send string syntax supports cleanly). Nested
-# containers can be added later without breaking compatibility.
+# Array elements, dict keys and variant payloads are restricted to basic
+# types, and dict values to basic types or variants of basic types, which is
+# the same set the dbus-send string syntax can express.
 
 
 def _coerce_basic(type_name: str, value: object) -> object:
@@ -320,6 +346,19 @@ def _coerce_basic(type_name: str, value: object) -> object:
             raise _err(f"{type_name} value must be int, got {type(value).__name__}")
         return _parse_basic(type_name, str(value))
     raise _err(f"unknown type {type_name!r}")
+
+
+def _typed_variant_payload(value: object) -> object:
+    """Parse a typed-JSON dict value stored in a variant: ``{"type", "value"}``."""
+    if not isinstance(value, dict) or "type" not in value or "value" not in value:
+        raise _err(
+            "typed-JSON dict with value_type 'variant' needs values shaped "
+            f'{{"type": <basic>, "value": ...}}; got {value!r}'
+        )
+    type_name = value["type"]
+    if not isinstance(type_name, str) or type_name not in _BASIC_TYPES:
+        raise _err(f"typed-JSON variant payload type must be basic, got {type_name!r}")
+    return _coerce_basic(type_name, value["value"])
 
 
 def parse_typed_arg(d: Mapping[str, object]) -> object:
@@ -354,17 +393,24 @@ def parse_typed_arg(d: Mapping[str, object]) -> object:
         val_type = d.get("value_type")
         if not isinstance(key_type, str) or key_type not in _BASIC_TYPES:
             raise _err(f"typed-JSON dict requires 'key_type' = a basic type name; got {key_type!r}")
-        if not isinstance(val_type, str) or val_type not in _BASIC_TYPES:
+        if not isinstance(val_type, str) or (
+            val_type not in _BASIC_TYPES and val_type != "variant"
+        ):
             raise _err(
-                f"typed-JSON dict requires 'value_type' = a basic type name; got {val_type!r}"
+                "typed-JSON dict requires 'value_type' = a basic type name or 'variant'; "
+                f"got {val_type!r}"
             )
         if not isinstance(value, dict):
             raise _err(f"typed-JSON dict 'value' must be a dict, got {type(value).__name__}")
         out: dict[object, object] = {}
         for k, v in value.items():
-            out[_coerce_basic(key_type, k)] = _coerce_basic(val_type, v)
-        sig = _BASIC_SIGNATURES[key_type] + _BASIC_SIGNATURES[val_type]
-        return dbus.Dictionary(out, signature=sig)
+            key = _coerce_basic(key_type, k)
+            if val_type == "variant":
+                out[key] = _typed_variant_payload(v)
+            else:
+                out[key] = _coerce_basic(val_type, v)
+        vsig = "v" if val_type == "variant" else _BASIC_SIGNATURES[val_type]
+        return dbus.Dictionary(out, signature=_BASIC_SIGNATURES[key_type] + vsig)
 
     if type_name == "variant":
         val_type = d.get("value_type")
@@ -388,95 +434,3 @@ def parse_arg(arg: str | Mapping[str, object]) -> object:
     if isinstance(arg, dict):
         return parse_typed_arg(arg)
     raise _err(f"arg must be str or dict, got {type(arg).__name__}")
-
-
-def _to_dbus_send_basic(type_name: str, value: object) -> str:
-    """Render a Python primitive as the value half of a dbus-send string."""
-    if type_name == "boolean":
-        if not isinstance(value, bool):
-            raise _err(f"boolean value must be bool, got {type(value).__name__}")
-        return "true" if value else "false"
-    if type_name == "double":
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
-            raise _err(f"double value must be number, got {type(value).__name__}")
-        return repr(float(value))
-    if type_name in {"string", "objpath", "signature"}:
-        if not isinstance(value, str):
-            raise _err(f"{type_name} value must be str, got {type(value).__name__}")
-        if "," in value or ":" in value:
-            # Comma/colon would corrupt container element splitting in
-            # dbus-send syntax. The dbus-send CLI itself has the same
-            # limitation, so we reject up-front rather than producing a
-            # subtly wrong CLI invocation.
-            raise _err(
-                f"{type_name} value contains ',' or ':', cannot be encoded "
-                "as a dbus-send string; use the in-process path"
-            )
-        return value
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise _err(f"{type_name} value must be int, got {type(value).__name__}")
-    return str(value)
-
-
-def to_dbus_send_string(arg: str | Mapping[str, object]) -> str:
-    """Render an arg (legacy string or typed-JSON dict) as a dbus-send string.
-
-    Used as a temporary bridge in ``core.py::dbus_call`` until the body is
-    refactored to call dbus-python directly. Round-trip identity holds:
-    ``parse_dbus_send_arg(to_dbus_send_string(parse_typed_arg(d)))`` produces
-    the same dbus type as ``parse_typed_arg(d)`` for every supported shape.
-    """
-    if isinstance(arg, str):
-        parse_dbus_send_arg(arg)
-        return arg
-    if not isinstance(arg, dict):
-        raise _err(f"arg must be str or dict, got {type(arg).__name__}")
-    if "type" not in arg or "value" not in arg:
-        raise _err(
-            f"typed-JSON arg must have 'type' and 'value' keys; got keys {sorted(arg.keys())!r}"
-        )
-    type_name = arg["type"]
-    value = arg["value"]
-    if not isinstance(type_name, str):
-        raise _err(f"'type' must be a string, got {type(type_name).__name__}")
-
-    if type_name in _BASIC_TYPES:
-        return f"{type_name}:{_to_dbus_send_basic(type_name, value)}"
-
-    if type_name == "array":
-        elem_type = arg.get("element_type")
-        if not isinstance(elem_type, str) or elem_type not in _BASIC_TYPES:
-            raise _err(
-                f"typed-JSON array requires 'element_type' = a basic type name; got {elem_type!r}"
-            )
-        if not isinstance(value, list):
-            raise _err(f"typed-JSON array 'value' must be a list, got {type(value).__name__}")
-        rendered = ",".join(_to_dbus_send_basic(elem_type, v) for v in value)
-        return f"array:{elem_type}:{rendered}"
-
-    if type_name == "dict":
-        key_type = arg.get("key_type")
-        val_type = arg.get("value_type")
-        if not isinstance(key_type, str) or key_type not in _BASIC_TYPES:
-            raise _err(f"typed-JSON dict requires 'key_type' = a basic type name; got {key_type!r}")
-        if not isinstance(val_type, str) or val_type not in _BASIC_TYPES:
-            raise _err(
-                f"typed-JSON dict requires 'value_type' = a basic type name; got {val_type!r}"
-            )
-        if not isinstance(value, dict):
-            raise _err(f"typed-JSON dict 'value' must be a dict, got {type(value).__name__}")
-        pairs = ",".join(
-            f"{_to_dbus_send_basic(key_type, k)}:{_to_dbus_send_basic(val_type, v)}"
-            for k, v in value.items()
-        )
-        return f"dict:{key_type}:{val_type}:{pairs}"
-
-    if type_name == "variant":
-        val_type = arg.get("value_type")
-        if not isinstance(val_type, str) or val_type not in _BASIC_TYPES:
-            raise _err(
-                f"typed-JSON variant requires 'value_type' = a basic type name; got {val_type!r}"
-            )
-        return f"variant:{val_type}:{_to_dbus_send_basic(val_type, value)}"
-
-    raise _err(f"unknown typed-JSON type {type_name!r}")

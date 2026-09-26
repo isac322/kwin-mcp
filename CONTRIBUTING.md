@@ -146,6 +146,9 @@ The suite collects every test under `tests/e2e`. Together they prove:
   `dbus-run-session`: startup must stay deadline-bounded, report the captured session stderr and
   partial stdout, and leave the owned process group fully reaped — including when the session
   leader was already reaped or a descendant ignores `SIGTERM`.
+- accessibility-bus startup: `org.a11y.Bus` must have an owner as soon as `session_start`
+  returns, and a failed activation (a `dbus-send` stub on `PATH`) must reach the caller as a
+  `Warning:` line.
 
 The image needs no `--privileged`, GPU, `/dev/dri`, or other device flags. Engine tests use
 KWin's exact virtual backend with llvmpipe. Visual tests start Xvfb and a nested KWin compositor

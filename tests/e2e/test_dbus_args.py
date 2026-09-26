@@ -207,18 +207,22 @@ def test_variant_string() -> None:
     result = parse_dbus_send_arg("variant:string:hello")
     assert isinstance(result, dbus.String)
     assert result == "hello"
+    # A top-level variant marshals as 'v' even without introspection.
+    assert result.variant_level == 1
 
 
 def test_variant_int32() -> None:
     result = parse_dbus_send_arg("variant:int32:42")
     assert isinstance(result, dbus.Int32)
     assert result == 42
+    assert result.variant_level == 1
 
 
 def test_variant_boolean() -> None:
     result = parse_dbus_send_arg("variant:boolean:true")
     assert isinstance(result, dbus.Boolean)
     assert bool(result) is True
+    assert result.variant_level == 1
 
 
 # ── Nested containers ──────────────────────────────────────────────────────
@@ -468,6 +472,7 @@ def test_typed_variant() -> None:
     result = parse_typed_arg({"type": "variant", "value_type": "string", "value": "hello"})
     assert isinstance(result, dbus.String)
     assert result == "hello"
+    assert result.variant_level == 1
 
 
 def test_typed_error_missing_value_key() -> None:

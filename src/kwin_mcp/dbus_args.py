@@ -43,7 +43,7 @@ starts with ``"dbus-send arg:"``.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import dbus
 
@@ -353,10 +353,11 @@ def _typed_variant_payload(value: object) -> object:
             "typed-JSON dict with value_type 'variant' needs values shaped "
             f'{{"type": <basic>, "value": ...}}; got {value!r}'
         )
-    type_name = value["type"]
+    payload = cast("dict[str, object]", value)
+    type_name = payload["type"]
     if not isinstance(type_name, str) or type_name not in _BASIC_TYPES:
         raise _err(f"typed-JSON variant payload type must be basic, got {type_name!r}")
-    return _coerce_basic(type_name, value["value"])
+    return _coerce_basic(type_name, payload["value"])
 
 
 def parse_typed_arg(d: Mapping[str, object]) -> object:

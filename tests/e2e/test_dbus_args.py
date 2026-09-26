@@ -187,6 +187,7 @@ def test_dict_empty() -> None:
 
 def test_dict_value_keeps_colons() -> None:
     result = parse_dbus_send_arg("dict:string:string:url,http://x:8080")
+    assert isinstance(result, dbus.Dictionary)
     assert dict(result) == {"url": "http://x:8080"}
 
 

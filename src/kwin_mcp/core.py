@@ -817,9 +817,7 @@ class AutomationEngine:
         # terminal reaches the pty as ^V and alters the next keystroke.
         focus = self._run_kwin_query({"op": "active_class"})
         focused_class = str(focus["result"]) if focus["ok"] else None
-        ok = inp.keyboard_type_unicode(
-            text, env=self._session_env(), focused_class=focused_class
-        )
+        ok = inp.keyboard_type_unicode(text, env=self._session_env(), focused_class=focused_class)
         result = f"Typed unicode: {text!r}" if ok else f"Failed to type unicode: {text!r}"
         return self._with_frame_capture(result, screenshot_after_ms)
 

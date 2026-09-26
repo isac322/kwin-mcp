@@ -11,11 +11,6 @@ permissions:
 jobs:
   virtual-session:
     name: Virtual KWin session (${{ matrix.label }})
-    # Debian gates the workflow. Arch Linux runs the same suite and reports
-    # failures in its own job status and artifacts, but does not gate yet:
-    # KDE Gear 26.08's KWrite window title does not match KWin's caption, so
-    # kwin-mcp maps its AT-SPI2 elements to no window (see docker/README.md).
-    # Make it gating (drop continue-on-error) once that job is green.
     strategy:
       fail-fast: false
       matrix:
@@ -37,7 +32,6 @@ jobs:
             label: archlinux-amd64
             runner: ubuntu-24.04
     runs-on: ${{ matrix.runner }}
-    continue-on-error: ${{ matrix.distro != 'debian' }}
     timeout-minutes: 30
     env:
       E2E_ARTIFACT_DIR: artifacts/e2e/${{ matrix.label }}

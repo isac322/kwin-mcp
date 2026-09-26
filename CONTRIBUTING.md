@@ -191,7 +191,8 @@ On failure, the runner also records Docker inspection, container log, and proces
 diagnostics.
 
 CI runs the same installed-package architecture natively on `ubuntu-24.04` amd64 and
-`ubuntu-24.04-arm` arm64 runners and uploads the artifact directory for each architecture.
+`ubuntu-24.04-arm` arm64 runners, plus the Arch Linux image on `ubuntu-24.04` amd64, and uploads
+the artifact directory for each job. Every job gates the workflow.
 
 See `docker/README.md` for backend details and test-by-test coverage.
 

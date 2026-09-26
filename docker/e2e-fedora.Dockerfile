@@ -36,13 +36,14 @@ ENV KWIN_MCP_SYSTEM_PACKAGES="\
         dbus-daemon \
         dbus-tools \
         dejavu-sans-fonts \
-        google-noto-emoji-color-fonts \
-        google-noto-sans-cjk-ttc-fonts \
+        gobject-introspection \
+        google-noto-color-emoji-fonts \
+        google-noto-sans-cjk-vf-fonts \
         google-noto-sans-fonts \
         gtk3 \
         kcalc \
         konsole \
-        kwin-wayland \
+        kwin \
         kwrite \
         libcap \
         libei \

@@ -280,9 +280,7 @@ def _parse_dict_rest(rest: str) -> object:
         return dbus.Dictionary({}, signature=full_sig)
     items = values_str.split(",")
     if len(items) % 2:
-        raise _err(
-            f"dict entries must alternate key,value separated by ',', got {values_str!r}"
-        )
+        raise _err(f"dict entries must alternate key,value separated by ',', got {values_str!r}")
     out: dict[object, object] = {}
     for raw_key, raw_value in zip(items[::2], items[1::2], strict=True):
         key = _parse_basic(ktype, raw_key)

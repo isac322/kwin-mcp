@@ -562,4 +562,3 @@ def test_dispatch_rejects_list() -> None:
     bad: object = ["string:hello"]
     with pytest.raises(ValueError, match=r"arg must be str or dict, got list"):
         parse_arg(typing.cast("str", bad))
-

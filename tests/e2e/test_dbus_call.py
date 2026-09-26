@@ -180,17 +180,19 @@ def test_typed_json_int32_reaches_service(echo: EchoService) -> None:
 
 def test_dict_uses_dbus_send_comma_grammar(echo: EchoService) -> None:
     output, received = echo.call("StrDict", ["dict:string:string:FOO,bar,BAZ,qux"])
-    assert received == [
-        ["StrDict", {"FOO": ["String", "bar"], "BAZ": ["String", "qux"]}]
-    ], (output, received)
+    assert received == [["StrDict", {"FOO": ["String", "bar"], "BAZ": ["String", "qux"]}]], (
+        output,
+        received,
+    )
     assert not output.startswith(("D-Bus call failed:", "D-Bus error:")), output
 
 
 def test_dict_with_variant_values_sends_asv(echo: EchoService) -> None:
     output, received = echo.call("VarDict", ["dict:string:variant:name,string:x,n,int32:3"])
-    assert received == [
-        ["VarDict", {"name": ["String", "x"], "n": ["Int32", 3]}]
-    ], (output, received)
+    assert received == [["VarDict", {"name": ["String", "x"], "n": ["Int32", 3]}]], (
+        output,
+        received,
+    )
     assert not output.startswith(("D-Bus call failed:", "D-Bus error:")), output
 
 
@@ -202,9 +204,10 @@ def test_typed_json_dict_with_variant_values_sends_asv(echo: EchoService) -> Non
         "value": {"name": {"type": "string", "value": "x"}, "n": {"type": "int32", "value": 3}},
     }
     output, received = echo.call("VarDict", [arg])
-    assert received == [
-        ["VarDict", {"name": ["String", "x"], "n": ["Int32", 3]}]
-    ], (output, received)
+    assert received == [["VarDict", {"name": ["String", "x"], "n": ["Int32", 3]}]], (
+        output,
+        received,
+    )
     assert output == "var-dict", output
 
 

@@ -367,7 +367,7 @@ The AT-SPI2 accessibility bus within the isolated session is queried via PyGObje
 | **OS** | Linux with KDE Plasma 6 (Wayland session) |
 | **Python** | 3.12 or later |
 | **KWin** | `kwin_wayland` with `--virtual` flag support (KDE Plasma 6.x) |
-| **libei** | Usually bundled with KWin 6.x (EIS input emulation) |
+| **libei** | EIS input emulation client library. Not a `kwin-wayland` dependency on Debian/Ubuntu; install `libei1` (Arch's `kwin` package depends on it) |
 | **libwayland-client** | Used by the `keyboard_type_unicode` clipboard paste; already installed as a KWin dependency |
 | **spectacle** | KDE screenshot tool (CLI mode); packaged as `kde-spectacle` on Debian and Ubuntu |
 | **AT-SPI2** | `at-spi2-core` for accessibility tree support |
@@ -404,10 +404,10 @@ For other distributions, follow the "Installing from PyPI with pip" build depend
 <details>
 <summary><strong>Debian 13 (Trixie)</strong></summary>
 
-Debian packages Spectacle as `kde-spectacle`; there is no `spectacle` package. `gir1.2-atspi-2.0` provides the AT-SPI2 GObject Introspection typelib that PyGObject loads at runtime.
+Debian packages Spectacle as `kde-spectacle`; there is no `spectacle` package. `gir1.2-atspi-2.0` provides the AT-SPI2 GObject Introspection typelib that PyGObject loads at runtime. `libei1` provides the EIS client library used for input injection; `kwin-wayland` does not depend on it, so it must be installed explicitly.
 
 ```bash
-sudo apt-get install -y --no-install-recommends kwin-wayland kde-spectacle at-spi2-core gir1.2-atspi-2.0
+sudo apt-get install -y --no-install-recommends kwin-wayland kde-spectacle libei1 at-spi2-core gir1.2-atspi-2.0
 
 # Optional: for clipboard and Unicode input
 sudo apt-get install -y --no-install-recommends wl-clipboard wtype wayland-utils
@@ -457,7 +457,7 @@ sudo zypper install wl-clipboard wtype wayland-utils
 Use a release that ships KDE Plasma 6 and Python 3.12 or later; older Kubuntu releases with Plasma 5 are not supported. Install the Debian build prerequisites above as well. Ubuntu packages Spectacle as `kde-spectacle`.
 
 ```bash
-sudo apt install kwin-wayland kde-spectacle at-spi2-core python3-gi gir1.2-atspi-2.0 python3-dbus
+sudo apt install kwin-wayland kde-spectacle libei1 at-spi2-core python3-gi gir1.2-atspi-2.0 python3-dbus
 
 # Optional: for clipboard and Unicode input
 sudo apt install wl-clipboard wtype wayland-utils

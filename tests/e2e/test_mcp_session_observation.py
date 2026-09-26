@@ -18,6 +18,7 @@ PID_PATTERN = re.compile(r"\(PID=(\d+)\)")
 TREE_ROLE_PATTERN = re.compile(r"^\s*- \[([^]]+)]", re.MULTILINE)
 WINDOW_HEADER_PATTERN = re.compile(r"^- (.+?) \(\d+ windows\)$")
 CLIENT_GEOMETRY_PATTERN = re.compile(r"client: \((\d+), (\d+), (\d+)x(\d+)\)")
+WINDOW_ID_PATTERN = re.compile(r"^    id:\s+(\S+)$", re.MULTILINE)
 WAIT_TIMEOUT_MS = 300
 
 
@@ -201,6 +202,27 @@ async def test_installed_server_observes_virtual_session_and_apps(
             assert 0 <= y < SCREEN_HEIGHT, geometry
             assert width > 0 and x + width <= SCREEN_WIDTH, geometry
             assert height > 0 and y + height <= SCREEN_HEIGHT, geometry
+
+            active = await client.call_text("active_window")
+            assert active.startswith("Active window:"), active
+            assert "kcalc" in active.lower(), active
+            assert "[active]" in active, active
+
+            kwrite_geometry = await client.call_text("window_geometry", {"app_name": "kwrite"})
+            kwrite_ids = WINDOW_ID_PATTERN.findall(kwrite_geometry)
+            assert len(kwrite_ids) == 1, kwrite_geometry
+            close_output = await client.call_text("window_close", {"window_id": kwrite_ids[0]})
+            assert close_output.startswith("Close requested:"), close_output
+            close_deadline = anyio.current_time() + 10
+            while anyio.current_time() < close_deadline:
+                remaining = await client.call_text("window_geometry", {"window_id": kwrite_ids[0]})
+                if remaining == f"No window with id {kwrite_ids[0]!r}.":
+                    break
+                await anyio.sleep(0.25)
+            else:
+                pytest.fail(f"kwrite window was not closed: {remaining[:500]}")
+            kcalc_geometry = await client.call_text("window_geometry", {"app_name": "kcalc"})
+            assert len(WINDOW_ID_PATTERN.findall(kcalc_geometry)) == 1, kcalc_geometry
 
             seat_protocols = await client.call_text("wayland_info", {"filter_protocol": "wl_seat"})
             assert "interface: 'wl_seat'" in seat_protocols, seat_protocols[:500]

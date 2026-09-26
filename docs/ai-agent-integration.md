@@ -4,7 +4,7 @@ Three onboarding paths for `kwin-mcp`. Pick the one that matches your editor.
 
 ## Why use the integrations?
 
-`kwin-mcp` exposes **31 MCP tools**. Without context, an AI agent often calls them in the wrong order — skipping `session_start`, mixing up `keyboard_type` vs `keyboard_type_unicode`, ignoring the AT-SPI2 surface-local coordinate system, and so on.
+`kwin-mcp` exposes **33 MCP tools**. Without context, an AI agent often calls them in the wrong order — skipping `session_start`, mixing up `keyboard_type` vs `keyboard_type_unicode`, ignoring the AT-SPI2 surface-local coordinate system, and so on.
 
 Each integration package bundles:
 

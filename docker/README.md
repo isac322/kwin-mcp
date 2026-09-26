@@ -106,8 +106,8 @@ Additional arguments after the image command can select a file, node ID, marker,
 | `test_installed_package.py` | Runtime-venv imports, distribution ownership, system Python dependencies, installed console entry points, and CLI help. |
 | `test_interaction_probe.py` | Installed stdio coverage for material click, scroll, drag, keyboard, touch hold, pinch, and multi-swipe options with retained state and image evidence. |
 | `test_mcp_pointer_keyboard.py` | Pointer and keyboard wrappers crossing the installed MCP stdio transport and changing application state. |
-| `test_mcp_protocol.py` | Initialization, exact names and JSON input schemas for all 31 tools, invalid argument rejection, tool-error conversion, and server survival. |
-| `test_mcp_session_observation.py` | Installed stdio session, app launch, accessibility, windows, geometry, logs, Wayland, D-Bus, focus, polling, lifecycle, and virtual screenshot-error paths. |
+| `test_mcp_protocol.py` | Initialization, exact names and JSON input schemas for all 33 tools, invalid argument rejection, tool-error conversion, and server survival. |
+| `test_mcp_session_observation.py` | Installed stdio session, app launch, accessibility, windows, geometry, active window, closing one window by id, logs, Wayland, D-Bus, focus, polling, lifecycle, and virtual screenshot-error paths. |
 | `test_mcp_touch_clipboard.py` | Clipboard and touch wrappers over installed stdio, including observable GUI changes and compositor gesture limits. |
 | `test_observation_tools.py` | Accessibility filters and depth, element queries and states, polling, multi-window focus, app logs, Wayland protocol filtering, and generic D-Bus calls. |
 | `test_pointer_reconnect.py` | A click after `session_stop` and `session_connect` to the same KWin must reach a new window whose button lies under the parked cursor, proved by the persistent `animation_clicks` counter of `counted_gui_probe.py` (#66). |
@@ -117,6 +117,7 @@ Additional arguments after the image command can select a file, node ID, marker,
 | `test_unicode_clipboard_lifecycle.py` | `keyboard_type_unicode` clipboard paste: byte-for-byte restoration of every prior MIME type, empty prior selections, the secret-hint transient offer, a concurrent user copy that must survive, failure before paste with a stalled prior owner, a single restore owner across repeated calls, and the restored selection surviving a live-session disconnect. |
 | `test_virtual_session_smoke.py` | Minimum virtual KWin contract: KCalc launch, AT-SPI2 visibility and widgets, EIS keyboard delivery, plus the intentionally skipped exact-virtual ScreenShot2 success probe. |
 | `test_visual_qa.py` | Pixel-backed GUI probe and KCalc oracles: hover repaint, cursor localization, animation bursts, CJK-versus-tofu rendering, and binary-value transitions. |
+| `test_window_close.py` | `window_close` closing only the targeted one of two same-app windows, unknown ids, window ids containing a quote staying data rather than running as KWin script (`window_close` and `window_geometry`), `active_window` and the `[active]` marker following `focus_window`, and `window_close` refused in a live session. |
 | `test_window_control.py` | Focus, smooth/discrete scroll, drag selection, touch swipe/multi-swipe/pinch delivery, and scrollbar values. |
 | `test_window_geometry.py` | Global client/frame geometry, centered placement, element rectangles reported in screen coordinates, and unknown-window behavior. |
 

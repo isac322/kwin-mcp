@@ -134,7 +134,7 @@ The suite collects every test under `tests/e2e`. Together they prove:
 
 - engine-level behavior in isolated virtual KWin sessions;
 - the installed `kwin-mcp` entry point over real MCP stdio JSON-RPC, including the exact schemas
-  and wrappers for all 31 tools;
+  and wrappers for all 33 tools;
 - AT-SPI2 observation and KWin EIS keyboard, pointer, touch, clipboard, window, and D-Bus paths;
 - GUI pixels, cursor capture, repaint changes, and frame bursts in test-owned nested Xvfb/KWin
   sessions using the explicitly selected X11 `scrot` capture mode;
@@ -223,7 +223,7 @@ tests/e2e/
 ├── interaction_probe.py                # Input and screenshot probe application
 ├── test_installed_package.py           # Wheel, dependencies, and entry points
 ├── test_environment_evidence.py        # Safe environment.json provenance
-├── test_mcp_protocol.py                # All 31 tool schemas and protocol errors
+├── test_mcp_protocol.py                # All 33 tool schemas and protocol errors
 ├── test_mcp_session_observation.py     # Installed stdio session and observation flow
 ├── test_mcp_pointer_keyboard.py        # Installed stdio pointer and keyboard flow
 ├── test_mcp_touch_clipboard.py         # Installed stdio touch and clipboard flow
@@ -238,6 +238,7 @@ tests/e2e/
 ├── test_observation_tools.py           # Accessibility, window, log, and Wayland tools
 ├── test_atspi_worker.py                # AT-SPI worker reuse across session changes and crashes
 ├── test_window_geometry.py             # Global window geometry and element coordinate space
+├── test_window_close.py                # Window ids, active window, and closing one window by id
 ├── test_window_control.py              # Focus, scroll, drag, and touch behavior
 ├── test_pointer_reconnect.py           # Clicks reach a window mapped under a parked pointer
 ├── test_dbus_args.py                   # dbus_call argument parser (no session needed)

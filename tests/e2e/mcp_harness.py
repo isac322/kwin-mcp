@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 EXPECTED_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "accessibility_tree",
+        "active_window",
         "clipboard_get",
         "clipboard_set",
         "dbus_call",
@@ -50,6 +51,7 @@ EXPECTED_TOOL_NAMES: frozenset[str] = frozenset(
         "touch_tap",
         "wait_for_element",
         "wayland_info",
+        "window_close",
         "window_geometry",
     }
 )

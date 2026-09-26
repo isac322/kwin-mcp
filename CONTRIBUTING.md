@@ -133,7 +133,7 @@ snapshot.
 To run the same suite on another distribution, pass `--distro fedora`, `--distro opensuse`,
 or `--distro archlinux`. These build `docker/e2e-fedora.Dockerfile` (Fedora 44),
 `docker/e2e-opensuse.Dockerfile` (openSUSE Tumbleweed), and `docker/e2e-arch.Dockerfile`
-(the official `archlinux:base` image) — variants with the same stages, virtual environment,
+(the official `archlinux:base` image). They are variants with the same stages, virtual environment,
 user, and test command; only the distro package layer differs. Use them when a change touches
 distro-sensitive behavior such as libei, KWin, Qt, or packaged tool versions:
 
@@ -194,9 +194,10 @@ Debian package provenance. `junit.xml` contains the machine-readable test result
 On failure, the runner also records Docker inspection, container log, and process-list
 diagnostics.
 
-CI runs the same installed-package architecture natively on `ubuntu-24.04` amd64 and
-`ubuntu-24.04-arm` arm64 runners, in the Debian image and in Fedora 44, openSUSE Tumbleweed,
-and Arch Linux variants, and uploads the artifact directory for each job. Every job gates the workflow.
+CI runs the same installed-package architecture natively. The Debian image and the Fedora 44 and
+openSUSE Tumbleweed variants run on both `ubuntu-24.04` amd64 and `ubuntu-24.04-arm` arm64
+runners; the Arch Linux variant runs on amd64 only. CI uploads the artifact directory for each job,
+and every job gates the workflow.
 
 See `docker/README.md` for backend details and test-by-test coverage.
 

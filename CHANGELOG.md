@@ -7,11 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-27
+
 ### Added
 
 - `dbus_call` accepts typed-JSON arguments (`{"type": "int32", "value": 42}`) alongside dbus-send strings (`"int32:42"`), mixed freely in one `args` list. Supported shapes: basic types, `array` of a basic type, `dict` with a basic key and a basic or `variant` value (so `a{sv}` is expressible as `{"type": "dict", "key_type": "string", "value_type": "variant", "value": {"k": {"type": "string", "value": "v"}}}`), and `variant` of a basic type. The tool schema's `args` items widen from `string` to `string | object`.
 - `window_close` asks exactly one window to close, addressed by its KWin id, through the same KWin scripting path as `focus_window`. Other windows of the same app stay open. The id reaches KWin only as a JSON string literal, so an id containing a quote is treated as data and never runs as KWin script. Closing is refused in live sessions (`session_connect`), where it could discard unsaved work on the real desktop.
 - `active_window` reports the window KWin currently treats as active, with its id, frame, and client rectangles, for example to confirm `focus_window`.
+- Tool count increased from 31 to 33.
 - Arch Linux end-to-end image `docker/e2e-arch.Dockerfile`. It runs the same `tests/e2e` suite as the Debian image, including every MCP tool such as `mouse_click`, `keyboard_type`, and `accessibility_tree`, against Arch's much newer KWin, libei, Qt, and Mesa, with the same venv, user, entrypoint, and artifacts. The base image digest is pinned and pacman reads a dated Arch Linux Archive snapshot. The E2E workflow gains an `archlinux-amd64` job that fails the workflow on any test failure, like the Debian jobs. There is no arm64 job because no current Arch-family arm64 base image exists. `scripts/run-e2e-docker.sh --distro archlinux` runs it locally.
 - E2E images for Fedora 44 (`docker/e2e-fedora.Dockerfile`) and openSUSE Tumbleweed (`docker/e2e-opensuse.Dockerfile`), with digest-pinned bases, run the same `tests/e2e` suite as Debian. The `E2E` workflow gains `fedora-amd64`, `fedora-arm64`, `opensuse-amd64`, and `opensuse-arm64` jobs, and a failure in any of them fails the workflow, like the Debian and Arch Linux jobs. Fedora and Tumbleweed packages resolve from the live repositories at build time, so their versions can change between builds; `environment.json` records them. `scripts/run-e2e-docker.sh --distro fedora` and `--distro opensuse` run them locally.
 
@@ -24,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `keyboard_type_unicode` no longer uses `wl-clipboard`. It still tries `wtype` first; when `wtype` is unavailable or unsupported by the session, the text is pasted through a private clipboard helper (`python -m kwin_mcp.clipboard`). The helper uses the Wayland data-control protocol through `libwayland-client`, which KWin already depends on; no new package is required (#45).
 - `screenshot` and `screenshot_after_ms` frame bursts on ScreenShot2 now capture the whole workspace across all outputs (`CaptureWorkspace`) instead of only the active screen, matching the Spectacle and X11/scrot backends. The ScreenShot2 path also decodes the RGBX8888 raw format (QImage format 16) that current KWin emits for workspace captures, alongside the integer RGB32/ARGB32 formats.
 - `docker/e2e.Dockerfile` installs `libkscreen-bin` so visual E2E tests can set nested KWin output scales with `kscreen-doctor`; `environment.json` records its package version. It is a test-environment dependency, not a runtime requirement.
-- **Breaking for clients that parse `dbus_call` text:** `dbus_call` now calls D-Bus in-process through dbus-python instead of running `dbus-send --print-reply`, and its reply text changes. A void reply is an empty string instead of a `method return time=...` header, a single basic value is returned bare (`GetNameOwner` returns `:1.2` instead of `method return ...` followed by `string ":1.2"`), and containers or multiple values are JSON. Bus and remote errors read `D-Bus error: <error-name>: <message>`; argument errors read `D-Bus call failed: <reason>`. Numbers still arrive with their D-Bus type (`int32:42` is sent as `Int32`), and a top-level `variant:` argument stays a variant on the wire (`v`). The `dbus-send` binary is no longer needed at runtime. `unixfd` arguments remain unsupported, as in dbus-send.
+- **Breaking for clients that parse `dbus_call` text:** `dbus_call` now calls D-Bus in-process through dbus-python instead of running `dbus-send --print-reply`, and its reply text changes. A void reply is an empty string instead of a `method return time=...` header, a single basic value is returned bare (`GetNameOwner` returns `:1.2` instead of `method return ...` followed by `string ":1.2"`), and containers or multiple values are JSON. Bus and remote errors read `D-Bus error: <error-name>: <message>`; argument errors read `D-Bus call failed: <reason>`. Numbers still arrive with their D-Bus type (`int32:42` is sent as `Int32`), and a top-level `variant:` argument stays a variant on the wire (`v`). `dbus_call` no longer needs the `dbus-send` binary. `unixfd` arguments remain unsupported, as in dbus-send.
 - `docker/e2e.Dockerfile` installs `konsole` so the E2E suite can exercise `keyboard_type_unicode` in a terminal. It is a test-environment dependency, not a runtime requirement.
 
 ### Fixed
@@ -209,7 +212,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keyboard input: text typing and key combinations via KWin EIS
 - FastMCP-based MCP server with stdio transport
 
-[Unreleased]: https://github.com/isac322/kwin-mcp/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/isac322/kwin-mcp/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/isac322/kwin-mcp/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/isac322/kwin-mcp/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/isac322/kwin-mcp/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/isac322/kwin-mcp/compare/v0.5.1...v0.6.0

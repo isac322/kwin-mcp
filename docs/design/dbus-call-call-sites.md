@@ -10,20 +10,20 @@
 
 | Location | Role | Current Args Type |
 |---|---|---|
-| `src/kwin_mcp/core.py:717` | `dbus_call()` method — implementation | `args: list[str] \| None` — passed directly to `dbus-send` CLI |
-| `src/kwin_mcp/server.py:751` | `dbus_call` MCP tool — schema + wrapper | Annotated `list[str] \| None`, description mentions dbus-send format |
+| `src/kwin_mcp/core.py` `AutomationEngine.dbus_call` | Implementation | `args: list[str \| dict] \| None`, parsed by `kwin_mcp.dbus_args.parse_arg` and sent in-process with dbus-python |
+| `src/kwin_mcp/server.py` `dbus_call` | MCP tool schema + wrapper | Annotated `list[str \| dict] \| None`; the description documents both argument shapes |
 
 ## Internal Call Sites
 
 | Location | Caller | Service | Path | Interface | Method | Args | Type Complexity |
 |---|---|---|---|---|---|---|---|
-| `src/kwin_mcp/server.py:769` | MCP tool handler | pass-through | pass-through | pass-through | pass-through | pass-through from MCP user | varies |
+| `src/kwin_mcp/server.py` `dbus_call` | MCP tool handler | pass-through | pass-through | pass-through | pass-through | pass-through from MCP user | varies |
 
 **There are no internal call sites with hard-coded arg patterns.** All args originate from external MCP clients (LLM agents).
 
 ## External Arg Patterns (from MCP tool docstring)
 
-The `dbus_call` MCP tool description (`server.py:759-768`) documents the accepted format:
+Before the in-process rewrite, the `dbus_call` MCP tool description documented:
 ```
 Method arguments in dbus-send format (e.g. "string:value", "int32:42", "boolean:true")
 ```
@@ -54,10 +54,10 @@ Based on the zero internal hard-coded call sites and the MCP tool's documented u
 | `objpath:` | `objpath:/org/kde/KWin` | **Required** — object references |
 | `signature:` | `signature:s` | **Required** — introspection |
 | `array:` | `array:string:a,b,c` | **Required** — lists |
-| `dict:` | `dict:string:int32:k:1` | **Required** — D-Bus dicts |
+| `dict:` | `dict:string:int32:k1,1,k2,2`, `dict:string:variant:k,string:v` | **Required** — D-Bus dicts, including `a{sv}` |
 | `variant:` | `variant:string:hello` | **Required** — polymorphic values |
 
-**No types from the dbus-send man page are deferred** — the MCP tool is a public API and agents may use any valid dbus-send syntax.
+**No types from the dbus-send man page are deferred** — the MCP tool is a public API and agents may use any valid dbus-send syntax. Dict entries follow dbus-send's grammar: one comma-separated list alternating keys and values, and a `variant` value type makes each value a `TYPE:VALUE` pair with a basic type. `unixfd` is not supported: dbus-send has no such type either, and an fd number from an MCP client would not refer to a descriptor in the server process.
 
 ## Scope Impact on Task 7 (Parser)
 
@@ -67,4 +67,8 @@ Task 7 must implement a full recursive-descent parser for the dbus-send argument
 2. LLM agents generate diverse arg patterns based on D-Bus introspection output
 3. Supporting only 2-3 types would break real-world agent workflows
 
-**Minimum viable parser scope**: all basic types + `array:`, `dict:`, `variant:` containers + nested containers.
+**Minimum viable parser scope**: all basic types + `array:`, `dict:`, `variant:` containers + nested arrays.
+
+## Argument checking
+
+`dbus_call` introspects the target object once per call. When the method is described, the argument count must match its input signature and the arguments are marshalled with that signature; mismatches and marshalling errors return `D-Bus call failed: ...` before anything is sent. When the object is not introspectable, the call goes out with dbus-python's inferred signature and the remote side validates it.

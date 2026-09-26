@@ -195,6 +195,7 @@ src/kwin_mcp/
 ├── accessibility.py   # AT-SPI2 accessibility tree inspection
 ├── geometry.py        # Window geometry, activation, and output topology via KWin scripting
 ├── clipboard.py       # Private Wayland data-control helper for keyboard_type_unicode paste
+├── dbus_args.py       # dbus_call argument parser (dbus-send strings and typed JSON)
 └── input.py           # Input injection via KWin EIS D-Bus + libei
 
 docker/
@@ -235,6 +236,8 @@ tests/e2e/
 ├── test_window_geometry.py             # Global window geometry and element coordinate space
 ├── test_window_control.py              # Focus, scroll, drag, and touch behavior
 ├── test_pointer_reconnect.py           # Clicks reach a window mapped under a parked pointer
+├── test_dbus_args.py                   # dbus_call argument parser (no session needed)
+├── test_dbus_call.py                   # dbus_call arguments as received by a test D-Bus service
 └── test_input_injection.py             # Engine-level EIS input behavior
 
 integrations/

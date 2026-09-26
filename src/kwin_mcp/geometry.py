@@ -6,10 +6,11 @@ hand the numbers back over D-Bus.
 
 Two entry points share one script round-trip:
 
-- ``query()`` / ``active()`` / ``activate()`` / ``close()`` / ``outputs()`` run
-  in a subprocess (`python -m kwin_mcp.geometry`) for the public
-  ``window_geometry`` / ``active_window`` / ``focus_window`` / ``window_close``
-  tools and for screenshot coordinate mapping.
+- ``query()`` / ``active()`` / ``activate()`` / ``close()`` / ``outputs()``
+  / ``active_class()`` run in a subprocess (`python -m kwin_mcp.geometry`)
+  for the public ``window_geometry`` / ``active_window`` / ``focus_window``
+  / ``window_close`` tools, for screenshot coordinate mapping, and for the
+  paste chord ``keyboard_type_unicode`` chooses.
 - ``collect_windows()`` runs in-process inside the AT-SPI2 query subprocess so
   `accessibility.py` can translate element rectangles into screen coordinates.
 
@@ -139,6 +140,14 @@ for (var i = 0; i < windows.length; i++) {
     break;
 }
 callDBus("{sink}", "{path}", "{sink}", "Report", JSON.stringify(result));
+"""
+
+# The active window's resource class (the Wayland app_id, or the X11 WM_CLASS
+# class for Xwayland clients). keyboard_type_unicode picks its paste chord from
+# it before pressing anything. An empty string means no window is active.
+_ACTIVE_CLASS_SCRIPT = """
+var w = workspace.activeWindow;
+callDBus("{sink}", "{path}", "{sink}", "Report", w ? String(w.resourceClass) : "");
 """
 
 # Output topology for screenshot coordinate mapping. Geometry is logical (the
@@ -329,6 +338,11 @@ def close(window_id: str, timeout: float = 5.0) -> dict[str, object]:
     return payload
 
 
+def active_class(timeout: float = 5.0) -> str:
+    """Return the active window's resource class, or "" when none is active."""
+    return run_kwin_script(_ACTIVE_CLASS_SCRIPT, timeout)
+
+
 def outputs(timeout: float = 5.0) -> dict[str, object]:
     """Ask KWin for every output's logical geometry and scale.
 
@@ -359,6 +373,9 @@ def main() -> None:
             return
         if op == "active":
             print(json.dumps({"ok": True, "result": active()}))
+            return
+        if op == "active_class":
+            print(json.dumps({"ok": True, "result": active_class()}))
             return
         if op == "close":
             print(json.dumps({"ok": True, "result": close(str(request.get("window_id", "")))}))

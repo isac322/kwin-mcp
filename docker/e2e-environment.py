@@ -39,6 +39,7 @@ DEBIAN_PACKAGES = (
     "gir1.2-gtk-3.0",
     "kcalc",
     "kde-spectacle",
+    "konsole",
     "kwin-common",
     "kwin-wayland",
     "kwrite",

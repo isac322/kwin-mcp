@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 from enum import Enum
+from typing import TYPE_CHECKING
 
 import dbus
 import dbus.bus
@@ -28,6 +29,9 @@ from dbus.mainloop.glib import DBusGMainLoop
 
 # Protocol constants only; importing the helper module loads no C library.
 from kwin_mcp.clipboard import MAX_COPY_BYTES, READY_BUDGET_S, RESTORE_ROUNDTRIP_S
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class MouseButton(Enum):
@@ -606,14 +610,64 @@ class EISClient:
 # Parent waits are the helper's own worst-case budgets plus a margin for
 # interpreter startup and pipe latency, so a slow but successful step is never
 # misreported. READY also covers writing the COPY request. The transfer bound
-# is how long the focused app gets to request the text after Ctrl+V before the
-# call reports failure; the prior selection is restored either way.
+# is how long the focused app gets to request the text after the paste chord
+# before the call reports failure; the prior selection is restored either way.
 _CLIPBOARD_MARGIN = 2.0
 _CLIPBOARD_READY_TIMEOUT = READY_BUDGET_S + _CLIPBOARD_MARGIN
 _CLIPBOARD_ARM_TIMEOUT = 2.0
 _CLIPBOARD_TRANSFER_TIMEOUT = 4.0
 _CLIPBOARD_RESTORE_TIMEOUT = RESTORE_ROUNDTRIP_S + _CLIPBOARD_MARGIN
 _CLIPBOARD_EVENTS = frozenset({"READY", "ARMED", "TRANSFERRED", "CANCELLED", "RESTORED", "ERR"})
+
+# Paste chord selection. GUI toolkits paste on Ctrl+V and ignore it otherwise,
+# but a terminal that does not bind the sent chord forwards it to the pty as ^V
+# (VLNEXT, or a line editor's quoted-insert), which alters the next keystroke
+# long after the call has reported failure. No follow-up key can cancel that
+# state without itself being inserted literally, so the chord must be right
+# before anything is pressed. Terminals listed here paste the clipboard on
+# Ctrl+Shift+V by default (Konsole: ACCEL | Qt::Key_V; st: config.def.h
+# TERMMOD|XK_V -> clippaste). Terminal-like classes that are not listed get no
+# chord at all: xterm and urxvt have no default clipboard paste chord, and
+# Shift+Insert pastes the primary selection in VTE, xterm and foot, which the
+# helper does not own. Classes are compared lowercased.
+_CTRL_SHIFT_V_TERMINALS = frozenset(
+    {
+        "alacritty",
+        "com.gexperts.tilix",
+        "com.mitchellh.ghostty",
+        "foot",
+        "footclient",
+        "gnome-terminal-server",
+        "kitty",
+        "org.gnome.console",
+        "org.gnome.terminal",
+        "org.kde.konsole",
+        "org.kde.yakuake",
+        "org.wezfurlong.wezterm",
+        "st-256color",
+        "terminator",
+        "xfce4-terminal",
+    }
+)
+_UNPASTEABLE_TERMINAL_MARKERS = ("term", "rxvt")
+
+
+def _paste_chord(resource_class: str | None) -> str | None:
+    """Return the clipboard paste chord for the focused window, or None to skip.
+
+    ``resource_class`` is KWin's resource class of the active window ("" when
+    none is active, None when it could not be determined). An unknown target
+    may be a terminal, so it gets no chord: a reported failure is recoverable,
+    a stray ^V in someone's shell line is not.
+    """
+    if resource_class is None:
+        return None
+    cls = resource_class.lower()
+    if cls in _CTRL_SHIFT_V_TERMINALS:
+        return "ctrl+shift+v"
+    if any(marker in cls for marker in _UNPASTEABLE_TERMINAL_MARKERS):
+        return None
+    return "ctrl+v"
 
 
 class _ClipboardHelper:
@@ -1188,26 +1242,41 @@ class InputBackend:
         for tid in tids:
             self._client.touch_up(tid)
 
-    def keyboard_type_unicode(self, text: str, env: dict[str, str] | None = None) -> bool:
+    def keyboard_type_unicode(
+        self,
+        text: str,
+        env: dict[str, str] | None = None,
+        focused_class: str | Callable[[], str | None] | None = None,
+    ) -> bool:
         """Type arbitrary Unicode text using wtype or a temporary clipboard paste.
 
         The clipboard route hands the text to ``kwin_mcp.clipboard``, which
         snapshots the current selection, offers the text (marked as a secret
         for KDE clipboard managers) and restores the snapshot after the paste.
-        Ctrl+V is sent only after the helper owns the selection and has armed
-        transfer counting, so a failed or slow copy never pastes stale content.
+        The paste chord is sent only after the helper owns the selection and
+        has armed transfer counting, so a failed or slow copy never pastes
+        stale content. The chord follows the focused window's class: Ctrl+Shift+V
+        for terminals known to paste on it, none for other terminals or an
+        unknown target, and Ctrl+V otherwise (see ``_paste_chord``).
 
         Args:
             text: Text to type (supports non-ASCII, e.g. Korean, CJK).
             env: Session environment. Both routes use Wayland clients, so this
                 must carry WAYLAND_DISPLAY of the target session.
+            focused_class: KWin resource class of the active window ("" when
+                none is active), None when it could not be determined, or a
+                zero-argument callable returning one of those. A callable is
+                resolved only when the clipboard path is reached, so a session
+                where wtype succeeds never pays for the window query.
 
         Returns:
             True if wtype succeeded, or if the text was transferred to a
-            client that requested it after Ctrl+V and the helper then confirmed
-            that the prior selection was restored or replaced by a newer copy.
-            False for text over the helper's 1 MiB limit (nothing is touched),
-            and when any step or the restoration fails or times out.
+            client that requested it after the paste chord and the helper then
+            confirmed that the prior selection was restored or replaced by a
+            newer copy. False without touching the clipboard or pressing any
+            key for text over the helper's 1 MiB limit and for a target with
+            no safe paste chord; False when any step or the restoration fails
+            or times out.
         """
         env = {**os.environ, **(env or {})}
 
@@ -1229,9 +1298,15 @@ class InputBackend:
             if result is not None and result.returncode == 0:
                 return True
 
-        return self._paste_via_clipboard(text, env)
+        if focused_class is None or isinstance(focused_class, str):
+            cls = focused_class
+        else:
+            cls = focused_class()
+        return self._paste_via_clipboard(text, env, _paste_chord(cls))
 
-    def _paste_via_clipboard(self, text: str, env: dict[str, str]) -> bool:
+    def _paste_via_clipboard(self, text: str, env: dict[str, str], chord: str | None) -> bool:
+        if chord is None:
+            return False  # no chord this target is known to paste on; touch nothing
         try:
             payload = text.encode()
         except UnicodeEncodeError:
@@ -1258,7 +1333,7 @@ class InputBackend:
                 return False
             if helper.next_event(deadline - time.monotonic()) != "ARMED":
                 return False
-            self.keyboard_key("ctrl+v")
+            self.keyboard_key(chord)
             transferred = helper.next_event(_CLIPBOARD_TRANSFER_TIMEOUT) == "TRANSFERRED"
         finally:
             restored = helper.release()

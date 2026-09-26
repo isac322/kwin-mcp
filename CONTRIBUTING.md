@@ -232,6 +232,7 @@ tests/e2e/
 ├── test_interaction_probe.py           # Full probe interaction feedback loop
 ├── test_input_cleanup.py               # Input state reset across sessions and failures
 ├── test_session_lifecycle.py           # Ownership, teardown, retention, and bounded-startup cleanup
+├── test_terminal_unicode_paste.py      # Unicode paste chord and next-key integrity in Konsole
 ├── test_unicode_clipboard_lifecycle.py # Unicode paste clipboard snapshot, restore, and cleanup
 ├── test_clipboard_helper_protocol.py   # Private clipboard helper framing, timeouts, and restore
 ├── test_virtual_session_smoke.py       # Minimum isolated KWin contract

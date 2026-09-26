@@ -1298,7 +1298,10 @@ class InputBackend:
             if result is not None and result.returncode == 0:
                 return True
 
-        cls = focused_class() if callable(focused_class) else focused_class
+        if focused_class is None or isinstance(focused_class, str):
+            cls = focused_class
+        else:
+            cls = focused_class()
         return self._paste_via_clipboard(text, env, _paste_chord(cls))
 
     def _paste_via_clipboard(self, text: str, env: dict[str, str], chord: str | None) -> bool:

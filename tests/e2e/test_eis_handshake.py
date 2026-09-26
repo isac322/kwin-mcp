@@ -50,7 +50,7 @@ class _ScriptedLibei:
 
         def bind(_seat: int, *capabilities: object) -> None:
             self.bound_capabilities = [
-                c.value for c in capabilities if getattr(c, "value", None) is not None
+                v for c in capabilities if (v := getattr(c, "value", None)) is not None
             ]
 
         self.ei_seat_bind_capabilities = bind

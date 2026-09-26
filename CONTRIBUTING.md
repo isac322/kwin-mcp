@@ -130,12 +130,16 @@ dev dependency group is installed separately from `pyproject.toml`; `uv.lock` is
 the image. The image pins both its Debian base-image digest and its dated Debian package
 snapshot.
 
-To run the same suite on Arch Linux, pass `--distro archlinux`. It builds
-`docker/e2e-arch.Dockerfile`, a variant on the official `archlinux:base` image with the same stages, virtual environment,
-user, and test command; only the distro package layer differs. Use it when a change touches
+To run the same suite on another distribution, pass `--distro fedora`, `--distro opensuse`,
+or `--distro archlinux`. These build `docker/e2e-fedora.Dockerfile` (Fedora 44),
+`docker/e2e-opensuse.Dockerfile` (openSUSE Tumbleweed), and `docker/e2e-arch.Dockerfile`
+(the official `archlinux:base` image). They are variants with the same stages, virtual environment,
+user, and test command; only the distro package layer differs. Use them when a change touches
 distro-sensitive behavior such as libei, KWin, Qt, or packaged tool versions:
 
 ```bash
+scripts/run-e2e-docker.sh --distro fedora
+scripts/run-e2e-docker.sh --distro opensuse
 scripts/run-e2e-docker.sh --distro archlinux
 ```
 
@@ -190,9 +194,10 @@ Debian package provenance. `junit.xml` contains the machine-readable test result
 On failure, the runner also records Docker inspection, container log, and process-list
 diagnostics.
 
-CI runs the same installed-package architecture natively on `ubuntu-24.04` amd64 and
-`ubuntu-24.04-arm` arm64 runners, plus the Arch Linux image on `ubuntu-24.04` amd64, and uploads
-the artifact directory for each job. Every job gates the workflow.
+CI runs the same installed-package architecture natively. The Debian image and the Fedora 44 and
+openSUSE Tumbleweed variants run on both `ubuntu-24.04` amd64 and `ubuntu-24.04-arm` arm64
+runners; the Arch Linux variant runs on amd64 only. CI uploads the artifact directory for each job,
+and every job gates the workflow.
 
 See `docker/README.md` for backend details and test-by-test coverage.
 
@@ -212,11 +217,13 @@ src/kwin_mcp/
 └── input.py           # Input injection via KWin EIS D-Bus + libei
 
 docker/
-├── e2e.Dockerfile      # Reproducible installed-package E2E image (Debian)
-├── e2e-arch.Dockerfile # Arch Linux (archlinux:base) variant of the same E2E image
-├── e2e-entrypoint.sh   # Records environment evidence, then executes the test command
-├── e2e-environment.py  # Writes allowlisted environment.json provenance
-└── README.md           # Container backends, coverage, and limitations
+├── e2e.Dockerfile          # Reproducible installed-package E2E image (Debian trixie)
+├── e2e-arch.Dockerfile     # Arch Linux (archlinux:base) variant of the same E2E image
+├── e2e-fedora.Dockerfile   # Fedora 44 variant of the E2E image
+├── e2e-opensuse.Dockerfile # openSUSE Tumbleweed variant of the E2E image
+├── e2e-entrypoint.sh       # Records environment evidence, then executes the test command
+├── e2e-environment.py      # Writes allowlisted environment.json provenance
+└── README.md               # Container backends, coverage, and limitations
 
 scripts/
 ├── run-e2e-docker.sh      # Recommended local Docker E2E runner and artifact collector

@@ -4,12 +4,13 @@ set -u
 
 usage() {
     cat <<'EOF'
-Usage: scripts/run-e2e-docker.sh [--distro debian|archlinux] [--image-tag TAG] [--] [PYTEST_ARG ...]
+Usage: scripts/run-e2e-docker.sh [--distro debian|fedora|opensuse|archlinux] [--image-tag TAG] [--] [PYTEST_ARG ...]
 
 Build the E2E image and run the installed-package test suite on Docker's native
 architecture. --distro selects the image variant: debian (docker/e2e.Dockerfile,
-the default) or archlinux (docker/e2e-arch.Dockerfile). Additional arguments are
-passed directly to pytest.
+the default), fedora (docker/e2e-fedora.Dockerfile), opensuse
+(docker/e2e-opensuse.Dockerfile), or archlinux (docker/e2e-arch.Dockerfile).
+Additional arguments are passed directly to pytest.
 EOF
 }
 
@@ -67,12 +68,20 @@ case $distro in
         dockerfile=docker/e2e.Dockerfile
         default_tag=kwin-mcp-e2e
         ;;
+    fedora)
+        dockerfile=docker/e2e-fedora.Dockerfile
+        default_tag=kwin-mcp-e2e-fedora
+        ;;
+    opensuse)
+        dockerfile=docker/e2e-opensuse.Dockerfile
+        default_tag=kwin-mcp-e2e-opensuse
+        ;;
     archlinux)
         dockerfile=docker/e2e-arch.Dockerfile
         default_tag=kwin-mcp-e2e-arch
         ;;
     *)
-        printf 'error: unknown --distro %s (expected debian or archlinux)\n' "$distro" >&2
+        printf 'error: unknown --distro %s (expected debian, fedora, opensuse, or archlinux)\n' "$distro" >&2
         usage >&2
         exit 64
         ;;

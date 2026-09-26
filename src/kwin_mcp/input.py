@@ -222,7 +222,11 @@ def _load_libei() -> ctypes.CDLL:
     lib.ei_configure_name.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
     lib.ei_setup_backend_fd.restype = ctypes.c_int
     lib.ei_setup_backend_fd.argtypes = [ctypes.c_void_p, ctypes.c_int]
-    lib.ei_dispatch.restype = ctypes.c_int
+    # libei declares `void ei_dispatch(struct ei *ei)`. With a c_int restype
+    # ctypes returns whatever the return register held, which is negative on
+    # some builds (Fedora 44, Tumbleweed aarch64) and used to abort the
+    # handshake before DEVICE_ADDED. Errors arrive as EI_EVENT_DISCONNECT.
+    lib.ei_dispatch.restype = None
     lib.ei_dispatch.argtypes = [ctypes.c_void_p]
     lib.ei_get_event.restype = ctypes.c_void_p
     lib.ei_get_event.argtypes = [ctypes.c_void_p]
@@ -409,9 +413,7 @@ class EISClient:
         while time.monotonic() - start < timeout:
             readable, _, _ = select.select([ei_fd], [], [], 0.3)
             if readable:
-                ret = _get_libei().ei_dispatch(self._ei)
-                if ret < 0:
-                    break
+                _get_libei().ei_dispatch(self._ei)
 
             while True:
                 event = _get_libei().ei_get_event(self._ei)

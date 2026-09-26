@@ -217,8 +217,11 @@ class Session:
         # file is also the diagnostic sink read when startup fails.
         self._stderr_file = tempfile.TemporaryFile()  # noqa: SIM115
         try:
+            # stdin is the MCP server's JSON-RPC transport; no descendant of
+            # the session (compositor, AT-SPI bus, apps) may read from it.
             self._process = subprocess.Popen(
                 ["dbus-run-session", "bash", "-c", wrapper_script],
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=self._stderr_file,
                 env=self._build_env(config),
@@ -329,9 +332,12 @@ class Session:
         log_path = self._info.screenshot_dir / f"app_{app_name}_{self._app_counter}.log"
         log_file = log_path.open("ab")
 
+        # stdin=DEVNULL: an inherited stdin would be the MCP server's JSON-RPC
+        # transport, and a launched program that reads it steals requests.
         proc = subprocess.Popen(
             command,
             env=env,
+            stdin=subprocess.DEVNULL,
             stdout=log_file,
             stderr=log_file,
         )
@@ -850,9 +856,11 @@ class LiveSession:
         log_path = self._info.screenshot_dir / f"app_{app_name}_{self._app_counter}.log"
         log_file = log_path.open("ab")
 
+        # stdin=DEVNULL: see Session.launch_app.
         proc = subprocess.Popen(
             command,
             env=env,
+            stdin=subprocess.DEVNULL,
             stdout=log_file,
             stderr=log_file,
         )

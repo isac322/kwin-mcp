@@ -11,6 +11,9 @@ permissions:
 jobs:
   virtual-session:
     name: Virtual KWin session (${{ matrix.label }})
+    # Every distribution gates the workflow: a failure on Fedora or Tumbleweed
+    # is a kwin-mcp portability bug (the ei_dispatch return type once broke
+    # input there only), not noise. Debian keeps its original job and artifact names.
     strategy:
       fail-fast: false
       matrix:
@@ -24,6 +27,26 @@ jobs:
             dockerfile: docker/e2e.Dockerfile
             arch: arm64
             label: arm64
+            runner: ubuntu-24.04-arm
+          - distro: fedora
+            dockerfile: docker/e2e-fedora.Dockerfile
+            arch: amd64
+            label: fedora-amd64
+            runner: ubuntu-24.04
+          - distro: fedora
+            dockerfile: docker/e2e-fedora.Dockerfile
+            arch: arm64
+            label: fedora-arm64
+            runner: ubuntu-24.04-arm
+          - distro: opensuse
+            dockerfile: docker/e2e-opensuse.Dockerfile
+            arch: amd64
+            label: opensuse-amd64
+            runner: ubuntu-24.04
+          - distro: opensuse
+            dockerfile: docker/e2e-opensuse.Dockerfile
+            arch: arm64
+            label: opensuse-arm64
             runner: ubuntu-24.04-arm
           # Arch Linux publishes amd64 images only; see docker/e2e-arch.Dockerfile.
           - distro: archlinux

@@ -336,6 +336,8 @@ def close(window_id: str, timeout: float = 5.0) -> dict[str, object]:
         msg = f"KWin returned a malformed close result: {payload!r}"
         raise RuntimeError(msg)
     return payload
+
+
 def active_class(timeout: float = 5.0) -> str:
     """Return the active window's resource class, or "" when none is active."""
     return run_kwin_script(_ACTIVE_CLASS_SCRIPT, timeout)

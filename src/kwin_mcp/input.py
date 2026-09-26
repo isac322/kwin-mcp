@@ -344,6 +344,11 @@ class EISClient:
 
     def _setup(self) -> None:
         """Connect to KWin EIS and negotiate devices."""
+        # Resolve libei before asking KWin for an EIS connection: a missing
+        # library must fail before connectToEIS hands us a socket fd and a
+        # cookie that nothing would close or disconnect.
+        lib = _get_libei()
+
         # KWin only exposes the EIS interface when it supports remote input;
         # translate the D-Bus failure so callers can treat the input backend as
         # optional (see AutomationEngine.session_start).
@@ -368,16 +373,16 @@ class EISClient:
         self._cookie = int(result[1])
 
         # Create libei sender context
-        self._ei = _get_libei().ei_new_sender(None)
+        self._ei = lib.ei_new_sender(None)
         if not self._ei:
             msg = "Failed to create EI context"
             raise RuntimeError(msg)
 
-        _get_libei().ei_configure_name(self._ei, b"kwin-mcp")
+        lib.ei_configure_name(self._ei, b"kwin-mcp")
 
-        ret = _get_libei().ei_setup_backend_fd(self._ei, fd)
+        ret = lib.ei_setup_backend_fd(self._ei, fd)
         if ret != 0:
-            _get_libei().ei_unref(self._ei)
+            lib.ei_unref(self._ei)
             self._ei = 0
             msg = f"ei_setup_backend_fd failed: {ret}"
             raise RuntimeError(msg)

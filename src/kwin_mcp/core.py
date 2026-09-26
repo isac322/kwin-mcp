@@ -499,11 +499,11 @@ class AutomationEngine:
         time.sleep(0.5)
         try:
             self._input = InputBackend(info.dbus_address)
-        except RuntimeError:
+        except RuntimeError as exc:
             self._input = None
-
-        input_status = "Input backend: KWin EIS" if self._input else "No input backend available"
-        result += f"\n{input_status}"
+            result += f"\nNo input backend available ({exc})"
+        else:
+            result += "\nInput backend: KWin EIS"
 
         return result
 
@@ -586,13 +586,13 @@ class AutomationEngine:
         try:
             self._input = InputBackend(dbus_addr)
             result += "\nInput backend: KWin EIS"
-        except RuntimeError:
+        except RuntimeError as exc:
             self._input = None
             if shutil.which("ydotool"):
                 result += "\nInput backend: ydotool (EIS unavailable)"
             else:
                 result += (
-                    "\nNo input backend available (EIS connection failed and ydotool not found). "
+                    f"\nNo input backend available ({exc}; ydotool not found). "
                     "Screenshot and accessibility tools still work."
                 )
 

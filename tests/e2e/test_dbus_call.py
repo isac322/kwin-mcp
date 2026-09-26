@@ -373,7 +373,11 @@ def test_overloaded_kwin_load_script_accepts_both_arities(
     """KWin exports loadScript as (s) and (ss); both arities must succeed."""
     script = tmp_path / "probe.js"
     script.write_text("console.log('kwin-mcp dbus_call probe');\n", encoding="utf-8")
-    for args in ([f"string:{script}"], [f"string:{script}", "string:prfix23probe"]):
+    arg_sets: list[list[str | dict]] = [
+        [f"string:{script}"],
+        [f"string:{script}", "string:prfix23probe"],
+    ]
+    for args in arg_sets:
         output = echo.engine.dbus_call(
             "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "loadScript", args
         )

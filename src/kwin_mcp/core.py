@@ -91,6 +91,7 @@ class AutomationEngine:
         self._atspi_proc: subprocess.Popen[bytes] | None = None
         self._atspi_bus: str = ""
         self._atspi_buffer: bytes = b""
+        self._atspi_a11y: str = ""
         self._atspi_lock = threading.Lock()
 
     def __del__(self) -> None:
@@ -131,18 +132,53 @@ class AutomationEngine:
         env.pop("DISPLAY", None)
         return env
 
+    def _a11y_bus_address(self, env: dict[str, str]) -> str:
+        """Identity of the session's AT-SPI bus; ``""`` when it cannot be read.
+
+        Apps and the worker reach the accessibility bus through
+        ``AT_SPI_BUS_ADDRESS`` when it is set, else through
+        ``org.a11y.Bus.GetAddress`` on the session bus. The reply embeds the
+        bus's guid, so it changes when the a11y bus restarts even though its
+        socket path stays the same. A worker that bound the old identity keeps
+        answering ``(no accessible applications found)`` from its dead
+        connection forever, so this is probed on every call.
+        """
+        explicit = env.get("AT_SPI_BUS_ADDRESS", "")
+        if explicit:
+            return explicit
+        session_bus = env.get("DBUS_SESSION_BUS_ADDRESS", "")
+        if not session_bus:
+            return ""
+        try:
+            import dbus.bus
+
+            conn = dbus.bus.BusConnection(session_bus)
+            try:
+                return str(
+                    conn.get_object("org.a11y.Bus", "/org/a11y/bus").GetAddress(
+                        dbus_interface="org.a11y.Bus"
+                    )
+                )
+            finally:
+                conn.close()
+        except Exception:
+            return ""
+
     def _ensure_atspi_worker(self) -> subprocess.Popen[bytes]:
         """Return the AT-SPI worker for the current session bus, (re)spawning it if needed.
 
-        ``gi.repository.Atspi`` binds its D-Bus connection once per process, so the
-        worker is keyed to the bus address it was started with. A different address
-        (new session, live connection, changed environment) or a dead worker means
-        the old process would answer from the wrong or a dead bus: replace it.
+        ``gi.repository.Atspi`` binds its D-Bus connections once per process, so
+        the worker is keyed to the bus identities it was started with. A
+        different session bus, a restarted a11y bus, or a dead worker means the
+        old process would answer from the wrong or a dead bus: replace it.
         """
         env = self._session_env()
         bus = env.get("DBUS_SESSION_BUS_ADDRESS", "")
+        a11y = self._a11y_bus_address(env)
         proc = self._atspi_proc
-        if proc is not None and (proc.poll() is not None or bus != self._atspi_bus):
+        if proc is not None and (
+            proc.poll() is not None or bus != self._atspi_bus or a11y != self._atspi_a11y
+        ):
             self._teardown_atspi_worker()
             proc = None
         if proc is None:
@@ -154,6 +190,7 @@ class AutomationEngine:
             )
             self._atspi_proc = proc
             self._atspi_bus = bus
+            self._atspi_a11y = a11y
             self._atspi_buffer = b""
         return proc
 
@@ -227,6 +264,7 @@ class AutomationEngine:
         proc = self._atspi_proc
         self._atspi_proc = None
         self._atspi_bus = ""
+        self._atspi_a11y = ""
         self._atspi_buffer = b""
         if proc is None:
             return

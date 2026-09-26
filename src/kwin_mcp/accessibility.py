@@ -689,6 +689,14 @@ def _serve() -> None:
     A request that raises is answered with ``{"worker_error": ...}`` so the
     caller can discard this worker and retry on a fresh one.
     """
+    import warnings
+
+    # The worker's stderr is the server's stderr; silence the one library
+    # warning that fires on every tree walk and is not actionable for users.
+    warnings.filterwarnings(
+        "ignore", message=r"Atspi\.Action\.get_action_name is deprecated"
+    )
+
     # Keep the response stream private: anything a library prints lands on stderr.
     responses = os.fdopen(os.dup(sys.stdout.fileno()), "w", encoding="utf-8")
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())

@@ -1,10 +1,10 @@
 """End-to-end contracts for the long-lived AT-SPI2 worker.
 
-The accessibility tools reuse one worker process per session bus. These tests
 pin the lifecycle guarantees that reuse must not break: answers always come
 from the current session (even when the previous one crashed or was never
-stopped), a killed worker is replaced transparently, and ``session_stop``
-leaves no helper process behind.
+stopped, or its accessibility bus restarted under an unchanged session bus),
+a killed worker is replaced transparently, and ``session_stop`` leaves no
+helper process behind.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import contextlib
 import os
 import re
 import signal
+import subprocess
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -96,9 +97,85 @@ def _crash_session(engine: AutomationEngine) -> None:
     assert not session.is_running, "crashed session still reports running"
 
 
-def _worker_pid(engine: AutomationEngine) -> int:
-    proc = engine._atspi_proc
-    assert proc is not None, "no AT-SPI worker after an accessibility call"
+def _a11y_address(engine: AutomationEngine) -> str:
+    """Current ``org.a11y.Bus.GetAddress`` reply (same socket, new guid per restart)."""
+    out = subprocess.run(
+        [
+            "dbus-send",
+            "--session",
+            "--print-reply=literal",
+            "--dest=org.a11y.Bus",
+            "/org/a11y/bus",
+            "org.a11y.Bus.GetAddress",
+        ],
+        env=engine._session_env(),
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    return out.stdout.strip()
+
+
+def _kill_accessibility_bus() -> None:
+    """Kill the AT-SPI bus trio so the next GetAddress relaunches it with a new guid."""
+    # comm is truncated to 15 chars; matching the full name with -f would also
+    # hit the dbus-run-session wrapper whose script text mentions the launcher.
+    subprocess.run(
+        ["pkill", "-KILL", "-x", "at-spi2-registr"], check=False, capture_output=True
+    )
+    subprocess.run(
+        ["pkill", "-KILL", "-x", "at-spi-bus-laun"], check=False, capture_output=True
+    )
+    # The a11y dbus-daemon is distinguished from the session daemon by its config.
+    listing = subprocess.run(
+        ["pgrep", "-a", "-x", "dbus-daemon"], check=False, capture_output=True, text=True
+    )
+    for line in listing.stdout.splitlines():
+        if "at-spi2" in line:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(int(line.split()[0]), signal.SIGKILL)
+
+
+def _wait_for_new_a11y_bus(engine: AutomationEngine, previous: str) -> str:
+    """Poll GetAddress until the a11y bus restarts (reply changes) or 15 s pass."""
+    deadline = time.monotonic() + 15.0
+    current = previous
+    while current == previous and time.monotonic() < deadline:
+        time.sleep(0.2)
+        current = _a11y_address(engine)
+    return current
+
+
+def test_accessibility_recovers_when_the_a11y_bus_restarts(
+    kcalc_session: AutomationEngine,
+    wait_for_app: Callable[[str], str],
+) -> None:
+    """A restarted a11y bus (same socket path, new guid) must not keep stale answers."""
+    kcalc_session.list_windows()
+    first_pid = _worker_pid(kcalc_session)
+
+    old_addr = _a11y_address(kcalc_session)
+    assert old_addr, "org.a11y.Bus.GetAddress returned nothing"
+    _kill_accessibility_bus()
+    new_addr = _wait_for_new_a11y_bus(kcalc_session, old_addr)
+    assert new_addr != old_addr, "the a11y bus did not restart within 15s"
+
+    # An app launched before the restart bound to the dead bus and will not
+    # return; one launched after the restart must be reachable on the new bus.
+    kcalc_session.launch_app("kwrite")
+    wait_for_app("kwrite")
+    windows = kcalc_session.list_windows()
+    assert "kwrite" in windows.lower(), windows
+    if first_pid is not None:
+        assert _worker_pid(kcalc_session) != first_pid
+
+
+def _worker_pid(engine: AutomationEngine) -> int | None:
+    """The AT-SPI worker pid, or ``None`` on builds without a persistent worker."""
+    proc = getattr(engine, "_atspi_proc", None)
+    if proc is None:
+        return None
     assert proc.poll() is None, "AT-SPI worker exited"
     return proc.pid
 
@@ -163,6 +240,9 @@ def test_killed_atspi_worker_is_replaced_on_next_call(
     """A worker killed between calls is respawned and the next query still answers."""
     assert any("kcalc" in name for name in _tree_apps(kcalc_session))
     first = _worker_pid(kcalc_session)
+    if first is None:  # no persistent worker (e.g. main): recovery is per-call
+        assert any("kcalc" in name for name in _tree_apps(kcalc_session))
+        return
 
     os.kill(first, signal.SIGKILL)
     assert _wait_until_gone(first, zombie_ok=True), f"worker {first} survived SIGKILL"
@@ -178,6 +258,7 @@ def test_session_stop_reaps_a_stopped_atspi_worker(
     """A SIGSTOPped worker cannot exit on EOF; session_stop must still reap it promptly."""
     kcalc_session.accessibility_tree()
     pid = _worker_pid(kcalc_session)
+    assert pid is not None, "no AT-SPI worker after an accessibility call"
     os.kill(pid, signal.SIGSTOP)
     try:
         started = time.monotonic()

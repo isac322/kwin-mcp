@@ -115,7 +115,7 @@ async def test_installed_server_observes_virtual_session_and_apps(
                     "args": ["string:org.kde.KWin"],
                 },
             )
-            assert re.search(r'^\s*string "(:\d+\.\d+)"\s*$', kwin_owner, re.MULTILINE), kwin_owner
+            assert re.fullmatch(r":\d+\.\d+", kwin_owner), kwin_owner
 
             kcalc_launch = await client.call_text("launch_app", {"command": "kcalc"})
             assert "App launched: kcalc" in kcalc_launch, kcalc_launch

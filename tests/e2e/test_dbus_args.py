@@ -5,12 +5,7 @@ import typing
 import dbus
 import pytest
 
-from kwin_mcp.dbus_args import (
-    parse_arg,
-    parse_dbus_send_arg,
-    parse_typed_arg,
-    to_dbus_send_string,
-)
+from kwin_mcp.dbus_args import parse_arg, parse_dbus_send_arg, parse_typed_arg
 
 # ── Basic types ────────────────────────────────────────────────────────────
 
@@ -168,14 +163,14 @@ def test_array_single_element() -> None:
 
 
 def test_dict_string_string() -> None:
-    result = parse_dbus_send_arg("dict:string:string:k1:v1,k2:v2")
+    result = parse_dbus_send_arg("dict:string:string:k1,v1,k2,v2")
     assert isinstance(result, dbus.Dictionary)
     assert result.signature == "ss"
     assert dict(result) == {"k1": "v1", "k2": "v2"}
 
 
 def test_dict_string_int32() -> None:
-    result = parse_dbus_send_arg("dict:string:int32:key1:1,key2:2")
+    result = parse_dbus_send_arg("dict:string:int32:key1,1,key2,2")
     assert isinstance(result, dbus.Dictionary)
     assert result.signature == "si"
     assert dict(result) == {"key1": 1, "key2": 2}
@@ -190,10 +185,18 @@ def test_dict_empty() -> None:
     assert dict(result) == {}
 
 
-def test_dict_single_pair() -> None:
-    result = parse_dbus_send_arg("dict:string:string:only:one")
+def test_dict_value_keeps_colons() -> None:
+    result = parse_dbus_send_arg("dict:string:string:url,http://x:8080")
+    assert dict(result) == {"url": "http://x:8080"}
+
+
+def test_dict_string_variant() -> None:
+    result = parse_dbus_send_arg("dict:string:variant:name,string:x,n,int32:3")
     assert isinstance(result, dbus.Dictionary)
-    assert dict(result) == {"only": "one"}
+    assert result.signature == "sv"
+    assert dict(result) == {"name": "x", "n": 3}
+    assert isinstance(result["name"], dbus.String)
+    assert isinstance(result["n"], dbus.Int32)
 
 
 # ── Variants ───────────────────────────────────────────────────────────────
@@ -275,6 +278,25 @@ def test_error_invalid_int32() -> None:
         parse_dbus_send_arg("int32:notanint")
 
 
+@pytest.mark.parametrize("literal", ["12x3", "", "1.5"])
+def test_error_int32_rejects_partial_literals(literal: str) -> None:
+    # dbus-send's strtol would send 12, 0 and 1 for these.
+    with pytest.raises(ValueError, match=r"invalid int32 value"):
+        parse_dbus_send_arg(f"int32:{literal}")
+
+
+def test_error_int32_overflow() -> None:
+    # dbus-send wraps 2147483648 to -2147483648.
+    with pytest.raises(ValueError, match=r"int32 value 2147483648 out of range"):
+        parse_dbus_send_arg("int32:2147483648")
+
+
+def test_int_hex_literal_like_dbus_send() -> None:
+    result = parse_dbus_send_arg("uint32:0x10")
+    assert isinstance(result, dbus.UInt32)
+    assert result == 16
+
+
 def test_error_invalid_int64() -> None:
     with pytest.raises(ValueError, match=r"dbus-send arg: invalid int64 value"):
         parse_dbus_send_arg("int64:abc")
@@ -308,14 +330,28 @@ def test_error_objpath_no_leading_slash() -> None:
         parse_dbus_send_arg("objpath:no-slash")
 
 
-def test_error_dict_pair_missing_colon() -> None:
-    with pytest.raises(ValueError, match=r"dbus-send arg: dict pair must be 'key:value'"):
-        parse_dbus_send_arg("dict:string:string:keyonly")
+@pytest.mark.parametrize(
+    "arg",
+    [
+        "dict:string:string:keyonly",
+        "dict:string:string:k1,v1,k2",
+        # The key:value pair form is not dbus-send syntax; dbus-send rejects it too.
+        "dict:string:string:k1:v1",
+    ],
+)
+def test_error_dict_odd_entry_count(arg: str) -> None:
+    with pytest.raises(ValueError, match=r"dict entries must alternate key,value"):
+        parse_dbus_send_arg(arg)
 
 
 def test_error_dict_container_value_unsupported() -> None:
-    with pytest.raises(ValueError, match=r"dict with container value type is not supported"):
-        parse_dbus_send_arg("dict:string:array:string:k1:a,b")
+    with pytest.raises(ValueError, match=r"dict value type must be basic or variant"):
+        parse_dbus_send_arg("dict:string:array:string:k1,a")
+
+
+def test_error_dict_variant_value_needs_basic_type() -> None:
+    with pytest.raises(ValueError, match=r"dict variant value must have a basic type"):
+        parse_dbus_send_arg("dict:string:variant:k,array:string:a")
 
 
 def test_error_message_prefix_consistent() -> None:
@@ -399,6 +435,32 @@ def test_typed_dict() -> None:
     assert isinstance(result, dbus.Dictionary)
     assert result.signature == "si"
     assert dict(result) == {"k1": 1, "k2": 2}
+
+
+def test_typed_dict_string_variant() -> None:
+    result = parse_typed_arg(
+        {
+            "type": "dict",
+            "key_type": "string",
+            "value_type": "variant",
+            "value": {
+                "name": {"type": "string", "value": "x"},
+                "n": {"type": "int32", "value": 3},
+            },
+        }
+    )
+    assert isinstance(result, dbus.Dictionary)
+    assert result.signature == "sv"
+    assert isinstance(result["name"], dbus.String)
+    assert isinstance(result["n"], dbus.Int32)
+    assert dict(result) == {"name": "x", "n": 3}
+
+
+def test_typed_error_dict_variant_value_untyped() -> None:
+    with pytest.raises(ValueError, match=r"value_type 'variant' needs values shaped"):
+        parse_typed_arg(
+            {"type": "dict", "key_type": "string", "value_type": "variant", "value": {"k": 7}}
+        )
 
 
 def test_typed_variant() -> None:
@@ -501,62 +563,3 @@ def test_dispatch_rejects_list() -> None:
     with pytest.raises(ValueError, match=r"arg must be str or dict, got list"):
         parse_arg(typing.cast("str", bad))
 
-
-# ── Bridge (to_dbus_send_string) ───────────────────────────────────────────
-
-
-def test_bridge_passthrough_legacy() -> None:
-    assert to_dbus_send_string("string:hello") == "string:hello"
-    assert to_dbus_send_string("int32:42") == "int32:42"
-
-
-def test_bridge_typed_basic() -> None:
-    assert to_dbus_send_string({"type": "string", "value": "hello"}) == "string:hello"
-    assert to_dbus_send_string({"type": "int32", "value": 42}) == "int32:42"
-    assert to_dbus_send_string({"type": "boolean", "value": True}) == "boolean:true"
-    assert to_dbus_send_string({"type": "boolean", "value": False}) == "boolean:false"
-
-
-def test_bridge_typed_array() -> None:
-    out = to_dbus_send_string({"type": "array", "element_type": "string", "value": ["a", "b", "c"]})
-    assert out == "array:string:a,b,c"
-
-
-def test_bridge_typed_dict() -> None:
-    out = to_dbus_send_string(
-        {
-            "type": "dict",
-            "key_type": "string",
-            "value_type": "int32",
-            "value": {"k1": 1, "k2": 2},
-        }
-    )
-    assert out.startswith("dict:string:int32:")
-    parts = sorted(out[len("dict:string:int32:") :].split(","))
-    assert parts == ["k1:1", "k2:2"]
-
-
-def test_bridge_typed_variant() -> None:
-    assert (
-        to_dbus_send_string({"type": "variant", "value_type": "string", "value": "x"})
-        == "variant:string:x"
-    )
-
-
-def test_bridge_round_trip() -> None:
-    typed = {"type": "int32", "value": 7}
-    rendered = to_dbus_send_string(typed)
-    via_string = parse_dbus_send_arg(rendered)
-    via_typed = parse_typed_arg(typed)
-    assert type(via_string) is type(via_typed) is dbus.Int32
-    assert via_string == via_typed == 7
-
-
-def test_bridge_rejects_string_with_comma() -> None:
-    with pytest.raises(ValueError, match=r"contains ',' or ':'"):
-        to_dbus_send_string({"type": "string", "value": "has,comma"})
-
-
-def test_bridge_rejects_invalid_legacy() -> None:
-    with pytest.raises(ValueError, match=r"unknown type"):
-        to_dbus_send_string("foobar:42")

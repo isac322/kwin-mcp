@@ -98,6 +98,7 @@ Additional arguments after the image command can select a file, node ID, marker,
 
 | Test file | Coverage |
 |---|---|
+| `test_atspi_worker.py` | The long-lived AT-SPI2 worker: accessibility answers come from the current bus after a crashed session is replaced by `session_start` or `session_connect` without `session_stop`, a killed worker is respawned on the next call, a `SIGSTOP`ped worker is still reaped by `session_stop`, and no helper process stays running after `session_stop`. |
 | `test_clipboard_helper_protocol.py` | The private `kwin_mcp.clipboard` helper driven directly against a test-owned KWin over data-control: a READY timeout that restores the prior selection and keeps serving it, oversized and malformed COPY framing that ends the helper without echoing its input, bad headers rejected on arrival while KWin is stopped during the helper's connect roundtrips, a framing failure staying single-ERR/exit-2 when recorded post-connect or while QUIT's restore is pending, and a framing error while the helper owns the selection that still restores and keeps serving the prior selection. |
 | `test_environment_evidence.py` | Allowlisted `environment.json` provenance, installed versions, and atomic replacement. |
 | `test_input_cleanup.py` | Held EIS modifier/button cleanup across fresh connections, invalid input errors, and installed-server survival. |

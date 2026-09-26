@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import selectors
 import shlex
 import shutil
 import signal
@@ -17,12 +18,18 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
 from kwin_mcp.input import InputBackend, MouseButton
 from kwin_mcp.screenshot import capture_frame_burst, capture_screenshot_to_file
 from kwin_mcp.session import LiveSession, Session, SessionConfig
+
+# Per-attempt bound for one AT-SPI2 request, and how long a worker may take to
+# exit on stdin EOF before it is killed.
+_ATSPI_TIMEOUT_S = 30.0
+_ATSPI_EXIT_GRACE_S = 2.0
 
 # Install hints for external binaries
 _INSTALL_HINTS: dict[str, str] = {
@@ -81,6 +88,15 @@ class AutomationEngine:
         self._input: InputBackend | None = None
         self._clipboard_enabled: bool = False
         self._keep_screenshots: bool = False
+        self._atspi_proc: subprocess.Popen[bytes] | None = None
+        self._atspi_bus: str = ""
+        self._atspi_buffer: bytes = b""
+        self._atspi_a11y: str = ""
+        self._atspi_lock = threading.Lock()
+
+    def __del__(self) -> None:
+        with contextlib.suppress(Exception):
+            self._teardown_atspi_worker()
 
     # ── Private helpers ───────────────────────────────────────────────────
 
@@ -116,47 +132,152 @@ class AutomationEngine:
         env.pop("DISPLAY", None)
         return env
 
-    def _run_atspi(self, op: str, **kwargs: object) -> dict:
-        """Run an AT-SPI2 query in a subprocess with the isolated session's D-Bus address.
+    def _a11y_bus_address(self, env: dict[str, str]) -> str:
+        """Identity of the session's AT-SPI bus; ``""`` when it cannot be read.
 
-        The gi.repository.Atspi library caches the D-Bus connection process-wide,
-        so we must run queries in a fresh subprocess that inherits the correct
-        DBUS_SESSION_BUS_ADDRESS from the isolated dbus-run-session.
+        Apps and the worker reach the accessibility bus through
+        ``AT_SPI_BUS_ADDRESS`` when it is set, else through
+        ``org.a11y.Bus.GetAddress`` on the session bus. The reply embeds the
+        bus's guid, so it changes when the a11y bus restarts even though its
+        socket path stays the same. A worker that bound the old identity keeps
+        answering ``(no accessible applications found)`` from its dead
+        connection forever, so this is probed on every call.
+        """
+        explicit = env.get("AT_SPI_BUS_ADDRESS", "")
+        if explicit:
+            return explicit
+        session_bus = env.get("DBUS_SESSION_BUS_ADDRESS", "")
+        if not session_bus:
+            return ""
+        try:
+            import dbus.bus
 
-        Retries once on failure to handle transient AT-SPI2 bus instability.
+            conn = dbus.bus.BusConnection(session_bus)
+            try:
+                return str(
+                    conn.get_object("org.a11y.Bus", "/org/a11y/bus").GetAddress(
+                        dbus_interface="org.a11y.Bus"
+                    )
+                )
+            finally:
+                conn.close()
+        except Exception:
+            return ""
+
+    def _ensure_atspi_worker(self) -> subprocess.Popen[bytes]:
+        """Return the AT-SPI worker for the current session bus, (re)spawning it if needed.
+
+        ``gi.repository.Atspi`` binds its D-Bus connections once per process, so
+        the worker is keyed to the bus identities it was started with. A
+        different session bus, a restarted a11y bus, or a dead worker means the
+        old process would answer from the wrong or a dead bus: replace it.
         """
         env = self._session_env()
-        payload = json.dumps({"op": op, **kwargs})
+        bus = env.get("DBUS_SESSION_BUS_ADDRESS", "")
+        a11y = self._a11y_bus_address(env)
+        proc = self._atspi_proc
+        if proc is not None and (
+            proc.poll() is not None or bus != self._atspi_bus or a11y != self._atspi_a11y
+        ):
+            self._teardown_atspi_worker()
+            proc = None
+        if proc is None:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "kwin_mcp.accessibility", "--serve"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                env=env,
+            )
+            self._atspi_proc = proc
+            self._atspi_bus = bus
+            self._atspi_a11y = a11y
+            self._atspi_buffer = b""
+        return proc
 
+    def _atspi_exchange(self, proc: subprocess.Popen[bytes], line: bytes) -> dict:
+        """Send one request line to the worker and read one response line.
+
+        Raises ``TimeoutError`` after ``_ATSPI_TIMEOUT_S`` and ``EOFError`` if the
+        worker exits or closes its pipes.
+        """
+        assert proc.stdin is not None
+        assert proc.stdout is not None
+        try:
+            proc.stdin.write(line)
+            proc.stdin.flush()
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            raise EOFError("AT-SPI2 worker exited before the request was sent") from exc
+
+        deadline = time.monotonic() + _ATSPI_TIMEOUT_S
+        fd = proc.stdout.fileno()
+        with selectors.DefaultSelector() as selector:
+            selector.register(fd, selectors.EVENT_READ)
+            while b"\n" not in self._atspi_buffer:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not selector.select(remaining):
+                    raise TimeoutError
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    raise EOFError(f"AT-SPI2 worker exited (status {proc.poll()})")
+                self._atspi_buffer += chunk
+        response, _, self._atspi_buffer = self._atspi_buffer.partition(b"\n")
+        return json.loads(response)
+
+    def _run_atspi(self, op: str, **kwargs: object) -> dict:
+        """Run an AT-SPI2 query in the long-lived worker bound to the session bus.
+
+        The worker (``python -m kwin_mcp.accessibility --serve``) is started once
+        per session bus and reused, so each call skips interpreter startup and the
+        PyGObject/Atspi import. A timeout, worker exit or worker-side exception
+        discards the worker and retries once on a fresh one.
+        """
+        line = json.dumps({"op": op, **kwargs}).encode() + b"\n"
         last_error = ""
-        for attempt in range(2):
-            if attempt > 0:
-                time.sleep(0.5)
-            try:
-                result = subprocess.run(
-                    [sys.executable, "-m", "kwin_mcp.accessibility"],
-                    input=payload,
-                    env=env,
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-            except subprocess.TimeoutExpired:
-                last_error = f"AT-SPI2 query timed out after 30s (op={op})"
-                continue
-
-            if result.returncode != 0:
-                last_error = f"AT-SPI2 query failed (exit {result.returncode}): {result.stderr}"
-                continue
-
-            try:
-                return json.loads(result.stdout)
-            except json.JSONDecodeError:
-                last_error = f"AT-SPI2 query returned invalid JSON: {result.stdout[:200]}"
-                continue
+        with self._atspi_lock:
+            for attempt in range(2):
+                if attempt > 0:
+                    time.sleep(0.5)
+                proc = self._ensure_atspi_worker()
+                try:
+                    resp = self._atspi_exchange(proc, line)
+                except TimeoutError:
+                    last_error = f"AT-SPI2 query timed out after {_ATSPI_TIMEOUT_S:g}s (op={op})"
+                except EOFError as exc:
+                    last_error = f"AT-SPI2 query failed: {exc}"
+                except json.JSONDecodeError as exc:
+                    last_error = f"AT-SPI2 query returned invalid JSON: {exc}"
+                else:
+                    if "worker_error" not in resp:
+                        return resp
+                    last_error = f"AT-SPI2 query failed: {resp['worker_error']}"
+                self._teardown_atspi_worker()
 
         msg = f"{last_error}. Retried once but still failed — the AT-SPI2 bus may be unstable."
         raise RuntimeError(msg)
+
+    def _teardown_atspi_worker(self) -> None:
+        """Stop the AT-SPI worker with bounded latency.
+
+        Closing stdin lets an idle worker exit on EOF; a busy, hung or stopped
+        worker is killed after a short grace period.
+        """
+        proc = self._atspi_proc
+        self._atspi_proc = None
+        self._atspi_bus = ""
+        self._atspi_a11y = ""
+        self._atspi_buffer = b""
+        if proc is None:
+            return
+        with contextlib.suppress(OSError):
+            if proc.stdin is not None:
+                proc.stdin.close()
+        try:
+            proc.wait(timeout=_ATSPI_EXIT_GRACE_S)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        if proc.stdout is not None:
+            proc.stdout.close()
 
     def _with_frame_capture(
         self,
@@ -202,6 +323,10 @@ class AutomationEngine:
         """Start an isolated KWin Wayland session, optionally launching an app."""
         if self._session is not None and self._session.is_running:
             return "Session already running. Call session_stop first."
+
+        # Any worker left over from an earlier session (crashed or never stopped)
+        # is bound to that session's bus.
+        self._teardown_atspi_worker()
 
         self._clipboard_enabled = enable_clipboard
 
@@ -249,6 +374,10 @@ class AutomationEngine:
         """Connect to an existing KWin session (e.g. the real desktop)."""
         if self._session is not None and self._session.is_running:
             return "Session already running. Call session_stop first."
+
+        # Any worker left over from an earlier session (crashed or never stopped)
+        # is bound to that session's bus.
+        self._teardown_atspi_worker()
 
         dbus_addr = dbus_address or os.environ.get("DBUS_SESSION_BUS_ADDRESS", "")
         wayland_disp = wayland_display or os.environ.get("WAYLAND_DISPLAY", "")
@@ -336,6 +465,9 @@ class AutomationEngine:
 
         if self._input is not None:
             self._input.close()
+
+        # The AT-SPI worker is bound to this session's bus; stop it before the bus goes away.
+        self._teardown_atspi_worker()
 
         is_live = isinstance(self._session, LiveSession)
         if isinstance(self._session, LiveSession):

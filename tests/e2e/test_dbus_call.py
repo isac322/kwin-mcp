@@ -64,37 +64,27 @@ def _serve(record_path: Path, service_name: str, introspectable: bool) -> None:
             handle.write(json.dumps(payload) + "\n")
 
     class Echo(dbus.service.Object):
-        @dbus.service.method(
-            INTERFACE, in_signature="", out_signature="s", message_keyword="msg"
-        )
+        @dbus.service.method(INTERFACE, in_signature="", out_signature="s", message_keyword="msg")
         def NoArgs(self, msg: Any) -> str:  # noqa: N802 - D-Bus method name
             record("NoArgs", msg, ())
             return "no-args"
 
-        @dbus.service.method(
-            INTERFACE, in_signature="s", out_signature="s", message_keyword="msg"
-        )
+        @dbus.service.method(INTERFACE, in_signature="s", out_signature="s", message_keyword="msg")
         def OneStr(self, value: str, msg: Any) -> str:  # noqa: N802
             record("OneStr", msg, (value,))
             return str(value)
 
-        @dbus.service.method(
-            INTERFACE, in_signature="i", out_signature="i", message_keyword="msg"
-        )
+        @dbus.service.method(INTERFACE, in_signature="i", out_signature="i", message_keyword="msg")
         def OneInt(self, value: int, msg: Any) -> int:  # noqa: N802
             record("OneInt", msg, (value,))
             return value
 
-        @dbus.service.method(
-            INTERFACE, in_signature="x", out_signature="x", message_keyword="msg"
-        )
+        @dbus.service.method(INTERFACE, in_signature="x", out_signature="x", message_keyword="msg")
         def OneInt64(self, value: int, msg: Any) -> int:  # noqa: N802
             record("OneInt64", msg, (value,))
             return value
 
-        @dbus.service.method(
-            INTERFACE, in_signature="v", out_signature="s", message_keyword="msg"
-        )
+        @dbus.service.method(INTERFACE, in_signature="v", out_signature="s", message_keyword="msg")
         def OneVariant(self, value: Any, msg: Any) -> str:  # noqa: N802
             record("OneVariant", msg, (value,))
             return "variant-ok"
@@ -272,9 +262,10 @@ def test_dict_uses_dbus_send_comma_grammar(echo: EchoService) -> None:
 
 def test_dict_with_variant_values_sends_asv(echo: EchoService) -> None:
     output, received = echo.call("VarDict", ["dict:string:variant:name,string:x,n,int32:3"])
-    assert received == [
-        ["VarDict", "a{sv}", [{"name": ["String", "x"], "n": ["Int32", 3]}]]
-    ], (output, received)
+    assert received == [["VarDict", "a{sv}", [{"name": ["String", "x"], "n": ["Int32", 3]}]]], (
+        output,
+        received,
+    )
     assert not output.startswith(("D-Bus call failed:", "D-Bus error:")), output
 
 
@@ -286,9 +277,10 @@ def test_typed_json_dict_with_variant_values_sends_asv(echo: EchoService) -> Non
         "value": {"name": {"type": "string", "value": "x"}, "n": {"type": "int32", "value": 3}},
     }
     output, received = echo.call("VarDict", [arg])
-    assert received == [
-        ["VarDict", "a{sv}", [{"name": ["String", "x"], "n": ["Int32", 3]}]]
-    ], (output, received)
+    assert received == [["VarDict", "a{sv}", [{"name": ["String", "x"], "n": ["Int32", 3]}]]], (
+        output,
+        received,
+    )
     assert output == "var-dict", output
 
 

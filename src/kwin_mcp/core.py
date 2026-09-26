@@ -71,9 +71,7 @@ def _element_position(el: dict) -> str:
     return f"@ unavailable ({el.get('unavailable') or 'unmapped'})"
 
 
-def _introspected_in_signatures(
-    xml_data: str, interface: str, method: str
-) -> list[str] | None:
+def _introspected_in_signatures(xml_data: str, interface: str, method: str) -> list[str] | None:
     """Return every input signature for ``interface.method`` in introspection XML.
 
     Qt exports overloaded slots and slots with default arguments as several

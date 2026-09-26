@@ -126,9 +126,7 @@ def _mark_variant(value: object) -> object:
     signature.
     """
     if isinstance(value, dbus.Dictionary | dbus.Array):
-        return type(value)(
-            value, signature=value.signature, variant_level=value.variant_level + 1
-        )
+        return type(value)(value, signature=value.signature, variant_level=value.variant_level + 1)
     return type(value)(value, variant_level=value.variant_level + 1)
 
 

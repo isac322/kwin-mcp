@@ -799,7 +799,8 @@ def dbus_call(
                 '(typed JSON) [{"type":"string","value":"hello"}, '
                 '{"type":"int32","value":42}, '
                 '{"type":"array","element_type":"string","value":["a","b"]}]. '
-                "Each argument's type and the count must match one of the method's declared signatures."
+                "Each argument's type and the count must match one of the method's "
+                "declared signatures."
             )
         ),
     ] = None,

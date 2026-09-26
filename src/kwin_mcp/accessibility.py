@@ -528,11 +528,16 @@ def _eligible(window: KWinWindow) -> bool:
 def _caption_consistent(caption: str, name: str) -> bool:
     """Caption check applies only when both sides are non-empty.
 
+    Both sides are compared with whitespace runs collapsed to one space, the
+    same way KWin simplifies a client title into its caption: KWrite 26.08
+    names its AT-SPI frame 'file.txt  — KWrite' (two spaces) while KWin shows
+    'file.txt — KWrite'.
+
     Accepts exact equality or the KDE " — App" suffix KWin shows for KDE apps
     (AT-SPI 'Open File' vs KWin 'Open File — KWrite'). A plain prefix is never
     accepted: 'Document' must not match 'Document 2 — KWrite'.
     """
-    n, c = name.strip(), caption.strip()
+    n, c = " ".join(name.split()), " ".join(caption.split())
     if not n or not c:
         return True
     return c == n or c.startswith(n + " — ")

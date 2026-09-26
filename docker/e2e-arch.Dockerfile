@@ -65,6 +65,7 @@ ENV KWIN_MCP_SYSTEM_PACKAGES="\
         gtk3 \
         kate \
         kcalc \
+        konsole \
         kwin \
         libcap \
         libei \

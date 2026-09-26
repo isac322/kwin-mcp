@@ -336,7 +336,6 @@ async def _probe_rect(client: McpClient, name: str) -> tuple[int, int, int, int]
     raise AssertionError(output[:500])
 
 
-
 async def test_clipboard_disabled_guards_return_without_hanging() -> None:
     async with running_mcp_server() as client:
         session_running = False
@@ -612,8 +611,7 @@ async def test_touch_wrappers_change_gui_state_and_report_kwin_limits(tmp_path: 
                 },
             )
             assert output == (
-                f"{fingers}-finger swipe from ({swipe_from}, {row}) "
-                f"to ({swipe_to}, {row}) in 400ms"
+                f"{fingers}-finger swipe from ({swipe_from}, {row}) to ({swipe_to}, {row}) in 400ms"
             )
             status = await _wait_for_probe_status(
                 client,

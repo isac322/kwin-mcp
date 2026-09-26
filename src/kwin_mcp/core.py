@@ -8,10 +8,8 @@ from __future__ import annotations
 
 import contextlib
 import json
-import logging
-import multiprocessing
-import multiprocessing.pool
 import os
+import selectors
 import shlex
 import shutil
 import signal
@@ -28,7 +26,10 @@ from kwin_mcp.input import InputBackend, MouseButton
 from kwin_mcp.screenshot import capture_frame_burst, capture_screenshot_to_file
 from kwin_mcp.session import LiveSession, Session, SessionConfig
 
-_atspi_logger = logging.getLogger("kwin_mcp.atspi")
+# Per-attempt bound for one AT-SPI2 request, and how long a worker may take to
+# exit on stdin EOF before it is killed.
+_ATSPI_TIMEOUT_S = 30.0
+_ATSPI_EXIT_GRACE_S = 2.0
 
 # Install hints for external binaries
 _INSTALL_HINTS: dict[str, str] = {
@@ -87,15 +88,14 @@ class AutomationEngine:
         self._input: InputBackend | None = None
         self._clipboard_enabled: bool = False
         self._keep_screenshots: bool = False
-        self._atspi_pool: multiprocessing.pool.Pool | None = None
-        self._atspi_worker_pids: tuple[int, ...] = ()
+        self._atspi_proc: subprocess.Popen[bytes] | None = None
+        self._atspi_bus: str = ""
+        self._atspi_buffer: bytes = b""
+        self._atspi_lock = threading.Lock()
 
     def __del__(self) -> None:
-        try:
-            if getattr(self, "_atspi_pool", None) is not None:
-                self._teardown_atspi_pool()
-        except Exception:
-            pass
+        with contextlib.suppress(Exception):
+            self._teardown_atspi_worker()
 
     # ── Private helpers ───────────────────────────────────────────────────
 
@@ -131,206 +131,115 @@ class AutomationEngine:
         env.pop("DISPLAY", None)
         return env
 
-    def _ensure_atspi_pool(self) -> multiprocessing.pool.Pool:
-        """Lazily build the spawn-context Pool that hosts AT-SPI ops.
+    def _ensure_atspi_worker(self) -> subprocess.Popen[bytes]:
+        """Return the AT-SPI worker for the current session bus, (re)spawning it if needed.
 
-        The worker module is imported here, NOT at module top, so the parent
-        process never loads ``gi.repository.Atspi`` (which caches its D-Bus
-        connection process-wide).
+        ``gi.repository.Atspi`` binds its D-Bus connection once per process, so the
+        worker is keyed to the bus address it was started with. A different address
+        (new session, live connection, changed environment) or a dead worker means
+        the old process would answer from the wrong or a dead bus: replace it.
         """
-        if self._atspi_pool is not None:
-            return self._atspi_pool
+        env = self._session_env()
+        bus = env.get("DBUS_SESSION_BUS_ADDRESS", "")
+        proc = self._atspi_proc
+        if proc is not None and (proc.poll() is not None or bus != self._atspi_bus):
+            self._teardown_atspi_worker()
+            proc = None
+        if proc is None:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "kwin_mcp.accessibility", "--serve"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                env=env,
+            )
+            self._atspi_proc = proc
+            self._atspi_bus = bus
+            self._atspi_buffer = b""
+        return proc
 
-        from kwin_mcp.accessibility_worker import _init_atspi_worker
+    def _atspi_exchange(self, proc: subprocess.Popen[bytes], line: bytes) -> dict:
+        """Send one request line to the worker and read one response line.
 
-        dbus_addr = self._session_env().get("DBUS_SESSION_BUS_ADDRESS", "")
-        ctx = multiprocessing.get_context("spawn")
-        self._atspi_pool = ctx.Pool(
-            processes=1,
-            initializer=_init_atspi_worker,
-            initargs=(dbus_addr,),
-        )
-        _atspi_logger.info("atspi pool created (DBUS=%s)", dbus_addr)
-        return self._atspi_pool
-
-    @staticmethod
-    def _atspi_pool_worker_pids(pool: multiprocessing.pool.Pool) -> tuple[int, ...]:
-        return tuple(proc.pid for proc in getattr(pool, "_pool", []) if proc.pid is not None)
-
-    @staticmethod
-    def _pid_alive(pid: int) -> bool:
+        Raises ``TimeoutError`` after ``_ATSPI_TIMEOUT_S`` and ``EOFError`` if the
+        worker exits or closes its pipes.
+        """
+        assert proc.stdin is not None
+        assert proc.stdout is not None
         try:
-            os.kill(pid, 0)
-            return True
-        except ProcessLookupError:
-            return False
+            proc.stdin.write(line)
+            proc.stdin.flush()
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            raise EOFError("AT-SPI2 worker exited before the request was sent") from exc
 
-    def _atspi_pool_has_dead_or_replaced_worker(
-        self,
-        pool: multiprocessing.pool.Pool,
-        recorded_pids: tuple[int, ...],
-    ) -> bool:
-        if not recorded_pids:
-            return False
-
-        current_pids = self._atspi_pool_worker_pids(pool)
-        if current_pids != recorded_pids:
-            return True
-
-        return any(not self._pid_alive(pid) for pid in recorded_pids)
+        deadline = time.monotonic() + _ATSPI_TIMEOUT_S
+        fd = proc.stdout.fileno()
+        with selectors.DefaultSelector() as selector:
+            selector.register(fd, selectors.EVENT_READ)
+            while b"\n" not in self._atspi_buffer:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not selector.select(remaining):
+                    raise TimeoutError
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    raise EOFError(f"AT-SPI2 worker exited (status {proc.poll()})")
+                self._atspi_buffer += chunk
+        response, _, self._atspi_buffer = self._atspi_buffer.partition(b"\n")
+        return json.loads(response)
 
     def _run_atspi(self, op: str, **kwargs: object) -> dict:
-        """Run an AT-SPI op via the spawn-context worker Pool.
+        """Run an AT-SPI2 query in the long-lived worker bound to the session bus.
 
-        Long-lived worker amortises the ~700 ms PyGObject + Atspi startup;
-        warm calls land near the round-trip cost of the bus query itself.
-
-        On TimeoutError or IPC death (the multiprocessing.pool surface for
-        dead workers — NOT ``concurrent.futures.process.BrokenProcessPool``),
-        tear down the Pool and retry exactly once.
+        The worker (``python -m kwin_mcp.accessibility --serve``) is started once
+        per session bus and reused, so each call skips interpreter startup and the
+        PyGObject/Atspi import. A timeout, worker exit or worker-side exception
+        discards the worker and retries once on a fresh one.
         """
-        from kwin_mcp.accessibility_worker import do_atspi_op
-
-        attempts = 0
-        deadline = time.monotonic() + 30.0
-        poll_quantum = 0.05
-        health_check_grace = 2.0
-        retry_backoff = 0.05
-        call_worker_pids = self._atspi_worker_pids
-        while True:
-            attempts += 1
-            attempt_started = time.monotonic()
-            pool = self._ensure_atspi_pool()
-            async_result = pool.apply_async(do_atspi_op, kwds={"op": op, **kwargs})
-            timeout_count = 0
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    _atspi_logger.warning(
-                        "atspi call timeout (30s total, op=%s, attempt=%d)",
-                        op,
-                        attempts,
-                    )
-                    self._teardown_atspi_pool()
-                    if attempts >= 2:
-                        raise multiprocessing.TimeoutError() from None
-                    break
-
-                wait_seconds = min(poll_quantum, remaining)
+        line = json.dumps({"op": op, **kwargs}).encode() + b"\n"
+        last_error = ""
+        with self._atspi_lock:
+            for attempt in range(2):
+                if attempt > 0:
+                    time.sleep(0.5)
+                proc = self._ensure_atspi_worker()
                 try:
-                    result = async_result.get(timeout=wait_seconds)
-                except multiprocessing.TimeoutError:
-                    timeout_count += 1
-                    if timeout_count < 3:
-                        continue
-
-                    if not call_worker_pids:
-                        continue
-
-                    if time.monotonic() - attempt_started < health_check_grace:
-                        continue
-
-                    worker_failed = self._atspi_pool_has_dead_or_replaced_worker(
-                        pool,
-                        call_worker_pids,
-                    )
-
-                    if worker_failed:
-                        _atspi_logger.warning(
-                            "atspi worker died or was replaced (op=%s, attempt=%d, workers=%s)",
-                            op,
-                            attempts,
-                            call_worker_pids,
-                        )
-                        self._teardown_atspi_pool()
-                        if attempts >= 2:
-                            raise multiprocessing.TimeoutError(
-                                "AT-SPI worker died or was replaced during call"
-                            ) from None
-                        break
-                    continue
-                except (EOFError, BrokenPipeError, ConnectionResetError) as exc:
-                    _atspi_logger.warning(
-                        "atspi worker IPC death (%s, op=%s, attempt=%d)",
-                        type(exc).__name__,
-                        op,
-                        attempts,
-                    )
-                    self._teardown_atspi_pool()
-                    if attempts >= 2:
-                        raise
-                    break
-                except OSError as exc:
-                    if exc.errno in (32, 104):  # EPIPE, ECONNRESET
-                        _atspi_logger.warning(
-                            "atspi worker IPC death (OSError errno=%d, op=%s, attempt=%d)",
-                            exc.errno,
-                            op,
-                            attempts,
-                        )
-                        self._teardown_atspi_pool()
-                        if attempts >= 2:
-                            raise
-                        break
-                    raise
+                    resp = self._atspi_exchange(proc, line)
+                except TimeoutError:
+                    last_error = f"AT-SPI2 query timed out after {_ATSPI_TIMEOUT_S:g}s (op={op})"
+                except EOFError as exc:
+                    last_error = f"AT-SPI2 query failed: {exc}"
+                except json.JSONDecodeError as exc:
+                    last_error = f"AT-SPI2 query returned invalid JSON: {exc}"
                 else:
-                    self._atspi_worker_pids = self._atspi_pool_worker_pids(pool)
-                    return result
+                    if "worker_error" not in resp:
+                        return resp
+                    last_error = f"AT-SPI2 query failed: {resp['worker_error']}"
+                self._teardown_atspi_worker()
 
-            if attempts < 2:
-                time.sleep(retry_backoff)
+        msg = f"{last_error}. Retried once but still failed — the AT-SPI2 bus may be unstable."
+        raise RuntimeError(msg)
 
-    @staticmethod
-    def _join_pool_with_timeout(pool: multiprocessing.pool.Pool, timeout: float) -> bool:
-        """Wrap ``Pool.join`` (which has no timeout kwarg) in a daemon thread."""
-        t = threading.Thread(target=pool.join, daemon=True)
-        t.start()
-        t.join(timeout=timeout)
-        return not t.is_alive()
+    def _teardown_atspi_worker(self) -> None:
+        """Stop the AT-SPI worker with bounded latency.
 
-    @staticmethod
-    def _terminate_pool_with_timeout(pool: multiprocessing.pool.Pool, timeout: float) -> bool:
-        """Wrap ``Pool.terminate`` in a daemon thread so dead workers cannot hang teardown."""
-        t = threading.Thread(target=pool.terminate, daemon=True)
-        t.start()
-        t.join(timeout=timeout)
-        return not t.is_alive()
-
-    def _teardown_atspi_pool(self) -> None:
-        """Tear down the AT-SPI Pool with bounded shutdown latency.
-
-        Escalation: ``close → join(5s) → terminate → join(2s) → SIGKILL → join(1s)``.
-
-        ``multiprocessing.pool.Pool.join`` does not accept a timeout, so we
-        wrap it in a daemon thread. Worker PIDs are captured BEFORE shutdown
-        because ``terminate`` may reap them before SIGKILL escalation.
+        Closing stdin lets an idle worker exit on EOF; a busy, hung or stopped
+        worker is killed after a short grace period.
         """
-        pool = self._atspi_pool
-        if pool is None:
+        proc = self._atspi_proc
+        self._atspi_proc = None
+        self._atspi_bus = ""
+        self._atspi_buffer = b""
+        if proc is None:
             return
-        worker_pids = [p.pid for p in getattr(pool, "_pool", []) if p.pid is not None]
+        with contextlib.suppress(OSError):
+            if proc.stdin is not None:
+                proc.stdin.close()
         try:
-            pool.close()
-            if self._join_pool_with_timeout(pool, 5.0):
-                _atspi_logger.info("atspi pool torn down gracefully")
-                return
-            _atspi_logger.warning("atspi pool graceful shutdown timed out, terminating")
-            if self._terminate_pool_with_timeout(pool, 2.0) and self._join_pool_with_timeout(
-                pool, 2.0
-            ):
-                _atspi_logger.warning("atspi pool terminated after graceful timeout")
-                return
-            _atspi_logger.error(
-                "atspi pool terminate timed out, escalating to SIGKILL pids=%s",
-                worker_pids,
-            )
-            for pid in worker_pids:
-                with contextlib.suppress(ProcessLookupError):
-                    os.kill(pid, signal.SIGKILL)
-            self._join_pool_with_timeout(pool, 1.0)
-        finally:
-            self._atspi_pool = None
-            self._atspi_worker_pids = ()
+            proc.wait(timeout=_ATSPI_EXIT_GRACE_S)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        if proc.stdout is not None:
+            proc.stdout.close()
 
     def _with_frame_capture(
         self,
@@ -377,6 +286,10 @@ class AutomationEngine:
         if self._session is not None and self._session.is_running:
             return "Session already running. Call session_stop first."
 
+        # Any worker left over from an earlier session (crashed or never stopped)
+        # is bound to that session's bus.
+        self._teardown_atspi_worker()
+
         self._clipboard_enabled = enable_clipboard
 
         self._session = Session()
@@ -421,6 +334,10 @@ class AutomationEngine:
         """Connect to an existing KWin session (e.g. the real desktop)."""
         if self._session is not None and self._session.is_running:
             return "Session already running. Call session_stop first."
+
+        # Any worker left over from an earlier session (crashed or never stopped)
+        # is bound to that session's bus.
+        self._teardown_atspi_worker()
 
         dbus_addr = dbus_address or os.environ.get("DBUS_SESSION_BUS_ADDRESS", "")
         wayland_disp = wayland_display or os.environ.get("WAYLAND_DISPLAY", "")
@@ -509,8 +426,8 @@ class AutomationEngine:
         if self._input is not None:
             self._input.close()
 
-        # Pool worker holds a D-Bus connection to this session — tear down BEFORE session.stop().
-        self._teardown_atspi_pool()
+        # The AT-SPI worker is bound to this session's bus; stop it before the bus goes away.
+        self._teardown_atspi_worker()
 
         is_live = isinstance(self._session, LiveSession)
         if isinstance(self._session, LiveSession):

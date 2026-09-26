@@ -1,12 +1,15 @@
 """AT-SPI2 accessibility tree reader.
 
-Can be run as a subprocess CLI for isolated D-Bus session support.
-Reads a JSON request from stdin and writes a JSON response to stdout.
+Can be run as a subprocess CLI for isolated D-Bus session support. By default it
+reads one JSON request from stdin and writes one JSON response to stdout. With
+``--serve`` it answers newline-delimited JSON requests until stdin closes; the
+automation engine keeps one such worker per session bus.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -680,7 +683,29 @@ def _handle_request(request: dict) -> dict:
     return {"ok": False, "error": f"Unknown operation: {op}"}
 
 
+def _serve() -> None:
+    """Answer newline-delimited JSON requests on stdin until EOF.
+
+    A request that raises is answered with ``{"worker_error": ...}`` so the
+    caller can discard this worker and retry on a fresh one.
+    """
+    # Keep the response stream private: anything a library prints lands on stderr.
+    responses = os.fdopen(os.dup(sys.stdout.fileno()), "w", encoding="utf-8")
+    os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
+    for line in sys.stdin:
+        try:
+            resp = _handle_request(json.loads(line))
+        except Exception as exc:
+            resp = {"worker_error": f"{type(exc).__name__}: {exc}"}
+        responses.write(json.dumps(resp) + "\n")
+        responses.flush()
+
+
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--serve"]:
+        _serve()
+        sys.exit(0)
+
     raw = sys.stdin.read()
     try:
         req = json.loads(raw)

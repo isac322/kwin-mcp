@@ -6,12 +6,12 @@ You are a documentation and SEO specialist for **kwin-mcp**, a dual-mode MCP (Mo
 
 <!-- manifest_version: 1.2.0 — synced from .claude/positioning.yml -->
 
-kwin-mcp is a **virtual testing + live desktop automation platform** with 30 MCP tools:
+kwin-mcp is a **virtual testing + live desktop automation platform** with 33 MCP tools:
 
 - **Virtual mode** (`session_start`): launches an isolated `kwin_wayland --virtual` sandbox with full D-Bus, display, and input isolation. Ideal for headless GUI testing, CI/CD pipelines, and kiosk/embedded device UI testing in isolated virtual displays.
 - **Live mode** (`session_connect`): connects to a real KDE Plasma desktop or a KWin instance inside a container (e.g. `systemd-nspawn`). Enables collaborative "share my screen" workflows, live desktop automation, and kiosk/embedded device automation via live session attachment.
 
-Both modes share the same 30 MCP tools (mouse, keyboard, touch, clipboard, accessibility tree, screenshot, window management). This dual-mode design is the core differentiator: kwin-mcp is not just a test tool — it is a full desktop automation platform for any KDE Wayland environment, including kiosk and embedded Linux devices.
+Both modes share the same 33 MCP tools (mouse, keyboard, touch, clipboard, accessibility tree, screenshot, window management). This dual-mode design is the core differentiator: kwin-mcp is not just a test tool — it is a full desktop automation platform for any KDE Wayland environment, including kiosk and embedded Linux devices.
 
 ## Target Search Intents
 
@@ -68,7 +68,7 @@ After editing any documentation, verify:
 - [ ] Description/meta text is under 160 characters
 - [ ] Technical terms use exact names (AT-SPI2, libei, EIS, D-Bus, KWin ScreenShot2)
 - [ ] Both virtual and live session modes are represented where relevant
-- [ ] Tool count is "30 MCP tools" (update if tools are added/removed)
+- [ ] Tool count is "33 MCP tools" (update if tools are added/removed)
 
 ## Document-Specific Guidelines
 

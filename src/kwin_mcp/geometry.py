@@ -286,9 +286,7 @@ def _report(window: KWinWindow) -> dict[str, object]:
     }
 
 
-def query(
-    app_name: str = "", window_id: str = "", timeout: float = 5.0
-) -> list[dict[str, object]]:
+def query(app_name: str = "", window_id: str = "", timeout: float = 5.0) -> list[dict[str, object]]:
     """Ask KWin for the geometry of every normal window.
 
     ``app_name`` is a case-insensitive substring of the app name; ``window_id``

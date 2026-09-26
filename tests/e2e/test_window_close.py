@@ -134,9 +134,7 @@ def test_window_close_is_refused_in_live_sessions(
 ) -> None:
     with live_kwin() as live:
         monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", live.dbus_address)
-        engine.session_connect(
-            dbus_address=live.dbus_address, wayland_display=live.wayland_display
-        )
+        engine.session_connect(dbus_address=live.dbus_address, wayland_display=live.wayland_display)
         try:
             engine.launch_app("kcalc")
             [window_id] = _await_ids(engine, "kcalc", lambda ids: len(ids) == 1)

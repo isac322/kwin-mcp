@@ -88,10 +88,10 @@ def test_import_does_not_load_libei(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_get_libei_loads_once_and_caches(monkeypatch: pytest.MonkeyPatch) -> None:
     """_get_libei() loads on the first call and reuses the handle afterwards."""
     module = _exec_input_module()
-    sentinel = ctypes.CDLL  # any stable object; never used as a library
+    sentinel = object()  # any stable object; never used as a library
     calls: list[int] = []
 
-    def _fake_load() -> ctypes.CDLL:
+    def _fake_load() -> object:
         calls.append(1)
         return sentinel
 

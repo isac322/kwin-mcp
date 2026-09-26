@@ -131,7 +131,7 @@ the image. The image pins both its Debian base-image digest and its dated Debian
 snapshot.
 
 To run the same suite on Arch Linux, pass `--distro archlinux`. It builds
-`docker/e2e-arch.Dockerfile`, a Manjaro-based variant with the same stages, virtual environment,
+`docker/e2e-arch.Dockerfile`, a variant on the official `archlinux:base` image with the same stages, virtual environment,
 user, and test command; only the distro package layer differs. Use it when a change touches
 distro-sensitive behavior such as libei, KWin, Qt, or packaged tool versions:
 
@@ -212,7 +212,7 @@ src/kwin_mcp/
 
 docker/
 ├── e2e.Dockerfile      # Reproducible installed-package E2E image (Debian)
-├── e2e-arch.Dockerfile # Arch Linux (Manjaro) variant of the same E2E image
+├── e2e-arch.Dockerfile # Arch Linux (archlinux:base) variant of the same E2E image
 ├── e2e-entrypoint.sh   # Records environment evidence, then executes the test command
 ├── e2e-environment.py  # Writes allowlisted environment.json provenance
 └── README.md           # Container backends, coverage, and limitations

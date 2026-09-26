@@ -84,8 +84,8 @@ Triple isolation ensures no impact on the host desktop:
 ### M5: MCP Server Integration (`server.py`) ✅
 - [x] Register 10 tools and run MCP server
 - [x] Register server in Claude Code settings (.mcp.json)
-- [ ] Full feedback loop test (launch → interact → verify)
-- **Done**: Server code complete, .mcp.json registered
+- [x] Full feedback loop test (launch → interact → observe semantics and pixels → verify cleanup)
+- **Done**: MCP integration is covered through the installed server's real stdio transport and the reproducible Docker E2E suite
 
 ### M6: Extended Input Features for E2E Testing ✅
 - [x] Fix `ei_device_start_emulating` argument count bug (2 → 3)
@@ -159,3 +159,15 @@ Triple isolation ensures no impact on the host desktop:
 - [ ] Ensure all alternatives are functionally identical (no behavioral differences)
 - [ ] Update `_INSTALL_HINTS` to suggest multiple options
 - **Goal**: Users on non-KDE or minimal setups don't need to install KDE-specific tools if equivalent alternatives are already present
+
+### M13: Reproducible Installed MCP Docker E2E QA ✅
+- [x] Add `scripts/run-e2e-docker.sh` as the supported local build, execution, cleanup, and artifact-collection path
+- [x] Pin the Docker base-image digest and Debian package snapshot; build the project wheel and install locked MCP 1.x dependencies with hashes
+- [x] Collect 99 tests across engine-level virtual sessions and installed-package MCP stdio sessions
+- [x] Validate the exact schemas and wrappers for all 31 MCP tools over JSON-RPC stdio
+- [x] Add test-owned nested Xvfb/KWin visual sessions with explicit X11 `scrot` capture and pixel-level oracles for cursor, repaint, state transition, and frame-burst behavior
+- [x] Cover lifecycle ownership, errors, input-state reset, process and socket teardown, screenshot retention, and container cleanup
+- [x] Retain `environment.json`, `junit.xml`, pytest output, PNG evidence, compositor/server/application logs, and failure diagnostics
+- [x] Run native CI jobs on `ubuntu-24.04` amd64 and `ubuntu-24.04-arm` arm64 without privileged, GPU, or device flags
+- [x] Keep the exact-virtual ScreenShot2 success case explicitly skipped because that backend does not return captures; verify its error path and prove screenshot success through nested X11 `scrot`
+- **Done**: Code, MCP transport, GUI pixels, teardown, and retained provenance are exercised in one installed-package Docker run

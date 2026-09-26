@@ -149,8 +149,13 @@ def screenshot(
 ) -> str:
     """Capture a screenshot of the isolated session.
 
-    Requires an active session. Returns the file path to the saved PNG image
-    and its size in KB.
+    Requires an active session. Captures every output and returns the saved
+    PNG path and size plus a "Coordinate space" line. The image is in global
+    logical coordinates: pixel (px, py) shows the point (origin_x + px,
+    origin_y + py) that mouse and touch tools take, whatever the output
+    scale. The origin can be negative on multi-monitor layouts. "coverage
+    partial" lists the regions the capture backend delivered; other pixels
+    are transparent. Frames from screenshot_after_ms carry the same line.
     """
     return _engine.screenshot(include_cursor=include_cursor)
 
@@ -174,7 +179,10 @@ def accessibility_tree(
     """Get the accessibility tree of apps in the isolated session.
 
     Returns a formatted text tree with each widget's role, name, states,
-    and bounding box coordinates. Use this to understand UI structure before
+    and bounding box in global screen coordinates ("@ screen (x, y, wxh)"),
+    the same space mouse_click and touch_tap take. Elements whose window
+    cannot be identified with certainty report "@ unavailable (reason)"
+    instead of coordinates. Use this to understand UI structure before
     interacting with elements.
     """
     return _engine.accessibility_tree(app_name=app_name, max_depth=max_depth, role=role)
@@ -205,8 +213,11 @@ def find_ui_elements(
     """Find UI elements matching a search query and/or required AT-SPI2 states.
 
     Returns a list of matching elements with their role, name, bounding box
-    (x, y, width, height), and available actions. Use this to locate specific
-    buttons, inputs, or labels before clicking or interacting.
+    in global screen coordinates ("@ screen (x, y, wxh)") — the same space
+    mouse_click and touch_tap take — and available actions. Elements whose
+    window cannot be identified with certainty report "@ unavailable (reason)"
+    instead of coordinates. Use this to locate specific buttons, inputs, or
+    labels before clicking or interacting.
     """
     return _engine.find_ui_elements(query=query, app_name=app_name, states=states)
 
@@ -218,11 +229,11 @@ def find_ui_elements(
 def mouse_click(
     x: Annotated[
         int,
-        Field(description="X coordinate in pixels (0 = left edge of virtual screen)."),
+        Field(description="X coordinate in global logical screen pixels."),
     ],
     y: Annotated[
         int,
-        Field(description="Y coordinate in pixels (0 = top edge of virtual screen)."),
+        Field(description="Y coordinate in global logical screen pixels."),
     ],
     button: Annotated[
         str, Field(description='Mouse button: "left", "right", or "middle".')
@@ -247,8 +258,11 @@ def mouse_click(
 ) -> str:
     """Click at coordinates in the isolated session.
 
-    Coordinates use the virtual screen pixel grid where (0, 0) is the top-left
-    corner. Returns a description of the click performed. Optionally captures
+    Coordinates are global logical screen pixels, the space window_geometry
+    and find_ui_elements report. A screenshot pixel (px, py) is the point
+    (origin_x + px, origin_y + py), using the origin from the screenshot's
+    "Coordinate space" line; at scale 1 with one output the origin is (0, 0).
+    Returns a description of the click performed. Optionally captures
     screenshot frames after the click for visual feedback.
     """
     return _engine.mouse_click(
@@ -440,8 +454,11 @@ def keyboard_type_unicode(
 ) -> str:
     """Type arbitrary Unicode text including non-ASCII characters.
 
-    Uses wtype if available, otherwise falls back to clipboard injection
-    (wl-copy + Ctrl+V). Requires wtype or wl-clipboard to be installed.
+    Uses wtype if it succeeds (KWin does not support it), otherwise pastes
+    through a temporary clipboard owner with Ctrl+V. The previous clipboard
+    content (all its formats) is restored after the paste, and the text is
+    marked as secret so KDE's clipboard history skips it. Returns a failure
+    when the clipboard could not be taken or nothing requested the text.
     Use this instead of keyboard_type when the text contains non-ASCII
     characters (e.g. Korean, CJK, emoji, accented characters).
     """
@@ -684,8 +701,10 @@ def wait_for_element(
     """Wait for a UI element matching query and/or states to appear.
 
     Polls repeatedly until a matching element is found or the timeout expires.
-    Returns matching elements in the same format as find_ui_elements, or a
-    timeout error message.
+    Returns matching elements in the same format as find_ui_elements —
+    bounding boxes are global screen coordinates, or "@ unavailable (reason)"
+    when the element's window cannot be identified — or a timeout error
+    message.
     """
     return _engine.wait_for_element(
         query=query,
@@ -742,6 +761,22 @@ def focus_window(
     (case-insensitive) and activates its first focusable window via AT-SPI2.
     """
     return _engine.focus_window(app_name=app_name)
+
+
+@mcp.tool()
+def window_geometry(
+    app_name: Annotated[
+        str,
+        Field(description="Only report windows whose app name contains this string."),
+    ] = "",
+) -> str:
+    """Report window positions and sizes in global screen coordinates.
+
+    Element rectangles from accessibility_tree and find_ui_elements are
+    already translated to this same coordinate space; this tool remains
+    useful for locating whole windows and diagnosing placement.
+    """
+    return _engine.window_geometry(app_name=app_name)
 
 
 # ── D-Bus tools ──────────────────────────────────────────────────────────

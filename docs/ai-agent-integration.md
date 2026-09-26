@@ -4,7 +4,7 @@ Three onboarding paths for `kwin-mcp`. Pick the one that matches your editor.
 
 ## Why use the integrations?
 
-`kwin-mcp` exposes **30 MCP tools**. Without context, an AI agent often calls them in the wrong order — skipping `session_start`, mixing up `keyboard_type` vs `keyboard_type_unicode`, ignoring the AT-SPI2 surface-local coordinate system, and so on.
+`kwin-mcp` exposes **31 MCP tools**. Without context, an AI agent often calls them in the wrong order — skipping `session_start`, mixing up `keyboard_type` vs `keyboard_type_unicode`, ignoring the AT-SPI2 surface-local coordinate system, and so on.
 
 Each integration package bundles:
 
@@ -80,7 +80,7 @@ Both plugins ship the same SKILL.md content; the Claude Code plugin's copy is th
 
 ### `uvx: command not found`
 
-The MCP launch command is `uvx kwin-mcp`. Install [`uv`](https://docs.astral.sh/uv/) first:
+The MCP launch command is `uvx kwin-mcp`. This error means `uv` itself is missing; it is not a kwin-mcp build failure. Install [`uv`](https://docs.astral.sh/uv/) first:
 
 ```bash
 # Arch / Manjaro
@@ -90,7 +90,17 @@ sudo pacman -S uv
 sudo dnf install uv
 ```
 
-If you prefer a global install of `kwin-mcp` itself, run `uv tool install kwin-mcp` and replace `"command": ["uvx", "kwin-mcp"]` with `"command": ["kwin-mcp"]` in the OpenCode config (or the equivalent for Claude Code's `.mcp.json`).
+If you prefer a global install of `kwin-mcp` itself, run `uv tool install kwin-mcp`. Then replace `"command": ["uvx", "kwin-mcp"]` with `"command": ["kwin-mcp"]` in the OpenCode config. In Claude Code's `.mcp.json`, set `"command": "kwin-mcp"` and remove the `"args": ["kwin-mcp"]` entry.
+
+### `uvx kwin-mcp` or `uv tool install kwin-mcp` fails while building `pygobject` or `dbus-python`
+
+`uv` is installed, but installing kwin-mcp failed while compiling a native dependency (for example, a missing compiler, `pkg-config`, `Python.h`, or a missing `cairo`, `girepository-2.0`, or `dbus-1` pkg-config package). `uvx` and `uv tool install` create an isolated environment that cannot use the distribution's `gi` (PyGObject) or `dbus` Python packages, so `pygobject` and `dbus-python` are built from source inside it.
+
+Install the build dependencies for your distribution from the README's [Build Prerequisites for uv and pip Installs](../README.md#build-prerequisites-for-uv-and-pip-installs) section, then rerun the same command. The MCP config does not need to change.
+
+### Server exits with `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`
+
+This is a Python dependency problem, not a missing system package. Published releases before 0.8.0 did not declare an upper bound for the `mcp` package — verified for the 0.7.0 package on PyPI — so a fresh install could resolve `mcp` 2.x, which no longer provides `mcp.server.fastmcp`. Release 0.8.0 ships the `mcp>=1.0.0,<2` constraint in its package metadata, so upgrading to 0.8.0 or later resolves the error; installing system build dependencies does not.
 
 ### Plugin installs but the agent ignores it
 

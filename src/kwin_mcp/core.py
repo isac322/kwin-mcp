@@ -15,7 +15,10 @@ import os
 import shlex
 import shutil
 import signal
+import socket
+import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -53,6 +56,23 @@ _INSTALL_HINTS: dict[str, str] = {
         "(e.g. 'sudo pacman -S wayland-utils' or 'sudo apt install wayland-utils')."
     ),
 }
+
+# wl-copy forks its selection owner and exits 0 once the compositor confirmed
+# the selection; a parent still running after this is treated as a failure.
+_CLIPBOARD_SET_TIMEOUT = 5.0
+
+
+def _element_position(el: dict) -> str:
+    """Format an element's position for find_ui_elements / wait_for_element.
+
+    Coordinates are global screen coordinates (the space mouse_click and
+    touch_tap take). Elements whose window could not be identified with
+    certainty report "unavailable" with a reason and no numbers, so callers
+    never click a plausible-looking wrong point.
+    """
+    if el.get("mapped"):
+        return f"@ screen ({el['x']}, {el['y']}, {el['width']}x{el['height']})"
+    return f"@ unavailable ({el.get('unavailable') or 'unmapped'})"
 
 
 def _dbus_to_json(value: object) -> object:
@@ -116,7 +136,6 @@ class AutomationEngine:
         self._session: Session | LiveSession | None = None
         self._input: InputBackend | None = None
         self._clipboard_enabled: bool = False
-        self._wl_copy_proc: subprocess.Popen[bytes] | None = None
         self._keep_screenshots: bool = False
         self._atspi_pool: multiprocessing.pool.Pool | None = None
         self._atspi_worker_pids: tuple[int, ...] = ()
@@ -385,9 +404,10 @@ class AutomationEngine:
         )
 
         lines = [action_result, f"Captured {len(frames)} frames:"]
-        for delay_ms, path in zip(sorted(screenshot_after_ms), frames, strict=True):
+        for delay_ms, (path, mapping) in zip(sorted(screenshot_after_ms), frames, strict=True):
             size_kb = path.stat().st_size / 1024
             lines.append(f"  {delay_ms}ms: {path} ({size_kb:.1f} KB)")
+            lines.append(f"    {mapping.describe()}")
         return "\n".join(lines)
 
     # ── Session management ────────────────────────────────────────────────
@@ -476,6 +496,30 @@ class AutomationEngine:
         except dbus_module.DBusException as exc:
             return f"Cannot reach KWin on D-Bus ({dbus_addr}): {exc}"
 
+        display_path = Path(wayland_disp)
+        if not display_path.is_absolute():
+            runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+            if not runtime_dir:
+                return f"Cannot reach Wayland display ({wayland_disp}): XDG_RUNTIME_DIR is not set"
+            display_path = Path(runtime_dir) / display_path
+
+        try:
+            display_mode = display_path.stat().st_mode
+        except OSError as exc:
+            return f"Cannot reach Wayland display ({wayland_disp}): {exc}"
+        if not stat.S_ISSOCK(display_mode):
+            return (
+                f"Cannot reach Wayland display ({wayland_disp}): "
+                f"{display_path} is not a Unix socket"
+            )
+
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+                probe.settimeout(0.5)
+                probe.connect(str(display_path))
+        except OSError as exc:
+            return f"Cannot reach Wayland display ({wayland_disp}): {exc}"
+
         screenshot_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-screenshots-"))
 
         session = LiveSession(dbus_addr, wayland_disp, screenshot_dir)
@@ -510,14 +554,6 @@ class AutomationEngine:
         if self._session is None:
             return "No session running."
 
-        # Clean up wl-copy process if active
-        if self._wl_copy_proc is not None:
-            self._wl_copy_proc.terminate()
-            try:
-                self._wl_copy_proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                self._wl_copy_proc.kill()
-            self._wl_copy_proc = None
         self._clipboard_enabled = False
 
         if self._input is not None:
@@ -547,14 +583,14 @@ class AutomationEngine:
             msg = "No session info available"
             raise RuntimeError(msg)
 
-        path = capture_screenshot_to_file(
+        path, mapping = capture_screenshot_to_file(
             dbus_address=info.dbus_address,
             wayland_socket=info.wayland_socket,
             include_cursor=include_cursor,
             output_dir=info.screenshot_dir,
         )
         size_kb = path.stat().st_size / 1024
-        return f"Screenshot saved: {path} ({size_kb:.1f} KB)"
+        return f"Screenshot saved: {path} ({size_kb:.1f} KB)\n{mapping.describe()}"
 
     def accessibility_tree(self, app_name: str = "", max_depth: int = 15, role: str = "") -> str:
         """Get the accessibility tree of apps in the isolated session."""
@@ -584,9 +620,15 @@ class AutomationEngine:
         lines = [f"Found {len(elements)} elements matching {search_desc}:\n"]
         for el in elements:
             actions_str = f" [actions: {', '.join(el['actions'])}]" if el["actions"] else ""
+            text_str = f" text={el['text']!r}" if el.get("text") else ""
+            value_str = (
+                f" value={el['value']:g}/{el['value_max']:g}"
+                if el.get("value") is not None and el.get("value_max") is not None
+                else ""
+            )
             lines.append(
                 f'- [{el["role"]}] "{el["name"]}" '
-                f"@ ({el['x']}, {el['y']}, {el['width']}x{el['height']}){actions_str}"
+                f"{_element_position(el)}{text_str}{value_str}{actions_str}"
             )
         return "\n".join(lines)
 
@@ -719,16 +761,10 @@ class AutomationEngine:
         screenshot_after_ms: list[int] | None = None,
     ) -> str:
         """Type arbitrary Unicode text including non-ASCII characters."""
-        if not shutil.which("wtype") and not shutil.which("wl-copy"):
-            return (
-                "Neither wtype nor wl-copy found. Install at least one: "
-                "wtype (e.g. 'sudo pacman -S wtype') or "
-                "wl-clipboard (e.g. 'sudo pacman -S wl-clipboard')."
-            )
         inp = self._get_input()
-        session = self._get_session()
-        dbus_addr = session.info.dbus_address if session.info else None
-        ok = inp.keyboard_type_unicode(text, dbus_address=dbus_addr)
+        # Both routes are Wayland clients: without the session's WAYLAND_DISPLAY
+        # they would act on whatever compositor the server inherited.
+        ok = inp.keyboard_type_unicode(text, env=self._session_env())
         result = f"Typed unicode: {text!r}" if ok else f"Failed to type unicode: {text!r}"
         return self._with_frame_capture(result, screenshot_after_ms)
 
@@ -854,27 +890,32 @@ class AutomationEngine:
                 "or use session_connect (clipboard is always enabled for live sessions)."
             )
 
-        # Terminate previous wl-copy process (replaced by new content)
-        if self._wl_copy_proc is not None:
-            self._wl_copy_proc.terminate()
-            try:
-                self._wl_copy_proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                self._wl_copy_proc.kill()
-            self._wl_copy_proc = None
-
         env = self._session_env()
         try:
-            self._wl_copy_proc = subprocess.Popen(
+            proc = subprocess.Popen(
                 ["wl-copy", "--", text],
                 env=env,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                start_new_session=True,
             )
         except FileNotFoundError:
             return _INSTALL_HINTS["wl-copy"]
-        time.sleep(0.1)  # Wait for fork to complete
+        # The exit is the readiness signal; the forked owner intentionally
+        # outlives this call and serves the text until something replaces it.
+        try:
+            returncode = proc.wait(timeout=_CLIPBOARD_SET_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+            return (
+                "Failed to set clipboard: wl-copy did not confirm the selection "
+                f"within {_CLIPBOARD_SET_TIMEOUT:g}s"
+            )
+        if returncode != 0:
+            return f"Failed to set clipboard: wl-copy exited with status {returncode}"
         return f"Clipboard set: {text!r}"
 
     # ── Wait-for-UI tools ─────────────────────────────────────────────────
@@ -913,9 +954,15 @@ class AutomationEngine:
         lines = [f"Found {len(elements)} elements matching {search_desc}:\n"]
         for el in elements:
             actions_str = f" [actions: {', '.join(el['actions'])}]" if el["actions"] else ""
+            text_str = f" text={el['text']!r}" if el.get("text") else ""
+            value_str = (
+                f" value={el['value']:g}/{el['value_max']:g}"
+                if el.get("value") is not None and el.get("value_max") is not None
+                else ""
+            )
             lines.append(
                 f'- [{el["role"]}] "{el["name"]}" '
-                f"@ ({el['x']}, {el['y']}, {el['width']}x{el['height']}){actions_str}"
+                f"{_element_position(el)}{text_str}{value_str}{actions_str}"
             )
         return "\n".join(lines)
 
@@ -934,11 +981,66 @@ class AutomationEngine:
         resp = self._run_atspi("list_windows")
         return resp["result"]
 
+    def _run_kwin_query(self, request: dict[str, object]) -> dict:
+        """Run a KWin scripting query in a subprocess bound to the session bus."""
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "kwin_mcp.geometry"],
+                input=json.dumps(request),
+                env=self._session_env(),
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": "KWin query timed out after 30s"}
+        if result.returncode != 0:
+            return {"ok": False, "error": f"exit {result.returncode}: {result.stderr[:200]}"}
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return {"ok": False, "error": f"invalid JSON: {result.stdout[:200]}"}
+
     def focus_window(self, app_name: str) -> str:
-        """Attempt to focus a window by application name."""
+        """Activate a window by application name.
+
+        Activation goes through KWin: AT-SPI2's grab_focus neither raises nor
+        activates windows on Wayland, so it reported success while the previously
+        active window kept both focus and the foreground.
+        """
         self._get_session()
-        resp = self._run_atspi("focus_window", app_name=app_name)
-        return resp["result"]
+        resp = self._run_kwin_query({"op": "activate", "app_name": app_name})
+        if not resp["ok"]:
+            return f"Failed to focus '{app_name}': {resp['error']}"
+        activated = str(resp["result"]).strip()
+        return f"Focused: {activated}" if activated else f"No window matches '{app_name}'."
+
+    def window_geometry(self, app_name: str = "") -> str:
+        """Report window positions in global screen coordinates.
+
+        Element rectangles from find_ui_elements and accessibility_tree are
+        already translated to this same coordinate space; this tool remains
+        useful for locating whole windows and diagnosing placement.
+        """
+        self._get_session()
+        resp = self._run_kwin_query({"app_name": app_name})
+        if not resp["ok"]:
+            return f"Window geometry unavailable: {resp['error']}"
+
+        windows = resp["result"]
+        if not windows:
+            return "No windows found." if not app_name else f"No windows found for '{app_name}'."
+
+        lines = [f"Windows ({len(windows)}):"]
+        for window in windows:
+            frame, client = window["frame"], window["client"]
+            lines.append(
+                f'- {window["app"]} "{window["caption"]}"\n'
+                f"    frame:  ({frame['x']}, {frame['y']}, {frame['width']}x{frame['height']})\n"
+                f"    client: ({client['x']}, {client['y']}, "
+                f"{client['width']}x{client['height']})"
+            )
+        return "\n".join(lines)
 
     # ── D-Bus tools ───────────────────────────────────────────────────────
 

@@ -5,7 +5,7 @@ description: Use when the user asks to launch, click, type, screenshot, or other
 
 # kwin-desktop-automation
 
-Drive Linux KDE Plasma 6 Wayland desktops through the `kwin-mcp` MCP server. The MCP server provides 31 capabilities; this skill provides the operational discipline to use them efficiently, in the right order, and without falling into platform-specific traps.
+Drive Linux KDE Plasma 6 Wayland desktops through the `kwin-mcp` MCP server. The MCP server provides 33 capabilities; this skill provides the operational discipline to use them efficiently, in the right order, and without falling into platform-specific traps.
 
 ## When to apply
 
@@ -44,7 +44,7 @@ Each interaction is three steps. Cheap observation **before** action prevents ac
 
 **Observation tools, cheapest first:**
 
-1. `list_windows` — window titles + active/focused markers. Free.
+1. `list_windows` — window titles + active/focused markers. Free. `active_window` answers "which window has focus?" straight from KWin, with its id.
 2. `accessibility_tree` — full AT-SPI2 widget tree. Always pass `app_name=` and/or `role=` (e.g. `"button"`, `"check box"`) and/or `max_depth=` to keep it small. Don't fetch the whole tree just to find one button.
 3. `find_ui_elements` — query by name/role/states. Use this when you know what you are looking for. `query=""` + `states=["focused"]` answers "what currently has focus?".
 4. `wait_for_element` — same matching as `find_ui_elements` but polls until the element appears (or `timeout_ms` elapses). Use after launching an app or after any click that triggers async UI.
@@ -55,6 +55,7 @@ Pick the cheapest tool that answers the question. Do not start with `screenshot`
 **Action tools:**
 
 - Rectangles from `find_ui_elements` / `accessibility_tree` are already global screen coordinates (`@ screen (x, y, wxh)`) — the same space `mouse_click` and `touch_tap` take. Click the centre directly: `(x + width / 2, y + height / 2)`. An element reported as `@ unavailable (reason)` has no trustworthy position; do not click it.
+- `window_geometry` lists every window with a KWin `id`. Ids stay stable while the window exists, so use them to tell apart several windows of the same app: `window_geometry(window_id=...)` re-reads one window, and `window_close(window_id=...)` closes exactly that one. `window_close` only asks the app to close; confirm with `window_geometry` because a "save changes?" prompt can keep it open. It is refused in live sessions.
 - Screenshot pixels are logical too, but offset by the image origin. Read the `Coordinate space: logical; origin (ox, oy); ...` line in the `screenshot` result and click image pixel `(px, py)` at `(ox + px, oy + py)`. The origin can be negative on multi-monitor layouts. Never rescale by the display scale factor — kwin-mcp already did.
 - `keyboard_type` is **ASCII / US-QWERTY only**. It maps characters to evdev keycodes; non-ASCII silently breaks.
 - `keyboard_type_unicode` for Korean / CJK / emoji / any non-ASCII. It tries `wtype` first; when `wtype` is unavailable or unsupported by the session, it pastes with Ctrl+V through a built-in temporary clipboard owner and then restores the previous clipboard in every format. A failure result means the clipboard could not be taken, nothing read the text after Ctrl+V, or the restore failed: verify the target field before retrying. Text over 1 MiB of UTF-8 is rejected.

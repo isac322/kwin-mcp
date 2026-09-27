@@ -168,6 +168,6 @@ Triple isolation ensures no impact on the host desktop:
 - [x] Add test-owned nested Xvfb/KWin visual sessions with explicit X11 `scrot` capture and pixel-level oracles for cursor, repaint, state transition, and frame-burst behavior
 - [x] Cover lifecycle ownership, errors, input-state reset, process and socket teardown, screenshot retention, and container cleanup
 - [x] Retain `environment.json`, `junit.xml`, pytest output, PNG evidence, compositor/server/application logs, and failure diagnostics
-- [x] Run native CI jobs on `ubuntu-24.04` amd64 and `ubuntu-24.04-arm` arm64 without privileged, GPU, or device flags
+- [x] Run native CI jobs on `ubuntu-26.04` amd64 and `ubuntu-26.04-arm` arm64 without privileged, GPU, or device flags
 - [x] Keep the exact-virtual ScreenShot2 success case explicitly skipped because that backend does not return captures; verify its error path and prove screenshot success through nested X11 `scrot`
 - **Done**: Code, MCP transport, GUI pixels, teardown, and retained provenance are exercised in one installed-package Docker run

@@ -5,11 +5,11 @@
 # Run:
 #   docker run --rm kwin-mcp-e2e
 
-ARG DEBIAN_SNAPSHOT=20260913T000000Z
+ARG DEBIAN_SNAPSHOT=20260926T000000Z
 
-FROM ghcr.io/astral-sh/uv:0.10.8@sha256:88234bc9e09c2b2f6d176a3daf411419eb0370d450a08129257410de9cfafd2a AS uv-bin
+FROM ghcr.io/astral-sh/uv:0.12.19@sha256:04d046b13e60d6bcec73cbc5e1cad25d680dea90c8573340950a0ac2d1aef424 AS uv-bin
 
-FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS debian-snapshot
+FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a AS debian-snapshot
 
 ARG DEBIAN_SNAPSHOT
 RUN printf '%s\n' \
@@ -136,14 +136,14 @@ LABEL org.opencontainers.image.title="kwin-mcp E2E" \
       org.opencontainers.image.description="Reproducible virtual KWin environment for kwin-mcp end-to-end tests" \
       org.opencontainers.image.source="https://github.com/isac322/kwin-mcp" \
       org.opencontainers.image.base.name="debian:trixie-slim" \
-      org.opencontainers.image.base.digest="sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132" \
+      org.opencontainers.image.base.digest="sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a" \
       io.github.isac322.kwin-mcp.debian-snapshot="${DEBIAN_SNAPSHOT}"
 
 ENV PATH="/opt/kwin-mcp-venv/bin:${PATH}" \
     HOME=/home/tester \
     XDG_RUNTIME_DIR=/tmp/xdg-runtime \
     KWIN_MCP_ARTIFACT_DIR=/artifacts \
-    KWIN_MCP_BASE_IMAGE="debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132" \
+    KWIN_MCP_BASE_IMAGE="debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a" \
     KWIN_MCP_BASE_SNAPSHOT="debian-snapshot:${DEBIAN_SNAPSHOT}" \
     PYTHONUNBUFFERED=1 \
     LIBGL_ALWAYS_SOFTWARE=1

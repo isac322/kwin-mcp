@@ -8,9 +8,9 @@
 
 The image fixes the inputs that define the test environment:
 
-- the build helper is `ghcr.io/astral-sh/uv:0.10.8@sha256:88234bc9e09c2b2f6d176a3daf411419eb0370d450a08129257410de9cfafd2a`;
-- the runtime base is `debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132`;
-- APT reads Debian trixie, trixie-updates, and trixie-security from snapshot `20260913T000000Z`;
+- the build helper is `ghcr.io/astral-sh/uv:0.12.19@sha256:04d046b13e60d6bcec73cbc5e1cad25d680dea90c8573340950a0ac2d1aef424`;
+- the runtime base is `debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a`;
+- APT reads Debian trixie, trixie-updates, and trixie-security from snapshot `20260926T000000Z`;
 - the project is built as a wheel and installed into `/opt/kwin-mcp-venv` with standard `Requires-Dist` resolution. Tests import that installed distribution and launch its `kwin-mcp` and `kwin-mcp-cli` console entry points.
 
 All Python dependencies — `mcp` within the declared 1.x range, PyGObject, pycairo, dbus-python, Pillow, and their transitives — resolve fresh from the package index at image-build time, so Python dependency versions vary within the declared ranges between builds. PyGObject, pycairo, and dbus-python compile from source in the isolated `venv-builder` stage; the runtime image adds only the `libgirepository-2.0-0` shared library they need and carries no compiler or development headers. The virtual environment keeps system site packages so distro-only modules such as NumPy stay importable, and the dev dependency group is installed separately from `pyproject.toml`; `uv.lock` is not used inside the image. `environment.json` records the architecture, base digest, package snapshot, Python and KWin versions, the installed version of every distro package the image lists in `KWIN_MCP_SYSTEM_PACKAGES` (the same list its package-manager step installs), and installed `kwin-mcp` and `mcp` distribution metadata for each run, so the resolved versions remain part of the retained provenance.
@@ -20,7 +20,7 @@ All Python dependencies — `mcp` within the declared 1.x range, PyGObject, pyca
 `e2e-arch.Dockerfile` keeps the contract of `e2e.Dockerfile`: the same build stages, `/opt/kwin-mcp-venv`, `tester` user (UID 1000), entrypoint, `/artifacts` directory, and `pytest tests/e2e` command. Only the distro layer differs, so the unchanged suite checks kwin-mcp against Arch's KWin, libei, Qt, Mesa, and tool versions, which are much newer than Debian stable's (for the pinned date: KWin 6.7.5, libei 1.6.0, Python 3.14).
 
 - The runtime base is `archlinux:base-20260920.0.596911@sha256:f3691b4dde62ba4c4b6f0ae2c1fbf28e8c0c8c4b9a35c7e06dc1f70e21aa29f6`.
-- pacman reads the Arch Linux Archive snapshot for `2026/09/20` (build argument `ARCH_ARCHIVE_DATE`), the equivalent of the Debian snapshot pin, and `pacman -Syyuu` moves the base packages to exactly that snapshot.
+- pacman reads the Arch Linux Archive snapshot for `2026/09/26` (build argument `ARCH_ARCHIVE_DATE`), the equivalent of the Debian snapshot pin, and `pacman -Syyuu` moves the base packages to exactly that snapshot.
 - The image is `linux/amd64` only. The official Arch image has no arm64 build, and no maintained Arch-family arm64 image tracks current packages: Manjaro ARM's `arm-stable` branch still ships KWin 5.27 and Python 3.11. On an arm64 host, build and run it with `--platform linux/amd64` under emulation, which is several times slower.
 - pacman's download sandbox restricts syscalls with seccomp, which fails with `EINVAL` under qemu-user emulation, so the image enables `DisableSandboxSyscalls`. The base image already disables the filesystem part of the sandbox.
 - Package names differ from Debian: `kate` provides `/usr/bin/kwrite`, `libkscreen` provides `kscreen-doctor`, `xorg-server-xvfb` provides `Xvfb`, and `xorg-xwininfo`/`xorg-xdpyinfo` replace `x11-utils`.
@@ -215,13 +215,13 @@ CI stores the same evidence under `artifacts/e2e/<label>/` and uploads it as `e2
 
 | Label | Image | Runner |
 |---|---|---|
-| `amd64` | `e2e.Dockerfile` (Debian) | `ubuntu-24.04` |
-| `arm64` | `e2e.Dockerfile` (Debian) | `ubuntu-24.04-arm` |
-| `fedora-amd64` | `e2e-fedora.Dockerfile` (Fedora 44) | `ubuntu-24.04` |
-| `fedora-arm64` | `e2e-fedora.Dockerfile` (Fedora 44) | `ubuntu-24.04-arm` |
-| `opensuse-amd64` | `e2e-opensuse.Dockerfile` (openSUSE Tumbleweed) | `ubuntu-24.04` |
-| `opensuse-arm64` | `e2e-opensuse.Dockerfile` (openSUSE Tumbleweed) | `ubuntu-24.04-arm` |
-| `archlinux-amd64` | `e2e-arch.Dockerfile` (Arch Linux) | `ubuntu-24.04` |
+| `amd64` | `e2e.Dockerfile` (Debian) | `ubuntu-26.04` |
+| `arm64` | `e2e.Dockerfile` (Debian) | `ubuntu-26.04-arm` |
+| `fedora-amd64` | `e2e-fedora.Dockerfile` (Fedora 44) | `ubuntu-26.04` |
+| `fedora-arm64` | `e2e-fedora.Dockerfile` (Fedora 44) | `ubuntu-26.04-arm` |
+| `opensuse-amd64` | `e2e-opensuse.Dockerfile` (openSUSE Tumbleweed) | `ubuntu-26.04` |
+| `opensuse-arm64` | `e2e-opensuse.Dockerfile` (openSUSE Tumbleweed) | `ubuntu-26.04-arm` |
+| `archlinux-amd64` | `e2e-arch.Dockerfile` (Arch Linux) | `ubuntu-26.04` |
 
 The Arch Linux image has no arm64 row because no current Arch-family arm64 base image exists.
 

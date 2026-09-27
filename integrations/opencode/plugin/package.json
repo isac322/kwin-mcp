@@ -22,11 +22,11 @@
     "prepack": "npm run build"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "^1.14.31",
+    "@opencode-ai/plugin": "^1.18.32",
     "@swc/cli": "^0.8.1",
-    "@swc/core": "^1.15.32",
-    "@types/node": "^25.6.0",
-    "@typescript/native-preview": "^7.0.0-dev.20260502.1"
+    "@swc/core": "^1.16.2",
+    "@types/node": "^26.6.3",
+    "@typescript/native-preview": "^7.0.0-dev.20260707.2"
   },
   "keywords": [
     "opencode",

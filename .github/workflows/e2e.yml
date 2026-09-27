@@ -22,38 +22,38 @@ jobs:
             dockerfile: docker/e2e.Dockerfile
             arch: amd64
             label: amd64
-            runner: ubuntu-24.04
+            runner: ubuntu-26.04
           - distro: debian
             dockerfile: docker/e2e.Dockerfile
             arch: arm64
             label: arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-26.04-arm
           - distro: fedora
             dockerfile: docker/e2e-fedora.Dockerfile
             arch: amd64
             label: fedora-amd64
-            runner: ubuntu-24.04
+            runner: ubuntu-26.04
           - distro: fedora
             dockerfile: docker/e2e-fedora.Dockerfile
             arch: arm64
             label: fedora-arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-26.04-arm
           - distro: opensuse
             dockerfile: docker/e2e-opensuse.Dockerfile
             arch: amd64
             label: opensuse-amd64
-            runner: ubuntu-24.04
+            runner: ubuntu-26.04
           - distro: opensuse
             dockerfile: docker/e2e-opensuse.Dockerfile
             arch: arm64
             label: opensuse-arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-26.04-arm
           # Arch Linux publishes amd64 images only; see docker/e2e-arch.Dockerfile.
           - distro: archlinux
             dockerfile: docker/e2e-arch.Dockerfile
             arch: amd64
             label: archlinux-amd64
-            runner: ubuntu-24.04
+            runner: ubuntu-26.04
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     env:

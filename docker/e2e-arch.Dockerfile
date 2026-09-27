@@ -14,9 +14,9 @@
 # ARM's arm-stable branch still ships KWin 5.27 and Python 3.11. On arm64 hosts
 # build it with `--platform linux/amd64` under emulation.
 
-ARG ARCH_ARCHIVE_DATE=2026/09/20
+ARG ARCH_ARCHIVE_DATE=2026/09/26
 
-FROM ghcr.io/astral-sh/uv:0.10.8@sha256:88234bc9e09c2b2f6d176a3daf411419eb0370d450a08129257410de9cfafd2a AS uv-bin
+FROM ghcr.io/astral-sh/uv:0.12.19@sha256:04d046b13e60d6bcec73cbc5e1cad25d680dea90c8573340950a0ac2d1aef424 AS uv-bin
 
 FROM archlinux:base-20260920.0.596911@sha256:f3691b4dde62ba4c4b6f0ae2c1fbf28e8c0c8c4b9a35c7e06dc1f70e21aa29f6 AS arch-base
 

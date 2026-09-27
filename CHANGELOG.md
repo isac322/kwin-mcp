@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-09-27
+
 ### Fixed
 
 - `session_start` sometimes returned `No input backend available (KWin EIS interface unavailable: ... The name org.kde.KWin was not provided by any .service files)`, leaving `mouse_click`, `keyboard_type`, and the other input tools unusable for the whole session (#74). The startup treated the Wayland socket file as "KWin is ready", then slept 0.8 s in total and asked KWin for an EIS connection once. KWin creates its socket early and takes the `org.kde.KWin` D-Bus name only after its workspace is built, which took over 2 s on a loaded host. The session wrapper now waits for `org.kde.KWin` to get an owner (a bounded `dbus-send` `NameHasOwner` loop inside `dbus-run-session`, the same tool the AT-SPI activation already requires) before it prints `READY`; it gives up as soon as KWin exits or after 30 s and reports `FAILED`, which `Session.start()` turns into its normal startup error and teardown. A session bus that stalls entirely still fails at the startup handshake deadline. The fixed sleeps are gone, so a normal `session_start` is also faster (about 0.25 s instead of 1 s in the Debian E2E image). `session_connect` already requires `org.kde.KWin` to have an owner and no longer sleeps 0.3 s before setting up EIS.
@@ -217,7 +219,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keyboard input: text typing and key combinations via KWin EIS
 - FastMCP-based MCP server with stdio transport
 
-[Unreleased]: https://github.com/isac322/kwin-mcp/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/isac322/kwin-mcp/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/isac322/kwin-mcp/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/isac322/kwin-mcp/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/isac322/kwin-mcp/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/isac322/kwin-mcp/compare/v0.6.0...v0.7.0

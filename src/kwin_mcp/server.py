@@ -16,9 +16,18 @@ import functools
 import importlib.metadata
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Any
 
-from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver import (
+    AcceptedElicitation,
+    CancelledElicitation,
+    Context,
+    DeclinedElicitation,
+    Elicit,
+    ElicitationResult,
+    MCPServer,
+    Resolve,
+)
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.mcpserver.utilities.context_injection import find_context_parameter
 from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
@@ -969,21 +978,121 @@ def active_window() -> str:
     return _engine.active_window()
 
 
+class WindowCloseConfirmation(BaseModel):
+    """Form the user fills in to approve window_close in a live session."""
+
+    confirm: bool = Field(
+        title="Close this window",
+        description="Close it even if it has unsaved work.",
+    )
+
+
+# Resolver outcomes that ask the user nothing. They travel as AcceptedElicitation data.
+_NOT_LIVE = "not-live"  # virtual session: no confirmation needed
+_CANNOT_ELICIT = "cannot-elicit"  # live session, but the client cannot show a form
+_NO_WINDOW = "no-window"  # live session, but no window has this id: nothing to confirm
+
+
+def _client_can_elicit_form(ctx: Context) -> bool:
+    """Whether the client declared form-mode elicitation for this request.
+
+    Spec 2025-11-25: a bare ``elicitation: {}`` means form support; url-only does
+    not. Same rule as the SDK's own capability gate, checked here so a client
+    without it gets today's refusal instead of a JSON-RPC error.
+    """
+    caps = ctx.client_capabilities
+    elicitation = caps.elicitation if caps is not None else None
+    return elicitation is not None and (elicitation.form is not None or elicitation.url is None)
+
+
+def _lookup_app_name(window_id: str) -> tuple[str | None, str | None]:
+    # Runs on the tool thread; reduces a failure to its message there, like _tool does.
+    try:
+        return _engine.window_app_name(window_id), None
+    except Exception as exc:
+        return None, str(exc)
+
+
+async def _window_close_consent(
+    window_id: str, ctx: Context
+) -> str | Elicit[WindowCloseConfirmation]:
+    """Ask the user to approve window_close in a live session, when the client can.
+
+    Runs on the event loop before the body is submitted to the tool thread, so it
+    reads only the live flag and sends D-Bus work through the tool executor. With
+    MRTR (2026-07-28) it re-runs every round and the question must render
+    identically, so the message holds the window id and app name, not the caption.
+    No server-side timeout: the call stays pending until the user answers or the
+    client cancels it.
+    """
+    if not _engine.is_live_session:
+        return _NOT_LIVE
+    if not _client_can_elicit_form(ctx):
+        return _CANNOT_ELICIT
+    app_name, error = await asyncio.wrap_future(_tool_executor.submit(_lookup_app_name, window_id))
+    if error is not None:
+        raise ToolError(error)
+    if app_name is None:
+        return _NO_WINDOW
+    return Elicit(
+        f"kwin-mcp wants to close window {window_id} ({app_name}) on your desktop. "
+        "Unsaved work in that window may be lost.",
+        WindowCloseConfirmation,
+    )
+
+
 @_tool(annotations=_DESTRUCTIVE_IDEMPOTENT)
 def window_close(
     window_id: Annotated[
         str,
         Field(description="Id of the window to close, as reported by window_geometry."),
     ],
+    consent: Annotated[ElicitationResult[Any], Resolve(_window_close_consent)],
 ) -> str:
     """Ask one window to close, like its titlebar close button.
 
     Only the window with exactly this id is addressed, even when the same app
     has several windows. The app may keep the window open (for example to ask
-    about unsaved changes), so confirm with window_geometry. Disabled in live
-    sessions (session_connect) to protect unsaved work on the real desktop.
+    about unsaved changes), so confirm with window_geometry. In live sessions
+    (session_connect) the user is asked to confirm when the client supports
+    elicitation; otherwise it is refused to protect unsaved work.
     """
-    return _engine.window_close(window_id=window_id)
+    # Replies (all non-error text):
+    # - not live / client cannot form-elicit: the engine decides, unconfirmed. On a
+    #   live session that is the refusal "window_close is disabled in live sessions:
+    #   it could discard unsaved work on the real desktop. Close the window through
+    #   the app's own UI instead."
+    # - no such window: "No window with id '<id>'."
+    # - accepted with confirm=true: the engine closes, "Close requested: ...".
+    # - accepted with confirm=false: "window_close not performed: the user did not
+    #   confirm closing window <id>."
+    # - declined: "window_close not performed: the user declined closing window <id>.
+    #   Do not retry unless the user asks."
+    # - cancelled: "window_close not performed: the user dismissed the confirmation
+    #   for window <id>."
+    # The engine re-checks the session here on the tool thread, so a session that
+    # turned live after the resolver ran is still refused without confirmation.
+    if isinstance(consent, DeclinedElicitation):
+        return (
+            f"window_close not performed: the user declined closing window {window_id}. "
+            "Do not retry unless the user asks."
+        )
+    if isinstance(consent, CancelledElicitation):
+        return (
+            "window_close not performed: the user dismissed the confirmation "
+            f"for window {window_id}."
+        )
+    assert isinstance(consent, AcceptedElicitation)
+    data = consent.data
+    if data == _NO_WINDOW:
+        return _engine.window_close_no_target(window_id)
+    if isinstance(data, WindowCloseConfirmation):
+        if not data.confirm:
+            return (
+                f"window_close not performed: the user did not confirm closing window {window_id}."
+            )
+        return _engine.window_close(window_id=window_id, live_confirmed=True)
+    return _engine.window_close(window_id=window_id, live_confirmed=False)
 
 
 # ── D-Bus tools ──────────────────────────────────────────────────────────

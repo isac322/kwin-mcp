@@ -251,6 +251,16 @@ class AutomationEngine:
         with contextlib.suppress(Exception):
             self._teardown_atspi_worker()
 
+    @property
+    def is_live_session(self) -> bool:
+        """Whether the current session is attached with session_connect.
+
+        A plain attribute read with no D-Bus access, so it is safe off the tool
+        thread. It can go stale before the next tool call runs; window_close
+        re-checks on the tool thread.
+        """
+        return isinstance(self._session, LiveSession)
+
     # ── Private helpers ───────────────────────────────────────────────────
 
     def _get_session(self) -> Session | LiveSession:
@@ -1121,27 +1131,52 @@ class AutomationEngine:
             return "No active window."
         return f"Active window:\n{format_window(WindowGeometry.model_validate(window))}"
 
-    def window_close(self, window_id: str) -> str:
+    @staticmethod
+    def window_close_no_target(window_id: str) -> str:
+        """Reply for a window_close call that addresses no window."""
+        if not window_id:
+            return "window_close needs a window_id (see window_geometry)."
+        return f"No window with id {window_id!r}."
+
+    def window_app_name(self, window_id: str) -> str | None:
+        """Return the app name of the window with exactly this id.
+
+        None when window_id is empty or no such window exists. Raises
+        RuntimeError when KWin cannot be queried.
+        """
+        self._get_session()
+        if not window_id:
+            return None
+        resp = self._run_kwin_query({"app_name": "", "window_id": window_id})
+        if not resp["ok"]:
+            msg = f"Window lookup for {window_id!r} failed: {resp['error']}"
+            raise RuntimeError(msg)
+        windows = resp["result"]
+        return str(windows[0]["app"]) if windows else None
+
+    def window_close(self, window_id: str, *, live_confirmed: bool = False) -> str:
         """Ask KWin to close one window, addressed by the id window_geometry reports.
 
-        Refused in live sessions: closing can discard unsaved work in the user's
-        own applications, and unlike input actions it cannot be watched and
-        interrupted step by step.
+        Refused in live sessions unless ``live_confirmed`` says the user approved
+        this close: closing can discard unsaved work in the user's own
+        applications, and unlike input actions it cannot be watched and
+        interrupted step by step. The check runs here, on the tool thread, so it
+        sees the session as it is when the close is sent.
         """
         session = self._get_session()
-        if isinstance(session, LiveSession):
+        if isinstance(session, LiveSession) and not live_confirmed:
             return (
                 "window_close is disabled in live sessions: it could discard unsaved work "
                 "on the real desktop. Close the window through the app's own UI instead."
             )
         if not window_id:
-            return "window_close needs a window_id (see window_geometry)."
+            return self.window_close_no_target(window_id)
         resp = self._run_kwin_query({"op": "close", "window_id": window_id})
         if not resp["ok"]:
             return f"Failed to close window {window_id!r}: {resp['error']}"
         result = resp["result"]
         if not result["found"]:
-            return f"No window with id {window_id!r}."
+            return self.window_close_no_target(window_id)
         name = f'{result["app"]} "{result["caption"]}"'
         if not result["closeable"]:
             return f"Window {name} ({window_id}) cannot be closed."

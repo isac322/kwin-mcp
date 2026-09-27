@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+import anyio
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import TextContent
@@ -57,6 +58,28 @@ EXPECTED_TOOL_NAMES: frozenset[str] = frozenset(
 )
 
 
+class ProgressLog:
+    """Progress callback that records every ``notifications/progress`` of one call."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[float, float | None, str | None]] = []
+
+    async def __call__(self, progress: float, total: float | None, message: str | None) -> None:
+        self.events.append((progress, total, message))
+
+    @property
+    def values(self) -> list[float]:
+        return [progress for progress, _, _ in self.events]
+
+    async def settle(self, seconds: float = 0.2) -> None:
+        """Let callbacks the client spawned for already-received notifications run.
+
+        The client dispatches each progress notification to its own task, so the
+        last callbacks can still be pending when ``call_tool`` returns.
+        """
+        await anyio.sleep(seconds)
+
+
 class McpTestClient:
     """Initialized MCP client plus assertions tailored to text-returning tools."""
 
@@ -78,10 +101,18 @@ class McpTestClient:
             return ""
 
     async def call_result(
-        self, name: str, arguments: dict[str, Any] | None = None
+        self,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        progress_callback: ProgressLog | None = None,
     ) -> CallToolResult:
-        """Call a tool over JSON-RPC and return the unmodified MCP result."""
-        return await self.session.call_tool(name, arguments)
+        """Call a tool over JSON-RPC and return the unmodified MCP result.
+
+        Passing ``progress_callback`` makes the client send a progressToken, so the
+        server's ``notifications/progress`` for this call are recorded in it.
+        """
+        return await self.session.call_tool(name, arguments, progress_callback=progress_callback)
 
     async def call_text(self, name: str, arguments: dict[str, Any] | None = None) -> str:
         """Call a text tool, failing immediately when MCP reports a tool error."""

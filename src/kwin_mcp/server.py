@@ -4,32 +4,40 @@ Thin wrapper that registers MCP tools with parameter descriptions,
 delegating all logic to AutomationEngine in core.py.
 
 Supports ``--default-live-session`` flag to switch the default session mode
-from virtual (isolated) to live (real desktop).
+from virtual (isolated) to live (real desktop), and ``--screenshot-images`` flag
+to attach the screenshot PNGs a tool call captured as MCP image content.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import functools
 import importlib.metadata
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Annotated
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.utilities.context_injection import find_context_parameter
+from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 from pydantic import Field
 
+from kwin_mcp import progress
 from kwin_mcp.core import AutomationEngine
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+    from concurrent.futures import Future
     from types import FunctionType
 
 mcp = MCPServer("kwin-mcp", version=importlib.metadata.version("kwin-mcp"))
 _engine = AutomationEngine()
 
-# Detect --default-live-session flag early (before MCP framework consumes args)
+# Detect custom flags early (before MCP framework consumes args)
 _live_session_mode = "--default-live-session" in sys.argv
+_screenshot_images = "--screenshot-images" in sys.argv
 
 # Tool descriptions that replace the docstrings when --default-live-session is active.
 _LIVE_SESSION_DESCRIPTIONS: dict[str, str] = {
@@ -51,42 +59,113 @@ _LIVE_SESSION_DESCRIPTIONS: dict[str, str] = {
 # calls stay serialized on one thread, as they were when tools ran inline one at a time.
 _tool_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kwin-mcp-tool")
 
+# Tool annotations (MCP hints) shared by tools with identical behavior profiles.
+_READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
+# Input injection and other actions that change app state and are not safe to repeat.
+_DESTRUCTIVE = ToolAnnotations(
+    read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False
+)
+# Destructive but repeating with the same arguments has no further effect.
+_DESTRUCTIVE_IDEMPOTENT = ToolAnnotations(
+    read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=False
+)
+_NON_DESTRUCTIVE_IDEMPOTENT = ToolAnnotations(
+    read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False
+)
+# Starts or attaches to sessions/processes outside the server's closed domain.
+_SPAWN = ToolAnnotations(
+    read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=True
+)
+_DBUS_CALL = ToolAnnotations(
+    read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=True
+)
 
-def _tool[F: FunctionType](fn: F) -> F:
-    """Register ``fn`` as an MCP tool that runs on the dedicated tool thread.
+
+def _tool[F: FunctionType](
+    *, annotations: ToolAnnotations, images: bool = False
+) -> Callable[[F], F]:
+    """Register a sync body as an MCP tool that runs on the dedicated tool thread.
+
+    ``annotations`` are published in tools/list. ``images`` marks tools that may capture
+    screenshot PNGs; with ``--screenshot-images`` the PNGs a call recorded through
+    ``progress.record_image`` are appended as ImageContent after the unchanged text.
+    The body runs inside a ``progress.call_scope`` that forwards ``progress.report``
+    calls to the client as progress notifications (no-op without a progressToken).
 
     Any exception is re-raised as ``ToolError`` so the client sees
-    ``Error executing tool <name>: <message>``. Returns ``fn`` unchanged.
+    ``Error executing tool <name>: <message>``. Input and output schemas are derived
+    from ``fn`` unchanged, and the body never receives the Context. Returns ``fn``.
     """
 
-    def run_body(*args: object, **kwargs: object) -> tuple[str | None, str | None]:
-        # Reduce a failure to its message here, on the tool thread: the exception's
-        # traceback keeps the failed call's D-Bus connections and fds alive, and they
-        # must be released before the response goes out, as they were when tools ran
-        # inline on the event loop.
-        try:
-            return fn(*args, **kwargs), None
-        except Exception as exc:
-            return None, str(exc)
+    def register(fn: F) -> F:
+        attach_images = images and _screenshot_images
 
-    @functools.wraps(fn)
-    async def wrapper(*args: object, **kwargs: object) -> str | None:
-        result, error = await asyncio.wrap_future(
-            _tool_executor.submit(functools.partial(run_body, *args, **kwargs))
-        )
-        if error is not None:
-            raise ToolError(error)
-        return result
+        def run_body(
+            report_fn: progress.ReportFn, kwargs: dict[str, object]
+        ) -> tuple[str | None, list[str], str | None]:
+            # Reduce a failure to its message here, on the tool thread: the exception's
+            # traceback keeps the failed call's D-Bus connections and fds alive, and they
+            # must be released before the response goes out, as they were when tools ran
+            # inline on the event loop. PNGs are read and encoded here too, off the loop.
+            try:
+                with progress.call_scope(report_fn, collect_images=attach_images) as scope:
+                    text = fn(**kwargs)
+                    encoded = [
+                        base64.b64encode(path.read_bytes()).decode("ascii") for path in scope.images
+                    ]
+                return text, encoded, None
+            except Exception as exc:
+                return None, [], str(exc)
 
-    description = _LIVE_SESSION_DESCRIPTIONS.get(fn.__name__) if _live_session_mode else None
-    mcp.tool(description=description)(wrapper)
-    return fn
+        @functools.wraps(fn)
+        async def wrapper(*, ctx: Context, **kwargs: object) -> str | CallToolResult:
+            loop = asyncio.get_running_loop()
+            sent: list[Future[None]] = []
+
+            def report_fn(value: float, total: float | None, message: str | None) -> None:
+                # Called on the tool thread. Do not wait for the send: blocking on the loop
+                # would slow every step. report_progress never raises on a closed channel.
+                coro = ctx.report_progress(value, total, message)
+                sent.append(asyncio.run_coroutine_threadsafe(coro, loop))
+
+            text, encoded, error = await asyncio.wrap_future(
+                _tool_executor.submit(run_body, report_fn, kwargs)
+            )
+            # Flush progress sends before the response; the SDK drops notifications for a
+            # request once its response is written. The body is done, so no appends race.
+            await asyncio.gather(*map(asyncio.wrap_future, sent), return_exceptions=True)
+            if error is not None:
+                raise ToolError(error)
+            assert text is not None
+            if not encoded:
+                return text
+            return CallToolResult(
+                content=[
+                    TextContent(text=text),
+                    *(ImageContent(data=data, mime_type="image/png") for data in encoded),
+                ],
+                structured_content={"result": text},
+            )
+
+        # Context injection: the SDK finds the Context parameter via get_type_hints(wrapper),
+        # while the argument model and schemas follow __wrapped__ to fn. Use a new dict so
+        # fn.__annotations__ (introspected by the CLI) is not mutated.
+        wrapper.__annotations__ = {**fn.__annotations__, "ctx": Context}
+
+        description = _LIVE_SESSION_DESCRIPTIONS.get(fn.__name__) if _live_session_mode else None
+        # The SDK silently skips Context injection when type hints fail to resolve; check it
+        # with the same lookup the SDK uses before registering.
+        assert find_context_parameter(wrapper) == "ctx", fn.__name__
+        mcp.tool(description=description, annotations=annotations)(wrapper)
+        return fn
+
+    return register
 
 
 # ── Session management ──────────────────────────────────────────────────
 
 
-@_tool
+@_tool(annotations=_SPAWN)
 def session_start(
     app_command: Annotated[
         str,
@@ -149,7 +228,7 @@ def session_start(
     )
 
 
-@_tool
+@_tool(annotations=_SPAWN)
 def session_connect(
     dbus_address: Annotated[
         str,
@@ -184,7 +263,7 @@ def session_connect(
     )
 
 
-@_tool
+@_tool(annotations=_DESTRUCTIVE_IDEMPOTENT)
 def session_stop() -> str:
     """Stop the current session and clean up.
 
@@ -199,7 +278,7 @@ def session_stop() -> str:
 # ── Screenshot / Accessibility ───────────────────────────────────────────
 
 
-@_tool
+@_tool(annotations=_READ_ONLY, images=True)
 def screenshot(
     include_cursor: Annotated[
         bool,
@@ -219,7 +298,7 @@ def screenshot(
     return _engine.screenshot(include_cursor=include_cursor)
 
 
-@_tool
+@_tool(annotations=_READ_ONLY)
 def accessibility_tree(
     app_name: Annotated[
         str,
@@ -247,7 +326,7 @@ def accessibility_tree(
     return _engine.accessibility_tree(app_name=app_name, max_depth=max_depth, role=role)
 
 
-@_tool
+@_tool(annotations=_READ_ONLY)
 def find_ui_elements(
     query: Annotated[
         str,
@@ -284,7 +363,7 @@ def find_ui_elements(
 # ── Mouse tools ──────────────────────────────────────────────────────────
 
 
-@_tool
+@_tool(annotations=_DESTRUCTIVE, images=True)
 def mouse_click(
     x: Annotated[
         int,
@@ -336,7 +415,7 @@ def mouse_click(
     )
 
 
-@_tool
+@_tool(annotations=_NON_DESTRUCTIVE_IDEMPOTENT, images=True)
 def mouse_move(
     x: Annotated[int, Field(description="X coordinate in pixels.")],
     y: Annotated[int, Field(description="Y coordinate in pixels.")],
@@ -356,7 +435,7 @@ def mouse_move(
     return _engine.mouse_move(x=x, y=y, screenshot_after_ms=screenshot_after_ms)
 
 
-@_tool
+@_tool(annotations=_DESTRUCTIVE)
 def mouse_scroll(
     x: Annotated[int, Field(description="X coordinate in pixels.")],
     y: Annotated[int, Field(description="Y coordinate in pixels.")],
@@ -395,7 +474,7 @@ def mouse_scroll(
     )
 
 
-@_tool
+@_tool(annotations=_DESTRUCTIVE, images=True)
 def mouse_drag(
     from_x: Annotated[int, Field(description="Starting X coordinate in pixels.")],
     from_y: Annotated[int, Field(description="Starting Y coordinate in pixels.")],
@@ -438,7 +517,7 @@ def mouse_drag(
     )
 
 
-@_tool
+@_tool(annotations=_DESTRUCTIVE_IDEMPOTENT)
 def mouse_button_down(
     x: Annotated[int, Field(description="X coordinate in pixels.")],
     y: Annotated[int, Field(description="Y coordinate in pixels.")],
@@ -455,7 +534,7 @@ def mouse_button_down(
     return _engine.mouse_button_down(x=x, y=y, button=button)
 
 
-@_tool
+@_tool(annotations=_DESTRUCTIVE_IDEMPOTENT)
 def mouse_button_up(
     x: Annotated[int, Field(description="X coordinate in pixels.")],
     y: Annotated[int, Field(description="Y coordinate in pixels.")],
@@ -474,7 +553,7 @@ def mouse_button_up(
 # ── Keyboard tools ───────────────────────────────────────────────────────
 
 
-@_tool
+@_tool(annotations=_DESTRUCTIVE, images=True)
 def keyboard_type(
     text: Annotated[
         str,
@@ -500,7 +579,7 @@ def keyboard_type(
     return _engine.keyboard_type(text=text, screenshot_after_ms=screenshot_after_ms)
 
 
-@_tool
+@_tool(annotations=_DESTRUCTIVE, images=True)
 def keyboard_type_unicode(
     text: Annotated[
         str,
@@ -528,7 +607,7 @@ def keyboard_type_unicode(
     return _engine.keyboard_type_unicode(text=text, screenshot_after_ms=screenshot_after_ms)
 
 
-@_tool
+@_tool(annotations=_DESTRUCTIVE, images=True)
 def keyboard_key(
     key: Annotated[
         str,
@@ -553,7 +632,7 @@ def keyboard_key(
     return _engine.keyboard_key(key=key, screenshot_after_ms=screenshot_after_ms)
 
 
-@_tool
+@_tool(annotations=_DESTRUCTIVE_IDEMPOTENT)
 def keyboard_key_down(
     key: Annotated[
         str,
@@ -569,7 +648,7 @@ def keyboard_key_down(
     return _engine.keyboard_key_down(key=key)
 
 
-@_tool
+@_tool(annotations=_DESTRUCTIVE_IDEMPOTENT)
 def keyboard_key_up(
     key: Annotated[
         str,
@@ -587,7 +666,7 @@ def keyboard_key_up(
 # ── Touch tools ──────────────────────────────────────────────────────────
 
 
-@_tool
+@_tool(annotations=_DESTRUCTIVE, images=True)
 def touch_tap(
     x: Annotated[int, Field(description="X coordinate in pixels.")],
     y: Annotated[int, Field(description="Y coordinate in pixels.")],
@@ -610,7 +689,7 @@ def touch_tap(
     return _engine.touch_tap(x=x, y=y, hold_ms=hold_ms, screenshot_after_ms=screenshot_after_ms)
 
 
-@_tool
+@_tool(annotations=_DESTRUCTIVE, images=True)
 def touch_swipe(
     from_x: Annotated[int, Field(description="Starting X coordinate in pixels.")],
     from_y: Annotated[int, Field(description="Starting Y coordinate in pixels.")],
@@ -636,7 +715,7 @@ def touch_swipe(
     )
 
 
-@_tool
+@_tool(annotations=_DESTRUCTIVE, images=True)
 def touch_pinch(
     center_x: Annotated[int, Field(description="Center X coordinate of the pinch gesture.")],
     center_y: Annotated[int, Field(description="Center Y coordinate of the pinch gesture.")],
@@ -674,7 +753,7 @@ def touch_pinch(
     )
 
 
-@_tool
+@_tool(annotations=_DESTRUCTIVE, images=True)
 def touch_multi_swipe(
     from_x: Annotated[
         int, Field(description="Starting X coordinate (center of finger group) in pixels.")
@@ -710,7 +789,7 @@ def touch_multi_swipe(
 # ── Clipboard tools ──────────────────────────────────────────────────────
 
 
-@_tool
+@_tool(annotations=_READ_ONLY)
 def clipboard_get() -> str:
     """Read the current clipboard content in the isolated session.
 
@@ -721,7 +800,7 @@ def clipboard_get() -> str:
     return _engine.clipboard_get()
 
 
-@_tool
+@_tool(annotations=_NON_DESTRUCTIVE_IDEMPOTENT)
 def clipboard_set(
     text: Annotated[str, Field(description="Text to copy to clipboard.")],
 ) -> str:
@@ -737,7 +816,7 @@ def clipboard_set(
 # ── Wait-for-UI tools ───────────────────────────────────────────────────
 
 
-@_tool
+@_tool(annotations=_READ_ONLY)
 def wait_for_element(
     query: Annotated[
         str,
@@ -781,7 +860,7 @@ def wait_for_element(
 # ── Window management tools ──────────────────────────────────────────────
 
 
-@_tool
+@_tool(annotations=_SPAWN)
 def launch_app(
     command: Annotated[
         str,
@@ -800,7 +879,7 @@ def launch_app(
     return _engine.launch_app(command=command, env=env)
 
 
-@_tool
+@_tool(annotations=_READ_ONLY)
 def list_windows() -> str:
     """List accessible application windows in the isolated session.
 
@@ -811,7 +890,7 @@ def list_windows() -> str:
     return _engine.list_windows()
 
 
-@_tool
+@_tool(annotations=_NON_DESTRUCTIVE_IDEMPOTENT)
 def focus_window(
     app_name: Annotated[
         str,
@@ -826,7 +905,7 @@ def focus_window(
     return _engine.focus_window(app_name=app_name)
 
 
-@_tool
+@_tool(annotations=_READ_ONLY)
 def window_geometry(
     app_name: Annotated[
         str,
@@ -848,7 +927,7 @@ def window_geometry(
     return _engine.window_geometry(app_name=app_name, window_id=window_id)
 
 
-@_tool
+@_tool(annotations=_READ_ONLY)
 def active_window() -> str:
     """Report the window KWin currently treats as active.
 
@@ -858,7 +937,7 @@ def active_window() -> str:
     return _engine.active_window()
 
 
-@_tool
+@_tool(annotations=_DESTRUCTIVE_IDEMPOTENT)
 def window_close(
     window_id: Annotated[
         str,
@@ -878,7 +957,7 @@ def window_close(
 # ── D-Bus tools ──────────────────────────────────────────────────────────
 
 
-@_tool
+@_tool(annotations=_DBUS_CALL)
 def dbus_call(
     service: Annotated[str, Field(description='D-Bus service name (e.g. "org.kde.KWin").')],
     path: Annotated[str, Field(description='Object path (e.g. "/org/kde/KWin").')],
@@ -915,7 +994,7 @@ def dbus_call(
     )
 
 
-@_tool
+@_tool(annotations=_READ_ONLY)
 def read_app_log(
     pid: Annotated[
         int,
@@ -934,7 +1013,7 @@ def read_app_log(
     return _engine.read_app_log(pid=pid, last_n_lines=last_n_lines)
 
 
-@_tool
+@_tool(annotations=_READ_ONLY)
 def wayland_info(
     filter_protocol: Annotated[
         str,
@@ -957,11 +1036,13 @@ def main() -> None:
     """Run the MCP server.
 
     Supports ``--default-live-session`` flag to make session_connect the default
-    session tool instead of session_start.
+    session tool instead of session_start, and ``--screenshot-images`` flag to attach
+    captured screenshot PNGs to tool results as image content.
     """
-    # Remove our custom flag before MCP framework parses args
-    if "--default-live-session" in sys.argv:
-        sys.argv.remove("--default-live-session")
+    # Remove our custom flags before MCP framework parses args
+    for flag in ("--default-live-session", "--screenshot-images"):
+        if flag in sys.argv:
+            sys.argv.remove(flag)
     mcp.run()
 
 

@@ -187,7 +187,35 @@ kwin-mcp-cli
 # Live session mode (default to real desktop instead of virtual)
 kwin-mcp --default-live-session
 kwin-mcp-cli --default-live-session
+
+# Attach captured screenshots to tool results as MCP image content
+kwin-mcp --screenshot-images
 ```
+
+### Screenshot Images in Tool Results (`--screenshot-images`)
+
+By default, `screenshot` and the `screenshot_after_ms` frame captures of action tools return only the PNG file paths, so the agent must read the files to look at them. Start the server with `--screenshot-images` to also attach each captured PNG to the tool result as MCP `image` content — the single `screenshot` frame and every `screenshot_after_ms` burst frame, in capture order. The text of the result and its `{"result": ...}` structured content are unchanged; image blocks are only appended, and only for tools that actually captured frames.
+
+Claude Code:
+
+```bash
+claude mcp add kwin-mcp -- uvx kwin-mcp --screenshot-images
+```
+
+Any JSON MCP config takes the flag as another argument:
+
+```json
+{
+  "mcpServers": {
+    "kwin-mcp": {
+      "command": "uvx",
+      "args": ["kwin-mcp", "--screenshot-images"]
+    }
+  }
+}
+```
+
+The flag is off by default because every attached frame is sent to the model and costs context tokens, and a `screenshot_after_ms` burst attaches all of its frames — there is no cap. In a live session (`session_connect` or `--default-live-session`) the images are your real desktop's pixels, so enabling the flag sends them to the model provider.
 
 ## Available Tools
 
@@ -314,6 +342,12 @@ kwin-mcp server  (33 tools)       kwin-mcp-cli (interactive REPL)
   |-- read_app_log --------------> log file read
   +-- wayland_info --------------> wayland-info
 ```
+
+### Tool Annotations and Progress Notifications
+
+Every tool publishes MCP tool annotations in `tools/list`, so clients can decide which calls need user confirmation. Observation tools such as `screenshot`, `accessibility_tree`, `find_ui_elements`, `wait_for_element`, `list_windows`, and `clipboard_get` are marked read-only. `window_close`, `session_stop`, `dbus_call`, and the mouse, keyboard, and touch input tools other than `mouse_move` are marked destructive: injected input can trigger any action in the focused app, such as deleting a file or sending a message. `mouse_move`, `focus_window`, `clipboard_set`, `launch_app`, `session_start`, and `session_connect` change state but are not marked destructive. The annotations are hints for the client; kwin-mcp does not enforce them.
+
+Long-running tools send MCP progress notifications when the client includes a `progressToken` in the request: `session_start` and `session_connect` report their startup steps, `wait_for_element` reports polling, `screenshot_after_ms` bursts report captured frames, and long `mouse_click`/`touch_tap` holds, touch gestures, `mouse_drag`, and long `keyboard_type` strings report their progress. Clients that send no token receive no notifications, and tool results are the same either way.
 
 ### Triple Isolation (+ Optional Home Isolation)
 

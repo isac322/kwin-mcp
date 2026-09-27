@@ -21,11 +21,20 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 from xml.etree import ElementTree
 
+from kwin_mcp import progress
 from kwin_mcp.input import InputBackend, MouseButton
 from kwin_mcp.screenshot import capture_frame_burst, capture_screenshot_to_file
 from kwin_mcp.session import LiveSession, Session, SessionConfig
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+# Longest single wait inside an AT-SPI exchange, so a heartbeat can run while
+# the worker is busy (e.g. a long wait_for_element).
+_ATSPI_HEARTBEAT_S = 0.25
 
 # Per-attempt bound for one AT-SPI2 request, and how long a worker may take to
 # exit on stdin EOF before it is killed.
@@ -336,11 +345,17 @@ class AutomationEngine:
             self._atspi_buffer = b""
         return proc
 
-    def _atspi_exchange(self, proc: subprocess.Popen[bytes], line: bytes) -> dict:
+    def _atspi_exchange(
+        self,
+        proc: subprocess.Popen[bytes],
+        line: bytes,
+        heartbeat: Callable[[], None] | None = None,
+    ) -> dict:
         """Send one request line to the worker and read one response line.
 
         Raises ``TimeoutError`` after ``_ATSPI_TIMEOUT_S`` and ``EOFError`` if the
-        worker exits or closes its pipes.
+        worker exits or closes its pipes. ``heartbeat`` runs at least every
+        ``_ATSPI_HEARTBEAT_S`` while waiting for the response.
         """
         assert proc.stdin is not None
         assert proc.stdout is not None
@@ -356,8 +371,12 @@ class AutomationEngine:
             selector.register(fd, selectors.EVENT_READ)
             while b"\n" not in self._atspi_buffer:
                 remaining = deadline - time.monotonic()
-                if remaining <= 0 or not selector.select(remaining):
+                if remaining <= 0:
                     raise TimeoutError
+                if not selector.select(min(remaining, _ATSPI_HEARTBEAT_S)):
+                    if heartbeat is not None:
+                        heartbeat()
+                    continue
                 chunk = os.read(fd, 65536)
                 if not chunk:
                     raise EOFError(f"AT-SPI2 worker exited (status {proc.poll()})")
@@ -365,13 +384,16 @@ class AutomationEngine:
         response, _, self._atspi_buffer = self._atspi_buffer.partition(b"\n")
         return json.loads(response)
 
-    def _run_atspi(self, op: str, **kwargs: object) -> dict:
+    def _run_atspi(
+        self, op: str, *, heartbeat: Callable[[], None] | None = None, **kwargs: object
+    ) -> dict:
         """Run an AT-SPI2 query in the long-lived worker bound to the session bus.
 
         The worker (``python -m kwin_mcp.accessibility --serve``) is started once
         per session bus and reused, so each call skips interpreter startup and the
         PyGObject/Atspi import. A timeout, worker exit or worker-side exception
-        discards the worker and retries once on a fresh one.
+        discards the worker and retries once on a fresh one. ``heartbeat`` is
+        called periodically while a response is awaited.
         """
         line = json.dumps({"op": op, **kwargs}).encode() + b"\n"
         last_error = ""
@@ -381,7 +403,7 @@ class AutomationEngine:
                     time.sleep(0.5)
                 proc = self._ensure_atspi_worker()
                 try:
-                    resp = self._atspi_exchange(proc, line)
+                    resp = self._atspi_exchange(proc, line, heartbeat)
                 except TimeoutError:
                     last_error = f"AT-SPI2 query timed out after {_ATSPI_TIMEOUT_S:g}s (op={op})"
                 except EOFError as exc:
@@ -444,6 +466,7 @@ class AutomationEngine:
 
         lines = [action_result, f"Captured {len(frames)} frames:"]
         for delay_ms, (path, mapping) in zip(sorted(screenshot_after_ms), frames, strict=True):
+            progress.record_image(path)
             size_kb = path.stat().st_size / 1024
             lines.append(f"  {delay_ms}ms: {path} ({size_kb:.1f} KB)")
             lines.append(f"    {mapping.describe()}")
@@ -481,7 +504,8 @@ class AutomationEngine:
             isolate_home=isolate_home,
             keep_home=keep_home,
         )
-        info = self._session.start(config)
+        total_steps = 5 if app_command else 4
+        info = self._session.start(config, progress_total=total_steps)
 
         result = f"Session started. Wayland socket: {info.wayland_socket}"
         if info.home_dir:
@@ -493,6 +517,7 @@ class AutomationEngine:
             cmd = shlex.split(app_command)
             app_info = self._session.launch_app(cmd, extra_env=env)
             result += f"\nApp launched: {app_command} (PID={app_info.pid})"
+            progress.report(4, total_steps, "App launched")
             result += f"\nApp log: {app_info.log_path}"
 
         # Set up input backend via KWin's EIS D-Bus interface. start() returned
@@ -505,6 +530,7 @@ class AutomationEngine:
         else:
             result += "\nInput backend: KWin EIS"
 
+        progress.report(total_steps, total_steps, "Input backend ready")
         return result
 
     def session_connect(
@@ -544,6 +570,7 @@ class AutomationEngine:
             bus.get_object("org.kde.KWin", "/org/kde/KWin")
         except dbus_module.DBusException as exc:
             return f"Cannot reach KWin on D-Bus ({dbus_addr}): {exc}"
+        progress.report(1, 3, "KWin reachable on D-Bus")
 
         display_path = Path(wayland_disp)
         if not display_path.is_absolute():
@@ -568,6 +595,7 @@ class AutomationEngine:
                 probe.connect(str(display_path))
         except OSError as exc:
             return f"Cannot reach Wayland display ({wayland_disp}): {exc}"
+        progress.report(2, 3, "Wayland display reachable")
 
         screenshot_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-screenshots-"))
 
@@ -596,6 +624,7 @@ class AutomationEngine:
                     "Screenshot and accessibility tools still work."
                 )
 
+        progress.report(3, 3, "Input backend ready")
         return result
 
     def session_stop(self) -> str:
@@ -638,6 +667,7 @@ class AutomationEngine:
             include_cursor=include_cursor,
             output_dir=info.screenshot_dir,
         )
+        progress.record_image(path)
         size_kb = path.stat().st_size / 1024
         return f"Screenshot saved: {path} ({size_kb:.1f} KB)\n{mapping.describe()}"
 
@@ -988,8 +1018,15 @@ class AutomationEngine:
     ) -> str:
         """Wait for a UI element to appear in the accessibility tree."""
         self._get_session()
+        wait_start = time.monotonic()
+
+        def heartbeat() -> None:
+            elapsed_ms = (time.monotonic() - wait_start) * 1000
+            progress.report(elapsed_ms, timeout_ms, f"Waiting for {query}")
+
         resp = self._run_atspi(
             "wait",
+            heartbeat=heartbeat,
             query=query,
             app_name=app_name,
             timeout_ms=timeout_ms,

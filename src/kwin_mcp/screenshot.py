@@ -58,6 +58,8 @@ from typing import TYPE_CHECKING, TypedDict
 import dbus
 import dbus.bus
 
+from kwin_mcp import progress
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -1239,6 +1241,18 @@ def capture_frame_burst(
     burst_start = time.monotonic()
     output_dir.mkdir(parents=True, exist_ok=True)
     sorted_delays = sorted(delays_ms)
+    frame_count = len(sorted_delays)
+    frames_saved = 0
+
+    def on_frame(index: int, delay_ms: int) -> None:
+        # One counter across backend fallbacks keeps reported progress increasing.
+        nonlocal frames_saved
+        frames_saved += 1
+        progress.report(
+            frames_saved,
+            max(frames_saved, frame_count),
+            f"Frame {index + 1}/{frame_count} at {delay_ms}ms",
+        )
 
     x11_enabled = os.environ.get("KWIN_MCP_X11_SCREENSHOT") == "1"
     x11_selected = x11_enabled and bool(os.environ.get("DISPLAY"))
@@ -1251,13 +1265,18 @@ def capture_frame_burst(
                 sorted_delays,
                 include_cursor=include_cursor,
                 start_time=burst_start,
+                on_frame=on_frame,
             )
         except RuntimeError as exc:
             x11_error = exc
 
     try:
         return _capture_frame_burst_dbus(
-            dbus_address, output_dir, sorted_delays, include_cursor=include_cursor
+            dbus_address,
+            output_dir,
+            sorted_delays,
+            include_cursor=include_cursor,
+            on_frame=on_frame,
         )
     except (dbus.DBusException, RuntimeError) as dbus_exc:
         try:
@@ -1267,6 +1286,7 @@ def capture_frame_burst(
                 output_dir,
                 sorted_delays,
                 include_cursor=include_cursor,
+                on_frame=on_frame,
             )
         except RuntimeError as spectacle_exc:
             if not x11_enabled:
@@ -1284,6 +1304,7 @@ def capture_frame_burst(
                         output_dir,
                         sorted_delays,
                         include_cursor=include_cursor,
+                        on_frame=on_frame,
                     )
                 except RuntimeError as exc:
                     x11_error = exc
@@ -1303,6 +1324,7 @@ def _capture_frame_burst_dbus(
     sorted_delays: list[int],
     *,
     include_cursor: bool = False,
+    on_frame: Callable[[int, int], None] | None = None,
 ) -> list[tuple[Path, FrameMapping]]:
     """Capture frames using fast KWin ScreenShot2 D-Bus interface."""
 
@@ -1336,6 +1358,8 @@ def _capture_frame_burst_dbus(
         )
         _image_from_raw_frame(frame).save(frame_path, "PNG")
         frames.append((frame_path, mapping))
+        if on_frame is not None:
+            on_frame(i, delay_ms)
     return frames
 
 
@@ -1346,6 +1370,7 @@ def _capture_frame_burst_spectacle(
     sorted_delays: list[int],
     *,
     include_cursor: bool = False,
+    on_frame: Callable[[int, int], None] | None = None,
 ) -> list[tuple[Path, FrameMapping]]:
     """Capture frames using spectacle CLI (slower but always authorized)."""
     frames: list[tuple[Path, FrameMapping]] = []
@@ -1376,6 +1401,8 @@ def _capture_frame_burst_spectacle(
             "output topology changed while this frame was captured",
         )
         frames.append((frame_path, mapping))
+        if on_frame is not None:
+            on_frame(i, delay_ms)
     return frames
 
 
@@ -1386,6 +1413,7 @@ def _capture_frame_burst_x11(
     *,
     include_cursor: bool = False,
     start_time: float | None = None,
+    on_frame: Callable[[int, int], None] | None = None,
 ) -> list[tuple[Path, FrameMapping]]:
     """Capture frames from the explicitly enabled X11 display."""
     display = os.environ.get("DISPLAY", "")
@@ -1408,6 +1436,8 @@ def _capture_frame_burst_x11(
             "output topology or windows changed while this frame was captured",
         )
         frames.append((frame_path, mapping))
+        if on_frame is not None:
+            on_frame(i, delay_ms)
     return frames
 
 

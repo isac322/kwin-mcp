@@ -214,6 +214,7 @@ src/kwin_mcp/
 ├── geometry.py        # Window geometry, activation, and output topology via KWin scripting
 ├── clipboard.py       # Private Wayland data-control helper for keyboard_type_unicode paste
 ├── dbus_args.py       # dbus_call argument parser (dbus-send strings and typed JSON)
+├── progress.py        # Per-call progress and screenshot-image scope (MCP-free; no-op in the CLI)
 └── input.py           # Input injection via KWin EIS D-Bus + libei
 
 docker/

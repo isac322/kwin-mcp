@@ -11,9 +11,9 @@
 # repositories at build time. environment.json records the installed versions of
 # KWIN_MCP_SYSTEM_PACKAGES.
 
-ARG TUMBLEWEED_IMAGE=opensuse/tumbleweed:latest@sha256:007fde2c1e6b3de48681c765b3d6905d4e59d2f7a26f4585ec49dd11305c3fe7
+ARG TUMBLEWEED_IMAGE=opensuse/tumbleweed:latest@sha256:8f013f32368a73422e03c4d73fff22abaf8b9131ec9b3cbff1d094540ecb7bcd
 
-FROM ghcr.io/astral-sh/uv:0.10.8@sha256:88234bc9e09c2b2f6d176a3daf411419eb0370d450a08129257410de9cfafd2a AS uv-bin
+FROM ghcr.io/astral-sh/uv:0.12.19@sha256:04d046b13e60d6bcec73cbc5e1cad25d680dea90c8573340950a0ac2d1aef424 AS uv-bin
 
 FROM ${TUMBLEWEED_IMAGE} AS wheel-builder
 
@@ -114,7 +114,7 @@ LABEL org.opencontainers.image.title="kwin-mcp E2E (openSUSE Tumbleweed)" \
       org.opencontainers.image.description="Virtual KWin environment for kwin-mcp end-to-end tests on openSUSE Tumbleweed" \
       org.opencontainers.image.source="https://github.com/isac322/kwin-mcp" \
       org.opencontainers.image.base.name="opensuse/tumbleweed:latest" \
-      org.opencontainers.image.base.digest="sha256:007fde2c1e6b3de48681c765b3d6905d4e59d2f7a26f4585ec49dd11305c3fe7"
+      org.opencontainers.image.base.digest="sha256:8f013f32368a73422e03c4d73fff22abaf8b9131ec9b3cbff1d094540ecb7bcd"
 
 ENV PATH="/opt/kwin-mcp-venv/bin:${PATH}" \
     HOME=/home/tester \

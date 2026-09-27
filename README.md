@@ -543,8 +543,8 @@ The container uses software rendering and needs no `--privileged`, `--cap-add`, 
 
 | Jobs | GitHub Actions runner |
 |---|---|
-| `amd64`, `fedora-amd64`, `opensuse-amd64`, `archlinux-amd64` | `ubuntu-24.04` |
-| `arm64`, `fedora-arm64`, `opensuse-arm64` | `ubuntu-24.04-arm` |
+| `amd64`, `fedora-amd64`, `opensuse-amd64`, `archlinux-amd64` | `ubuntu-26.04` |
+| `arm64`, `fedora-arm64`, `opensuse-arm64` | `ubuntu-26.04-arm` |
 
 A completed run retains `environment.json`, `junit.xml`, `pytest.log`, nested-KWin/Xvfb/MCP logs, and visual PNG evidence below its artifact directory. Failed runs also collect Docker inspect, container log, and process-list diagnostics.
 

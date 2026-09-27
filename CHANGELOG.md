@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Upgraded the development, CI, and E2E toolchain to the latest releases without changing kwin-mcp behavior. `uv.lock` resolves `mcp` 1.30.0 (still within the declared `mcp<2` range), PyGObject 3.58.0, pydantic 2.13.5, starlette 1.7.0, uvicorn 0.54.0, and their other transitives at their newest versions. The dev group now requires `ruff>=0.16.9`, `ty>=0.0.84`, and `pytest>=9.1.1`, the build backend requires `uv_build>=0.12.19,<0.13.0`, and `.python-version` selects Python 3.14. The runtime dependency floors and `requires-python>=3.12` are unchanged.
+- CI and E2E workflows run on `ubuntu-26.04` and `ubuntu-26.04-arm` runners and use `astral-sh/setup-uv@v10.2.0`. The E2E images use the `ghcr.io/astral-sh/uv:0.12.19` build helper, the newest `debian:trixie-slim` and `opensuse/tumbleweed` digests, Debian snapshot `20260926T000000Z`, and Arch Linux Archive date `2026/09/26`. The OpenCode plugin builds with `@opencode-ai/plugin` 1.18.32, `@swc/core` 1.16.2, `@types/node` 26.6.3, and the latest `@typescript/native-preview`, and type-checks against ES2025; its emitted JavaScript is unchanged.
+
 ## [0.9.1] - 2026-09-27
 
 ### Fixed

@@ -195,7 +195,7 @@ On failure, the runner also records Docker inspection, container log, and proces
 diagnostics.
 
 CI runs the same installed-package architecture natively. The Debian image and the Fedora 44 and
-openSUSE Tumbleweed variants run on both `ubuntu-24.04` amd64 and `ubuntu-24.04-arm` arm64
+openSUSE Tumbleweed variants run on both `ubuntu-26.04` amd64 and `ubuntu-26.04-arm` arm64
 runners; the Arch Linux variant runs on amd64 only. CI uploads the artifact directory for each job,
 and every job gates the workflow.
 

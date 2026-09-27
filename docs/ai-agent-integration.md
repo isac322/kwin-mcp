@@ -100,7 +100,7 @@ Install the build dependencies for your distribution from the README's [Build Pr
 
 ### Server exits with `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`
 
-This is a Python dependency problem, not a missing system package. Published releases before 0.8.0 did not declare an upper bound for the `mcp` package — verified for the 0.7.0 package on PyPI — so a fresh install could resolve `mcp` 2.x, which no longer provides `mcp.server.fastmcp`. Release 0.8.0 ships the `mcp>=1.0.0,<2` constraint in its package metadata, so upgrading to 0.8.0 or later resolves the error; installing system build dependencies does not.
+This is a Python dependency problem, not a missing system package. kwin-mcp 0.7.0 on PyPI did not declare an upper bound for the `mcp` package, so a fresh install could resolve `mcp` 2.x, which no longer provides `mcp.server.fastmcp`. Releases 0.8.0–0.9.x cap `mcp<2`, and the next release runs on `mcp>=2.2.0,<3`, so upgrading kwin-mcp resolves the error; installing system build dependencies does not.
 
 ### Plugin installs but the agent ignores it
 

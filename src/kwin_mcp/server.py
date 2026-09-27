@@ -9,25 +9,84 @@ from virtual (isolated) to live (real desktop).
 
 from __future__ import annotations
 
+import asyncio
+import functools
+import importlib.metadata
 import sys
-from typing import Annotated
+from concurrent.futures import ThreadPoolExecutor
+from typing import TYPE_CHECKING, Annotated
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field
 
 from kwin_mcp.core import AutomationEngine
 
-mcp = FastMCP("kwin-mcp")
+if TYPE_CHECKING:
+    from types import FunctionType
+
+mcp = MCPServer("kwin-mcp", version=importlib.metadata.version("kwin-mcp"))
 _engine = AutomationEngine()
 
 # Detect --default-live-session flag early (before MCP framework consumes args)
 _live_session_mode = "--default-live-session" in sys.argv
 
+# Tool descriptions that replace the docstrings when --default-live-session is active.
+_LIVE_SESSION_DESCRIPTIONS: dict[str, str] = {
+    "session_start": (
+        "Start an isolated virtual KWin Wayland session. "
+        "Only use when explicitly asked for an isolated/virtual session. "
+        "The default session tool is session_connect (live session mode is active)."
+    ),
+    "session_connect": (
+        "Connect to an existing KWin session (e.g. the real desktop or a container). "
+        "This is the default session tool. Connects to a KWin compositor that is already "
+        "running. Clipboard is always available. Input injection uses KWin EIS when "
+        "possible, with ydotool as fallback."
+    ),
+}
+
+# All tool bodies run on this single worker thread. AutomationEngine state (session,
+# EIS/libei input, D-Bus connections) is not thread-safe and has thread affinity, so
+# calls stay serialized on one thread, as they were when tools ran inline one at a time.
+_tool_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kwin-mcp-tool")
+
+
+def _tool[F: FunctionType](fn: F) -> F:
+    """Register ``fn`` as an MCP tool that runs on the dedicated tool thread.
+
+    Any exception is re-raised as ``ToolError`` so the client sees
+    ``Error executing tool <name>: <message>``. Returns ``fn`` unchanged.
+    """
+
+    def run_body(*args: object, **kwargs: object) -> tuple[str | None, str | None]:
+        # Reduce a failure to its message here, on the tool thread: the exception's
+        # traceback keeps the failed call's D-Bus connections and fds alive, and they
+        # must be released before the response goes out, as they were when tools ran
+        # inline on the event loop.
+        try:
+            return fn(*args, **kwargs), None
+        except Exception as exc:
+            return None, str(exc)
+
+    @functools.wraps(fn)
+    async def wrapper(*args: object, **kwargs: object) -> str | None:
+        result, error = await asyncio.wrap_future(
+            _tool_executor.submit(functools.partial(run_body, *args, **kwargs))
+        )
+        if error is not None:
+            raise ToolError(error)
+        return result
+
+    description = _LIVE_SESSION_DESCRIPTIONS.get(fn.__name__) if _live_session_mode else None
+    mcp.tool(description=description)(wrapper)
+    return fn
+
 
 # ── Session management ──────────────────────────────────────────────────
 
 
-@mcp.tool()
+@_tool
 def session_start(
     app_command: Annotated[
         str,
@@ -90,7 +149,7 @@ def session_start(
     )
 
 
-@mcp.tool()
+@_tool
 def session_connect(
     dbus_address: Annotated[
         str,
@@ -125,7 +184,7 @@ def session_connect(
     )
 
 
-@mcp.tool()
+@_tool
 def session_stop() -> str:
     """Stop the current session and clean up.
 
@@ -140,7 +199,7 @@ def session_stop() -> str:
 # ── Screenshot / Accessibility ───────────────────────────────────────────
 
 
-@mcp.tool()
+@_tool
 def screenshot(
     include_cursor: Annotated[
         bool,
@@ -160,7 +219,7 @@ def screenshot(
     return _engine.screenshot(include_cursor=include_cursor)
 
 
-@mcp.tool()
+@_tool
 def accessibility_tree(
     app_name: Annotated[
         str,
@@ -188,7 +247,7 @@ def accessibility_tree(
     return _engine.accessibility_tree(app_name=app_name, max_depth=max_depth, role=role)
 
 
-@mcp.tool()
+@_tool
 def find_ui_elements(
     query: Annotated[
         str,
@@ -225,7 +284,7 @@ def find_ui_elements(
 # ── Mouse tools ──────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@_tool
 def mouse_click(
     x: Annotated[
         int,
@@ -277,7 +336,7 @@ def mouse_click(
     )
 
 
-@mcp.tool()
+@_tool
 def mouse_move(
     x: Annotated[int, Field(description="X coordinate in pixels.")],
     y: Annotated[int, Field(description="Y coordinate in pixels.")],
@@ -297,7 +356,7 @@ def mouse_move(
     return _engine.mouse_move(x=x, y=y, screenshot_after_ms=screenshot_after_ms)
 
 
-@mcp.tool()
+@_tool
 def mouse_scroll(
     x: Annotated[int, Field(description="X coordinate in pixels.")],
     y: Annotated[int, Field(description="Y coordinate in pixels.")],
@@ -336,7 +395,7 @@ def mouse_scroll(
     )
 
 
-@mcp.tool()
+@_tool
 def mouse_drag(
     from_x: Annotated[int, Field(description="Starting X coordinate in pixels.")],
     from_y: Annotated[int, Field(description="Starting Y coordinate in pixels.")],
@@ -379,7 +438,7 @@ def mouse_drag(
     )
 
 
-@mcp.tool()
+@_tool
 def mouse_button_down(
     x: Annotated[int, Field(description="X coordinate in pixels.")],
     y: Annotated[int, Field(description="Y coordinate in pixels.")],
@@ -396,7 +455,7 @@ def mouse_button_down(
     return _engine.mouse_button_down(x=x, y=y, button=button)
 
 
-@mcp.tool()
+@_tool
 def mouse_button_up(
     x: Annotated[int, Field(description="X coordinate in pixels.")],
     y: Annotated[int, Field(description="Y coordinate in pixels.")],
@@ -415,7 +474,7 @@ def mouse_button_up(
 # ── Keyboard tools ───────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@_tool
 def keyboard_type(
     text: Annotated[
         str,
@@ -441,7 +500,7 @@ def keyboard_type(
     return _engine.keyboard_type(text=text, screenshot_after_ms=screenshot_after_ms)
 
 
-@mcp.tool()
+@_tool
 def keyboard_type_unicode(
     text: Annotated[
         str,
@@ -469,7 +528,7 @@ def keyboard_type_unicode(
     return _engine.keyboard_type_unicode(text=text, screenshot_after_ms=screenshot_after_ms)
 
 
-@mcp.tool()
+@_tool
 def keyboard_key(
     key: Annotated[
         str,
@@ -494,7 +553,7 @@ def keyboard_key(
     return _engine.keyboard_key(key=key, screenshot_after_ms=screenshot_after_ms)
 
 
-@mcp.tool()
+@_tool
 def keyboard_key_down(
     key: Annotated[
         str,
@@ -510,7 +569,7 @@ def keyboard_key_down(
     return _engine.keyboard_key_down(key=key)
 
 
-@mcp.tool()
+@_tool
 def keyboard_key_up(
     key: Annotated[
         str,
@@ -528,7 +587,7 @@ def keyboard_key_up(
 # ── Touch tools ──────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@_tool
 def touch_tap(
     x: Annotated[int, Field(description="X coordinate in pixels.")],
     y: Annotated[int, Field(description="Y coordinate in pixels.")],
@@ -551,7 +610,7 @@ def touch_tap(
     return _engine.touch_tap(x=x, y=y, hold_ms=hold_ms, screenshot_after_ms=screenshot_after_ms)
 
 
-@mcp.tool()
+@_tool
 def touch_swipe(
     from_x: Annotated[int, Field(description="Starting X coordinate in pixels.")],
     from_y: Annotated[int, Field(description="Starting Y coordinate in pixels.")],
@@ -577,7 +636,7 @@ def touch_swipe(
     )
 
 
-@mcp.tool()
+@_tool
 def touch_pinch(
     center_x: Annotated[int, Field(description="Center X coordinate of the pinch gesture.")],
     center_y: Annotated[int, Field(description="Center Y coordinate of the pinch gesture.")],
@@ -615,7 +674,7 @@ def touch_pinch(
     )
 
 
-@mcp.tool()
+@_tool
 def touch_multi_swipe(
     from_x: Annotated[
         int, Field(description="Starting X coordinate (center of finger group) in pixels.")
@@ -651,7 +710,7 @@ def touch_multi_swipe(
 # ── Clipboard tools ──────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@_tool
 def clipboard_get() -> str:
     """Read the current clipboard content in the isolated session.
 
@@ -662,7 +721,7 @@ def clipboard_get() -> str:
     return _engine.clipboard_get()
 
 
-@mcp.tool()
+@_tool
 def clipboard_set(
     text: Annotated[str, Field(description="Text to copy to clipboard.")],
 ) -> str:
@@ -678,7 +737,7 @@ def clipboard_set(
 # ── Wait-for-UI tools ───────────────────────────────────────────────────
 
 
-@mcp.tool()
+@_tool
 def wait_for_element(
     query: Annotated[
         str,
@@ -722,7 +781,7 @@ def wait_for_element(
 # ── Window management tools ──────────────────────────────────────────────
 
 
-@mcp.tool()
+@_tool
 def launch_app(
     command: Annotated[
         str,
@@ -741,7 +800,7 @@ def launch_app(
     return _engine.launch_app(command=command, env=env)
 
 
-@mcp.tool()
+@_tool
 def list_windows() -> str:
     """List accessible application windows in the isolated session.
 
@@ -752,7 +811,7 @@ def list_windows() -> str:
     return _engine.list_windows()
 
 
-@mcp.tool()
+@_tool
 def focus_window(
     app_name: Annotated[
         str,
@@ -767,7 +826,7 @@ def focus_window(
     return _engine.focus_window(app_name=app_name)
 
 
-@mcp.tool()
+@_tool
 def window_geometry(
     app_name: Annotated[
         str,
@@ -789,7 +848,7 @@ def window_geometry(
     return _engine.window_geometry(app_name=app_name, window_id=window_id)
 
 
-@mcp.tool()
+@_tool
 def active_window() -> str:
     """Report the window KWin currently treats as active.
 
@@ -799,7 +858,7 @@ def active_window() -> str:
     return _engine.active_window()
 
 
-@mcp.tool()
+@_tool
 def window_close(
     window_id: Annotated[
         str,
@@ -819,7 +878,7 @@ def window_close(
 # ── D-Bus tools ──────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@_tool
 def dbus_call(
     service: Annotated[str, Field(description='D-Bus service name (e.g. "org.kde.KWin").')],
     path: Annotated[str, Field(description='Object path (e.g. "/org/kde/KWin").')],
@@ -856,7 +915,7 @@ def dbus_call(
     )
 
 
-@mcp.tool()
+@_tool
 def read_app_log(
     pid: Annotated[
         int,
@@ -875,7 +934,7 @@ def read_app_log(
     return _engine.read_app_log(pid=pid, last_n_lines=last_n_lines)
 
 
-@mcp.tool()
+@_tool
 def wayland_info(
     filter_protocol: Annotated[
         str,
@@ -894,28 +953,6 @@ def wayland_info(
     return _engine.wayland_info(filter_protocol=filter_protocol)
 
 
-def _apply_live_session_mode() -> None:
-    """Swap tool descriptions when --default-live-session is active."""
-    if not _live_session_mode:
-        return
-
-    # Update session_start to indicate it's NOT the default
-    tools = mcp._tool_manager._tools
-    if "session_start" in tools:
-        tools["session_start"].description = (
-            "Start an isolated virtual KWin Wayland session. "
-            "Only use when explicitly asked for an isolated/virtual session. "
-            "The default session tool is session_connect (live session mode is active)."
-        )
-    if "session_connect" in tools:
-        tools["session_connect"].description = (
-            "Connect to an existing KWin session (e.g. the real desktop or a container). "
-            "This is the default session tool. Connects to a KWin compositor that is already "
-            "running. Clipboard is always available. Input injection uses KWin EIS when "
-            "possible, with ydotool as fallback."
-        )
-
-
 def main() -> None:
     """Run the MCP server.
 
@@ -925,7 +962,6 @@ def main() -> None:
     # Remove our custom flag before MCP framework parses args
     if "--default-live-session" in sys.argv:
         sys.argv.remove("--default-live-session")
-    _apply_live_session_mode()
     mcp.run()
 
 

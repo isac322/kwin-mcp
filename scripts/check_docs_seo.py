@@ -262,7 +262,7 @@ def check_skill_identical() -> list[CheckResult]:
 
 
 # ---------------------------------------------------------------------------
-# Tool count check (auto-detect from server.py @mcp.tool() decorators)
+# Tool count check (auto-detect from server.py @_tool decorators)
 # ---------------------------------------------------------------------------
 
 
@@ -274,14 +274,14 @@ def check_tool_count() -> CheckResult:
         return result
     actual = len(
         re.findall(
-            r"^\s*@mcp\.tool\(\)\s*$",
+            r"^\s*@_tool\s*$",
             server.read_text(encoding="utf-8"),
             re.MULTILINE,
         )
     )
     if actual != TOOL_COUNT_CANONICAL:
         result.missing = [
-            f"server.py has {actual} @mcp.tool() functions"
+            f"server.py has {actual} @_tool functions"
             f" but TOOL_COUNT_CANONICAL = {TOOL_COUNT_CANONICAL};"
             f" update .claude/positioning.yml § drift_detection.tool_count_canonical,"
             f" check_docs_seo.py § TOOL_COUNT_CANONICAL, README.md tool tables,"

@@ -61,7 +61,7 @@ Automate kiosk interfaces and embedded Linux desktops running KDE Plasma or a ba
 > Requires KDE Plasma 6 on Wayland. See [System Requirements](#system-requirements) for details.
 
 > [!NOTE]
-> **Fixed in 0.8.0:** the published kwin-mcp 0.7.0 package on PyPI did not cap its `mcp` dependency, so a fresh install could resolve `mcp` 2.x and the server failed at startup with `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`. Release 0.8.0 ships the `mcp>=1.0.0,<2` constraint in its package metadata. If you are still on 0.7.0, upgrade before following the steps below.
+> **0.7.0 only:** the published kwin-mcp 0.7.0 package on PyPI did not cap its `mcp` dependency, so a fresh install could resolve `mcp` 2.x and the server failed at startup with `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`. Releases 0.8.0–0.9.x cap `mcp<2`, and the next release targets `mcp>=2.2.0,<3`. If you are still on 0.7.0, upgrade kwin-mcp before following the steps below.
 
 **1. Install system and build dependencies**
 
@@ -470,7 +470,7 @@ sudo apt install wl-clipboard wtype wayland-utils
 Install the [system and build dependencies](#installing-system-dependencies) before using any method below. The uv installs, pip installs into a virtual environment, and the from-source install build PyGObject, pycairo, and dbus-python from source and fail without them.
 
 > [!NOTE]
-> kwin-mcp 0.7.0 on PyPI did not cap its `mcp` dependency, so a fresh install could resolve `mcp` 2.x and the server failed at startup with `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`. Release 0.8.0 ships the `mcp>=1.0.0,<2` constraint; install 0.8.0 or later.
+> kwin-mcp 0.7.0 on PyPI did not cap its `mcp` dependency, so a fresh install could resolve `mcp` 2.x and the server failed at startup with `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`. Releases 0.8.0–0.9.x cap `mcp<2`, and the next release targets `mcp>=2.2.0,<3`; upgrading kwin-mcp fixes the error.
 
 ### Using uv (recommended)
 

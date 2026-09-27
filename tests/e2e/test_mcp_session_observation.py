@@ -157,7 +157,7 @@ async def test_installed_server_observes_virtual_session_and_apps(
                 },
             )
             timeout_elapsed = anyio.current_time() - timeout_started
-            assert not timeout_result.isError, _result_text(timeout_result)
+            assert not timeout_result.is_error, _result_text(timeout_result)
             assert (
                 _result_text(timeout_result)
                 == f"Timeout after {WAIT_TIMEOUT_MS}ms: no elements matching "
@@ -255,7 +255,7 @@ async def test_virtual_screenshot_error_crosses_stdio_without_killing_server() -
 
             screenshot_result = await client.call_result("screenshot")
             screenshot_error = _result_text(screenshot_result)
-            assert screenshot_result.isError, screenshot_error
+            assert screenshot_result.is_error, screenshot_error
             assert "Screenshot capture failed" in screenshot_error, screenshot_error
             assert "ScreenShot2" in screenshot_error, screenshot_error
             assert "Spectacle" in screenshot_error, screenshot_error

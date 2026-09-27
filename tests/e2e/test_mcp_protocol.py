@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import re
 from typing import TYPE_CHECKING
 
+import anyio
 import pytest
 from mcp.types import TextContent
 from mcp_harness import EXPECTED_TOOL_NAMES, running_mcp_server
@@ -16,6 +18,7 @@ if TYPE_CHECKING:
 
 BAD_BINARY = "definitely-not-a-real-binary"
 SESSION_REQUIRED_GUIDANCE = "Call session_start or session_connect first."
+HOLD_MS = 1500
 NO_DEFAULT = object()
 ARRAY_OF_STRINGS = ("array", "string")
 ARRAY_OF_INTEGERS = ("array", "integer")
@@ -283,7 +286,7 @@ async def test_installed_server_initializes_and_registers_exact_tool_schemas() -
     assert frozenset(names) == EXPECTED_TOOL_NAMES
 
     for tool in response.tools:
-        schema = tool.inputSchema
+        schema = tool.input_schema
         assert isinstance(schema, dict), tool.name
         assert schema.get("type") == "object", (tool.name, schema)
 
@@ -331,7 +334,7 @@ async def test_invalid_tool_arguments_are_rejected_over_stdio_json_rpc(
     async with running_mcp_server() as client:
         result = await client.call_result("mouse_click", arguments)
 
-    assert result.isError is True
+    assert result.is_error is True
     error_text = _result_text(result)
     assert error_text, result.content
     field_token = rf"(?<![A-Za-z0-9_]){re.escape(invalid_field)}(?![A-Za-z0-9_])"
@@ -349,7 +352,7 @@ async def test_no_active_session_tool_errors_are_isolated_and_server_survives() 
         for tool_name, arguments in calls:
             result = await client.call_result(tool_name, arguments)
 
-            assert result.isError is True
+            assert result.is_error is True
             error_text = _result_text(result)
             assert SESSION_REQUIRED_GUIDANCE in error_text, (tool_name, error_text)
             assert await client.session.send_ping() is not None
@@ -395,7 +398,7 @@ async def test_engine_exception_is_a_tool_error_and_server_survives() -> None:
                 },
             )
 
-            assert result.isError is True
+            assert result.is_error is True
             error_text = _result_text(result)
             assert BAD_BINARY in error_text, error_text
 
@@ -405,6 +408,56 @@ async def test_engine_exception_is_a_tool_error_and_server_survives() -> None:
             cleanup_result = await client.call_result("session_stop")
 
         assert cleanup_result is not None
-        assert cleanup_result.isError is False
+        assert cleanup_result.is_error is False
         assert _result_text(cleanup_result) == "Session stopped."
         assert await client.call_text("session_stop") == "No session running."
+
+
+@pytest.mark.anyio
+async def test_initialize_reports_kwin_mcp_server_name_and_package_version() -> None:
+    async with running_mcp_server() as client:
+        server_info = client.initialize_result.server_info
+
+    assert server_info.name == "kwin-mcp"
+    assert server_info.version == importlib.metadata.version("kwin-mcp")
+
+
+@pytest.mark.anyio
+async def test_concurrent_tool_calls_are_serialized() -> None:
+    """Blocking tool calls issued concurrently must run one after another.
+
+    mouse_click with hold_ms sleeps inside the input backend without taking any
+    engine lock, so overlapping calls only serialize if the server itself does.
+    """
+    click_points = ((10, 10), (20, 20))
+    outputs: dict[tuple[int, int], str] = {}
+
+    async with running_mcp_server() as client:
+        session_running = False
+        try:
+            start = await client.call_text(
+                "session_start", {"screen_width": 1280, "screen_height": 800}
+            )
+            session_running = True
+            assert "Session started." in start, start
+
+            async def click(point: tuple[int, int]) -> None:
+                x, y = point
+                outputs[point] = await client.call_text(
+                    "mouse_click", {"x": x, "y": y, "hold_ms": HOLD_MS}
+                )
+
+            started = anyio.current_time()
+            with anyio.fail_after(30):
+                async with anyio.create_task_group() as task_group:
+                    for point in click_points:
+                        task_group.start_soon(click, point)
+            elapsed = anyio.current_time() - started
+        finally:
+            if session_running:
+                assert await client.call_text("session_stop") == "Session stopped."
+
+    for x, y in click_points:
+        assert outputs[(x, y)] == f"Clicked left at ({x}, {y}) held {HOLD_MS}ms"
+    serialized_minimum = len(click_points) * HOLD_MS / 1000 - 0.1
+    assert elapsed >= serialized_minimum, elapsed

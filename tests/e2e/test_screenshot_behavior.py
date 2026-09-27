@@ -781,7 +781,7 @@ async def test_virtual_screenshot_failures_name_each_attempt_and_server_survives
             for _ in range(3):
                 screenshot_result = await client.call_result("screenshot")
                 screenshot_error = _result_text(screenshot_result)
-                assert screenshot_result.isError is True, screenshot_error
+                assert screenshot_result.is_error is True, screenshot_error
                 assert "Screenshot capture failed" in screenshot_error, screenshot_error
                 assert "ScreenShot2" in screenshot_error, screenshot_error
                 assert "Spectacle" in screenshot_error, screenshot_error
@@ -796,7 +796,7 @@ async def test_virtual_screenshot_failures_name_each_attempt_and_server_survives
                 },
             )
             burst_error = _result_text(burst_result)
-            assert burst_result.isError is True, burst_error
+            assert burst_result.is_error is True, burst_error
             assert "Frame burst capture failed" in burst_error, burst_error
             assert "ScreenShot2" in burst_error, burst_error
             assert "Spectacle" in burst_error, burst_error
@@ -894,7 +894,7 @@ async def test_virtual_spectacle_fallback_waits_for_slow_healthy_capture(
             result = await client.call_result("screenshot")
             elapsed = time.monotonic() - started
             output = _result_text(result)
-            assert result.isError is not True, output
+            assert result.is_error is not True, output
             spaces = coordinate_spaces(output)
             assert [(s.origin, s.size, s.backend, s.coverage) for s in spaces] == [
                 ((0, 0), SCREEN_SIZE, "spectacle", "full")
@@ -934,7 +934,7 @@ async def test_virtual_spectacle_fallback_bounds_stuck_capture(
             result = await client.call_result("screenshot")
             elapsed = time.monotonic() - started
             error = _result_text(result)
-            assert result.isError is True, error
+            assert result.is_error is True, error
             match = re.search(r"Spectacle \(spectacle timed out after (\d+(?:\.\d+)?)s", error)
             assert match is not None, error
             deadline = float(match.group(1))
@@ -987,7 +987,7 @@ async def test_virtual_spectacle_fallback_reports_why_no_file_was_written(
 
             result = await client.call_result("screenshot")
             error = _result_text(result)
-            assert result.isError is True, error
+            assert result.is_error is True, error
             assert f"Spectacle (spectacle produced no output: {_SILENT_SPECTACLE_REASON})" in error
         finally:
             if session_running:

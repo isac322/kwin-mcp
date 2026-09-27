@@ -17,7 +17,7 @@ EXPECTED_ENTRY_POINTS = {
     "kwin-mcp-cli": ("kwin_mcp.cli", "main"),
 }
 RUNTIME_IMPORTS = (
-    "mcp.server.fastmcp",
+    "mcp.server.mcpserver",
     "dbus.mainloop.glib",
     "PIL.Image",
 )

@@ -26,6 +26,21 @@ from xml.etree import ElementTree
 
 from kwin_mcp import progress
 from kwin_mcp.input import InputBackend, MouseButton
+from kwin_mcp.results import (
+    AccessibilityTreeResult,
+    FindUIElementsResult,
+    ListWindowsResult,
+    UIElement,
+    WindowGeometry,
+    WindowGeometryResult,
+    format_find,
+    format_found,
+    format_list_windows,
+    format_tree,
+    format_window,
+    format_window_geometry,
+    search_description,
+)
 from kwin_mcp.screenshot import capture_frame_burst, capture_screenshot_to_file
 from kwin_mcp.session import LiveSession, Session, SessionConfig
 
@@ -72,19 +87,6 @@ _CLIPBOARD_SET_TIMEOUT = 5.0
 # Upper bound for each D-Bus round trip made by dbus_call (introspection and the
 # method call), the same bound the former dbus-send subprocess had.
 _DBUS_CALL_TIMEOUT = 10.0
-
-
-def _element_position(el: dict) -> str:
-    """Format an element's position for find_ui_elements / wait_for_element.
-
-    Coordinates are global screen coordinates (the space mouse_click and
-    touch_tap take). Elements whose window could not be identified with
-    certainty report "unavailable" with a reason and no numbers, so callers
-    never click a plausible-looking wrong point.
-    """
-    if el.get("mapped"):
-        return f"@ screen ({el['x']}, {el['y']}, {el['width']}x{el['height']})"
-    return f"@ unavailable ({el.get('unavailable') or 'unmapped'})"
 
 
 def _introspected_in_signatures(xml_data: str, interface: str, method: str) -> list[str] | None:
@@ -671,45 +673,37 @@ class AutomationEngine:
         size_kb = path.stat().st_size / 1024
         return f"Screenshot saved: {path} ({size_kb:.1f} KB)\n{mapping.describe()}"
 
-    def accessibility_tree(self, app_name: str = "", max_depth: int = 15, role: str = "") -> str:
-        """Get the accessibility tree of apps in the isolated session."""
+    def accessibility_tree_data(
+        self, app_name: str = "", max_depth: int = 15, role: str = ""
+    ) -> AccessibilityTreeResult:
+        """Get the accessibility tree of apps in the isolated session as data."""
         self._get_session()
         resp = self._run_atspi("tree", app_name=app_name, max_depth=max_depth, role=role)
-        return resp["result"]
+        return AccessibilityTreeResult(
+            elements=[UIElement.from_worker(el) for el in resp["result"]]
+        )
+
+    def accessibility_tree(self, app_name: str = "", max_depth: int = 15, role: str = "") -> str:
+        """Get the accessibility tree of apps in the isolated session."""
+        return format_tree(self.accessibility_tree_data(app_name, max_depth, role))
+
+    def find_ui_elements_data(
+        self, query: str, app_name: str = "", states: list[str] | None = None
+    ) -> FindUIElementsResult:
+        """Find UI elements matching a search query and/or required states, as data."""
+        self._get_session()
+        resp = self._run_atspi("find", query=query, app_name=app_name, states=states)
+        return FindUIElementsResult(
+            query=query,
+            states=states,
+            elements=[UIElement.from_worker(el) for el in resp["result"]],
+        )
 
     def find_ui_elements(
         self, query: str, app_name: str = "", states: list[str] | None = None
     ) -> str:
         """Find UI elements matching a search query and/or required states."""
-        self._get_session()
-        resp = self._run_atspi("find", query=query, app_name=app_name, states=states)
-        elements = resp["result"]
-
-        # Build descriptive search summary
-        criteria: list[str] = []
-        if query:
-            criteria.append(f"query='{query}'")
-        if states:
-            criteria.append(f"states={states}")
-        search_desc = ", ".join(criteria) if criteria else "(all)"
-
-        if not elements:
-            return f"No elements found matching {search_desc}"
-
-        lines = [f"Found {len(elements)} elements matching {search_desc}:\n"]
-        for el in elements:
-            actions_str = f" [actions: {', '.join(el['actions'])}]" if el["actions"] else ""
-            text_str = f" text={el['text']!r}" if el.get("text") else ""
-            value_str = (
-                f" value={el['value']:g}/{el['value_max']:g}"
-                if el.get("value") is not None and el.get("value_max") is not None
-                else ""
-            )
-            lines.append(
-                f'- [{el["role"]}] "{el["name"]}" '
-                f"{_element_position(el)}{text_str}{value_str}{actions_str}"
-            )
-        return "\n".join(lines)
+        return format_find(self.find_ui_elements_data(query, app_name, states))
 
     # ── Mouse tools ───────────────────────────────────────────────────────
 
@@ -1036,30 +1030,8 @@ class AutomationEngine:
         if not resp["ok"]:
             return resp["error"]
 
-        elements = resp["result"]
-
-        # Build descriptive search summary
-        criteria: list[str] = []
-        if query:
-            criteria.append(f"query='{query}'")
-        if expected_states:
-            criteria.append(f"states={expected_states}")
-        search_desc = ", ".join(criteria) if criteria else "(all)"
-
-        lines = [f"Found {len(elements)} elements matching {search_desc}:\n"]
-        for el in elements:
-            actions_str = f" [actions: {', '.join(el['actions'])}]" if el["actions"] else ""
-            text_str = f" text={el['text']!r}" if el.get("text") else ""
-            value_str = (
-                f" value={el['value']:g}/{el['value_max']:g}"
-                if el.get("value") is not None and el.get("value_max") is not None
-                else ""
-            )
-            lines.append(
-                f'- [{el["role"]}] "{el["name"]}" '
-                f"{_element_position(el)}{text_str}{value_str}{actions_str}"
-            )
-        return "\n".join(lines)
+        elements = [UIElement.from_worker(el) for el in resp["result"]]
+        return format_found(elements, search_description(query, expected_states))
 
     # ── Window management tools ───────────────────────────────────────────
 
@@ -1070,11 +1042,15 @@ class AutomationEngine:
         app_info = session.launch_app(cmd, extra_env=env)
         return f"App launched: {command} (PID={app_info.pid})\nApp log: {app_info.log_path}"
 
-    def list_windows(self) -> str:
-        """List accessible application windows in the isolated session."""
+    def list_windows_data(self) -> ListWindowsResult:
+        """List accessible application windows in the isolated session, as data."""
         self._get_session()
         resp = self._run_atspi("list_windows")
-        return resp["result"]
+        return ListWindowsResult.model_validate({"applications": resp["result"]})
+
+    def list_windows(self) -> str:
+        """List accessible application windows in the isolated session."""
+        return format_list_windows(self.list_windows_data())
 
     def _run_kwin_query(self, request: dict[str, object]) -> dict:
         """Run a KWin scripting query in a subprocess bound to the session bus."""
@@ -1110,18 +1086,17 @@ class AutomationEngine:
         activated = str(resp["result"]).strip()
         return f"Focused: {activated}" if activated else f"No window matches '{app_name}'."
 
-    @staticmethod
-    def _format_window(window: dict) -> str:
-        """Render one window from the KWin geometry report."""
-        frame, client = window["frame"], window["client"]
-        marker = " [active]" if window["active"] else ""
-        return (
-            f'- {window["app"]} "{window["caption"]}"{marker}\n'
-            f"    id:     {window['id']}\n"
-            f"    frame:  ({frame['x']}, {frame['y']}, {frame['width']}x{frame['height']})\n"
-            f"    client: ({client['x']}, {client['y']}, "
-            f"{client['width']}x{client['height']})"
-        )
+    def window_geometry_data(self, app_name: str = "", window_id: str = "") -> WindowGeometryResult:
+        """Report window positions in global screen coordinates, as data.
+
+        A failed KWin query is reported in ``error`` rather than raised, so the
+        tool stays a soft (non-error) outcome as before.
+        """
+        self._get_session()
+        resp = self._run_kwin_query({"app_name": app_name, "window_id": window_id})
+        if not resp["ok"]:
+            return WindowGeometryResult(error=str(resp["error"]))
+        return WindowGeometryResult.model_validate({"windows": resp["result"]})
 
     def window_geometry(self, app_name: str = "", window_id: str = "") -> str:
         """Report window positions in global screen coordinates.
@@ -1131,20 +1106,9 @@ class AutomationEngine:
         useful for locating whole windows and diagnosing placement. Each window
         carries its KWin id, which window_id filters on and window_close takes.
         """
-        self._get_session()
-        resp = self._run_kwin_query({"app_name": app_name, "window_id": window_id})
-        if not resp["ok"]:
-            return f"Window geometry unavailable: {resp['error']}"
-
-        windows = resp["result"]
-        if not windows:
-            if window_id:
-                return f"No window with id {window_id!r}."
-            return "No windows found." if not app_name else f"No windows found for '{app_name}'."
-
-        lines = [f"Windows ({len(windows)}):"]
-        lines.extend(self._format_window(window) for window in windows)
-        return "\n".join(lines)
+        return format_window_geometry(
+            self.window_geometry_data(app_name, window_id), app_name, window_id
+        )
 
     def active_window(self) -> str:
         """Report the window KWin currently treats as active (the one focus_window sets)."""
@@ -1155,7 +1119,7 @@ class AutomationEngine:
         window = resp["result"]
         if window is None:
             return "No active window."
-        return f"Active window:\n{self._format_window(window)}"
+        return f"Active window:\n{format_window(WindowGeometry.model_validate(window))}"
 
     def window_close(self, window_id: str) -> str:
         """Ask KWin to close one window, addressed by the id window_geometry reports.

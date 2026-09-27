@@ -141,10 +141,14 @@ class KwinMcpShell(cmd.Cmd):
             self.intro = ""
 
     def _discover_commands(self) -> dict[str, Callable[..., Any]]:
-        """Discover all public methods on the engine."""
+        """Discover all public methods on the engine.
+
+        ``*_data`` methods return typed results for the MCP server; their text
+        counterparts (same name without the suffix) are the CLI commands.
+        """
         commands: dict[str, Callable[..., Any]] = {}
         for name in sorted(dir(self.engine)):
-            if name.startswith("_"):
+            if name.startswith("_") or name.endswith("_data"):
                 continue
             attr = getattr(self.engine, name)
             if callable(attr):

@@ -22,10 +22,20 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.mcpserver.utilities.context_injection import find_context_parameter
 from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from kwin_mcp import progress
 from kwin_mcp.core import AutomationEngine
+from kwin_mcp.results import (
+    AccessibilityTreeResult,
+    FindUIElementsResult,
+    ListWindowsResult,
+    WindowGeometryResult,
+    format_find,
+    format_list_windows,
+    format_tree,
+    format_window_geometry,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -304,6 +314,18 @@ def screenshot(
     return _engine.screenshot(include_cursor=include_cursor)
 
 
+def _structured(text: str, data: BaseModel) -> CallToolResult:
+    """Pair the human-readable text with ``data`` as structured content.
+
+    ``data`` is dumped to a plain dict: a model instance would lose its
+    ``null`` fields in the wire dump and then violate the published schema.
+    """
+    return CallToolResult(
+        content=[TextContent(type="text", text=text)],
+        structured_content=data.model_dump(mode="json"),
+    )
+
+
 @_tool(annotations=_READ_ONLY)
 def accessibility_tree(
     app_name: Annotated[
@@ -319,7 +341,7 @@ def accessibility_tree(
             "but their children are still traversed to find deeper matches."
         ),
     ] = "",
-) -> str:
+) -> Annotated[CallToolResult, AccessibilityTreeResult]:
     """Get the accessibility tree of apps in the isolated session.
 
     Returns a formatted text tree with each widget's role, name, states,
@@ -329,7 +351,8 @@ def accessibility_tree(
     instead of coordinates. Use this to understand UI structure before
     interacting with elements.
     """
-    return _engine.accessibility_tree(app_name=app_name, max_depth=max_depth, role=role)
+    data = _engine.accessibility_tree_data(app_name=app_name, max_depth=max_depth, role=role)
+    return _structured(format_tree(data), data)
 
 
 @_tool(annotations=_READ_ONLY)
@@ -353,7 +376,7 @@ def find_ui_elements(
             "Common states: active, focused, visible, enabled, checked, selected, expanded."
         ),
     ] = None,
-) -> str:
+) -> Annotated[CallToolResult, FindUIElementsResult]:
     """Find UI elements matching a search query and/or required AT-SPI2 states.
 
     Returns a list of matching elements with their role, name, bounding box
@@ -363,7 +386,8 @@ def find_ui_elements(
     instead of coordinates. Use this to locate specific buttons, inputs, or
     labels before clicking or interacting.
     """
-    return _engine.find_ui_elements(query=query, app_name=app_name, states=states)
+    data = _engine.find_ui_elements_data(query=query, app_name=app_name, states=states)
+    return _structured(format_find(data), data)
 
 
 # ── Mouse tools ──────────────────────────────────────────────────────────
@@ -886,14 +910,15 @@ def launch_app(
 
 
 @_tool(annotations=_READ_ONLY)
-def list_windows() -> str:
+def list_windows() -> Annotated[CallToolResult, ListWindowsResult]:
     """List accessible application windows in the isolated session.
 
     Uses AT-SPI2 to enumerate top-level applications and their window count.
     Applications that do not support accessibility (AT-SPI2) may not appear.
     Returns a formatted list of app names with window counts.
     """
-    return _engine.list_windows()
+    data = _engine.list_windows_data()
+    return _structured(format_list_windows(data), data)
 
 
 @_tool(annotations=_NON_DESTRUCTIVE_IDEMPOTENT)
@@ -921,7 +946,7 @@ def window_geometry(
         str,
         Field(description="Only report the window with exactly this id."),
     ] = "",
-) -> str:
+) -> Annotated[CallToolResult, WindowGeometryResult]:
     """Report window ids, positions and sizes in global screen coordinates.
 
     Element rectangles from accessibility_tree and find_ui_elements are
@@ -930,7 +955,8 @@ def window_geometry(
     lists its KWin id (stable while the window exists) and an [active] marker
     on the active window. Pass the id to window_close.
     """
-    return _engine.window_geometry(app_name=app_name, window_id=window_id)
+    data = _engine.window_geometry_data(app_name=app_name, window_id=window_id)
+    return _structured(format_window_geometry(data, app_name, window_id), data)
 
 
 @_tool(annotations=_READ_ONLY)

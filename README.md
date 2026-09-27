@@ -299,6 +299,8 @@ The flag is off by default because every attached frame is sent to the model and
 
 > **Frame capture:** Many action tools accept an optional `screenshot_after_ms` parameter (e.g., `[0, 50, 100, 200, 500]`) that captures screenshots at specified delays (in milliseconds) after the action completes. This is useful for observing transient UI states like hover effects, click animations, and menu transitions without extra MCP round-trips. Frame capture uses the fast KWin ScreenShot2 D-Bus interface (~30-70ms per frame). Each frame is followed by its own `Coordinate space` line in the same format as `screenshot`. A frame whose mapping cannot be proven — a topology change or a failed observation during the capture — still writes its PNG but reports `Coordinate space: unavailable (reason)`; that PNG holds the backend's raw unnormalized pixels, so only its timing observation is meaningful.
 
+> **Structured output:** `window_geometry`, `find_ui_elements`, `list_windows`, and `accessibility_tree` also return typed `structuredContent` described by their MCP `outputSchema`: window ids, the active flag, and frame/client rectangles; element role, name, states, and screen rectangle (or the reason it is unavailable); and applications with their windows. MCP clients that support structured tool output (spec 2025-06-18 and later) can read these fields directly instead of parsing text. The text result is unchanged; the other tools keep the `{"result": string}` output schema.
+
 ## How It Works
 
 ```

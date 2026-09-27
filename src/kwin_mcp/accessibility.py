@@ -81,8 +81,8 @@ def get_accessibility_tree(
     app_name: str = "",
     max_depth: int = 15,
     role: str = "",
-) -> str:
-    """Get the accessibility tree as a formatted text string.
+) -> list[ElementInfo]:
+    """Walk the accessibility tree in pre-order.
 
     Args:
         app_name: Filter to a specific application (empty = all apps).
@@ -91,7 +91,8 @@ def get_accessibility_tree(
             Non-matching elements are hidden but their children are still traversed.
 
     Returns:
-        Formatted text representation of the accessibility tree.
+        Role-filtered elements with screen coordinates (or an unavailable
+        reason); nesting is given by each element's ``depth``.
     """
     kwin_before, kwin_error = _kwin_windows()
     desktop = Atspi.get_desktop(0)
@@ -118,19 +119,11 @@ def get_accessibility_tree(
 
     _apply_stability(mappings_by_pid, kwin_before, kwin_error)
 
-    lines: list[str] = []
-    total = 0
-    for info, mapping in entries:
-        if role_filter and role_filter != info.role.lower():
-            continue
-        lines.append(_format_line(_finalize(info, mapping)))
-        total += 1
-
-    if not lines:
-        return "(no accessible applications found)"
-
-    header = f"# Accessibility Tree ({total} elements)\n\n"
-    return header + "\n".join(lines)
+    return [
+        _finalize(info, mapping)
+        for info, mapping in entries
+        if not role_filter or role_filter == info.role.lower()
+    ]
 
 
 def find_elements(
@@ -180,41 +173,42 @@ def find_elements(
     return [_finalize(info, mapping) for info, mapping in results]
 
 
-def list_windows() -> str:
-    """List accessible application windows with titles and active/focused state.
+def list_windows() -> list[dict[str, object]]:
+    """List accessible applications with their top-level windows.
+
+    Applications without children are skipped. ``window_count`` is the AT-SPI
+    child count, which can exceed ``len(windows)`` when a child vanished.
 
     Returns:
-        Formatted list of apps with per-window title and state markers.
+        ``{"name", "window_count", "windows": [{"title", "active", "focused"}]}``
+        per application, with "(unnamed)"/"(untitled)" for empty names.
     """
     desktop = Atspi.get_desktop(0)
-    lines: list[str] = []
-    app_count = 0
+    apps: list[dict[str, object]] = []
     for i in range(desktop.get_child_count()):
         app = desktop.get_child_at_index(i)
         if app is None:
             continue
-        app_name = app.get_name() or "(unnamed)"
         child_count = app.get_child_count()
         if child_count == 0:
             continue
-        app_count += 1
-        lines.append(f"- {app_name} ({child_count} windows)")
+        windows: list[dict[str, object]] = []
         for j in range(child_count):
             win = app.get_child_at_index(j)
             if win is None:
                 continue
-            win_title = win.get_name() or "(untitled)"
             state_set = win.get_state_set()
-            markers: list[str] = []
-            if state_set.contains(Atspi.StateType.ACTIVE):
-                markers.append("active")
-            if state_set.contains(Atspi.StateType.FOCUSED):
-                markers.append("focused")
-            marker_str = f" [{', '.join(markers)}]" if markers else ""
-            lines.append(f'    - "{win_title}"{marker_str}')
-    if not lines:
-        return "(no accessible applications found)"
-    return f"Applications ({app_count}):\n" + "\n".join(lines)
+            windows.append(
+                {
+                    "title": win.get_name() or "(untitled)",
+                    "active": state_set.contains(Atspi.StateType.ACTIVE),
+                    "focused": state_set.contains(Atspi.StateType.FOCUSED),
+                }
+            )
+        apps.append(
+            {"name": app.get_name() or "(unnamed)", "window_count": child_count, "windows": windows}
+        )
+    return apps
 
 
 def wait_for_elements(
@@ -335,25 +329,6 @@ def _finalize(info: ElementInfo, mapping: _WindowMapping) -> ElementInfo:
         info.mapped = False
         info.unavailable = mapping.reason or "unmapped"
     return info
-
-
-def _format_line(info: ElementInfo) -> str:
-    """Format one collected element as a tree line."""
-    indent = "  " * info.depth
-    states_str = f" ({', '.join(info.states)})" if info.states else ""
-    if info.mapped:
-        pos_str = f" @ screen ({info.x}, {info.y}, {info.width}x{info.height})"
-    else:
-        pos_str = f" @ unavailable ({info.unavailable})"
-    actions_str = f" [actions: {', '.join(info.actions)}]" if info.actions else ""
-    text_str = f" text={info.text!r}" if info.text else ""
-    has_value = info.value is not None and info.value_max is not None
-    value_str = f" value={info.value:g}/{info.value_max:g}" if has_value else ""
-
-    return (
-        f'{indent}- [{info.role}] "{info.name}"{states_str}{pos_str}'
-        f"{text_str}{value_str}{actions_str}"
-    )
 
 
 # ── AT-SPI top-level → KWin window mapping ───────────────────────────────
@@ -654,12 +629,12 @@ def _handle_request(request: dict) -> dict:
     op = request.get("op", "")
 
     if op == "tree":
-        result = get_accessibility_tree(
+        elements = get_accessibility_tree(
             app_name=request.get("app_name", ""),
             max_depth=request.get("max_depth", 15),
             role=request.get("role", ""),
         )
-        return {"ok": True, "result": result}
+        return {"ok": True, "result": [asdict(e) for e in elements]}
 
     if op == "find":
         elements = find_elements(

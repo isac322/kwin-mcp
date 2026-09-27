@@ -23,6 +23,9 @@ if TYPE_CHECKING:
 SCREENSHOT_IMAGES_FLAG = "--screenshot-images"
 SCREENSHOT_PREFIX = "Screenshot saved: "
 SESSION_REQUIRED_GUIDANCE = "Call session_start or session_connect first."
+TYPED_OUTPUT_TOOLS = frozenset(
+    {"accessibility_tree", "find_ui_elements", "list_windows", "window_geometry"}
+)
 SCREEN_WIDTH = 1280
 SCREEN_HEIGHT = 800
 MISSING_ELEMENT = "kwin-mcp-e2e-element-that-never-exists"
@@ -269,7 +272,10 @@ async def test_tools_publish_annotations_and_keep_schemas_with_and_without_image
         assert "ctx" not in properties, (tool.name, tool.input_schema)
         assert "ctx" not in tool.input_schema.get("required", []), (tool.name, tool.input_schema)
 
-        # Plain text tools keep the SDK's wrapped `{"result": string}` output schema.
+        # Plain text tools keep the SDK's wrapped `{"result": string}` output schema; the
+        # typed tools are covered by test_structured_output.py.
+        if tool.name in TYPED_OUTPUT_TOOLS:
+            continue
         output_schema = tool.output_schema
         assert isinstance(output_schema, dict), (tool.name, output_schema)
         assert output_schema.get("type") == "object", (tool.name, output_schema)

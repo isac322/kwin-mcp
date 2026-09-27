@@ -495,8 +495,8 @@ class AutomationEngine:
             result += f"\nApp launched: {app_command} (PID={app_info.pid})"
             result += f"\nApp log: {app_info.log_path}"
 
-        # Set up input backend via KWin's EIS D-Bus interface
-        time.sleep(0.5)
+        # Set up input backend via KWin's EIS D-Bus interface. start() returned
+        # only after KWin took org.kde.KWin, so the EIS object is reachable.
         try:
             self._input = InputBackend(info.dbus_address)
         except RuntimeError as exc:
@@ -581,8 +581,8 @@ class AutomationEngine:
 
         result = f"Connected to live KWin session. D-Bus: {dbus_addr}, Wayland: {wayland_disp}"
 
-        # Set up input backend — EIS first, ydotool fallback
-        time.sleep(0.3)
+        # Set up input backend — EIS first, ydotool fallback. The check above
+        # already found org.kde.KWin owned, so no settle delay is needed.
         try:
             self._input = InputBackend(dbus_addr)
             result += "\nInput backend: KWin EIS"

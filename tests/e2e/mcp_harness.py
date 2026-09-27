@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, cast
 
 import anyio
 from mcp import ClientSession, StdioServerParameters
+from mcp.client import Client
 from mcp.client.stdio import stdio_client
 from mcp.types import TextContent
 
@@ -17,7 +18,12 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
     from typing import Any, TextIO
 
+    from mcp.client.session import ElicitationFnT
     from mcp.types import CallToolResult, InitializeResult
+
+# The 2026-07-28 protocol era: no initialize handshake, and server-to-client
+# requests such as elicitation travel as input-required results (MRTR).
+MODERN_PROTOCOL_VERSION = "2026-07-28"
 
 EXPECTED_TOOL_NAMES: frozenset[str] = frozenset(
     {
@@ -80,17 +86,10 @@ class ProgressLog:
         await anyio.sleep(seconds)
 
 
-class McpTestClient:
-    """Initialized MCP client plus assertions tailored to text-returning tools."""
+class _ToolCaller:
+    """Assertions tailored to text-returning tools, shared by both protocol eras."""
 
-    def __init__(
-        self,
-        session: ClientSession,
-        stderr_path: Path,
-        initialize_result: InitializeResult,
-    ) -> None:
-        self.session = session
-        self.initialize_result = initialize_result
+    def __init__(self, stderr_path: Path) -> None:
         self._stderr_path = stderr_path
 
     def stderr_text(self) -> str:
@@ -107,12 +106,8 @@ class McpTestClient:
         *,
         progress_callback: ProgressLog | None = None,
     ) -> CallToolResult:
-        """Call a tool over JSON-RPC and return the unmodified MCP result.
-
-        Passing ``progress_callback`` makes the client send a progressToken, so the
-        server's ``notifications/progress`` for this call are recorded in it.
-        """
-        return await self.session.call_tool(name, arguments, progress_callback=progress_callback)
+        """Call a tool over JSON-RPC and return the unmodified MCP result."""
+        raise NotImplementedError
 
     async def call_text(self, name: str, arguments: dict[str, Any] | None = None) -> str:
         """Call a text tool, failing immediately when MCP reports a tool error."""
@@ -129,6 +124,60 @@ class McpTestClient:
         return text
 
 
+class McpTestClient(_ToolCaller):
+    """Client initialized through the handshake (initialize) protocol era."""
+
+    def __init__(
+        self,
+        session: ClientSession,
+        stderr_path: Path,
+        initialize_result: InitializeResult,
+    ) -> None:
+        super().__init__(stderr_path)
+        self.session = session
+        self.initialize_result = initialize_result
+
+    async def call_result(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        progress_callback: ProgressLog | None = None,
+    ) -> CallToolResult:
+        """Call a tool over JSON-RPC and return the unmodified MCP result.
+
+        Passing ``progress_callback`` makes the client send a progressToken, so the
+        server's ``notifications/progress`` for this call are recorded in it.
+        """
+        return await self.session.call_tool(name, arguments, progress_callback=progress_callback)
+
+
+class ModernMcpTestClient(_ToolCaller):
+    """Client speaking the 2026-07-28 protocol era, which has no initialize handshake.
+
+    ``Client.call_tool`` drives input-required rounds itself, answering them
+    through the elicitation callback before returning the final result.
+    """
+
+    def __init__(self, client: Client, stderr_path: Path) -> None:
+        super().__init__(stderr_path)
+        self.client = client
+
+    async def call_result(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        progress_callback: ProgressLog | None = None,
+    ) -> CallToolResult:
+        """Call a tool over JSON-RPC and return the unmodified MCP result.
+
+        Passing ``progress_callback`` makes the client send a progressToken, so the
+        server's ``notifications/progress`` for this call are recorded in it.
+        """
+        return await self.client.call_tool(name, arguments, progress_callback=progress_callback)
+
+
 def _add_stderr_note(error: BaseException, stderr_path: Path) -> None:
     try:
         stderr = stderr_path.read_text(encoding="utf-8", errors="replace").strip()
@@ -143,12 +192,12 @@ def _add_stderr_note(error: BaseException, stderr_path: Path) -> None:
 
 
 @asynccontextmanager
-async def running_mcp_server(
-    *extra_args: str, env: Mapping[str, str] | None = None
-) -> AsyncIterator[McpTestClient]:
-    """Start and initialize the installed kwin-mcp entrypoint over real stdio.
+async def _installed_server(
+    extra_args: tuple[str, ...], env: Mapping[str, str] | None
+) -> AsyncIterator[tuple[StdioServerParameters, TextIO, Path]]:
+    """Describe the installed kwin-mcp entrypoint and own its stderr capture file.
 
-    Environment overrides apply only to the spawned server process.
+    Failures raised inside the block get the server's stderr attached as a note.
     """
     stderr_file = cast(
         "TextIO",
@@ -170,12 +219,7 @@ async def running_mcp_server(
     )
 
     try:
-        async with (
-            stdio_client(parameters, errlog=stderr_file) as (read_stream, write_stream),
-            ClientSession(read_stream, write_stream) as session,
-        ):
-            initialize_result = await session.initialize()
-            yield McpTestClient(session, stderr_path, initialize_result)
+        yield parameters, stderr_file, stderr_path
     except BaseException as error:
         stderr_file.flush()
         _add_stderr_note(error, stderr_path)
@@ -183,3 +227,50 @@ async def running_mcp_server(
     finally:
         stderr_file.close()
         stderr_path.unlink(missing_ok=True)
+
+
+@asynccontextmanager
+async def running_mcp_server(
+    *extra_args: str,
+    env: Mapping[str, str] | None = None,
+    elicitation_callback: ElicitationFnT | None = None,
+) -> AsyncIterator[McpTestClient]:
+    """Start and initialize the installed kwin-mcp entrypoint over real stdio.
+
+    Environment overrides apply only to the spawned server process. The client
+    declares the elicitation capability only when ``elicitation_callback`` is set.
+    """
+    async with (
+        _installed_server(extra_args, env) as (parameters, stderr_file, stderr_path),
+        stdio_client(parameters, errlog=stderr_file) as (read_stream, write_stream),
+        ClientSession(
+            read_stream, write_stream, elicitation_callback=elicitation_callback
+        ) as session,
+    ):
+        initialize_result = await session.initialize()
+        yield McpTestClient(session, stderr_path, initialize_result)
+
+
+@asynccontextmanager
+async def running_modern_mcp_client(
+    *extra_args: str,
+    env: Mapping[str, str] | None = None,
+    elicitation_callback: ElicitationFnT | None = None,
+) -> AsyncIterator[ModernMcpTestClient]:
+    """Start the installed kwin-mcp entrypoint and connect in the 2026-07-28 era.
+
+    The mode is forced, so a server that fell back to the handshake would fail
+    to connect instead of silently testing the older era. The client declares
+    the elicitation capability (per request) only when ``elicitation_callback``
+    is set.
+    """
+    async with (
+        _installed_server(extra_args, env) as (parameters, stderr_file, stderr_path),
+        Client(
+            stdio_client(parameters, errlog=stderr_file),
+            mode=MODERN_PROTOCOL_VERSION,
+            elicitation_callback=elicitation_callback,
+        ) as client,
+    ):
+        assert client.protocol_version == MODERN_PROTOCOL_VERSION, client.protocol_version
+        yield ModernMcpTestClient(client, stderr_path)

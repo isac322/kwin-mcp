@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-27
+
 ### Changed
 
 - kwin-mcp now runs on the MCP Python SDK 2.x: the runtime dependency is `mcp>=2.2.0,<3` (previously `mcp>=1.0.0,<2`), and the server is built on `MCPServer` instead of `FastMCP`. Behavior is unchanged for clients. All 33 tools, such as `session_start`, `mouse_click`, and `accessibility_tree`, keep their names, parameters, and input schemas, and tool errors keep the text `Error executing tool <name>: <message>`, which SDK 2.1+ would otherwise hide behind a generic message. Tool calls still run one at a time on a single dedicated thread; SDK 2 would otherwise run `def` tools concurrently on worker threads, which `AutomationEngine` does not support. Clients speaking any MCP revision from 2024-11-05 to 2025-11-25 keep working through the `initialize` handshake, and 2026-07-28 clients are served natively. The one visible difference: `serverInfo.version` now reports the kwin-mcp version instead of the `mcp` SDK version.
@@ -227,7 +229,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keyboard input: text typing and key combinations via KWin EIS
 - FastMCP-based MCP server with stdio transport
 
-[Unreleased]: https://github.com/isac322/kwin-mcp/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/isac322/kwin-mcp/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/isac322/kwin-mcp/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/isac322/kwin-mcp/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/isac322/kwin-mcp/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/isac322/kwin-mcp/compare/v0.7.0...v0.8.0

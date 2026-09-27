@@ -1,6 +1,6 @@
 {
   "name": "@isac322/kwin-mcp-opencode",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "description": "OpenCode plugin for kwin-mcp \u2014 auto-registers the kwin-mcp MCP server (uvx kwin-mcp) and ships the kwin-desktop-automation skill on backend startup.",
   "type": "module",
   "main": "./dist/index.js",

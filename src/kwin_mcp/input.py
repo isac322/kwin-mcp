@@ -537,13 +537,17 @@ class EISClient:
                 self._abandoned_touches.add(touch_id)
 
     def _drain_events(self, timeout: float) -> None:
-        """Read and handle pending EIS events, waiting up to ``timeout`` for the first.
+        """Handle queued EIS events, then read more, waiting up to ``timeout`` for the first.
 
-        libei spreads one KWin device replacement over several dispatch rounds
-        (REMOVED and the ADDED/RESUMED of its replacement arrive separately), so
-        dispatch again while the socket stays readable, capped so a flooding or
-        EOF socket cannot spin forever.
+        Events libei already queued are handled first, even when the socket is
+        idle: every ei_dispatch() (including the one in _flush after each send)
+        may read and queue REMOVED/ADDED/RESUMED or DISCONNECT events that no
+        later select() would report. libei spreads one KWin device replacement
+        over several dispatch rounds (REMOVED and the ADDED/RESUMED of its
+        replacement arrive separately), so dispatch again while the socket stays
+        readable, capped so a flooding or EOF socket cannot spin forever.
         """
+        self._process_queued_events()
         if self._disconnected:
             return
         lib = _get_libei()

@@ -56,13 +56,20 @@ EI_EVENT_KEYBOARD_MODIFIERS = 9
 EI_EVENT_SYNC = 91
 UNKNOWN_EVENT = 0xFFFF
 
+# libei device capabilities (enum ei_device_capability in ei.h).
+EI_DEVICE_CAP_POINTER = 1 << 0
+EI_DEVICE_CAP_POINTER_ABSOLUTE = 1 << 1
+EI_DEVICE_CAP_KEYBOARD = 1 << 2
+EI_DEVICE_CAP_TOUCH = 1 << 3
+EI_DEVICE_CAP_SCROLL = 1 << 4
+EI_DEVICE_CAP_BUTTON = 1 << 5
 ALL_CAPABILITIES = (
-    kwin_input._EI_CAP_POINTER
-    | kwin_input._EI_CAP_POINTER_ABSOLUTE
-    | kwin_input._EI_CAP_KEYBOARD
-    | kwin_input._EI_CAP_TOUCH
-    | kwin_input._EI_CAP_SCROLL
-    | kwin_input._EI_CAP_BUTTON
+    EI_DEVICE_CAP_POINTER
+    | EI_DEVICE_CAP_POINTER_ABSOLUTE
+    | EI_DEVICE_CAP_KEYBOARD
+    | EI_DEVICE_CAP_TOUCH
+    | EI_DEVICE_CAP_SCROLL
+    | EI_DEVICE_CAP_BUTTON
 )
 
 # The devices KWin creates per EIS client: an absolute pointer that also
@@ -74,17 +81,17 @@ ABSOLUTE_REPLACEMENT = 0x3400
 KEYBOARD_REPLACEMENT = 0x3500
 FOREIGN = 0x3600
 _ABSOLUTE_CAPABILITIES = (
-    kwin_input._EI_CAP_POINTER_ABSOLUTE
-    | kwin_input._EI_CAP_TOUCH
-    | kwin_input._EI_CAP_BUTTON
-    | kwin_input._EI_CAP_SCROLL
+    EI_DEVICE_CAP_POINTER_ABSOLUTE
+    | EI_DEVICE_CAP_TOUCH
+    | EI_DEVICE_CAP_BUTTON
+    | EI_DEVICE_CAP_SCROLL
 )
 CAPABILITIES = {
     ABSOLUTE: _ABSOLUTE_CAPABILITIES,
     ABSOLUTE_REPLACEMENT: _ABSOLUTE_CAPABILITIES,
-    KEYBOARD: kwin_input._EI_CAP_KEYBOARD,
-    KEYBOARD_REPLACEMENT: kwin_input._EI_CAP_KEYBOARD,
-    RELATIVE: kwin_input._EI_CAP_POINTER | kwin_input._EI_CAP_BUTTON | kwin_input._EI_CAP_SCROLL,
+    KEYBOARD: EI_DEVICE_CAP_KEYBOARD,
+    KEYBOARD_REPLACEMENT: EI_DEVICE_CAP_KEYBOARD,
+    RELATIVE: EI_DEVICE_CAP_POINTER | EI_DEVICE_CAP_BUTTON | EI_DEVICE_CAP_SCROLL,
 }
 
 type _Event = int | tuple[int, int]
@@ -123,7 +130,11 @@ class _ScriptedLibei:
     ``write_fd`` the descriptor holds one byte per pending batch, so it is
     readable exactly while batches remain; without it the caller's descriptor
     decides readiness. Every device and touch call is recorded against the
-    device it reached, and a NULL handle fails the test.
+    device it reached, and a NULL handle fails the test. Batches scripted with
+    ``arrive_during_next_send`` reach the socket at the next device call, as
+    KWin's messages can while a frame is in flight, so the send's own
+    ``ei_dispatch`` moves them into the event queue and leaves the descriptor
+    idle.
     """
 
     def __init__(
@@ -149,6 +160,7 @@ class _ScriptedLibei:
         self.touches: dict[int, int] = {}
         self.touch_unrefs: dict[int, int] = {}
         self.released_events = 0
+        self._in_flight: list[list[_Event]] = []
         self.push(*batches)
 
         def bind(_seat: int, *capabilities: object) -> None:
@@ -164,6 +176,10 @@ class _ScriptedLibei:
             self._batches.append(batch)
             if self._write_fd is not None:
                 os.write(self._write_fd, b"x")
+
+    def arrive_during_next_send(self, *batches: list[_Event]) -> None:
+        """Script batches that reach the socket at the next device call."""
+        self._in_flight.extend(batches)
 
     def ei_get_fd(self, ei: int) -> int:
         assert ei == EI_CONTEXT
@@ -276,6 +292,9 @@ class _ScriptedLibei:
     def _record(self, name: str, device: int) -> None:
         self._require(device, name)
         self.device_calls.append((name, device))
+        if self._in_flight:
+            self.push(*self._in_flight)
+            self._in_flight.clear()
 
     def _touch_device(self, touch: int, name: str) -> int:
         if touch not in self.touches:
@@ -617,3 +636,63 @@ def test_handshake_follows_replaced_device(
     )
     assert libei.devices_reached() == {KEYBOARD_REPLACEMENT}, libei.device_calls
     assert KEYBOARD_REPLACEMENT in libei.emulating, libei.emulating
+
+
+def test_replacement_queued_by_a_send_reaches_the_next_send(
+    monkeypatch: pytest.MonkeyPatch, eis_pipe: tuple[int, int]
+) -> None:
+    libei, client = _connected_client(monkeypatch, eis_pipe)
+    libei.arrive_during_next_send(
+        [
+            (EI_EVENT_DEVICE_REMOVED, ABSOLUTE),
+            (EI_EVENT_DEVICE_ADDED, ABSOLUTE_REPLACEMENT),
+            (EI_EVENT_DEVICE_RESUMED, ABSOLUTE_REPLACEMENT),
+        ]
+    )
+    client.pointer_move_absolute(10.0, 20.0)
+    libei.device_calls.clear()
+
+    client.pointer_move_absolute(30.0, 40.0)
+
+    assert libei.devices_reached() == {ABSOLUTE_REPLACEMENT}, libei.device_calls
+
+
+def test_disconnect_queued_by_a_send_fails_the_next_send(
+    monkeypatch: pytest.MonkeyPatch, eis_pipe: tuple[int, int]
+) -> None:
+    libei, client = _connected_client(monkeypatch, eis_pipe)
+    libei.arrive_during_next_send(
+        [
+            (EI_EVENT_DEVICE_REMOVED, ABSOLUTE),
+            (EI_EVENT_DEVICE_REMOVED, KEYBOARD),
+            (EI_EVENT_DEVICE_REMOVED, RELATIVE),
+            (EI_EVENT_DISCONNECT, 0),
+        ]
+    )
+    client.pointer_move_absolute(10.0, 20.0)
+    libei.device_calls.clear()
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError):
+        client.pointer_move_absolute(30.0, 40.0)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < REPEAT_FAILURE_SECONDS, elapsed
+    assert libei.device_calls == []
+
+
+def test_keyboard_removal_queued_by_a_send_fails_the_next_key(
+    monkeypatch: pytest.MonkeyPatch, eis_pipe: tuple[int, int]
+) -> None:
+    libei, client = _connected_client(monkeypatch, eis_pipe)
+    libei.arrive_during_next_send([(EI_EVENT_DEVICE_REMOVED, KEYBOARD)])
+    client.pointer_move_absolute(10.0, 20.0)
+    libei.device_calls.clear()
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError):
+        client.keyboard_key(30, 1)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < FIRST_FAILURE_SECONDS, elapsed
+    assert libei.device_calls == []

@@ -141,7 +141,19 @@ _EI_EVENT_CONNECT = 1
 _EI_EVENT_DISCONNECT = 2
 _EI_EVENT_SEAT_ADDED = 3
 _EI_EVENT_DEVICE_ADDED = 5
+_EI_EVENT_DEVICE_REMOVED = 6
+_EI_EVENT_DEVICE_PAUSED = 7
 _EI_EVENT_DEVICE_RESUMED = 8
+
+# How long a sender waits for KWin to replace a removed or paused device. KWin
+# removes the old device, adds the replacement, and resumes it synchronously
+# inside one EisDevice change (keyboard layout reconfigure, output change); the
+# measured REMOVED -> RESUMED gap was at most 3 ms, so 1 s leaves a wide margin
+# on slow hosts while a truly lost device still fails the tool call quickly.
+_DEVICE_REPLACEMENT_TIMEOUT = 1.0
+# Upper bound on consecutive ei_dispatch rounds per drain while the socket
+# stays readable, so a flooding or EOF socket cannot spin forever.
+_MAX_DISPATCH_ROUNDS = 64
 
 # Scroll axis values (in libei, scroll is in pixels)
 _SCROLL_STEP_PIXELS = 15.0
@@ -337,17 +349,33 @@ class EISClient:
     and inject input events.
     """
 
+    # Device slots per role: (role name used in errors, attribute holding the handle).
+    _DEVICE_SLOTS: tuple[tuple[str, str], ...] = (
+        ("pointer", "_pointer"),
+        ("keyboard", "_keyboard"),
+        ("touch", "_touch_device"),
+    )
+
     def __init__(self, dbus_address: str) -> None:
         DBusGMainLoop(set_as_default=True)
         self._bus = dbus.bus.BusConnection(dbus_address)
         self._ei: int = 0  # ctypes void pointer (int representation)
         self._cookie: int = 0
+        # Each slot holds one ei_device_ref() on its device; one device may fill several slots.
         self._pointer: int = 0  # absolute pointer device
         self._keyboard: int = 0  # keyboard device
         self._touch_device: int = 0  # touch-capable device
         self._eis_iface: dbus.Interface | None = None
         self._next_touch_id: int = 0  # auto-increment touch ID
-        self._active_touches: dict[int, int] = {}  # touch_id -> ctypes pointer
+        # touch_id -> (ei_touch pointer, device the touch was created on)
+        self._active_touches: dict[int, tuple[int, int]] = {}
+        # Touch IDs whose device KWin removed while the touch was down.
+        self._abandoned_touches: set[int] = set()
+        # role -> monotonic time its device was removed or paused, until a resume.
+        self._lost_at: dict[str, float] = {}
+        # Devices this client has called ei_device_start_emulating() on.
+        self._emulating: set[int] = set()
+        self._disconnected: bool = False
         self._setup()
 
     def _setup(self) -> None:
@@ -403,42 +431,24 @@ class EISClient:
 
         A libei device may only emulate once the server has resumed it. Calling
         ei_device_start_emulating() earlier is rejected ("device is not
-        emulating") and every event sent afterwards is silently dropped, so wait
-        for EI_EVENT_DEVICE_RESUMED on each device before starting emulation.
+        emulating") and every event sent afterwards is silently dropped, so
+        emulation starts when EI_EVENT_DEVICE_RESUMED arrives for a held device
+        (see _handle_event). A device removed during the handshake is replaced
+        like any later removal.
         """
         ei_fd = _get_libei().ei_get_fd(self._ei)
         start = time.monotonic()
-        resumed: set[int] = set()
 
         while time.monotonic() - start < timeout:
             readable, _, _ = select.select([ei_fd], [], [], 0.3)
             if readable:
                 _get_libei().ei_dispatch(self._ei)
+            self._process_queued_events()
 
-            while True:
-                event = _get_libei().ei_get_event(self._ei)
-                if not event:
-                    break
-
-                etype = _get_libei().ei_event_get_type(event)
-
-                if etype == _EI_EVENT_DISCONNECT:
-                    _get_libei().ei_event_unref(event)
-                    msg = "EIS server disconnected during handshake"
-                    raise RuntimeError(msg)
-
-                if etype == _EI_EVENT_SEAT_ADDED:
-                    self._bind_seat_capabilities(event)
-
-                elif etype == _EI_EVENT_DEVICE_ADDED:
-                    self._register_device(event)
-
-                elif etype == _EI_EVENT_DEVICE_RESUMED:
-                    resumed.add(int(_get_libei().ei_event_get_device(event)))
-
-                _get_libei().ei_event_unref(event)
-
-            if self._pointer in resumed and self._keyboard in resumed:
+            if self._disconnected:
+                msg = "EIS server disconnected during handshake"
+                raise RuntimeError(msg)
+            if self._pointer in self._emulating and self._keyboard in self._emulating:
                 break
 
         if not self._pointer:
@@ -453,8 +463,137 @@ class EISClient:
         # replaced, and losing a slow-to-resume device would drop input that
         # used to work.
         for device in {self._pointer, self._keyboard, self._touch_device}:
-            if device:
+            if device and device not in self._emulating:
                 _get_libei().ei_device_start_emulating(device, 0)
+                self._emulating.add(device)
+
+    def _process_queued_events(self) -> None:
+        """Handle every event libei has already queued."""
+        while True:
+            event = _get_libei().ei_get_event(self._ei)
+            if not event:
+                return
+            self._handle_event(event)
+
+    def _handle_event(self, event: int) -> None:
+        """Apply one libei event to the device state and release it.
+
+        Shared by the handshake and by the drain every sender runs first, so a
+        device KWin replaces later (a new keyboard on each layout reconfigure,
+        a new absolute pointer/touch device on each output change) is tracked
+        exactly like the devices of the handshake.
+        """
+        lib = _get_libei()
+        try:
+            etype = lib.ei_event_get_type(event)
+            if etype == _EI_EVENT_DISCONNECT:
+                self._disconnected = True
+            elif etype == _EI_EVENT_SEAT_ADDED:
+                self._bind_seat_capabilities(event)
+            elif etype == _EI_EVENT_DEVICE_ADDED:
+                self._register_device(event)
+            elif etype in (
+                _EI_EVENT_DEVICE_REMOVED,
+                _EI_EVENT_DEVICE_PAUSED,
+                _EI_EVENT_DEVICE_RESUMED,
+            ):
+                device = int(lib.ei_event_get_device(event) or 0)
+                if device:
+                    self._update_device_state(etype, device)
+            # Everything else (modifiers, ping, sync, seat removal) needs no action.
+        finally:
+            lib.ei_event_unref(event)
+
+    def _update_device_state(self, etype: int, device: int) -> None:
+        """Apply a REMOVED, PAUSED, or RESUMED event for ``device``."""
+        roles = [role for role, attr in self._DEVICE_SLOTS if getattr(self, attr) == device]
+        if not roles:
+            return  # a device this client never took, e.g. the relative pointer
+
+        lib = _get_libei()
+        if etype == _EI_EVENT_DEVICE_RESUMED:
+            if device not in self._emulating:
+                lib.ei_device_start_emulating(device, 0)
+                self._emulating.add(device)
+            for role in roles:
+                self._lost_at.pop(role, None)
+            return
+
+        now = time.monotonic()
+        for role in roles:
+            self._lost_at.setdefault(role, now)
+        self._emulating.discard(device)
+        if etype == _EI_EVENT_DEVICE_PAUSED:
+            return  # keep the slot and its ref until KWin resumes the device
+
+        for role, attr in self._DEVICE_SLOTS:
+            if role in roles:
+                setattr(self, attr, 0)
+                lib.ei_device_unref(device)
+        for touch_id, (touch, touch_device) in list(self._active_touches.items()):
+            if touch_device == device:
+                lib.ei_touch_unref(touch)
+                del self._active_touches[touch_id]
+                self._abandoned_touches.add(touch_id)
+
+    def _drain_events(self, timeout: float) -> None:
+        """Handle queued EIS events, then read more, waiting up to ``timeout`` for the first.
+
+        Events libei already queued are handled first, even when the socket is
+        idle: every ei_dispatch() (including the one in _flush after each send)
+        may read and queue REMOVED/ADDED/RESUMED or DISCONNECT events that no
+        later select() would report. libei spreads one KWin device replacement
+        over several dispatch rounds (REMOVED and the ADDED/RESUMED of its
+        replacement arrive separately), so dispatch again while the socket stays
+        readable, capped so a flooding or EOF socket cannot spin forever.
+        """
+        self._process_queued_events()
+        if self._disconnected:
+            return
+        lib = _get_libei()
+        ei_fd = lib.ei_get_fd(self._ei)
+        wait = max(0.0, timeout)
+        for _ in range(_MAX_DISPATCH_ROUNDS):
+            readable, _, _ = select.select([ei_fd], [], [], wait)
+            if not readable:
+                return
+            lib.ei_dispatch(self._ei)
+            self._process_queued_events()
+            if self._disconnected:
+                return
+            wait = 0.0
+
+    def _live_device(self, role: str) -> int:
+        """Return the usable device for ``role``, waiting briefly for a replacement.
+
+        Raises RuntimeError when the EIS connection closed or when the role's
+        device was removed (or paused) and nothing usable arrived within
+        _DEVICE_REPLACEMENT_TIMEOUT of that event.
+        """
+        self._drain_events(0.0)
+        while True:
+            if self._disconnected:
+                msg = "KWin closed the EIS connection; input is unavailable"
+                raise RuntimeError(msg)
+            slot_role = role
+            # Without a dedicated touch device, touches go through the pointer.
+            if role == "touch" and not self._touch_device and "touch" not in self._lost_at:
+                slot_role = "pointer"
+            device: int = getattr(self, dict(self._DEVICE_SLOTS)[slot_role])
+            lost_at = self._lost_at.get(slot_role)
+            if lost_at is None:
+                if device:
+                    return device
+                msg = f"No {slot_role} device available from EIS"
+                raise RuntimeError(msg)
+            remaining = lost_at + _DEVICE_REPLACEMENT_TIMEOUT - time.monotonic()
+            if remaining <= 0:
+                msg = (
+                    f"KWin removed the EIS {slot_role} device and no usable replacement "
+                    f"arrived within {_DEVICE_REPLACEMENT_TIMEOUT:g} s"
+                )
+                raise RuntimeError(msg)
+            self._drain_events(remaining)
 
     def _bind_seat_capabilities(self, event: int) -> None:
         """Bind to all available capabilities on the seat."""
@@ -480,7 +619,7 @@ class EISClient:
         func(seat, *args)
 
     def _register_device(self, event: int) -> None:
-        """Register a device from a DEVICE_ADDED event."""
+        """Register a device from a DEVICE_ADDED event into each empty matching slot."""
         device = _get_libei().ei_event_get_device(event)
 
         has_abs = _get_libei().ei_device_has_capability(device, _EI_CAP_POINTER_ABSOLUTE)
@@ -505,43 +644,49 @@ class EISClient:
 
     def pointer_move_absolute(self, x: float, y: float) -> None:
         """Move pointer to absolute coordinates."""
-        _get_libei().ei_device_pointer_motion_absolute(self._pointer, x, y)
-        _get_libei().ei_device_frame(self._pointer, self._now_us())
+        device = self._live_device("pointer")
+        _get_libei().ei_device_pointer_motion_absolute(device, x, y)
+        _get_libei().ei_device_frame(device, self._now_us())
         self._flush()
 
     def pointer_button(self, button: int, state: int) -> None:
         """Press/release a mouse button (evdev button code)."""
-        _get_libei().ei_device_button_button(self._pointer, button, state)
-        _get_libei().ei_device_frame(self._pointer, self._now_us())
+        device = self._live_device("pointer")
+        _get_libei().ei_device_button_button(device, button, state)
+        _get_libei().ei_device_frame(device, self._now_us())
         self._flush()
 
     def pointer_scroll(self, dx: float, dy: float) -> None:
         """Scroll by pixel delta."""
-        _get_libei().ei_device_scroll_delta(self._pointer, dx, dy)
-        _get_libei().ei_device_frame(self._pointer, self._now_us())
+        device = self._live_device("pointer")
+        _get_libei().ei_device_scroll_delta(device, dx, dy)
+        _get_libei().ei_device_frame(device, self._now_us())
         self._flush()
 
     def pointer_scroll_discrete(self, dx: int, dy: int) -> None:
         """Scroll by discrete steps (wheel ticks)."""
-        _get_libei().ei_device_scroll_discrete(self._pointer, dx, dy)
-        _get_libei().ei_device_frame(self._pointer, self._now_us())
+        device = self._live_device("pointer")
+        _get_libei().ei_device_scroll_discrete(device, dx, dy)
+        _get_libei().ei_device_frame(device, self._now_us())
         self._flush()
 
     def pointer_scroll_stop(self) -> None:
         """Signal end of scroll."""
-        _get_libei().ei_device_scroll_stop(self._pointer, 1, 1)
-        _get_libei().ei_device_frame(self._pointer, self._now_us())
+        device = self._live_device("pointer")
+        _get_libei().ei_device_scroll_stop(device, 1, 1)
+        _get_libei().ei_device_frame(device, self._now_us())
         self._flush()
 
     def keyboard_key(self, keycode: int, state: int) -> None:
         """Press/release a key (evdev keycode)."""
-        _get_libei().ei_device_keyboard_key(self._keyboard, keycode, state)
-        _get_libei().ei_device_frame(self._keyboard, self._now_us())
+        device = self._live_device("keyboard")
+        _get_libei().ei_device_keyboard_key(device, keycode, state)
+        _get_libei().ei_device_frame(device, self._now_us())
         self._flush()
 
     def touch_down(self, x: float, y: float) -> int:
         """Start a new touch at (x, y). Returns a touch ID."""
-        device = self._touch_device or self._pointer
+        device = self._live_device("touch")
         touch = _get_libei().ei_device_touch_new(device)
         if not touch:
             msg = "Failed to create touch object"
@@ -552,60 +697,74 @@ class EISClient:
 
         touch_id = self._next_touch_id
         self._next_touch_id += 1
-        self._active_touches[touch_id] = touch
+        self._active_touches[touch_id] = (touch, device)
         return touch_id
+
+    def _active_touch(self, touch_id: int) -> tuple[int, int]:
+        """Return (touch, device) for an active touch after handling pending events."""
+        self._drain_events(0.0)
+        if self._disconnected:
+            msg = "KWin closed the EIS connection; input is unavailable"
+            raise RuntimeError(msg)
+        entry = self._active_touches.get(touch_id)
+        if entry is None:
+            if touch_id in self._abandoned_touches:
+                msg = f"KWin removed the EIS touch device while touch {touch_id} was down"
+                raise RuntimeError(msg)
+            msg = f"No active touch with ID {touch_id}"
+            raise ValueError(msg)
+        return entry
 
     def touch_move(self, touch_id: int, x: float, y: float) -> None:
         """Move an active touch to (x, y)."""
-        touch = self._active_touches.get(touch_id)
-        if touch is None:
-            msg = f"No active touch with ID {touch_id}"
-            raise ValueError(msg)
-        device = self._touch_device or self._pointer
+        touch, device = self._active_touch(touch_id)
         _get_libei().ei_touch_motion(touch, x, y)
         _get_libei().ei_device_frame(device, self._now_us())
         self._flush()
 
     def touch_up(self, touch_id: int) -> None:
         """End an active touch."""
-        touch = self._active_touches.pop(touch_id, None)
-        if touch is None:
-            msg = f"No active touch with ID {touch_id}"
-            raise ValueError(msg)
-        device = self._touch_device or self._pointer
+        touch, device = self._active_touch(touch_id)
+        del self._active_touches[touch_id]
         _get_libei().ei_touch_up(touch)
         _get_libei().ei_device_frame(device, self._now_us())
         _get_libei().ei_touch_unref(touch)
         self._flush()
 
     def close(self) -> None:
-        """Clean up EIS connection."""
-        # Release any lingering touches
-        for touch in self._active_touches.values():
-            _get_libei().ei_touch_up(touch)
-            _get_libei().ei_touch_unref(touch)
+        """Clean up the EIS connection without waiting; never raises."""
+        if not self._ei:
+            return
+        lib = _get_libei()
+        # Handle events already delivered so no call targets a removed device.
+        with contextlib.suppress(OSError, ValueError):
+            self._drain_events(0.0)
+
+        # After DISCONNECT libei has already removed every device, so only
+        # release references then.
+        for touch, _device in self._active_touches.values():
+            if not self._disconnected:
+                lib.ei_touch_up(touch)
+            lib.ei_touch_unref(touch)
         self._active_touches.clear()
 
-        if self._touch_device and self._touch_device not in (self._pointer, self._keyboard):
-            _get_libei().ei_device_stop_emulating(self._touch_device)
-            _get_libei().ei_device_unref(self._touch_device)
-            self._touch_device = 0
-        if self._pointer:
-            _get_libei().ei_device_stop_emulating(self._pointer)
-            _get_libei().ei_device_unref(self._pointer)
-            self._pointer = 0
-        if self._keyboard and self._keyboard != self._pointer:
-            _get_libei().ei_device_stop_emulating(self._keyboard)
-            _get_libei().ei_device_unref(self._keyboard)
-            self._keyboard = 0
+        if not self._disconnected:
+            slot_devices = {getattr(self, attr) for _role, attr in self._DEVICE_SLOTS}
+            for device in slot_devices & self._emulating:
+                lib.ei_device_stop_emulating(device)
+        self._emulating.clear()
+        for _role, attr in self._DEVICE_SLOTS:
+            device = getattr(self, attr)
+            if device:
+                lib.ei_device_unref(device)
+                setattr(self, attr, 0)
 
         if self._eis_iface and self._cookie:
             with contextlib.suppress(dbus.DBusException):
                 self._eis_iface.disconnect(dbus.Int32(self._cookie))
 
-        if self._ei:
-            _get_libei().ei_unref(self._ei)
-            self._ei = 0
+        lib.ei_unref(self._ei)
+        self._ei = 0
 
 
 # Bounds for the transient clipboard helper (``python -m kwin_mcp.clipboard``).
@@ -1031,10 +1190,13 @@ class InputBackend:
             button: Mouse button to release.
         """
         btn_code = _BTN_CODES[button]
-        self.mouse_move(x, y)
-        time.sleep(0.02)
-        self._client.pointer_button(btn_code, _RELEASED)
-        self._held_buttons.discard(btn_code)
+        try:
+            self.mouse_move(x, y)
+            time.sleep(0.02)
+            self._client.pointer_button(btn_code, _RELEASED)
+        finally:
+            # A failed release must not leave mouse_move in held (drag) mode.
+            self._held_buttons.discard(btn_code)
 
     def keyboard_type(self, text: str) -> None:
         """Type a string of text character by character."""

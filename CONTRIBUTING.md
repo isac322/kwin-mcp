@@ -263,6 +263,7 @@ tests/e2e/
 ├── test_dbus_args.py                   # dbus_call argument parser (no session needed)
 ├── test_dbus_call.py                   # dbus_call arguments as received by a test D-Bus service
 ├── test_lazy_libei.py                  # Import without libei and the missing-libei input backend path
+├── test_eis_device_replacement.py      # Input after KWin replaces or drops its EIS devices
 └── test_input_injection.py             # Engine-level EIS input behavior
 
 integrations/

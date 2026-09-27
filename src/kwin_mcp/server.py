@@ -72,9 +72,15 @@ _DESTRUCTIVE_IDEMPOTENT = ToolAnnotations(
 _NON_DESTRUCTIVE_IDEMPOTENT = ToolAnnotations(
     read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False
 )
-# Starts or attaches to sessions/processes outside the server's closed domain.
+# Attaches to sessions/processes outside the server's closed domain without
+# running a caller-chosen command.
 _SPAWN = ToolAnnotations(
     read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=True
+)
+# Starts sessions/apps by running an arbitrary caller command (shlex + Popen):
+# any action the command can take is possible, so destructive.
+_SPAWN_COMMAND = ToolAnnotations(
+    read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=True
 )
 _DBUS_CALL = ToolAnnotations(
     read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=True
@@ -165,7 +171,7 @@ def _tool[F: FunctionType](
 # ── Session management ──────────────────────────────────────────────────
 
 
-@_tool(annotations=_SPAWN)
+@_tool(annotations=_SPAWN_COMMAND)
 def session_start(
     app_command: Annotated[
         str,
@@ -860,7 +866,7 @@ def wait_for_element(
 # ── Window management tools ──────────────────────────────────────────────
 
 
-@_tool(annotations=_SPAWN)
+@_tool(annotations=_SPAWN_COMMAND)
 def launch_app(
     command: Annotated[
         str,

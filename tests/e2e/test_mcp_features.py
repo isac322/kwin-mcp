@@ -37,7 +37,7 @@ _WAYLAND_SOCKET = re.compile(r"wayland-mcp-\S+")
 EXPECTED_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "session_start": {
         "readOnlyHint": False,
-        "destructiveHint": False,
+        "destructiveHint": True,
         "idempotentHint": False,
         "openWorldHint": True,
     },
@@ -156,7 +156,7 @@ EXPECTED_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "wait_for_element": {"readOnlyHint": True, "openWorldHint": False},
     "launch_app": {
         "readOnlyHint": False,
-        "destructiveHint": False,
+        "destructiveHint": True,
         "idempotentHint": False,
         "openWorldHint": True,
     },
@@ -448,6 +448,55 @@ async def test_screenshot_results_carry_no_images_without_flag() -> None:
                 moved_text = _only_text(moved)
                 assert moved.structured_content == {"result": moved_text}
                 assert all(path.is_file() for path in _frame_paths(moved_text)), moved_text
+            finally:
+                (visual.artifact_dir / "mcp-server.stderr.log").write_text(
+                    client.stderr_text(), encoding="utf-8"
+                )
+                if connected:
+                    stop_output = await client.call_text("session_stop")
+                    assert stop_output == "Disconnected from live session.", stop_output
+
+
+@pytest.mark.anyio
+@pytest.mark.visual
+async def test_action_then_frame_burst_reports_strictly_increasing_progress() -> None:
+    """The gesture's step count and the frame burst restart at 1; emitted progress must not."""
+    with nested_visual_kwin() as visual:
+        async with running_mcp_server(
+            env={"DISPLAY": visual.x_display, "KWIN_MCP_X11_SCREENSHOT": "1"},
+        ) as client:
+            connected = False
+            try:
+                await _connect_visual(client, visual.dbus_address, visual.wayland_display)
+                connected = True
+
+                swipe_progress = ProgressLog()
+                swiped = await client.call_result(
+                    "touch_swipe",
+                    {
+                        "from_x": 200,
+                        "from_y": 600,
+                        "to_x": 600,
+                        "to_y": 600,
+                        "duration_ms": 300,
+                        "screenshot_after_ms": FRAME_DELAYS,
+                    },
+                    progress_callback=swipe_progress,
+                )
+                assert not swiped.is_error, swiped.content
+
+                await swipe_progress.settle()
+                assert len(swipe_progress.events) > len(FRAME_DELAYS), swipe_progress.events
+                _assert_strictly_increasing(swipe_progress.values)
+                # The action's counter and the burst each start at 1; the burst's
+                # raw values are offset so the last two events are its frames.
+                messages = [message for _, _, message in swipe_progress.events]
+                assert messages[-2:] == [
+                    f"Frame {index}/{len(FRAME_DELAYS)} at {delay}ms"
+                    for index, delay in enumerate(FRAME_DELAYS, 1)
+                ], swipe_progress.events
+                progress, total, _ = swipe_progress.events[-1]
+                assert progress == total, swipe_progress.events
             finally:
                 (visual.artifact_dir / "mcp-server.stderr.log").write_text(
                     client.stderr_text(), encoding="utf-8"

@@ -3,6 +3,12 @@
 MCP-independent: the server installs a scope around each tool call on the tool
 thread; outside a scope (e.g. kwin-mcp-cli or direct engine use) report() and
 record_image() are no-ops.
+
+One call can report more than one progress sequence: an action counts its own
+steps (e.g. touch_swipe 1..30), then the screenshot_after_ms burst restarts at
+frame 1. When a report's raw value does not exceed the previous raw value, a
+new phase begins: report() offsets the raw values by the last emitted value so
+emitted progress (and totals) always increase, as the MCP spec requires.
 """
 
 from __future__ import annotations
@@ -26,7 +32,12 @@ class _Scope:
     report: ReportFn | None
     collect_images: bool
     images: list[Path] = field(default_factory=list)
-    last_progress: float = float("-inf")
+    # Raw progress of the previous report; a non-increasing value opens a phase.
+    last_raw: float = float("-inf")
+    # Emitted value the current phase's raw values are offset by.
+    phase_base: float = 0.0
+    # Last value handed to report(); emissions must exceed it.
+    last_emitted: float = float("-inf")
 
 
 _scope: contextvars.ContextVar[_Scope | None] = contextvars.ContextVar(
@@ -52,14 +63,22 @@ def call_scope(report: ReportFn | None, *, collect_images: bool) -> Iterator[_Sc
 def report(progress: float, total: float | None = None, message: str | None = None) -> None:
     """Emit progress for the current tool call; a no-op outside a scope.
 
-    Values that do not exceed the last reported value are dropped: the MCP
-    spec requires progress to increase.
+    When ``progress`` does not exceed the previous raw value it marks a new
+    phase and is emitted offset by the last emitted value; totals are offset
+    the same way (``None`` stays ``None``). No emitted value is ever less than
+    or equal to the last emitted one.
     """
     s = _scope.get()
-    if s is None or s.report is None or progress <= s.last_progress:
+    if s is None or s.report is None:
         return
-    s.last_progress = progress
-    s.report(progress, total, message)
+    if progress <= s.last_raw:
+        s.phase_base = max(s.last_emitted, 0.0)
+    s.last_raw = progress
+    value = s.phase_base + progress
+    if value <= s.last_emitted:
+        return
+    s.last_emitted = value
+    s.report(value, None if total is None else s.phase_base + total, message)
 
 
 def record_image(path: Path) -> None:

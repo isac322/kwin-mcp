@@ -76,6 +76,44 @@ Both plugins ship the same SKILL.md content; the Claude Code plugin's copy is th
 - **Claude Code**: copy the shipped file to `~/.claude/skills/kwin-desktop-automation/SKILL.md` (personal scope) or `<project>/.claude/skills/kwin-desktop-automation/SKILL.md` (project scope). Personal and project skills override plugin skills with the same name.
 - **OpenCode**: drop your own `SKILL.md` under `~/.config/opencode/skills/<name>/SKILL.md` (or `<project>/.opencode/skills/`). The plugin never writes into your skill directories — the shipped SKILL.md is read-only inside the npm package, served via `skills.paths` injection. OpenCode keys skills by their frontmatter `name`, so reuse `kwin-desktop-automation` to override the shipped one, or pick a unique name (e.g. `kwin-desktop-automation-custom`) to keep both.
 
+## Server flags
+
+`kwin-mcp` accepts two optional server flags. Pass them after the command in any MCP config:
+
+- `--default-live-session` makes `session_connect` (the live desktop) the default session tool instead of `session_start`.
+- `--screenshot-images` attaches every PNG captured by `screenshot` and `screenshot_after_ms` to the tool result as MCP image content, so the agent sees the frames without reading files. Result text is unchanged. It is off by default because each frame costs model context tokens, and in live sessions it sends real-desktop pixels to the model provider.
+
+Claude Code (`claude mcp add` or `.mcp.json`):
+
+```bash
+claude mcp add kwin-mcp -- uvx kwin-mcp --screenshot-images
+```
+
+```json
+{
+  "mcpServers": {
+    "kwin-mcp": {
+      "command": "uvx",
+      "args": ["kwin-mcp", "--screenshot-images"]
+    }
+  }
+}
+```
+
+OpenCode (the [manual fallback](#manual-fallback) config):
+
+```jsonc
+{
+  "mcp": {
+    "kwin-mcp": {
+      "type": "local",
+      "command": ["uvx", "kwin-mcp", "--screenshot-images"],
+      "enabled": true
+    }
+  }
+}
+```
+
 ## Troubleshooting
 
 ### `uvx: command not found`

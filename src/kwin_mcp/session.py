@@ -20,6 +20,8 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from kwin_mcp import progress
+
 if TYPE_CHECKING:
     from typing import IO
 
@@ -167,10 +169,14 @@ class Session:
             "XDG_STATE_HOME": str(self._home_dir / ".local" / "state"),
         }
 
-    def start(self, config: SessionConfig | None = None) -> SessionInfo:
+    def start(
+        self, config: SessionConfig | None = None, *, progress_total: int | None = None
+    ) -> SessionInfo:
         """Start an isolated KWin Wayland session.
 
-        Returns SessionInfo with connection details.
+        Returns SessionInfo with connection details. Startup is reported as
+        progress steps 1-3 (KWin started, KWin ready, Wayland socket ready) out of
+        ``progress_total``, so a caller can append its own steps after them.
         """
         if self.is_running:
             msg = "Session is already running"
@@ -242,12 +248,15 @@ class Session:
             # resource acquisition this method already performed.
             self._cleanup_start_dirs()
             raise
+        progress.report(1, progress_total, "Starting KWin")
 
         # Read startup output from the wrapper script.
         # Expected lines: DBUS_SESSION_BUS_ADDRESS=..., READY or FAILED.
         # Any other lines (e.g. from D-Bus activation) are kept as diagnostics;
         # "WARN: " lines additionally reach the caller of a successful start.
-        dbus_address, got_ready, stdout_tail = self._read_startup_output()
+        dbus_address, got_ready, stdout_tail = self._read_startup_output(progress_total)
+        if got_ready:
+            progress.report(2, progress_total, "KWin ready")
 
         # Wait for kwin to be ready (socket file appears). Without READY the
         # start has already failed, so only probe the socket to pick the error
@@ -293,6 +302,7 @@ class Session:
             msg = f"{reason}.{detail}"
             raise RuntimeError(msg)
 
+        progress.report(3, progress_total, "Wayland socket ready")
         if self._home_dir is not None:
             screenshot_dir = self._home_dir / ".screenshots"
         else:
@@ -560,7 +570,7 @@ class Session:
         while self._group_alive() and time.monotonic() < deadline:
             time.sleep(0.05)
 
-    def _read_startup_output(self) -> tuple[str, bool, str]:
+    def _read_startup_output(self, progress_total: int | None = None) -> tuple[str, bool, str]:
         """Read the wrapper's stdout handshake with a hard deadline.
 
         Returns (dbus_address, got_ready, tail) where tail contains a decoded
@@ -569,6 +579,9 @@ class Session:
         surviving descendants keeps the pipe open without writing a newline,
         which once wedged start() forever. Reads are chunk-based on a
         non-blocking fd so a newline-free write also terminates the loop.
+
+        While waiting, reports fractional progress between steps 1 and 2 of
+        ``progress_total`` as a heartbeat.
         """
         process = self._process
         if process is None or process.stdout is None:
@@ -579,7 +592,8 @@ class Session:
         got_ready = False
         pending = bytearray()
         tail = bytearray()
-        deadline = time.monotonic() + _STARTUP_READ_TIMEOUT
+        started = time.monotonic()
+        deadline = started + _STARTUP_READ_TIMEOUT
 
         def remember(text: str) -> None:
             # Keep only a bounded excerpt; stdout is diagnostics, not a stream.
@@ -588,6 +602,12 @@ class Session:
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
             readable, _, _ = select.select([fd], [], [], min(remaining, 0.5))
+            elapsed = time.monotonic() - started
+            progress.report(
+                1 + min(elapsed / _STARTUP_READ_TIMEOUT, 0.99),
+                progress_total,
+                f"Waiting for KWin ({elapsed:.0f}s)",
+            )
             if not readable:
                 # No complete line can arrive any more once the leader is gone;
                 # whatever bytes remain pending are a partial line. Breaking

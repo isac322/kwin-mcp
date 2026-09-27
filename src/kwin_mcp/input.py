@@ -27,11 +27,35 @@ import dbus
 import dbus.bus
 from dbus.mainloop.glib import DBusGMainLoop
 
+from kwin_mcp import progress
+
 # Protocol constants only; importing the helper module loads no C library.
 from kwin_mcp.clipboard import MAX_COPY_BYTES, READY_BUDGET_S, RESTORE_ROUNDTRIP_S
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+# Longest uninterrupted sleep while holding a button or touch point, so a
+# long-press can report progress; the total hold duration is unchanged.
+_HOLD_SLICE_S = 0.5
+
+# keyboard_type reports progress at most this often.
+_TYPE_REPORT_INTERVAL_S = 0.5
+
+
+def _hold(seconds: float, message: str) -> None:
+    """Sleep for ``seconds`` in slices of at most ``_HOLD_SLICE_S``, reporting progress."""
+    start = time.monotonic()
+    deadline = start + seconds
+    while (remaining := deadline - time.monotonic()) > 0:
+        time.sleep(min(remaining, _HOLD_SLICE_S))
+        progress.report(min(time.monotonic() - start, seconds), seconds, message)
+
+
+def _report_step(done: int, total: int, message: str) -> None:
+    """Report step-loop progress about every 10% of ``total`` steps and at the end."""
+    if done == total or done % max(1, total // 10) == 0:
+        progress.report(done, total, message)
 
 
 class MouseButton(Enum):
@@ -1031,7 +1055,8 @@ class InputBackend:
                 time.sleep(_MULTI_CLICK_GAP_SECONDS)
             self._client.pointer_button(btn_code, _PRESSED)
             if hold_ms > 0 and i == click_count - 1:
-                time.sleep(max(_CLICK_PRESS_SECONDS, hold_ms / 1000.0))
+                hold_s = max(_CLICK_PRESS_SECONDS, hold_ms / 1000.0)
+                _hold(hold_s, f"Holding {button.value} button")
             else:
                 time.sleep(_CLICK_PRESS_SECONDS)
             self._client.pointer_button(btn_code, _RELEASED)
@@ -1144,7 +1169,7 @@ class InputBackend:
                     prev_x, prev_y = wx, wy
             segments.append((prev_x, prev_y, to_x, to_y, 0))
 
-            for seg_fx, seg_fy, seg_tx, seg_ty, dwell_ms in segments:
+            for seg_index, (seg_fx, seg_fy, seg_tx, seg_ty, dwell_ms) in enumerate(segments, 1):
                 dx = seg_tx - seg_fx
                 dy = seg_ty - seg_fy
                 steps = max(10, int((dx**2 + dy**2) ** 0.5 / 10))
@@ -1156,6 +1181,9 @@ class InputBackend:
                     time.sleep(0.01)
                 if dwell_ms > 0:
                     time.sleep(dwell_ms / 1000.0)
+                progress.report(
+                    seg_index, len(segments), f"Drag segment {seg_index}/{len(segments)}"
+                )
         finally:
             try:
                 if button_pressed:
@@ -1200,7 +1228,9 @@ class InputBackend:
 
     def keyboard_type(self, text: str) -> None:
         """Type a string of text character by character."""
-        for char in text:
+        total = len(text)
+        last_report = time.monotonic()
+        for index, char in enumerate(text, 1):
             entry = _CHAR_KEY_MAP.get(char)
             if entry is None:
                 continue
@@ -1219,6 +1249,11 @@ class InputBackend:
                 self._client.keyboard_key(_MODIFIER_KEYS["shift"], _RELEASED)
 
             time.sleep(0.02)
+
+            now = time.monotonic()
+            if now - last_report >= _TYPE_REPORT_INTERVAL_S:
+                last_report = now
+                progress.report(index, total, f"Typed {index}/{total} characters")
 
     def keyboard_key(self, key: str) -> None:
         """Press a key combination (e.g., 'ctrl+c', 'Return', 'alt+F4').
@@ -1294,7 +1329,7 @@ class InputBackend:
         """
         tid = self._client.touch_down(float(x), float(y))
         if hold_ms > 0:
-            time.sleep(max(0.01, hold_ms / 1000.0))
+            _hold(max(0.01, hold_ms / 1000.0), "Holding touch")
         else:
             time.sleep(0.01)
         self._client.touch_up(tid)
@@ -1327,6 +1362,7 @@ class InputBackend:
             cy = from_y + dy * frac
             self._client.touch_move(tid, cx, cy)
             time.sleep(step_delay)
+            _report_step(i, steps, "Swiping")
 
         self._client.touch_up(tid)
 
@@ -1360,6 +1396,7 @@ class InputBackend:
             self._client.touch_move(tid1, float(center_x - half), float(center_y))
             self._client.touch_move(tid2, float(center_x + half), float(center_y))
             time.sleep(step_delay)
+            _report_step(i, steps, "Pinching")
 
         self._client.touch_up(tid1)
         self._client.touch_up(tid2)
@@ -1402,6 +1439,7 @@ class InputBackend:
                 offset = (f - (fingers - 1) / 2.0) * finger_spacing
                 self._client.touch_move(tid, cx, cy + offset)
             time.sleep(step_delay)
+            _report_step(i, steps, f"{fingers}-finger swipe")
 
         for tid in tids:
             self._client.touch_up(tid)

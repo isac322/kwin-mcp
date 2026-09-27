@@ -52,6 +52,8 @@ Each interaction is three steps. Cheap observation **before** action prevents ac
 
 Pick the cheapest tool that answers the question. Do not start with `screenshot` if `find_ui_elements("Save")` would suffice.
 
+`screenshot` and `screenshot_after_ms` results name the saved PNG path. If the kwin-mcp server runs with `--screenshot-images`, the result also includes each captured image directly, after the text, so you can look at it without opening the file. Otherwise, read the PNG at the reported path. Each attached image costs context, so request only the frames you need.
+
 **Action tools:**
 
 - Rectangles from `find_ui_elements` / `accessibility_tree` are already global screen coordinates (`@ screen (x, y, wxh)`) — the same space `mouse_click` and `touch_tap` take. Click the centre directly: `(x + width / 2, y + height / 2)`. An element reported as `@ unavailable (reason)` has no trustworthy position; do not click it.

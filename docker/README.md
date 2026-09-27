@@ -13,7 +13,7 @@ The image fixes the inputs that define the test environment:
 - APT reads Debian trixie, trixie-updates, and trixie-security from snapshot `20260926T000000Z`;
 - the project is built as a wheel and installed into `/opt/kwin-mcp-venv` with standard `Requires-Dist` resolution. Tests import that installed distribution and launch its `kwin-mcp` and `kwin-mcp-cli` console entry points.
 
-All Python dependencies — `mcp` within the declared 1.x range, PyGObject, pycairo, dbus-python, Pillow, and their transitives — resolve fresh from the package index at image-build time, so Python dependency versions vary within the declared ranges between builds. PyGObject, pycairo, and dbus-python compile from source in the isolated `venv-builder` stage; the runtime image adds only the `libgirepository-2.0-0` shared library they need and carries no compiler or development headers. The virtual environment keeps system site packages so distro-only modules such as NumPy stay importable, and the dev dependency group is installed separately from `pyproject.toml`; `uv.lock` is not used inside the image. `environment.json` records the architecture, base digest, package snapshot, Python and KWin versions, the installed version of every distro package the image lists in `KWIN_MCP_SYSTEM_PACKAGES` (the same list its package-manager step installs), and installed `kwin-mcp` and `mcp` distribution metadata for each run, so the resolved versions remain part of the retained provenance.
+All Python dependencies — `mcp` within the declared 2.x range, PyGObject, pycairo, dbus-python, Pillow, and their transitives — resolve fresh from the package index at image-build time, so Python dependency versions vary within the declared ranges between builds. PyGObject, pycairo, and dbus-python compile from source in the isolated `venv-builder` stage; the runtime image adds only the `libgirepository-2.0-0` shared library they need and carries no compiler or development headers. The virtual environment keeps system site packages so distro-only modules such as NumPy stay importable, and the dev dependency group is installed separately from `pyproject.toml`; `uv.lock` is not used inside the image. `environment.json` records the architecture, base digest, package snapshot, Python and KWin versions, the installed version of every distro package the image lists in `KWIN_MCP_SYSTEM_PACKAGES` (the same list its package-manager step installs), and installed `kwin-mcp` and `mcp` distribution metadata for each run, so the resolved versions remain part of the retained provenance.
 
 ## Arch Linux variant
 
@@ -164,7 +164,7 @@ Additional arguments after the image command can select a file, node ID, marker,
 | `test_window_control.py` | Focus, smooth/discrete scroll, drag selection, touch swipe and pinch delivery to KWrite, two-finger delivery to the GTK interaction probe, and scrollbar values. |
 | `test_window_geometry.py` | Global client/frame geometry, centered placement, element rectangles reported in screen coordinates, and unknown-window behavior. |
 
-Together, the installed MCP files exercise every server wrapper over a real MCP 1.x stdio client/server connection. The engine-level files retain direct coverage of lower-level behavior and cleanup.
+Together, the installed MCP files exercise every server wrapper over a real MCP 2.x stdio client/server connection. The engine-level files retain direct coverage of lower-level behavior and cleanup.
 
 ## Visual pixel oracles
 

@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
     from typing import Any, TextIO
 
-    from mcp.types import CallToolResult
+    from mcp.types import CallToolResult, InitializeResult
 
 EXPECTED_TOOL_NAMES: frozenset[str] = frozenset(
     {
@@ -60,8 +60,14 @@ EXPECTED_TOOL_NAMES: frozenset[str] = frozenset(
 class McpTestClient:
     """Initialized MCP client plus assertions tailored to text-returning tools."""
 
-    def __init__(self, session: ClientSession, stderr_path: Path) -> None:
+    def __init__(
+        self,
+        session: ClientSession,
+        stderr_path: Path,
+        initialize_result: InitializeResult,
+    ) -> None:
         self.session = session
+        self.initialize_result = initialize_result
         self._stderr_path = stderr_path
 
     def stderr_text(self) -> str:
@@ -83,7 +89,7 @@ class McpTestClient:
         text = "\n".join(
             content.text for content in result.content if isinstance(content, TextContent)
         )
-        if result.isError:
+        if result.is_error:
             stderr = self.stderr_text().strip()
             details = text or repr(result.content)
             if stderr:
@@ -137,8 +143,8 @@ async def running_mcp_server(
             stdio_client(parameters, errlog=stderr_file) as (read_stream, write_stream),
             ClientSession(read_stream, write_stream) as session,
         ):
-            await session.initialize()
-            yield McpTestClient(session, stderr_path)
+            initialize_result = await session.initialize()
+            yield McpTestClient(session, stderr_path, initialize_result)
     except BaseException as error:
         stderr_file.flush()
         _add_stderr_note(error, stderr_path)

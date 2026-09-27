@@ -1,9 +1,11 @@
-"""The installed MCP server's stdio transport must stay private to the server.
+"""The installed MCP server's stdio transport pipes must stay private to the server.
 
-Over stdio, the server's stdin carries every JSON-RPC request. Session processes
-used to inherit it: the compositor wrapper and every ``launch_app`` program shared
-the server's stdin pipe, so a launched program that reads stdin (a shell script,
-``cat``, a CLI tool) consumed request lines and those calls never got a response.
+Over stdio, the server's stdin pipe carries every JSON-RPC request and its stdout
+pipe carries every response. Session processes used to inherit them: the
+compositor wrapper and every ``launch_app`` program shared the server's stdin
+pipe, so a launched program that reads stdin (a shell script, ``cat``, a CLI
+tool) consumed request lines and those calls never got a response. The transport
+must not be inherited by any session process on any fd.
 """
 
 from __future__ import annotations
@@ -35,11 +37,21 @@ def _parent_pid(pid: str) -> int | None:
     return int(stat.rsplit(")", 1)[1].split()[1])
 
 
-def _stdin_target(pid: str) -> str | None:
+def _pipe_targets(pid: str) -> set[str]:
+    """The ``pipe:[N]`` inode targets open on any fd of ``pid``."""
+    targets: set[str] = set()
     try:
-        return os.readlink(f"/proc/{pid}/fd/0")
+        fds = list(Path(f"/proc/{pid}/fd").iterdir())
     except OSError:
-        return None
+        return targets
+    for fd in fds:
+        try:
+            target = os.readlink(fd)
+        except OSError:
+            continue
+        if target.startswith("pipe:"):
+            targets.add(target)
+    return targets
 
 
 def _server_pid() -> str:
@@ -56,21 +68,28 @@ def _server_pid() -> str:
     return candidates[0]
 
 
-def _processes_sharing_stdin(server_pid: str) -> dict[str, str]:
-    """Every other process whose stdin is the server's JSON-RPC pipe."""
-    transport = _stdin_target(server_pid)
-    assert transport is not None and transport.startswith("pipe:"), transport
-    sharing: dict[str, str] = {}
+def _processes_holding_transport(server_pid: str) -> dict[str, str]:
+    """Every other process holding a JSON-RPC transport pipe on any fd.
+
+    The transport pipes are identified without relying on fd numbering (mcp 2.x
+    points the server's fd 0 at /dev/null): they are the pipe inodes open in the
+    server that are also open in this test process, whose stdio client holds the
+    other end of each pipe.
+    """
+    own_pid = str(os.getpid())
+    transport = _pipe_targets(server_pid) & _pipe_targets(own_pid)
+    assert transport, "no stdio transport pipes shared with the server"
+    holding: dict[str, str] = {}
     for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit() or entry.name == server_pid:
+        if not entry.name.isdigit() or entry.name in {server_pid, own_pid}:
             continue
-        if _stdin_target(entry.name) == transport:
+        if _pipe_targets(entry.name) & transport:
             try:
                 comm = (entry / "comm").read_text(encoding="utf-8").strip()
             except OSError:
                 comm = "?"
-            sharing[entry.name] = comm
-    return sharing
+            holding[entry.name] = comm
+    return holding
 
 
 @pytest.mark.anyio
@@ -89,8 +108,8 @@ async def test_session_processes_cannot_read_the_json_rpc_stdin(tmp_path: Path) 
             assert launch_output.startswith("App launched:"), launch_output
 
             # The compositor, D-Bus, AT-SPI2, and the launched reader are all
-            # running now; none of them may hold the transport as stdin.
-            assert _processes_sharing_stdin(_server_pid()) == {}
+            # running now; none of them may hold the transport on any fd.
+            assert _processes_holding_transport(_server_pid()) == {}
 
             completed = 0
             for _ in range(FOLLOW_UP_CALLS):

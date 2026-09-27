@@ -125,7 +125,7 @@ For each trigger label, read **exactly these files** before writing anything. Do
 
 **`tool-registration` input set**
 ```
-src/kwin_mcp/server.py          # authoritative list of registered MCP tools (@mcp.tool)
+src/kwin_mcp/server.py          # authoritative list of registered MCP tools (@_tool)
 src/kwin_mcp/core.py            # AutomationEngine methods (verifies tool implementation exists)
 README.md                       # current tool tables and tool-count references
 CHANGELOG.md (latest entry)     # what was recently changed
@@ -151,7 +151,7 @@ CONTRIBUTING.md                 # project structure listing
 
 **`code-general` input set**
 ```
-src/kwin_mcp/server.py          # tool count (count @mcp.tool decorated functions)
+src/kwin_mcp/server.py          # tool count (count @_tool decorated functions)
 README.md                       # all concrete number references ("30 MCP tools", etc.)
 CONTRIBUTING.md                 # project structure file listing
 CHANGELOG.md (latest entry)     # completeness check for unreleased section
@@ -253,7 +253,7 @@ For each trigger label, these are the files that **may** be modified. Only updat
 #### No-op Conditions
 
 Produce **no file changes** and report "no-op: [reason]" when all of the following are true for the triggered scope:
-- Tool count in `README.md` already matches actual `@mcp.tool` count in `src/kwin_mcp/server.py`
+- Tool count in `README.md` already matches actual `@_tool` count in `src/kwin_mcp/server.py`
 - All `pypi_package_keywords` from `.claude/positioning.yml` already appear in `pyproject.toml`
 - All keyword tiers in `CLAUDE.md` already match the manifest's `keywords.*` sections
 - README.md H1/meta description already matches `product.meta_description` in manifest (within reasonable paraphrase)
@@ -412,7 +412,7 @@ This section governs how the agent treats `integrations/*` (Claude Code plugin, 
 
 3. **SKILL identity rule**: `integrations/claude-code/skills/kwin-desktop-automation/SKILL.md` is the source of truth. `integrations/opencode/plugin/skill/kwin-desktop-automation/SKILL.md` must be byte-identical. The OpenCode plugin's `npm run build` automatically mirrors the source via its `build:skill` script; CI enforces equality via `check_docs_seo.py::check_skill_identical`.
 
-4. **Tool count consistency**: when `src/kwin_mcp/server.py` changes the `@mcp.tool()` count, all of `.claude/positioning.yml § product.tool_count`, `.claude/positioning.yml § drift_detection.tool_count_canonical`, `check_docs_seo.py § TOOL_COUNT_CANONICAL`, README tool tables, and the SKILL.md "30 capabilities" reference must update together.
+4. **Tool count consistency**: when `src/kwin_mcp/server.py` changes the `@_tool` count, all of `.claude/positioning.yml § product.tool_count`, `.claude/positioning.yml § drift_detection.tool_count_canonical`, `check_docs_seo.py § TOOL_COUNT_CANONICAL`, README tool tables, and the SKILL.md "30 capabilities" reference must update together.
 
 ### Output Targets per Trigger
 

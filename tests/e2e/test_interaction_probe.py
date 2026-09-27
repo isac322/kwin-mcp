@@ -563,7 +563,7 @@ async def test_interaction_options_change_visible_probe_state_and_preserve_evide
                 invalid_key = "DefinitelyNotARealKey"
                 invalid_result = await client.call_result("keyboard_key", {"key": invalid_key})
                 invalid_error = _result_text(invalid_result)
-                assert invalid_result.isError is True, invalid_error
+                assert invalid_result.is_error is True, invalid_error
                 assert invalid_key in invalid_error, invalid_error
                 assert await client.session.send_ping() is not None
                 assert await _keyboard_text(client) == ""

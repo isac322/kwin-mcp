@@ -270,7 +270,7 @@ async def test_mouse_drag_releases_state_before_x11_mirror_error(tmp_path: Path)
                     },
                 )
                 drag_error = _result_text(drag_result)
-                assert drag_result.isError is True, drag_error
+                assert drag_result.is_error is True, drag_error
                 assert "xdotool failed to mirror the screenshot cursor" in drag_error, drag_error
                 assert "(exit 73)" in drag_error, drag_error
 
@@ -330,7 +330,7 @@ async def test_invalid_key_and_button_are_tool_errors_without_killing_server() -
             for tool_name in ("keyboard_key", "keyboard_key_down", "keyboard_key_up"):
                 key_result = await client.call_result(tool_name, {"key": invalid_key})
                 key_error = _result_text(key_result)
-                assert key_result.isError is True, (tool_name, key_error)
+                assert key_result.is_error is True, (tool_name, key_error)
                 assert f"Unknown key: {invalid_key}" in key_error, (tool_name, key_error)
 
             button_result = await client.call_result(
@@ -342,7 +342,7 @@ async def test_invalid_key_and_button_are_tool_errors_without_killing_server() -
                 },
             )
             button_error = _result_text(button_result)
-            assert button_result.isError is True, button_error
+            assert button_result.is_error is True, button_error
             assert invalid_button in button_error, button_error
             assert "button" in button_error.lower(), button_error
 

@@ -121,6 +121,129 @@ def _remove_tree(path: Path, attempts: int = 3) -> None:
         time.sleep(0.3)
 
 
+# Grace periods for launched-app process-group teardown: how long to wait
+# between SIGTERM and SIGKILL, and after SIGKILL. The escalation is shared
+# across all launched apps (SIGTERM every group, wait, SIGKILL every surviving
+# group, wait), so the total bound is the TERM grace plus the KILL grace (~5 s)
+# regardless of how many apps were launched — the same TERM-all-then-wait shape
+# the old direct-child-only teardown used.
+_APP_TERM_GRACE_SECONDS = 3.0
+_APP_KILL_GRACE_SECONDS = 2.0
+
+
+def _signal_process_group(pgid: int, sig: int) -> None:
+    """Signal every member of a process group, ignoring races.
+
+    The pgid is allocated while any member lives, so it stays valid even after
+    the group's leader was reaped — unlike os.getpgid(pid), which raises ESRCH
+    on a reaped leader. Nothing stops the kernel from recycling the pid once
+    the last member is gone, so callers attribute the pgid to a process they
+    own and signal promptly.
+    """
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(pgid, sig)
+
+
+def _group_alive(pgid: int) -> bool:
+    """Return True while any live (non-zombie) member of the group exists.
+
+    killpg(pgid, 0) also succeeds for unreaped zombies, which persist when
+    orphaned members are reparented to a PID 1 that never reaps (e.g. a
+    container whose entrypoint execs pytest). Treating those as alive would
+    make every teardown wait out its full timeout, so on Linux the group's
+    members are confirmed through /proc/<pid>/stat and zombies are ignored.
+    """
+    try:
+        os.killpg(pgid, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    proc = Path("/proc")
+    if not (proc / "self" / "stat").exists():
+        # No procfs: killpg cannot tell zombies apart, so assume alive.
+        return True
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_text()
+        except OSError:
+            # The process exited (or is inaccessible) between listing and read.
+            continue
+        # Fields after the comm's closing ")" are: state ppid pgrp ...
+        fields = stat.rpartition(")")[2].split()
+        if len(fields) > 2 and fields[2] == str(pgid) and fields[0] not in ("Z", "X"):
+            return True
+    return False
+
+
+def _wait_for_group_exit(pgid: int, timeout: float) -> None:
+    """Block until the process group is empty or timeout elapses."""
+    deadline = time.monotonic() + timeout
+    while _group_alive(pgid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+
+def _leader_reaped(pid: int) -> bool:
+    """Whether our direct child pid has been reaped (is no longer a child).
+
+    Probes with waitid(WEXITED | WNOHANG | WNOWAIT), which reports the child's
+    status without reaping it: a still-running or zombie child is ours, a
+    reaped one is not. While the leader is ours, its pid — which is its
+    process-group id — stays reserved, so killpg on that group cannot reach a
+    pid recycled into an unrelated group.
+    """
+    try:
+        os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    except ChildProcessError:
+        return True
+    return False
+
+
+def _reap_app_leader(leader: subprocess.Popen) -> None:
+    """Reap a launched app leader; safe only after the last group signal.
+
+    The leader is kept unreaped (a zombie) through the whole escalation so its
+    pid (== its process-group id) stays reserved; it is reaped here, once no
+    further killpg can follow.
+    """
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        leader.wait(timeout=_APP_KILL_GRACE_SECONDS)
+
+
+def _wait_for_groups_exit(apps: list[AppInfo], timeout: float) -> None:
+    """Block until every launched group is empty or timeout elapses."""
+    deadline = time.monotonic() + timeout
+    while any(_group_alive(app.process.pid) for app in apps) and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+
+def _terminate_app_groups(apps: list[AppInfo]) -> None:
+    """Stop every launched app and its descendants in one bounded escalation.
+
+    SIGTERM every group, wait once for the groups to exit, SIGKILL every group
+    that still has live members, wait once more. The bound is the TERM grace
+    plus the KILL grace, shared across all apps rather than paid per app.
+
+    A group is signalled only while its leader — a Popen this server holds —
+    has not been reaped. Leaders are reaped only after the last group signal,
+    so throughout the escalation each leader's pid (== its process-group id)
+    stays reserved and killpg can never reach a pid recycled into an unrelated
+    group. The leader's status is probed with waitid(WEXITED | WNOHANG |
+    WNOWAIT), which observes without reaping; the leader is never poll()ed or
+    waited on before the final reaping.
+    """
+    for app in apps:
+        if not _leader_reaped(app.process.pid):
+            _signal_process_group(app.process.pid, signal.SIGTERM)
+    _wait_for_groups_exit(apps, _APP_TERM_GRACE_SECONDS)
+    for app in apps:
+        if not _leader_reaped(app.process.pid) and _group_alive(app.process.pid):
+            _signal_process_group(app.process.pid, signal.SIGKILL)
+    _wait_for_groups_exit(apps, _APP_KILL_GRACE_SECONDS)
+    for app in apps:
+        _reap_app_leader(app.process)
+
+
 class Session:
     """An isolated KWin Wayland session.
 
@@ -357,12 +480,16 @@ class Session:
 
         # stdin=DEVNULL: an inherited stdin would be the MCP server's JSON-RPC
         # transport, and a launched program that reads it steals requests.
+        # start_new_session=True puts the app and its descendants in their own
+        # process group so session_stop can stop the whole tree, not just the
+        # direct child (a shell script's background jobs, a browser's helpers).
         proc = subprocess.Popen(
             command,
             env=env,
             stdin=subprocess.DEVNULL,
             stdout=log_file,
             stderr=log_file,
+            start_new_session=True,
         )
         # Close the fd in the parent; child has inherited it
         log_file.close()
@@ -407,22 +534,10 @@ class Session:
         return text or "(no log output yet)"
 
     def _terminate_apps(self) -> None:
-        """Stop applications started through launch_app and reap them."""
+        """Stop every launched app with its whole process group and reap the leaders."""
         if self._info is None:
             return
-        for app in list(self._info.apps.values()):
-            if app.process.poll() is not None:
-                continue
-            with contextlib.suppress(ProcessLookupError):
-                app.process.terminate()
-        for app in list(self._info.apps.values()):
-            try:
-                app.process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                with contextlib.suppress(ProcessLookupError):
-                    app.process.kill()
-                with contextlib.suppress(subprocess.TimeoutExpired):
-                    app.process.wait(timeout=2)
+        _terminate_app_groups(list(self._info.apps.values()))
 
     def stop(self) -> None:
         """Stop the isolated session and clean up all processes."""
@@ -516,59 +631,22 @@ class Session:
         self._home_dir = None
 
     def _signal_process_group(self, sig: int) -> None:
-        """Signal the whole session process group, ignoring races.
-
-        start_new_session=True makes the leader's pid the process group id, so
-        the pid doubles as the pgid and stays valid even after the leader was
-        reaped — os.getpgid(pid) would instead fail with ESRCH on a reaped
-        leader and silently skip the signal. This is bounded by the owned
-        lifecycle only: nothing prevents the kernel from recycling the pid
-        once every group member is gone, so callers must signal promptly.
-        """
+        """Signal the whole session process group, ignoring races."""
         if self._process is None:
             return
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(self._process.pid, sig)
+        _signal_process_group(self._process.pid, sig)
 
     def _group_alive(self) -> bool:
-        """Return True while any live (non-zombie) member of the session group exists.
-
-        killpg(pgid, 0) also succeeds for unreaped zombies, which persist when
-        orphaned members are reparented to a PID 1 that never reaps (e.g. a
-        container whose entrypoint execs pytest). Treating those as alive would
-        make every teardown wait out its full timeout, so on Linux the group's
-        members are confirmed through /proc/<pid>/stat and zombies are ignored.
-        """
+        """Return True while any live (non-zombie) member of the session group exists."""
         if self._process is None:
             return False
-        pgid = self._process.pid
-        try:
-            os.killpg(pgid, 0)
-        except (ProcessLookupError, PermissionError):
-            return False
-        proc = Path("/proc")
-        if not (proc / "self" / "stat").exists():
-            # No procfs: killpg cannot tell zombies apart, so assume alive.
-            return True
-        for entry in proc.iterdir():
-            if not entry.name.isdigit():
-                continue
-            try:
-                stat = (entry / "stat").read_text()
-            except OSError:
-                # The process exited (or is inaccessible) between listing and read.
-                continue
-            # Fields after the comm's closing ")" are: state ppid pgrp ...
-            fields = stat.rpartition(")")[2].split()
-            if len(fields) > 2 and fields[2] == str(pgid) and fields[0] not in ("Z", "X"):
-                return True
-        return False
+        return _group_alive(self._process.pid)
 
     def _wait_for_group_exit(self, timeout: float) -> None:
         """Block until the session process group is empty or timeout elapses."""
-        deadline = time.monotonic() + timeout
-        while self._group_alive() and time.monotonic() < deadline:
-            time.sleep(0.05)
+        if self._process is None:
+            return
+        _wait_for_group_exit(self._process.pid, timeout)
 
     def _read_startup_output(self, progress_total: int | None = None) -> tuple[str, bool, str]:
         """Read the wrapper's stdout handshake with a hard deadline.
@@ -923,13 +1001,15 @@ class LiveSession:
         log_path = self._info.screenshot_dir / f"app_{app_name}_{self._app_counter}.log"
         log_file = log_path.open("ab")
 
-        # stdin=DEVNULL: see Session.launch_app.
+        # stdin=DEVNULL: see Session.launch_app. start_new_session=True gives
+        # the app its own process group so stop() can signal the whole tree.
         proc = subprocess.Popen(
             command,
             env=env,
             stdin=subprocess.DEVNULL,
             stdout=log_file,
             stderr=log_file,
+            start_new_session=True,
         )
         log_file.close()
 
@@ -970,12 +1050,10 @@ class LiveSession:
             return
         self._running = False
 
-        # Terminate apps launched by us
-        for app in self._info.apps.values():
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                app.process.terminate()
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                app.process.wait(timeout=3)
+        # Stop every app we launched, with its whole process group, escalating
+        # SIGTERM to SIGKILL. KWin and any apps that predate the connection
+        # are never signalled.
+        _terminate_app_groups(list(self._info.apps.values()))
 
         if not keep_screenshots and self._info.screenshot_dir.exists():
             shutil.rmtree(self._info.screenshot_dir, ignore_errors=True)

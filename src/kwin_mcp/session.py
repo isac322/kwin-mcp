@@ -14,11 +14,12 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from kwin_mcp import progress
 
@@ -199,49 +200,228 @@ def _leader_reaped(pid: int) -> bool:
     return False
 
 
-def _reap_app_leader(leader: subprocess.Popen) -> None:
-    """Reap a launched app leader; safe only after the last group signal.
-
-    The leader is kept unreaped (a zombie) through the whole escalation so its
-    pid (== its process-group id) stays reserved; it is reaped here, once no
-    further killpg can follow.
-    """
-    with contextlib.suppress(subprocess.TimeoutExpired):
-        leader.wait(timeout=_APP_KILL_GRACE_SECONDS)
-
-
-def _wait_for_groups_exit(apps: list[AppInfo], timeout: float) -> None:
-    """Block until every launched group is empty or timeout elapses."""
+def _wait_for_leader_groups_exit(leaders: list[subprocess.Popen[bytes]], timeout: float) -> None:
+    """Block until every leader's process group is empty or timeout elapses."""
     deadline = time.monotonic() + timeout
-    while any(_group_alive(app.process.pid) for app in apps) and time.monotonic() < deadline:
+    while any(_group_alive(leader.pid) for leader in leaders) and time.monotonic() < deadline:
         time.sleep(0.05)
 
 
 def _terminate_app_groups(apps: list[AppInfo]) -> None:
-    """Stop every launched app and its descendants in one bounded escalation.
+    """Stop every launched app and its descendants, reaping the leaders."""
+    process_registry.terminate_leaders([app.process for app in apps], reap=True)
 
-    SIGTERM every group, wait once for the groups to exit, SIGKILL every group
-    that still has live members, wait once more. The bound is the TERM grace
-    plus the KILL grace, shared across all apps rather than paid per app.
 
-    A group is signalled only while its leader — a Popen this server holds —
-    has not been reaped. Leaders are reaped only after the last group signal,
-    so throughout the escalation each leader's pid (== its process-group id)
-    stays reserved and killpg can never reach a pid recycled into an unrelated
-    group. The leader's status is probed with waitid(WEXITED | WNOHANG |
-    WNOWAIT), which observes without reaping; the leader is never poll()ed or
-    waited on before the final reaping.
+class OwnedProcessRegistry:
+    """Thread-safe registry of the process groups and temp dirs kwin-mcp owns.
+
+    The server's exit path cannot always run ``session_stop`` (the engine is not
+    thread-safe and the tool thread may be busy with a long tool), so on that
+    path the main thread cleans up the owned resources directly. This registry
+    records, at spawn time, the process groups kwin-mcp owns — the virtual
+    session's ``dbus-run-session`` wrapper group and every launched app group,
+    virtual or live — plus the temp dirs a virtual session creates that
+    ``session_stop`` would remove (isolated home, per-session config dir,
+    screenshot dir, and a keep-home session's ``.screenshots`` subdirectory).
+    KWin of a live session and any pre-existing process are never recorded, so
+    they are never signalled.
+
+    An entry exists if and only if its leader is an unreaped child of this
+    process: the registry holds the owned ``subprocess.Popen`` (the leader), not
+    a bare pgid, and every operation that can reap a registered leader —
+    ``poll``, ``wait``, ``kill``, and the final ``reap`` — goes through a helper
+    that holds the lock and unregisters the leader in the same critical section.
+    The exit path (``terminate_all``) therefore signals only the entries whose
+    leaders are still unreaped children, so it never signals a group whose
+    leader has been reaped and whose pgid the kernel may have recycled into an
+    unrelated group.
+
+    Spawn and registration are atomic with respect to ``close()``: the lock is
+    held across ``subprocess.Popen`` and the registration, so ``close()``
+    observes a spawn as either fully complete or not started. After ``close()``
+    a spawn is refused with a clear error instead of starting a group that
+    ``close()`` and ``terminate_all`` have already passed over (leaking it).
     """
-    for app in apps:
-        if not _leader_reaped(app.process.pid):
-            _signal_process_group(app.process.pid, signal.SIGTERM)
-    _wait_for_groups_exit(apps, _APP_TERM_GRACE_SECONDS)
-    for app in apps:
-        if not _leader_reaped(app.process.pid) and _group_alive(app.process.pid):
-            _signal_process_group(app.process.pid, signal.SIGKILL)
-    _wait_for_groups_exit(apps, _APP_KILL_GRACE_SECONDS)
-    for app in apps:
-        _reap_app_leader(app.process)
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._closed = False
+        self._processes: dict[int, subprocess.Popen[bytes]] = {}
+        self._temp_dirs: list[Path] = []
+
+    def close(self) -> None:
+        """Mark the registry closed; no spawn is allowed from here on.
+
+        Takes the same lock ``spawn`` holds, so a spawn in progress finishes
+        registering its group before ``close`` proceeds.
+        """
+        with self._lock:
+            self._closed = True
+
+    def spawn(self, args: list[str], **kwargs: object) -> subprocess.Popen[bytes]:
+        """Atomically spawn a process and register it as an owned leader.
+
+        Holds the lock across ``subprocess.Popen`` and the registration. The
+        caller passes the same arguments it would give ``subprocess.Popen``.
+        After ``close()`` this raises instead of spawning: a group started now
+        would not be signalled by the already-run ``terminate_all`` and would
+        leak, so it must be refused rather than started.
+        """
+        with self._lock:
+            if self._closed:
+                msg = "the process registry is closed; refusing to spawn a new process"
+                raise RuntimeError(msg)
+            raw = subprocess.Popen(args, **kwargs)  # ty: ignore[no-matching-overload]
+            proc = cast("subprocess.Popen[bytes]", raw)
+            self._processes[proc.pid] = proc
+        return proc
+
+    def register_temp_dir(self, path: Path) -> None:
+        """Record a temp dir a session created, for ``terminate_all`` to remove."""
+        with self._lock:
+            if path not in self._temp_dirs:
+                self._temp_dirs.append(path)
+
+    def unregister_temp_dir(self, path: Path) -> None:
+        """Drop a temp dir a stop already removed."""
+        with self._lock, contextlib.suppress(ValueError):
+            self._temp_dirs.remove(path)
+
+    def poll(self, proc: subprocess.Popen[bytes]) -> int | None:
+        """Poll a registered leader; if it has exited, unregister it.
+
+        ``Popen.poll`` reaps a finished child, so once it reports a status the
+        leader is no longer an owned child and must leave the registry in the
+        same critical section.
+        """
+        with self._lock:
+            rc = proc.poll()
+            if rc is not None:
+                self._processes.pop(proc.pid, None)
+            return rc
+
+    def wait(self, proc: subprocess.Popen[bytes], timeout: float) -> int:
+        """Wait for a registered leader, unregistering on reap.
+
+        Polls in short steps so the lock is not held across the whole wait
+        (``Popen.wait`` with a timeout would block the lock for the full bound).
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            with self._lock:
+                rc = proc.poll()
+                if rc is not None:
+                    self._processes.pop(proc.pid, None)
+                    return rc
+            if time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(proc.args, timeout)
+            time.sleep(0.05)
+
+    def kill(self, proc: subprocess.Popen[bytes]) -> None:
+        """Send SIGKILL to a registered leader; CPython polls first, so this
+        can reap a finished child and must unregister it in the same section."""
+        with self._lock:
+            proc.kill()
+            if proc.returncode is not None:
+                self._processes.pop(proc.pid, None)
+
+    def reap(self, proc: subprocess.Popen[bytes]) -> None:
+        """Reap a registered leader after its group's last signal, unregistering it.
+
+        Called only by the owner side (``session_stop``), once no further killpg
+        can follow. Polls in short steps so the lock is not held across the whole
+        wait; a leader that is not gone by the bound is left for the process to
+        orphan (its descendants, if any, are the residual documented below).
+        """
+        deadline = time.monotonic() + _APP_KILL_GRACE_SECONDS
+        while True:
+            with self._lock:
+                rc = proc.poll()
+                if rc is not None:
+                    self._processes.pop(proc.pid, None)
+                    return
+            if time.monotonic() >= deadline:
+                return
+            time.sleep(0.05)
+
+    def _signal_owned(self, leaders: list[subprocess.Popen[bytes]], sig: int) -> None:
+        """Signal every leader that is still an unreaped child, under the lock.
+
+        The ownership check and the signal run in one critical section, so no
+        other thread can reap the leader between them. Signals are fast; the
+        grace waits in the escalation run outside the lock.
+        """
+        with self._lock:
+            for leader in leaders:
+                if not _leader_reaped(leader.pid):
+                    _signal_process_group(leader.pid, sig)
+
+    def _kill_owned(self, leaders: list[subprocess.Popen[bytes]]) -> None:
+        """SIGKILL every still-owned leader whose group has live members."""
+        with self._lock:
+            for leader in leaders:
+                if not _leader_reaped(leader.pid) and _group_alive(leader.pid):
+                    _signal_process_group(leader.pid, signal.SIGKILL)
+
+    def terminate_leaders(self, leaders: list[subprocess.Popen[bytes]], *, reap: bool) -> None:
+        """Stop every leader's process group in one bounded escalation.
+
+        SIGTERM every group whose leader is still an unreaped child, wait once for
+        the groups to exit, SIGKILL every group that still has live members, wait
+        once more. The bound is the TERM grace plus the KILL grace, shared across
+        all groups rather than paid per group.
+
+        The ownership check (``_leader_reaped``) and the signal run under this
+        registry's lock, so no other thread can reap the leader between them; the
+        grace waits run outside the lock. While a leader is an unreaped child its
+        pid (== its process-group id) stays reserved, so killpg can never reach a
+        pid recycled into an unrelated group.
+
+        Leaders are reaped (and unregistered from the registry) only after the last
+        signal, and only when ``reap`` is set — the owner side (``session_stop``),
+        where this thread owns the ``Popen`` objects. On the exit path (``reap=False``)
+        the process exits right after and the tool thread may still own the objects,
+        so the leaders are left for the process to exit. If a leader was already
+        reaped while its descendants still hold the group, that group is left
+        unsignalled: ownership can no longer be proven (the same floor PR2 accepted).
+        """
+        self._signal_owned(leaders, signal.SIGTERM)
+        _wait_for_leader_groups_exit(leaders, _APP_TERM_GRACE_SECONDS)
+        self._kill_owned(leaders)
+        _wait_for_leader_groups_exit(leaders, _APP_KILL_GRACE_SECONDS)
+        if reap:
+            for leader in leaders:
+                self.reap(leader)
+
+    def terminate_all(self) -> None:
+        """Signal every still-registered group (no reap) and remove owned temp dirs.
+
+        Runs on the main thread after ``close()`` without touching the engine,
+        through the same shared escalation ``session_stop`` uses (``reap=False``):
+        SIGTERM to every group whose leader is still an unreaped child, one
+        shared wait, SIGKILL to the survivors, one shared wait, then best-effort
+        removal of the recorded temp dirs. The leaders are not reaped here: the
+        tool thread may still own the ``Popen`` objects, and the process exits
+        immediately afterwards.
+
+        If a leader was already reaped while its descendants still hold the
+        group, that group is left unsignalled — ownership can no longer be
+        proven, so signalling it could reach a recycled pgid (the same floor
+        PR2 accepted; reachable only if the wrapper exits on its own first).
+        """
+        with self._lock:
+            leaders = list(self._processes.values())
+        self.terminate_leaders(leaders, reap=False)
+        with self._lock:
+            dirs = list(self._temp_dirs)
+        for path in dirs:
+            # One dir that cannot be removed (an app may leave an inaccessible
+            # subdirectory) must not stop the removal of the others.
+            with contextlib.suppress(OSError):
+                _remove_tree(path)
+
+
+process_registry = OwnedProcessRegistry()
 
 
 class Session:
@@ -269,7 +449,10 @@ class Session:
     def is_running(self) -> bool:
         if self._process is None:
             return False
-        return self._process.poll() is None
+        # Poll through the registry so a finished wrapper is reaped and
+        # unregistered here, not left as a stale entry for a later stop or
+        # session replacement (core.py replaces a dead session without stop).
+        return process_registry.poll(self._process) is None
 
     @property
     def info(self) -> SessionInfo | None:
@@ -322,6 +505,16 @@ class Session:
                 ".screenshots",
             ):
                 (self._home_dir / subdir).mkdir(parents=True, exist_ok=True)
+            # Record the removable path(s) session_stop would remove, so the exit
+            # path (when it cannot run session_stop) mirrors session_stop's
+            # retention semantics: keep_home=False removes the whole home;
+            # keep_home=True with keep_screenshots=False removes only
+            # home/.screenshots. A keep_home + keep_screenshots home is the
+            # caller's to retain, so nothing is recorded.
+            if not config.keep_home:
+                process_registry.register_temp_dir(self._home_dir)
+            elif not config.keep_screenshots:
+                process_registry.register_temp_dir(self._home_dir / ".screenshots")
 
         # Clean up any stale socket files
         runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
@@ -339,6 +532,7 @@ class Session:
         else:
             self._session_config_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-config-"))
             _write_deterministic_session_config(self._session_config_dir)
+            process_registry.register_temp_dir(self._session_config_dir)
         # Deliberately NOT isolating XDG_DATA_HOME / XDG_CACHE_HOME: qtbase
         # crash-logs a fatal qFatal when a nonexistent standard data dir is
         # set (reproduced on qt6-base 6.10), and existing dirs already
@@ -356,7 +550,9 @@ class Session:
         try:
             # stdin is the MCP server's JSON-RPC transport; no descendant of
             # the session (compositor, AT-SPI bus, apps) may read from it.
-            self._process = subprocess.Popen(
+            # Spawn through the registry so the wrapper's group is registered
+            # atomically with the spawn (close() cannot slip in between).
+            self._process = process_registry.spawn(
                 ["dbus-run-session", "bash", "-c", wrapper_script],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
@@ -400,11 +596,11 @@ class Session:
                 # the whole group before reading diagnostics or giving up.
                 self._signal_process_group(signal.SIGTERM)
                 try:
-                    self._process.wait(timeout=5)
+                    process_registry.wait(self._process, timeout=5)
                 except subprocess.TimeoutExpired:
                     self._signal_process_group(signal.SIGKILL)
                     try:
-                        self._process.wait(timeout=5)
+                        process_registry.wait(self._process, timeout=5)
                     except subprocess.TimeoutExpired as exc:
                         stderr = self._read_stderr_log()
                         detail = self._format_startup_diagnostics(stderr, stdout_tail)
@@ -430,6 +626,10 @@ class Session:
             screenshot_dir = self._home_dir / ".screenshots"
         else:
             screenshot_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-screenshots-"))
+            # A keep_screenshots session is the caller's to retain, so it is not
+            # recorded for the exit path.
+            if not config.keep_screenshots:
+                process_registry.register_temp_dir(screenshot_dir)
 
         self._info = SessionInfo(
             dbus_address=dbus_address,
@@ -483,7 +683,9 @@ class Session:
         # start_new_session=True puts the app and its descendants in their own
         # process group so session_stop can stop the whole tree, not just the
         # direct child (a shell script's background jobs, a browser's helpers).
-        proc = subprocess.Popen(
+        # Spawn through the registry so the app's group is recorded atomically
+        # with the spawn.
+        proc = process_registry.spawn(
             command,
             env=env,
             stdin=subprocess.DEVNULL,
@@ -556,12 +758,13 @@ class Session:
         # member lives.
         self._signal_process_group(signal.SIGTERM)
 
+        # Reap through the registry so the wrapper is unregistered as it exits.
         try:
-            self._process.wait(timeout=5)
+            process_registry.wait(self._process, timeout=5)
         except subprocess.TimeoutExpired:
-            self._process.kill()
+            process_registry.kill(self._process)
             with contextlib.suppress(subprocess.TimeoutExpired):
-                self._process.wait(timeout=3)
+                process_registry.wait(self._process, timeout=3)
 
         # A returned leader wait only proves the leader exited. Descendants
         # that ignored SIGTERM (or briefly outlive their parent) keep the
@@ -604,7 +807,29 @@ class Session:
         # Remove the per-session config dir
         if self._session_config_dir is not None:
             shutil.rmtree(self._session_config_dir, ignore_errors=True)
+            process_registry.unregister_temp_dir(self._session_config_dir)
             self._session_config_dir = None
+
+        # Unregister the temp dirs this stop removed, so the registry stays
+        # accurate across start/stop cycles and the server's exit path never
+        # re-removes a dir the caller asked to keep. The owned process groups
+        # (the wrapper and the launched apps) are unregistered as they are
+        # reaped above, so they need no explicit drop here.
+        config = self._config
+        keep_home = config is not None and config.keep_home
+        keep_screenshots = config is not None and config.keep_screenshots
+        if (
+            self._info is not None
+            and not keep_screenshots
+            and self._home_dir is None
+            and self._info.screenshot_dir is not None
+        ):
+            process_registry.unregister_temp_dir(self._info.screenshot_dir)
+        if self._home_dir is not None:
+            if not keep_home:
+                process_registry.unregister_temp_dir(self._home_dir)
+            elif not keep_screenshots:
+                process_registry.unregister_temp_dir(self._home_dir / ".screenshots")
 
         self._process = None
         self._info = None
@@ -618,6 +843,7 @@ class Session:
         """
         if self._session_config_dir is not None:
             shutil.rmtree(self._session_config_dir, ignore_errors=True)
+            process_registry.unregister_temp_dir(self._session_config_dir)
             self._session_config_dir = None
         if self._home_dir is None:
             return
@@ -626,8 +852,10 @@ class Session:
         with contextlib.suppress(OSError):
             if not keep_home:
                 _remove_tree(self._home_dir)
+                process_registry.unregister_temp_dir(self._home_dir)
             elif not keep_screenshots:
                 shutil.rmtree(self._home_dir / ".screenshots", ignore_errors=True)
+                process_registry.unregister_temp_dir(self._home_dir / ".screenshots")
         self._home_dir = None
 
     def _signal_process_group(self, sig: int) -> None:
@@ -691,7 +919,7 @@ class Session:
                 # whatever bytes remain pending are a partial line. Breaking
                 # here is what keeps a SIGKILLed wrapper with pipe-holding
                 # descendants bounded.
-                if process.poll() is not None:
+                if process_registry.poll(process) is not None:
                     break
                 continue
             try:
@@ -926,7 +1154,7 @@ wait $KWIN_PID
             if socket_path.exists():
                 return True
             # Check if process died
-            if self._process and self._process.poll() is not None:
+            if self._process is not None and process_registry.poll(self._process) is not None:
                 return False
             time.sleep(0.2)
         return False
@@ -1003,7 +1231,9 @@ class LiveSession:
 
         # stdin=DEVNULL: see Session.launch_app. start_new_session=True gives
         # the app its own process group so stop() can signal the whole tree.
-        proc = subprocess.Popen(
+        # Spawn through the registry so the app's group is recorded atomically
+        # with the spawn (the live session's KWin itself is never recorded).
+        proc = process_registry.spawn(
             command,
             env=env,
             stdin=subprocess.DEVNULL,
@@ -1051,9 +1281,15 @@ class LiveSession:
         self._running = False
 
         # Stop every app we launched, with its whole process group, escalating
-        # SIGTERM to SIGKILL. KWin and any apps that predate the connection
-        # are never signalled.
+        # SIGTERM to SIGKILL. KWin and any apps that predate the connection are
+        # never signalled. The launched app leaders are unregistered as they are
+        # reaped by _terminate_app_groups, so no explicit drop is needed here.
         _terminate_app_groups(list(self._info.apps.values()))
 
-        if not keep_screenshots and self._info.screenshot_dir.exists():
+        # Remove the live session's screenshot dir (registered at connect when
+        # keep_screenshots is False), mirroring the registry's retention
+        # semantics. KWin of the live session was never recorded, so it is
+        # never touched here.
+        if not keep_screenshots:
             shutil.rmtree(self._info.screenshot_dir, ignore_errors=True)
+            process_registry.unregister_temp_dir(self._info.screenshot_dir)

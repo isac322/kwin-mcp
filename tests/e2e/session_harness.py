@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
     from typing import IO
 
 
@@ -48,7 +48,7 @@ def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
 
 
 @contextlib.contextmanager
-def live_kwin() -> Iterator[LiveKWin]:
+def live_kwin() -> Generator[LiveKWin]:
     runtime_dir = Path(os.environ["XDG_RUNTIME_DIR"])
     wayland_display = f"wayland-live-test-{os.getpid()}-{uuid4().hex}"
     socket_path = runtime_dir / wayland_display

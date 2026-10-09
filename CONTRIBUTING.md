@@ -162,8 +162,8 @@ The suite collects every test under `tests/e2e`. Together they prove:
 - server and CLI exit cleanup driven through the real installed processes: stdin EOF,
   `SIGTERM`, `SIGHUP`, and `SIGINT` must stop the session exactly as `session_stop`
   would (live-session KWin and pre-existing apps untouched), a tool outliving the exit
-  drain must not delay the exit, and a signal arriving mid-teardown must not interrupt
-  the launched-app kill loop;
+  drain must not delay the exit, nor may an undrained stdout or a full stderr pipe, and a
+  signal arriving mid-teardown must not interrupt the launched-app kill loop;
 - accessibility-bus startup: `org.a11y.Bus` must have an owner as soon as `session_start`
   returns, and a failed activation (a `dbus-send` stub on `PATH`) must reach the caller as a
   `Warning:` line.

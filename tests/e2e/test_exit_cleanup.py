@@ -41,16 +41,20 @@ recorded.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import json
 import os
 import queue
 import re
+import select
 import shlex
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
+import termios
 import threading
 import time
 from pathlib import Path
@@ -75,6 +79,10 @@ SERVER_EXIT_TIMEOUT_TOOL_OVERRUN_SECONDS = 15.0
 # No-session exits (idle signal, signal mid-submission): only the exit cleanup
 # itself — the drain plus the registry sweep — can consume time.
 SERVER_EXIT_TIMEOUT_IDLE_SECONDS = 15.0
+# Requests the undrained-stdout regression sends without reading their responses:
+# each tools/list response is tens of KB, so these fill the stdout pipe many times
+# over.
+_UNDRAINED_STDOUT_REQUESTS = 32
 
 
 # A distinctive app so its PID, parsed from the launch output, identifies it.
@@ -1465,6 +1473,105 @@ def test_sigint_idle_exits_130_with_stdin_open() -> None:
         if server.poll() is None:
             server.kill()
             server.wait()
+
+
+def _unread_stdout_bytes(process: subprocess.Popen[str]) -> int:
+    """Bytes the process wrote to its stdout pipe that the test has not read."""
+    count = fcntl.ioctl(_stdout(process).fileno(), termios.FIONREAD, struct.pack("i", 0))
+    return struct.unpack("i", count)[0]
+
+
+def test_sigterm_with_undrained_stdout_exits_143() -> None:
+    """A client that stops reading stdout cannot hold the signal exit.
+
+    The client completes the handshake, then sends ``tools/list`` requests without
+    reading any response until the pipe is full, so the transport writer is blocked
+    on it. The forced exit must not wait on that pipe: SIGTERM still exits 143
+    within the bound.
+    """
+    server = _spawn([sys.executable, "-m", "kwin_mcp"])
+    try:
+        stdin = _stdin(server)
+        stdout = _stdout(server)
+        initialize = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "exit-cleanup", "version": "0"},
+            },
+        }
+        stdin.write(json.dumps(initialize) + "\n")
+        stdin.flush()
+        ready, _, _ = select.select([stdout], [], [], SERVER_EXIT_TIMEOUT_IDLE_SECONDS)
+        assert ready, "server did not answer initialize"
+        assert json.loads(stdout.readline())["id"] == 1
+        stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
+        for request_id in range(2, 2 + _UNDRAINED_STDOUT_REQUESTS):
+            request = {"jsonrpc": "2.0", "id": request_id, "method": "tools/list", "params": {}}
+            stdin.write(json.dumps(request) + "\n")
+        stdin.flush()
+
+        capacity = fcntl.fcntl(stdout.fileno(), fcntl.F_GETPIPE_SZ)
+        deadline = time.monotonic() + SERVER_EXIT_TIMEOUT_IDLE_SECONDS
+        while _unread_stdout_bytes(server) < capacity and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert _unread_stdout_bytes(server) >= capacity, "the stdout pipe never filled"
+        # The transport writer is now blocked on the full pipe.
+        time.sleep(0.5)
+
+        os.kill(server.pid, signal.SIGTERM)
+        exit_code = server.wait(timeout=SERVER_EXIT_TIMEOUT_IDLE_SECONDS)
+        assert exit_code == 143, f"expected exit 143 on SIGTERM, got {exit_code}"
+    finally:
+        if server.poll() is None:
+            server.kill()
+            server.wait()
+
+
+def test_sigterm_with_full_stderr_exits_143() -> None:
+    """A client that stops reading stderr cannot hold the signal exit.
+
+    Regression: the forced exit printed its outcome line to stderr before
+    ``os._exit``. With the stderr pipe full, that write blocked forever, so the
+    process never exited and later signals were ignored. The server's stderr is a
+    pipe the test never reads, filled to capacity after the handshake; SIGTERM must
+    still exit 143 within the bound.
+    """
+    stderr_read, stderr_write = os.pipe()
+    try:
+        server = subprocess.Popen(
+            [sys.executable, "-m", "kwin_mcp"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=stderr_write,
+            text=True,
+        )
+    finally:
+        os.close(stderr_write)
+    reader = _LineReader(_stdout(server))
+    try:
+        _initialize_server(server, reader)
+        # Fill the pipe through a separate open file description, so O_NONBLOCK
+        # applies to the filler only and the server's writes still block.
+        filler = os.open(f"/proc/self/fd/{stderr_read}", os.O_WRONLY | os.O_NONBLOCK)
+        try:
+            with contextlib.suppress(BlockingIOError):
+                while True:
+                    os.write(filler, b"x")
+        finally:
+            os.close(filler)
+
+        os.kill(server.pid, signal.SIGTERM)
+        exit_code = server.wait(timeout=SERVER_EXIT_TIMEOUT_IDLE_SECONDS)
+        assert exit_code == 143, f"expected exit 143 on SIGTERM, got {exit_code}"
+    finally:
+        if server.poll() is None:
+            server.kill()
+            server.wait()
+        os.close(stderr_read)
 
 
 def test_registry_escalation_kills_term_ignoring_member_despite_concurrent_poll() -> None:

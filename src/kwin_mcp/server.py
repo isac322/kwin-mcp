@@ -88,6 +88,10 @@ _shutdown = threading.Event()
 # finish and the stop to start (the graceful path) and short enough that a long
 # tool (e.g. a 40 s screenshot_after_ms) triggers the registry path quickly.
 EXIT_DRAIN_SECONDS = 2.0
+# How long the forced exit waits for its stderr report (the cleanup outcome, and the
+# traceback on a server failure). The write runs on a daemon thread that os._exit
+# abandons, so a client that stopped draining stderr cannot hold the exit.
+EXIT_REPORT_SECONDS = 1.0
 
 # Tool annotations (MCP hints) shared by tools with identical behavior profiles.
 _READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
@@ -1167,13 +1171,34 @@ def _exit_cleanup() -> str:
     return "serialized session_stop path (completed on the tool thread)"
 
 
-def _finish(exit_code: int) -> NoReturn:
+def _write_stderr(data: bytes) -> None:
+    # Raw writes to fd 2: the sys.stderr buffer lock may be held by a thread blocked
+    # on the same pipe, and a broken pipe just ends the report.
+    with contextlib.suppress(OSError):
+        while data:
+            data = data[os.write(2, data) :]
+
+
+def _report_exit(report: str) -> None:
+    """Write ``report`` to stderr, waiting at most ``EXIT_REPORT_SECONDS``."""
+    with contextlib.suppress(Exception):
+        writer = threading.Thread(
+            target=_write_stderr,
+            args=(report.encode(errors="replace"),),
+            name="kwin-mcp-exit-report",
+            daemon=True,
+        )
+        writer.start()
+        writer.join(EXIT_REPORT_SECONDS)
+
+
+def _finish(exit_code: int, failure: str = "") -> NoReturn:
     """Run the once-only exit cleanup and leave the process with ``exit_code``.
 
     Whichever path arrives first — the watcher thread after a signal or the main
     thread when ``mcp.run()`` ends — owns the cleanup; a second caller blocks in
     ``_finish_lock.acquire()`` until the process exits, so the stop can never run
-    twice.
+    twice. ``failure`` is a traceback reported ahead of the cleanup outcome.
     """
     _finish_lock.acquire()
     # First statement under the lock: tool bodies queued from now on must not run.
@@ -1187,14 +1212,12 @@ def _finish(exit_code: int) -> NoReturn:
     # On a signal the stdio read worker is still blocked on readline of the stdin
     # pipe (the client does not close it), and interpreter shutdown would hang
     # joining that non-daemon thread (or a still-busy tool thread); exit directly
-    # on both the EOF and signal paths once the session is stopped. The outcome
-    # line and the stdio flushes are best-effort: a disconnecting client may have
-    # closed its stderr reader, and that BrokenPipeError must not skip the exit.
-    with contextlib.suppress(Exception):
-        print(f"kwin-mcp: exit cleanup: {outcome}", file=sys.stderr)
-    for stream in (sys.stdout, sys.stderr):
-        with contextlib.suppress(Exception):
-            stream.flush()
+    # on both the EOF and signal paths once the session is stopped. Nothing on the
+    # way out may block on a client pipe: stdout is not flushed (the transport
+    # flushes each message itself, and a writer stuck on an undrained pipe holds the
+    # buffer lock a flush would wait on), and the report is bounded, so neither a
+    # full nor a closed stdout/stderr can delay or skip the exit.
+    _report_exit(f"{failure}kwin-mcp: exit cleanup: {outcome}\n")
     os._exit(exit_code)
 
 
@@ -1226,6 +1249,7 @@ def main() -> None:
     # Daemon: a still-pending wait must not keep the process alive on the EOF path.
     threading.Thread(target=_signal_watcher, name="kwin-mcp-shutdown", daemon=True).start()
     exit_code = 0
+    failure = ""
     try:
         mcp.run()
     except KeyboardInterrupt:
@@ -1235,12 +1259,12 @@ def main() -> None:
     except Exception:
         # Surface a transport/SDK failure and exit non-zero instead of the
         # conventional 0 (the old interpreter-shutdown path did the same). The
-        # report is best-effort: it may itself fail on a closed stderr.
+        # traceback goes out with the bounded exit report, never on its own.
         exit_code = 1
         with contextlib.suppress(Exception):
-            traceback.print_exc()
+            failure = traceback.format_exc()
     finally:
-        _finish(exit_code)
+        _finish(exit_code, failure)
 
 
 if __name__ == "__main__":

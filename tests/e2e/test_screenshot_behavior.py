@@ -3,21 +3,28 @@
 from __future__ import annotations
 
 import ast
+import base64
+import io
 import os
 import re
 import shutil
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import anyio
 import pytest
 from _asserts import coordinate_spaces, screenshot_path
+from mcp.types import ImageContent, TextContent
 from mcp_harness import running_mcp_server
 from PIL import Image, ImageChops
 from visual_harness import nested_visual_kwin
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
+    from mcp.types import CallToolResult
     from mcp_harness import McpTestClient
 
 SCREEN_SIZE = (1280, 800)
@@ -992,3 +999,218 @@ async def test_virtual_spectacle_fallback_reports_why_no_file_was_written(
         finally:
             if session_running:
                 assert await client.call_text("session_stop") == "Session stopped."
+
+
+# ── Cropping and downscaling (region, max_edge, --screenshot-max-edge) ──
+#
+# The session is wider than tall, like an ultrawide desktop. A widget is located
+# by its own pixels in the reframed image, then mapped back with the formula the
+# coordinate line states; the click has to reach the widget, so a wrong scale or
+# crop origin fails behaviourally rather than only by size.
+
+WIDE_SCREEN_SIZE = (2560, 800)
+MAX_EDGE = 1280
+SCALED_SIZE = (1280, 400)
+FLAG_MAX_EDGE = 640
+FLAG_SCALED_SIZE = (640, 200)
+FRAME_DELAYS = [0, 100]
+# One scaled pixel covers two logical pixels; Lanczos softens edges by about one more.
+SCALED_SLACK_PX = 4
+_IMAGE_TERM = re.compile(
+    r"image (\d+)x(\d+) downscaled: pixel \(px, py\) shows "
+    r"\((-?\d+) \+ px \* (\d+) / (\d+), (-?\d+) \+ py \* (\d+) / (\d+)\)"
+)
+
+
+def _image_term(line: str) -> tuple[tuple[int, int], tuple[float, float]]:
+    """Image pixel size and per-axis logical-per-pixel factors stated by ``line``."""
+    match = _IMAGE_TERM.search(line)
+    assert match is not None, line
+    iw, ih, _, width, iw2, _, height, ih2 = (int(group) for group in match.groups())
+    assert (iw, ih) == (iw2, ih2), line
+    return (iw, ih), (width / iw, height / ih)
+
+
+def _wide_png_size(data: bytes) -> tuple[int, int]:
+    with Image.open(io.BytesIO(data)) as image:
+        return image.size
+
+
+def _image_blocks(result: CallToolResult) -> list[ImageContent]:
+    return [block for block in result.content if isinstance(block, ImageContent)]
+
+
+def _ok_text(result: CallToolResult) -> str:
+    assert not result.is_error, result.content
+    return "\n".join(block.text for block in result.content if isinstance(block, TextContent))
+
+
+@asynccontextmanager
+async def _wide_session(*server_args: str) -> AsyncGenerator[McpTestClient]:
+    """An installed server connected to a wide nested KWin, captured through X11.
+
+    The container's virtual KWin has no ScreenShot2, so pixel tests use the
+    nested visual compositor like the other tests in this module.
+    """
+    with nested_visual_kwin(screen_size=WIDE_SCREEN_SIZE) as visual:
+        _preserve_backend_record(visual.artifact_dir)
+        async with running_mcp_server(
+            *server_args,
+            env={"DISPLAY": visual.x_display, "KWIN_MCP_X11_SCREENSHOT": "1"},
+        ) as client:
+            connected = False
+            try:
+                await _connect(
+                    client, visual.dbus_address, visual.wayland_display, keep_screenshots=False
+                )
+                connected = True
+                yield client
+            finally:
+                (visual.artifact_dir / "mcp-server.stderr.log").write_text(
+                    client.stderr_text(), encoding="utf-8"
+                )
+                if connected:
+                    stop_output = await client.call_text("session_stop")
+                    assert stop_output == "Disconnected from live session.", stop_output
+
+
+async def _blue_in(
+    client: McpTestClient, arguments: dict[str, object], destination: Path
+) -> tuple[str, tuple[int, int, int, int]]:
+    """Take screenshots with ``arguments`` until the probe's blue button is drawn."""
+    deadline = time.monotonic() + STATE_TIMEOUT_SECONDS
+    while True:
+        output = await client.call_text("screenshot", arguments)
+        shutil.copy2(screenshot_path(output), destination)
+        bbox = _largest_color_region(destination, ANIMATION_BLUE)
+        if bbox is not None:
+            return output, bbox
+        if time.monotonic() > deadline:
+            raise AssertionError(f"{ANIMATION_BLUE} never appeared in {destination}: {output}")
+        await anyio.sleep(POLL_INTERVAL_SECONDS)
+
+
+@pytest.mark.anyio
+@pytest.mark.visual
+async def test_downscaled_pixels_map_back_to_a_working_click(tmp_path: Path) -> None:
+    """The stated pixel-to-logical formula turns a scaled pixel into a hit."""
+    async with _wide_session() as client:
+        await _launch_gui_probe(client)
+        rect = await _global_element_rect(client, "Animation Target", GUI_PROBE_SELECTOR)
+
+        full_output, full_bbox = await _blue_in(client, {}, tmp_path / "full.png")
+        assert [(s.origin, s.size) for s in coordinate_spaces(full_output)] == [
+            ((0, 0), WIDE_SCREEN_SIZE)
+        ], full_output
+        assert "downscaled" not in full_output, full_output
+
+        output, bbox = await _blue_in(client, {"max_edge": MAX_EDGE}, tmp_path / "scaled.png")
+        spaces = coordinate_spaces(output)
+        # The logical space is unchanged; only the pixel grid shrank.
+        assert [(s.origin, s.size) for s in spaces] == [((0, 0), WIDE_SCREEN_SIZE)], output
+        image_size, (fx, fy) = _image_term(output)
+        assert image_size == SCALED_SIZE, output
+        with Image.open(tmp_path / "scaled.png") as image:
+            assert image.size == SCALED_SIZE
+        assert all(
+            abs(scaled * 2 - full) <= SCALED_SLACK_PX
+            for scaled, full in zip(bbox, full_bbox, strict=True)
+        ), (bbox, full_bbox)
+
+        click_x = round((bbox[0] + bbox[2]) / 2 * fx)
+        click_y = round((bbox[1] + bbox[3]) / 2 * fy)
+        assert rect[0] <= click_x < rect[0] + rect[2], (rect, click_x)
+        assert rect[1] <= click_y < rect[1] + rect[3], (rect, click_y)
+        before = _status_name(
+            await client.call_text("accessibility_tree", {"app_name": GUI_PROBE_SELECTOR}),
+            "animation_status:",
+        )
+        await client.call_text("mouse_click", {"x": click_x, "y": click_y})
+        await _wait_for_status_change(client, "animation_status:", before, GUI_PROBE_SELECTOR)
+
+
+@pytest.mark.anyio
+@pytest.mark.visual
+async def test_region_crop_reports_its_origin_and_clips_to_the_workspace(
+    tmp_path: Path,
+) -> None:
+    async with _wide_session() as client:
+        await _launch_gui_probe(client)
+        _, full_bbox = await _blue_in(client, {}, tmp_path / "full.png")
+
+        # A full-resolution crop around the button: pixel (px, py) is origin + (px, py).
+        region = [full_bbox[0] - 40, full_bbox[1] - 30, 600, 200]
+        output, bbox = await _blue_in(client, {"region": region}, tmp_path / "crop.png")
+        assert [(s.origin, s.size) for s in coordinate_spaces(output)] == [
+            ((region[0], region[1]), (region[2], region[3]))
+        ], output
+        assert "downscaled" not in output, output
+        with Image.open(tmp_path / "crop.png") as image:
+            assert image.size == (region[2], region[3])
+        assert all(
+            abs(crop + offset - full) <= 1
+            for crop, offset, full in zip(bbox[:2], region[:2], full_bbox[:2], strict=True)
+        ), (bbox, full_bbox)
+
+        # A region hanging off the top-left corner keeps only the on-screen part.
+        clipped = await client.call_text("screenshot", {"region": [-100, -50, 300, 150]})
+        assert [(s.origin, s.size) for s in coordinate_spaces(clipped)] == [((0, 0), (200, 100))], (
+            clipped
+        )
+
+        # Crop and downscale compose: the crop is bounded after cutting.
+        both = await client.call_text("screenshot", {"region": [0, 0, 2000, 500], "max_edge": 1000})
+        assert [(s.origin, s.size) for s in coordinate_spaces(both)] == [((0, 0), (2000, 500))], (
+            both
+        )
+        assert _image_term(both)[0] == (1000, 250), both
+
+        # Entirely off-screen: a tool error that names the workspace, no stray file.
+        shots_dir = screenshot_path(both).parent
+        before_files = sorted(shots_dir.iterdir())
+        refused = await client.call_result("screenshot", {"region": [3000, 0, 100, 100]})
+        assert refused.is_error, refused.content
+        message = "\n".join(
+            block.text for block in refused.content if isinstance(block, TextContent)
+        )
+        assert "outside the captured workspace (0, 0, 2560x800)" in message, message
+        assert sorted(shots_dir.iterdir()) == before_files
+
+        # Schema validation refuses a malformed region before the engine runs.
+        malformed = await client.call_result("screenshot", {"region": [0, 0, 10]})
+        assert malformed.is_error, malformed.content
+
+
+@pytest.mark.anyio
+@pytest.mark.visual
+async def test_max_edge_flag_bounds_screenshots_frames_and_attached_images() -> None:
+    """--screenshot-max-edge applies to every capture; a call can ask for full size."""
+    async with _wide_session(
+        "--screenshot-max-edge", str(FLAG_MAX_EDGE), "--screenshot-images"
+    ) as client:
+        shot = await client.call_result("screenshot")
+        text = _ok_text(shot)
+        assert _image_term(text)[0] == FLAG_SCALED_SIZE, text
+        images = _image_blocks(shot)
+        assert len(images) == 1, shot.content
+        png = base64.b64decode(images[0].data)
+        assert _wide_png_size(png) == FLAG_SCALED_SIZE
+        assert png == screenshot_path(text).read_bytes()
+
+        full = await client.call_result("screenshot", {"max_edge": 0})
+        full_text = _ok_text(full)
+        assert "downscaled" not in full_text, full_text
+        assert _wide_png_size(base64.b64decode(_image_blocks(full)[0].data)) == WIDE_SCREEN_SIZE
+
+        moved = await client.call_result(
+            "mouse_move", {"x": 200, "y": 200, "screenshot_after_ms": FRAME_DELAYS}
+        )
+        moved_text = _ok_text(moved)
+        frames = _image_blocks(moved)
+        assert len(frames) == len(FRAME_DELAYS), moved.content
+        assert [_wide_png_size(base64.b64decode(f.data)) for f in frames] == [
+            FLAG_SCALED_SIZE
+        ] * len(FRAME_DELAYS)
+        frame_lines = [line for line in moved_text.splitlines() if "Coordinate space" in line]
+        assert len(frame_lines) == len(FRAME_DELAYS), moved_text
+        assert all(_image_term(line)[0] == FLAG_SCALED_SIZE for line in frame_lines), moved_text

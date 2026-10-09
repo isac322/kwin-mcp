@@ -41,7 +41,11 @@ from kwin_mcp.results import (
     format_window_geometry,
     search_description,
 )
-from kwin_mcp.screenshot import capture_frame_burst, capture_screenshot_to_file
+from kwin_mcp.screenshot import (
+    capture_frame_burst,
+    capture_screenshot_to_file,
+    reframe_screenshot,
+)
 from kwin_mcp.session import LiveSession, Session, SessionConfig
 
 if TYPE_CHECKING:
@@ -234,9 +238,17 @@ class AutomationEngine:
 
     Manages session lifecycle, input injection, screenshot capture,
     accessibility queries, and clipboard operations.
+
+    ``screenshot_max_edge`` bounds the long edge of every saved screenshot and
+    frame in pixels; ``0`` keeps full resolution. A ``screenshot`` call can
+    override it.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, screenshot_max_edge: int = 0) -> None:
+        if screenshot_max_edge < 0:
+            msg = f"screenshot_max_edge must be 0 or positive, got {screenshot_max_edge}"
+            raise ValueError(msg)
+        self._screenshot_max_edge = screenshot_max_edge
         self._session: Session | LiveSession | None = None
         self._input: InputBackend | None = None
         self._clipboard_enabled: bool = False
@@ -467,7 +479,8 @@ class AutomationEngine:
         )
 
         lines = [action_result, f"Captured {len(frames)} frames:"]
-        for delay_ms, (path, mapping) in zip(sorted(screenshot_after_ms), frames, strict=True):
+        for delay_ms, (path, captured) in zip(sorted(screenshot_after_ms), frames, strict=True):
+            mapping = reframe_screenshot(path, captured, max_edge=self._screenshot_max_edge)
             progress.record_image(path)
             size_kb = path.stat().st_size / 1024
             lines.append(f"  {delay_ms}ms: {path} ({size_kb:.1f} KB)")
@@ -655,20 +668,47 @@ class AutomationEngine:
 
     # ── Screenshot / Accessibility ────────────────────────────────────────
 
-    def screenshot(self, include_cursor: bool = False) -> str:
-        """Capture a screenshot of the isolated session."""
+    def screenshot(
+        self,
+        include_cursor: bool = False,
+        region: list[int] | None = None,
+        max_edge: int | None = None,
+    ) -> str:
+        """Capture a screenshot of the isolated session.
+
+        ``region`` is ``[x, y, width, height]`` in global logical coordinates.
+        ``max_edge`` bounds the image's long edge in pixels (``0`` keeps full
+        resolution); ``None`` uses the engine's ``screenshot_max_edge``.
+        """
+        crop: tuple[int, int, int, int] | None = None
+        if region is not None:
+            if len(region) != 4 or region[2] <= 0 or region[3] <= 0:
+                msg = f"region must be [x, y, width, height] with a positive size, got {region}"
+                raise ValueError(msg)
+            crop = (region[0], region[1], region[2], region[3])
+        if max_edge is None:
+            max_edge = self._screenshot_max_edge
+        elif max_edge < 0:
+            msg = f"max_edge must be 0 or positive, got {max_edge}"
+            raise ValueError(msg)
         session = self._get_session()
         info = session.info
         if info is None:
             msg = "No session info available"
             raise RuntimeError(msg)
 
-        path, mapping = capture_screenshot_to_file(
+        path, captured = capture_screenshot_to_file(
             dbus_address=info.dbus_address,
             wayland_socket=info.wayland_socket,
             include_cursor=include_cursor,
             output_dir=info.screenshot_dir,
         )
+        try:
+            mapping = reframe_screenshot(path, captured, region=crop, max_edge=max_edge)
+        except Exception:
+            # The caller gets no path for this capture, so do not leave it behind.
+            path.unlink(missing_ok=True)
+            raise
         progress.record_image(path)
         size_kb = path.stat().st_size / 1024
         return f"Screenshot saved: {path} ({size_kb:.1f} KB)\n{mapping.describe()}"

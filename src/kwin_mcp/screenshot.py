@@ -8,6 +8,10 @@ rectangles use: image pixel ``(px, py)`` shows logical point
 ``(origin_x + px, origin_y + py)``. ``origin`` is the top-left of KWin's
 virtual screen geometry and may be negative. The per-capture
 :class:`FrameMapping` reports origin, size, backend and coverage.
+:func:`reframe_screenshot` can crop a saved capture to a logical region and
+downscale it; a downscaled image then reports its pixel size next to the
+logical size, and pixel ``(px, py)`` shows logical point
+``(origin_x + px * width / image_width, origin_y + py * height / image_height)``.
 
 Backends deliver different pixel spaces, verified against upstream sources:
 
@@ -40,6 +44,7 @@ image dimensions are never treated as proof of unchanged coordinates.
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import json
 import math
@@ -143,11 +148,17 @@ class FrameMapping:
     captured: tuple[tuple[int, int, int, int], ...] = ()
     source: str = ""
     reason: str = ""
+    # Pixel size of the saved PNG when it was downscaled; ``None`` means the
+    # image has exactly ``size`` pixels.
+    image: tuple[int, int] | None = None
 
     def describe(self) -> str:
         """One line stating the image's coordinate space."""
         if self.origin is None or self.size is None:
-            return f"Coordinate space: unavailable ({self.reason}); backend {self.backend}"
+            text = f"Coordinate space: unavailable ({self.reason}); backend {self.backend}"
+            if self.image is not None:
+                text += f"; image downscaled to {self.image[0]}x{self.image[1]}"
+            return text
         text = (
             f"Coordinate space: logical; origin ({self.origin[0]}, {self.origin[1]}); "
             f"size {self.size[0]}x{self.size[1]}; backend {self.backend}"
@@ -158,6 +169,12 @@ class FrameMapping:
         if self.coverage == "partial":
             regions = ", ".join(f"({x}, {y}, {w}x{h})" for x, y, w, h in self.captured) or "none"
             text += f" (captured {regions}; other pixels are transparent)"
+        if self.image is not None:
+            (ox, oy), (width, height), (iw, ih) = self.origin, self.size, self.image
+            text += (
+                f"; image {iw}x{ih} downscaled: pixel (px, py) shows "
+                f"({ox} + px * {width} / {iw}, {oy} + py * {height} / {ih})"
+            )
         # Before/after bracketing cannot see a transient topology change that
         # reverted inside the capture, so this is stability observed, not a
         # generation/atomicity guarantee.
@@ -899,6 +916,89 @@ def _x11_root_size(display: str) -> tuple[int, int]:
     return int(match.group(1)), int(match.group(2))
 
 
+# ── Cropping and downscaling ─────────────────────────────────────────────
+
+
+def reframe_screenshot(
+    path: Path,
+    mapping: FrameMapping,
+    *,
+    region: tuple[int, int, int, int] | None = None,
+    max_edge: int = 0,
+) -> FrameMapping:
+    """Crop a saved capture to a logical region and bound its long edge, in place.
+
+    Args:
+        path: PNG saved by a capture entry point, in ``mapping``'s space.
+        mapping: The capture's logical mapping.
+        region: ``(x, y, width, height)`` in global logical coordinates. The
+            image keeps the part inside the captured workspace; a region
+            outside it is an error. Requires a proven mapping.
+        max_edge: Downscale so the longer side is at most this many pixels,
+            preserving the aspect ratio. ``0`` keeps full resolution.
+
+    Returns:
+        The mapping of the rewritten file: the crop's origin and size, the
+        captured regions inside it, and the pixel size when downscaled.
+    """
+    if region is None and max_edge <= 0:
+        return mapping
+    from PIL import Image as PILImage
+
+    with PILImage.open(path) as opened:
+        # Opening reads only the header: an image that already fits is left as saved.
+        if region is None and max(opened.size) <= max_edge:
+            return mapping
+        image = opened.copy()
+    if region is not None:
+        if mapping.origin is None or mapping.size is None:
+            msg = f"Cannot crop to a region: {mapping.describe()}"
+            raise RuntimeError(msg)
+        if image.size != mapping.size:
+            msg = f"Cannot crop to a region: image is {image.size}, mapping is {mapping.size}"
+            raise RuntimeError(msg)
+        workspace = (*mapping.origin, *mapping.size)
+        crop = _intersect(workspace, region)
+        if crop is None:
+            x, y, width, height = region
+            ox, oy, vw, vh = workspace
+            msg = (
+                f"Region ({x}, {y}, {width}x{height}) is outside the captured workspace "
+                f"({ox}, {oy}, {vw}x{vh})"
+            )
+            raise ValueError(msg)
+        left, top, width, height = crop
+        image = image.crop(
+            (
+                left - workspace[0],
+                top - workspace[1],
+                left - workspace[0] + width,
+                top - workspace[1] + height,
+            )
+        )
+        captured = tuple(
+            piece for piece in (_intersect(crop, c) for c in mapping.captured) if piece is not None
+        )
+        mapping = dataclasses.replace(
+            mapping, origin=(left, top), size=(width, height), captured=captured
+        )
+    width, height = image.size
+    if 0 < max_edge < max(width, height):
+        factor = max_edge / max(width, height)
+        scaled = (max(1, round(width * factor)), max(1, round(height * factor)))
+        image = image.resize(scaled, PILImage.Resampling.LANCZOS)
+        mapping = dataclasses.replace(mapping, image=scaled)
+    # Write beside the target and rename, so a failed save never leaves a
+    # truncated PNG under the reported path.
+    partial = path.with_name(f".{path.name}.partial")
+    try:
+        image.save(partial, format="PNG")
+        partial.replace(path)
+    finally:
+        partial.unlink(missing_ok=True)
+    return mapping
+
+
 # ── Public capture entry points ──────────────────────────────────────────
 
 
@@ -924,9 +1024,39 @@ def capture_screenshot_to_file(
         output_dir = Path("/tmp")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    output_path = output_dir / f"screenshot_{timestamp}.png"
+    output_path = _unclaimed_path(output_dir, f"screenshot_{time.strftime('%Y%m%d_%H%M%S')}")
+    try:
+        return _capture_screenshot_file(
+            dbus_address, wayland_socket, output_path, include_cursor=include_cursor
+        )
+    except BaseException:
+        # A backend can save the image and fail afterwards, e.g. when the topology
+        # observation after a Spectacle capture fails. The caller gets no path.
+        output_path.unlink(missing_ok=True)
+        raise
 
+
+def _unclaimed_path(directory: Path, stem: str) -> Path:
+    """``stem.png`` in ``directory``, or ``stem_N.png`` when that name is taken.
+
+    Names carry the second of the capture, so two captures in one second would
+    otherwise share a file. Captures run one at a time on the tool thread.
+    """
+    path = directory / f"{stem}.png"
+    suffix = 1
+    while path.exists():
+        path = directory / f"{stem}_{suffix}.png"
+        suffix += 1
+    return path
+
+
+def _capture_screenshot_file(
+    dbus_address: str,
+    wayland_socket: str,
+    output_path: Path,
+    *,
+    include_cursor: bool,
+) -> tuple[Path, FrameMapping]:
     x11_enabled = os.environ.get("KWIN_MCP_X11_SCREENSHOT") == "1"
     x11_selected = x11_enabled and bool(os.environ.get("DISPLAY"))
     x11_error: RuntimeError | None = None

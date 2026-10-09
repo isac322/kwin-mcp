@@ -78,10 +78,11 @@ Both plugins ship the same SKILL.md content; the Claude Code plugin's copy is th
 
 ## Server flags
 
-`kwin-mcp` accepts two optional server flags. Pass them after the command in any MCP config:
+`kwin-mcp` accepts three optional server flags. Pass them after the command in any MCP config:
 
 - `--default-live-session` makes `session_connect` (the live desktop) the default session tool instead of `session_start`.
 - `--screenshot-images` attaches every PNG captured by `screenshot` and `screenshot_after_ms` to the tool result as MCP image content, so the agent sees the frames without reading files. Result text is unchanged. It is off by default because each frame costs model context tokens, and in live sessions it sends real-desktop pixels to the model provider.
+- `--screenshot-max-edge N` downscales every screenshot and frame so its longer side is at most `N` pixels, and states the pixel-to-logical mapping in the result. Use it when the desktop is larger than the model's image limit, and pick a bound that keeps each image within the provider's pixel and token limits, so the provider does not resize it again behind the coordinate line (Claude 4.7 and later: 2576 pixels on the long edge and 4784 visual tokens). See [Screenshot Size](../README.md#screenshot-size---screenshot-max-edge-region-max_edge).
 
 Claude Code (`claude mcp add` or `.mcp.json`):
 

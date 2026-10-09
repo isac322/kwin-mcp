@@ -4,8 +4,10 @@ Thin wrapper that registers MCP tools with parameter descriptions,
 delegating all logic to AutomationEngine in core.py.
 
 Supports ``--default-live-session`` flag to switch the default session mode
-from virtual (isolated) to live (real desktop), and ``--screenshot-images`` flag
-to attach the screenshot PNGs a tool call captured as MCP image content.
+from virtual (isolated) to live (real desktop), ``--screenshot-images`` flag
+to attach the screenshot PNGs a tool call captured as MCP image content, and
+``--screenshot-max-edge N`` to downscale every screenshot and frame so its
+longer side is at most N pixels.
 """
 
 from __future__ import annotations
@@ -42,12 +44,40 @@ if TYPE_CHECKING:
     from concurrent.futures import Future
     from types import FunctionType
 
+_MAX_EDGE_FLAG = "--screenshot-max-edge"
+
+
+def _max_edge_flag_span(argv: list[str]) -> tuple[int, int, str] | None:
+    """Locate ``--screenshot-max-edge N`` or ``--screenshot-max-edge=N`` in ``argv``.
+
+    Returns the argument slice ``(start, stop)`` and the value text.
+    """
+    for index, arg in enumerate(argv):
+        if arg == _MAX_EDGE_FLAG:
+            value = argv[index + 1] if index + 1 < len(argv) else ""
+            return index, index + 2, value
+        if arg.startswith(f"{_MAX_EDGE_FLAG}="):
+            return index, index + 1, arg.split("=", 1)[1]
+    return None
+
+
+def _screenshot_max_edge(argv: list[str]) -> int:
+    span = _max_edge_flag_span(argv)
+    if span is None:
+        return 0
+    value = span[2]
+    if not value.isdigit():
+        msg = f"kwin-mcp: {_MAX_EDGE_FLAG} needs a pixel count (0 = no limit), got {value!r}"
+        raise SystemExit(msg)
+    return int(value)
+
+
 mcp = MCPServer("kwin-mcp", version=importlib.metadata.version("kwin-mcp"))
-_engine = AutomationEngine()
 
 # Detect custom flags early (before MCP framework consumes args)
 _live_session_mode = "--default-live-session" in sys.argv
 _screenshot_images = "--screenshot-images" in sys.argv
+_engine = AutomationEngine(screenshot_max_edge=_screenshot_max_edge(sys.argv))
 
 # Tool descriptions that replace the docstrings when --default-live-session is active.
 _LIVE_SESSION_DESCRIPTIONS: dict[str, str] = {
@@ -300,18 +330,40 @@ def screenshot(
         bool,
         Field(description="If true, render the mouse cursor in the screenshot."),
     ] = False,
+    region: Annotated[
+        list[int] | None,
+        Field(
+            description="Crop to [x, y, width, height] in the global logical coordinates "
+            "mouse tools take. The part outside the captured workspace is dropped. "
+            "Omit for every output.",
+            min_length=4,
+            max_length=4,
+        ),
+    ] = None,
+    max_edge: Annotated[
+        int | None,
+        Field(
+            description="Downscale so the longer side is at most this many pixels "
+            "(0 = full resolution). Omit to use the server's --screenshot-max-edge.",
+            ge=0,
+        ),
+    ] = None,
 ) -> str:
     """Capture a screenshot of the isolated session.
 
-    Requires an active session. Captures every output and returns the saved
-    PNG path and size plus a "Coordinate space" line. The image is in global
-    logical coordinates: pixel (px, py) shows the point (origin_x + px,
-    origin_y + py) that mouse and touch tools take, whatever the output
-    scale. The origin can be negative on multi-monitor layouts. "coverage
-    partial" lists the regions the capture backend delivered; other pixels
-    are transparent. Frames from screenshot_after_ms carry the same line.
+    Requires an active session. Captures every output, or only ``region``, and
+    returns the saved PNG path and size plus a "Coordinate space" line. The
+    image is in global logical coordinates: pixel (px, py) shows the point
+    (origin_x + px, origin_y + py) that mouse and touch tools take, whatever
+    the output scale. The origin can be negative on multi-monitor layouts.
+    "coverage partial" lists the regions the capture backend delivered; other
+    pixels are transparent. When the image was downscaled, the line also names
+    its pixel size and the formula that maps a pixel back to a logical point.
+    To read small text on a large desktop, take a downscaled overview, then a
+    full-resolution ``region`` around the area of interest. Frames from
+    screenshot_after_ms carry the same line and follow --screenshot-max-edge.
     """
-    return _engine.screenshot(include_cursor=include_cursor)
+    return _engine.screenshot(include_cursor=include_cursor, region=region, max_edge=max_edge)
 
 
 def _structured(text: str, data: BaseModel) -> CallToolResult:
@@ -1068,13 +1120,16 @@ def main() -> None:
     """Run the MCP server.
 
     Supports ``--default-live-session`` flag to make session_connect the default
-    session tool instead of session_start, and ``--screenshot-images`` flag to attach
-    captured screenshot PNGs to tool results as image content.
+    session tool instead of session_start, ``--screenshot-images`` flag to attach
+    captured screenshot PNGs to tool results as image content, and
+    ``--screenshot-max-edge N`` to bound every screenshot's longer side.
     """
     # Remove our custom flags before MCP framework parses args
     for flag in ("--default-live-session", "--screenshot-images"):
         if flag in sys.argv:
             sys.argv.remove(flag)
+    if (span := _max_edge_flag_span(sys.argv)) is not None:
+        del sys.argv[span[0] : span[1]]
     mcp.run()
 
 

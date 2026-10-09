@@ -215,7 +215,7 @@ def _stable_offsets(
 ) -> list[tuple[tuple[int, int] | None, str]]:
     pids, mappings, _ = _resolve_app(app, before, "")  # type: ignore[arg-type]
     monkeypatch.setattr(accessibility, "_kwin_windows", lambda: (after, ""))
-    _apply_stability({pid: mappings for pid in pids}, before, "")
+    _apply_stability({pids: mappings}, before, "")
     return [(mapping.offset, mapping.reason) for mapping in mappings]
 
 
@@ -306,3 +306,30 @@ def test_a_flatpak_window_change_during_the_walk_unmaps_it(
     after = [_window(287894, "w1", "Inbox - Betterbird", [40, 20, 1200, 800])]
 
     assert _stable_offsets(app, before, after, monkeypatch) == [(None, "windows-changed")]
+
+
+@pytest.mark.parametrize(
+    ("owner", "scope", "expected"),
+    [
+        # Another process of the same Flatpak instance opens a twin window.
+        (287895, BETTERBIRD_SCOPE, [(None, "windows-changed")]),
+        # A window of another instance does not concern this app.
+        (300, OTHER_SCOPE, [((10, 20), "")]),
+    ],
+)
+def test_a_window_from_a_new_flatpak_owner_during_the_walk(
+    proc: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    owner: int,
+    scope: str,
+    expected: list[tuple[tuple[int, int] | None, str]],
+) -> None:
+    """Owners are resolved again on the second snapshot, not taken from the first."""
+    _fake_proc(proc, 287882, "xdg-dbus-proxy", BETTERBIRD_SCOPE)
+    _fake_proc(proc, 287894, "betterbird", BETTERBIRD_SCOPE)
+    _fake_proc(proc, owner, "betterbird", scope)
+    app = _App(287882, [_TopLevel("Inbox - Betterbird", (1200, 800))])
+    before = [_window(287894, "w1", "Inbox - Betterbird", [10, 20, 1200, 800])]
+    after = [*before, _window(owner, "w2", "Inbox - Betterbird", [500, 20, 1200, 800])]
+
+    assert _stable_offsets(app, before, after, monkeypatch) == expected

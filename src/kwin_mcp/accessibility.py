@@ -101,7 +101,7 @@ def get_accessibility_tree(
     kwin_before, kwin_error = _kwin_windows()
     desktop = Atspi.get_desktop(0)
     entries: list[tuple[ElementInfo, _WindowMapping]] = []
-    mappings_by_pid: dict[int, list[_WindowMapping]] = {}
+    mappings_by_app: dict[frozenset[int], list[_WindowMapping]] = {}
     role_filter = role.lower()
 
     for i in range(desktop.get_child_count()):
@@ -114,14 +114,13 @@ def get_accessibility_tree(
             continue
 
         pids, mappings, children = _resolve_app(app, kwin_before, kwin_error)
-        for pid in pids:
-            mappings_by_pid.setdefault(pid, []).extend(mappings)
+        mappings_by_app.setdefault(pids, []).extend(mappings)
         entries.append((_extract_info(app, 0), _UNMAPPED))
         for child, mapping in zip(children, mappings, strict=True):
             if child is not None:
                 _collect_tree(child, mapping, entries, depth=1, max_depth=max_depth)
 
-    _apply_stability(mappings_by_pid, kwin_before, kwin_error)
+    _apply_stability(mappings_by_app, kwin_before, kwin_error)
 
     return [
         _finalize(info, mapping)
@@ -149,7 +148,7 @@ def find_elements(
     kwin_before, kwin_error = _kwin_windows()
     desktop = Atspi.get_desktop(0)
     results: list[tuple[ElementInfo, _WindowMapping]] = []
-    mappings_by_pid: dict[int, list[_WindowMapping]] = {}
+    mappings_by_app: dict[frozenset[int], list[_WindowMapping]] = {}
     query_lower = query.lower()
 
     for i in range(desktop.get_child_count()):
@@ -162,8 +161,7 @@ def find_elements(
             continue
 
         pids, mappings, children = _resolve_app(app, kwin_before, kwin_error)
-        for pid in pids:
-            mappings_by_pid.setdefault(pid, []).extend(mappings)
+        mappings_by_app.setdefault(pids, []).extend(mappings)
         app_info = _extract_info(app, 0)
         if _matches(app_info, query_lower, states):
             results.append((app_info, _UNMAPPED))
@@ -173,7 +171,7 @@ def find_elements(
                     child, mapping, query_lower, results, depth=1, required_states=states
                 )
 
-    _apply_stability(mappings_by_pid, kwin_before, kwin_error)
+    _apply_stability(mappings_by_app, kwin_before, kwin_error)
     return [_finalize(info, mapping) for info, mapping in results]
 
 
@@ -377,21 +375,24 @@ def _window_key(window: KWinWindow) -> tuple[object, ...]:
 
 
 def _apply_stability(
-    mappings_by_pid: dict[int, list[_WindowMapping]],
+    mappings_by_app: dict[frozenset[int], list[_WindowMapping]],
     kwin_before: list[KWinWindow],
     kwin_error: str,
 ) -> None:
-    """Unmap every top-level of a pid whose KWin window set changed mid-walk.
+    """Unmap every top-level of an app whose KWin window set changed mid-walk.
 
     The AT-SPI traversal takes ~200ms; a window opening, closing or moving
     during it would otherwise translate elements against stale geometry.
+    ``mappings_by_app`` is keyed by the app's window pids; a Flatpak instance
+    can gain a window owner mid-walk, so they are resolved again against the
+    second snapshot.
     """
     if kwin_error:
         return
     kwin_after, after_error = _kwin_windows()
     if after_error:
         # Cannot prove the snapshot was stable; fail closed for everything.
-        for mappings in mappings_by_pid.values():
+        for mappings in mappings_by_app.values():
             for mapping in mappings:
                 if mapping.offset is not None:
                     mapping.window, mapping.offset, mapping.reason = (
@@ -400,14 +401,11 @@ def _apply_stability(
                         "windows-changed",
                     )
         return
-    before_by_pid: dict[int, set[tuple[object, ...]]] = {}
-    for window in kwin_before:
-        before_by_pid.setdefault(window["pid"], set()).add(_window_key(window))
-    after_by_pid: dict[int, set[tuple[object, ...]]] = {}
-    for window in kwin_after:
-        after_by_pid.setdefault(window["pid"], set()).add(_window_key(window))
-    for pid, mappings in mappings_by_pid.items():
-        if before_by_pid.get(pid, set()) != after_by_pid.get(pid, set()):
+    for pids, mappings in mappings_by_app.items():
+        owners = pids.union(*(_window_pids(pid, kwin_after) for pid in pids))
+        before = {_window_key(window) for window in kwin_before if window["pid"] in owners}
+        after = {_window_key(window) for window in kwin_after if window["pid"] in owners}
+        if before != after:
             for mapping in mappings:
                 mapping.window, mapping.offset, mapping.reason = None, None, "windows-changed"
 

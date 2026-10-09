@@ -25,6 +25,8 @@ from kwin_mcp import progress
 if TYPE_CHECKING:
     from typing import IO
 
+    import dbus
+
 # Upper bound for the startup handshake. The wrapper itself is bounded: the
 # AT-SPI bus activation call gives up after 10 s (--reply-timeout) and the
 # socket wait after ~30 s, about 40 s in the worst case. This bound only covers
@@ -39,6 +41,12 @@ _STARTUP_READ_TIMEOUT = 60.0
 # needs that name, so the wrapper waits for it before printing READY; this
 # bounds that wait.
 _KWIN_BUS_NAME = "org.kde.KWin"
+# org.a11y.Status.IsEnabled on the session bus is the switch toolkits read to
+# decide whether to expose an accessibility tree. Firefox follows it at runtime;
+# a stock Plasma session leaves it false.
+_A11Y_BUS_NAME = "org.a11y.Bus"
+_A11Y_BUS_PATH = "/org/a11y/bus"
+_A11Y_STATUS_INTERFACE = "org.a11y.Status"
 _KWIN_BUS_NAME_TIMEOUT = 30
 
 
@@ -704,6 +712,15 @@ if ! ATSPI_ERR=$(dbus-send --session --print-reply --reply-timeout=10000 \\
     ATSPI_ERR=${{ATSPI_ERR%%$'\\n'*}}
     echo "WARN: AT-SPI bus activation failed, accessibility tools may be unavailable" \\
         "in this session: ${{ATSPI_ERR:-unknown error}}"
+# Switch accessibility on for every app of this session. The a11y bus belongs
+# to this private session bus, so the host desktop's setting is untouched.
+# It is set before any app runs, for apps that read it only at startup.
+elif ! ATSPI_ERR=$(dbus-send --session --print-reply --reply-timeout=10000 \\
+    --dest=org.a11y.Bus /org/a11y/bus org.freedesktop.DBus.Properties.Set \\
+    string:org.a11y.Status string:IsEnabled variant:boolean:true 2>&1 >/dev/null); then
+    ATSPI_ERR=${{ATSPI_ERR%%$'\\n'*}}
+    echo "WARN: AT-SPI accessibility could not be switched on, apps that check it" \\
+        "(such as Firefox) may expose no accessibility tree: ${{ATSPI_ERR:-unknown error}}"
 fi
 
 # Pre-set D-Bus activation environment BEFORE starting KWin.
@@ -860,6 +877,31 @@ wait $KWIN_PID
         self.stop()
 
 
+def _a11y_status(dbus_address: str) -> dbus.Interface:
+    import dbus
+    import dbus.bus
+
+    bus = dbus.bus.BusConnection(dbus_address)
+    return dbus.Interface(
+        bus.get_object(_A11Y_BUS_NAME, _A11Y_BUS_PATH), "org.freedesktop.DBus.Properties"
+    )
+
+
+def accessibility_enabled(dbus_address: str) -> bool:
+    """Read ``org.a11y.Status.IsEnabled`` on the given session bus.
+
+    Raises ``dbus.DBusException`` when the accessibility bus is unavailable.
+    """
+    return bool(_a11y_status(dbus_address).Get(_A11Y_STATUS_INTERFACE, "IsEnabled"))
+
+
+def set_accessibility_enabled(dbus_address: str, enabled: bool) -> None:
+    """Set ``org.a11y.Status.IsEnabled`` on the given session bus."""
+    import dbus
+
+    _a11y_status(dbus_address).Set(_A11Y_STATUS_INTERFACE, "IsEnabled", dbus.Boolean(enabled))
+
+
 class LiveSession:
     """Connection to an existing (non-virtual) KWin session.
 
@@ -884,6 +926,9 @@ class LiveSession:
         self._running = True
         self._app_counter: int = 0
         self._keep_screenshots: bool = False
+        # True when this connection switched accessibility on and stop() must
+        # switch it back off.
+        self._restore_accessibility: bool = False
 
     @property
     def is_running(self) -> bool:
@@ -896,6 +941,18 @@ class LiveSession:
     @property
     def wayland_socket(self) -> str:
         return self._info.wayland_socket
+
+    def enable_accessibility(self) -> bool:
+        """Switch ``org.a11y.Status.IsEnabled`` on until ``stop()``.
+
+        Returns False when it was already on; it is then left on at stop.
+        Raises ``dbus.DBusException`` when the accessibility bus is unavailable.
+        """
+        if accessibility_enabled(self._info.dbus_address):
+            return False
+        set_accessibility_enabled(self._info.dbus_address, True)
+        self._restore_accessibility = True
+        return True
 
     def launch_app(self, command: list[str], extra_env: dict[str, str] | None = None) -> AppInfo:
         """Launch an application in the live session.
@@ -976,6 +1033,12 @@ class LiveSession:
                 app.process.terminate()
             with contextlib.suppress(subprocess.TimeoutExpired):
                 app.process.wait(timeout=3)
+
+        if self._restore_accessibility:
+            self._restore_accessibility = False
+            # Best effort: a vanished bus has no setting left to restore.
+            with contextlib.suppress(Exception):
+                set_accessibility_enabled(self._info.dbus_address, False)
 
         if not keep_screenshots and self._info.screenshot_dir.exists():
             shutil.rmtree(self._info.screenshot_dir, ignore_errors=True)

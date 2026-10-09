@@ -161,6 +161,7 @@ EXPECTED_TOOL_PROPERTIES: dict[str, dict[str, tuple[object, object]]] = {
         "dbus_address": ("string", ""),
         "wayland_display": ("string", ""),
         "keep_screenshots": ("boolean", False),
+        "enable_accessibility": ("boolean", False),
     },
     "session_start": {
         "app_command": ("string", ""),

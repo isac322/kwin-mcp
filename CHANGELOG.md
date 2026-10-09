@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The E2E quality step failed under `ty` 0.0.85, which the E2E images resolve fresh: it reports `@contextmanager` and `@asynccontextmanager` functions annotated `-> Iterator[...]` or `-> AsyncIterator[...]` as deprecated. `call_scope` and the E2E harness context managers are now annotated `-> Generator[...]` and `-> AsyncGenerator[...]`; behavior is unchanged, and the locked `ty` passes as before.
+- `accessibility_tree`, `find_ui_elements`, and `wait_for_element` now return screen coordinates for Chromium and for Flatpak apps such as Betterbird, which reported `unavailable (no-kwin-window)` for every element. A Chromium window is matched through KWin's buffer geometry, because its AT-SPI frame includes the client-side decoration shadow. A top-level that no KWin window matches, such as Chromium's hidden omnibox popups, is unmapped alone instead of unmapping its whole app. A Flatpak app's AT-SPI pid is its sandbox's `xdg-dbus-proxy`; its windows are found through the instance's `app-flatpak-*.scope` cgroup. Caption and size checks are unchanged.
 
 ## [0.10.0] - 2026-09-27
 

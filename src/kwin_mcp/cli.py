@@ -33,6 +33,7 @@ import traceback
 from typing import TYPE_CHECKING, Any, cast
 
 from kwin_mcp.core import AutomationEngine
+from kwin_mcp.session import process_registry
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -275,7 +276,7 @@ class KwinMcpShell(cmd.Cmd):
     do_EOF = do_quit  # noqa: N815
 
     def _cleanup(self) -> None:
-        """Clean up session on exit."""
+        """Clean up the session and sweep any owned processes left outside it on exit."""
         try:
             if self.engine._session is not None and self.engine._session.is_running:
                 print("Stopping session...")
@@ -283,6 +284,27 @@ class KwinMcpShell(cmd.Cmd):
                 with _defer_shutdown_signals():
                     print(self.engine.session_stop())
         except Exception:
+            traceback.print_exc()
+        finally:
+            self._sweep_owned_processes()
+
+    def _sweep_owned_processes(self) -> None:
+        """Terminate owned groups the session does not know about, then owned temp dirs.
+
+        A signal can interrupt ``launch_app`` between ``process_registry.spawn``
+        (which already registered the child's group) and the session recording the
+        app's ``AppInfo``; ``session_stop`` then never sees that child, so the
+        registry sweeps the residual here. The same applies to a live session, whose
+        KWin is never registered and therefore never touched. The sweep runs on every
+        exit path under the same deferral as the session teardown, so a later signal
+        cannot abort the SIGTERM/SIGKILL escalation mid-flight.
+        """
+        try:
+            with _defer_shutdown_signals():
+                process_registry.close()
+                process_registry.terminate_all()
+        except Exception:
+            # The sweep is the last line of defense: report it, never raise through exit.
             traceback.print_exc()
 
     def postcmd(self, stop: bool, line: str) -> bool:

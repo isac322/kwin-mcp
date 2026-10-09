@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from kwin_mcp import progress
 
@@ -231,16 +231,23 @@ class OwnedProcessRegistry:
     a bare pgid, and every operation that can reap a registered leader —
     ``poll``, ``wait``, ``kill``, and the final ``reap`` — goes through a helper
     that holds the lock and unregisters the leader in the same critical section.
-    The exit path (``terminate_all``) therefore signals only the entries whose
-    leaders are still unreaped children, so it never signals a group whose
-    leader has been reaped and whose pgid the kernel may have recycled into an
-    unrelated group.
+    While ``terminate_leaders`` is escalating a leader — from its SIGTERM until
+    its last SIGKILL step has run — ``poll``/``wait``/``kill`` report that
+    leader's exit through ``waitid`` without reaping it, so the escalation's
+    ``_leader_reaped`` check still sees an owned child and the SIGKILL step still
+    reaches TERM-ignoring group members even if another thread polls during the
+    grace wait. The exit path (``terminate_all``) therefore signals only the
+    entries whose leaders are still unreaped children, so it never signals a
+    group whose leader has been reaped and whose pgid the kernel may have
+    recycled into an unrelated group.
 
     Spawn and registration are atomic with respect to ``close()``: the lock is
     held across ``subprocess.Popen`` and the registration, so ``close()``
     observes a spawn as either fully complete or not started. After ``close()``
     a spawn is refused with a clear error instead of starting a group that
-    ``close()`` and ``terminate_all`` have already passed over (leaking it).
+    ``close()`` and ``terminate_all`` have already passed over (leaking it);
+    ``register_temp_dir`` likewise removes the dir itself and refuses, because
+    the ``terminate_all`` snapshot it missed would never revisit it.
     """
 
     def __init__(self) -> None:
@@ -248,9 +255,14 @@ class OwnedProcessRegistry:
         self._closed = False
         self._processes: dict[int, subprocess.Popen[bytes]] = {}
         self._temp_dirs: list[Path] = []
+        # Leaders (by pid) whose terminate_leaders escalation sits between the
+        # SIGTERM and the last SIGKILL step: while marked, poll/wait/kill must
+        # observe their exit without reaping so _leader_reaped keeps them owned.
+        # Concurrent escalations of the same leader nest, hence a refcount.
+        self._escalating: dict[int, int] = {}
 
     def close(self) -> None:
-        """Mark the registry closed; no spawn is allowed from here on.
+        """Mark the registry closed; no spawn or temp dir is accepted from here on.
 
         Takes the same lock ``spawn`` holds, so a spawn in progress finishes
         registering its group before ``close`` proceeds.
@@ -258,11 +270,22 @@ class OwnedProcessRegistry:
         with self._lock:
             self._closed = True
 
-    def spawn(self, args: list[str], **kwargs: object) -> subprocess.Popen[bytes]:
+    def spawn(
+        self,
+        args: list[str],
+        *,
+        stdin: int | IO[bytes] | None = None,
+        stdout: int | IO[bytes] | None = None,
+        stderr: int | IO[bytes] | None = None,
+        env: dict[str, str] | None = None,
+        start_new_session: bool = False,
+    ) -> subprocess.Popen[bytes]:
         """Atomically spawn a process and register it as an owned leader.
 
         Holds the lock across ``subprocess.Popen`` and the registration. The
-        caller passes the same arguments it would give ``subprocess.Popen``.
+        keyword arguments are the subset of ``Popen``'s the session call sites
+        pass; a new call-site parameter is declared here rather than passed
+        through opaquely, so the bytes-mode ``Popen`` overload still resolves.
         After ``close()`` this raises instead of spawning: a group started now
         would not be signalled by the already-run ``terminate_all`` and would
         leak, so it must be refused rather than started.
@@ -271,32 +294,84 @@ class OwnedProcessRegistry:
             if self._closed:
                 msg = "the process registry is closed; refusing to spawn a new process"
                 raise RuntimeError(msg)
-            raw = subprocess.Popen(args, **kwargs)  # ty: ignore[no-matching-overload]
-            proc = cast("subprocess.Popen[bytes]", raw)
+            proc: subprocess.Popen[bytes] = subprocess.Popen(
+                args,
+                stdin=stdin,
+                stdout=stdout,
+                stderr=stderr,
+                env=env,
+                start_new_session=start_new_session,
+            )
             self._processes[proc.pid] = proc
         return proc
 
     def register_temp_dir(self, path: Path) -> None:
-        """Record a temp dir a session created, for ``terminate_all`` to remove."""
+        """Record a temp dir a session created, for ``terminate_all`` to remove.
+
+        After ``close()`` the ``terminate_all`` snapshot can no longer see the
+        dir, so recording it would leak it: the dir is removed here instead —
+        best-effort, like ``terminate_all``'s own removals — and the call is
+        refused, failing the in-flight session start just like a refused spawn.
+        """
         with self._lock:
-            if path not in self._temp_dirs:
+            closed = self._closed
+            if not closed and path not in self._temp_dirs:
                 self._temp_dirs.append(path)
+        if not closed:
+            return
+        # Outside the lock: _remove_tree sleeps between retries and must not
+        # stall the short poll/wait critical sections.
+        with contextlib.suppress(OSError):
+            _remove_tree(path)
+        msg = "the process registry is closed; refusing to register a temp dir"
+        raise RuntimeError(msg)
 
     def unregister_temp_dir(self, path: Path) -> None:
         """Drop a temp dir a stop already removed."""
         with self._lock, contextlib.suppress(ValueError):
             self._temp_dirs.remove(path)
 
+    def _poll_locked(self, proc: subprocess.Popen[bytes]) -> int | None:
+        """Report a leader's exit status; must be called under the lock.
+
+        ``Popen.poll`` reaps a finished child, which is allowed only for a
+        leader no other escalation still needs: while ``terminate_leaders`` is
+        escalating one, a reaping poll here would flip ``_leader_reaped`` to
+        True and make the escalation skip its SIGKILL, leaving TERM-ignoring
+        group members alive. An escalating leader is therefore probed with
+        ``waitid(WEXITED | WNOHANG | WNOWAIT)``, which reports the exit status
+        without reaping, and stays registered.
+        """
+        if proc.returncode is not None:
+            return proc.returncode
+        if proc.pid in self._escalating:
+            try:
+                info = os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            except ChildProcessError:
+                # Reaped outside the registry, so it is no longer an owned child:
+                # drop the entry even mid-escalation (the escalation reads the
+                # leaders list, not the registry). Popen.poll returns 0 for a
+                # child it cannot reap, so report the same rather than leak.
+                self._processes.pop(proc.pid, None)
+                return 0
+            if info is None:
+                return None
+            # Still our unreaped child; the entry stays for the escalation.
+            return info.si_status if info.si_code == os.CLD_EXITED else -info.si_status
+        return proc.poll()
+
     def poll(self, proc: subprocess.Popen[bytes]) -> int | None:
         """Poll a registered leader; if it has exited, unregister it.
 
         ``Popen.poll`` reaps a finished child, so once it reports a status the
         leader is no longer an owned child and must leave the registry in the
-        same critical section.
+        same critical section. While the leader is under ``terminate_leaders``
+        escalation it is probed without reaping instead, so the exit is still
+        reported but the entry stays.
         """
         with self._lock:
-            rc = proc.poll()
-            if rc is not None:
+            rc = self._poll_locked(proc)
+            if rc is not None and proc.pid not in self._escalating:
                 self._processes.pop(proc.pid, None)
             return rc
 
@@ -305,22 +380,35 @@ class OwnedProcessRegistry:
 
         Polls in short steps so the lock is not held across the whole wait
         (``Popen.wait`` with a timeout would block the lock for the full bound).
+        An escalating leader's exit is reported without reaping it, so the
+        entry stays for the escalation that still owns it.
         """
         deadline = time.monotonic() + timeout
         while True:
             with self._lock:
-                rc = proc.poll()
+                rc = self._poll_locked(proc)
                 if rc is not None:
-                    self._processes.pop(proc.pid, None)
+                    if proc.pid not in self._escalating:
+                        self._processes.pop(proc.pid, None)
                     return rc
             if time.monotonic() >= deadline:
                 raise subprocess.TimeoutExpired(proc.args, timeout)
             time.sleep(0.05)
 
     def kill(self, proc: subprocess.Popen[bytes]) -> None:
-        """Send SIGKILL to a registered leader; CPython polls first, so this
-        can reap a finished child and must unregister it in the same section."""
+        """Send SIGKILL to a registered leader.
+
+        ``Popen.kill`` polls the child before signalling, so it can reap a
+        finished leader and must unregister it in the same section. A leader
+        under escalation is signalled directly instead: ``Popen.kill``'s poll
+        would reap it, and its unreaped check already proved the child exists.
+        """
         with self._lock:
+            if proc.pid in self._escalating:
+                if self._poll_locked(proc) is None:
+                    with contextlib.suppress(ProcessLookupError, PermissionError):
+                        os.kill(proc.pid, signal.SIGKILL)
+                return
             proc.kill()
             if proc.returncode is not None:
                 self._processes.pop(proc.pid, None)
@@ -331,15 +419,19 @@ class OwnedProcessRegistry:
         Called only by the owner side (``session_stop``), once no further killpg
         can follow. Polls in short steps so the lock is not held across the whole
         wait; a leader that is not gone by the bound is left for the process to
-        orphan (its descendants, if any, are the residual documented below).
+        orphan (its descendants, if any, are the residual documented below). If a
+        concurrent ``terminate_leaders`` still escalates the leader, polling is
+        deferred until that window closes rather than reaping it mid-escalation.
         """
         deadline = time.monotonic() + _APP_KILL_GRACE_SECONDS
         while True:
             with self._lock:
-                rc = proc.poll()
-                if rc is not None:
-                    self._processes.pop(proc.pid, None)
-                    return
+                escalating = proc.pid in self._escalating
+                if not escalating:
+                    rc = proc.poll()
+                    if rc is not None:
+                        self._processes.pop(proc.pid, None)
+                        return
             if time.monotonic() >= deadline:
                 return
             time.sleep(0.05)
@@ -371,24 +463,42 @@ class OwnedProcessRegistry:
         once more. The bound is the TERM grace plus the KILL grace, shared across
         all groups rather than paid per group.
 
-        The ownership check (``_leader_reaped``) and the signal run under this
-        registry's lock, so no other thread can reap the leader between them; the
-        grace waits run outside the lock. While a leader is an unreaped child its
-        pid (== its process-group id) stays reserved, so killpg can never reach a
+        The leaders are marked as escalating before the first signal, so the
+        grace waits — which run outside the lock — cannot let a concurrent
+        ``poll``/``wait``/``kill`` reap them mid-escalation and leave
+        TERM-ignoring group members unsignalled; the marks are dropped only
+        after the last SIGKILL step. The ownership check (``_leader_reaped``)
+        and each signal run under this registry's lock, so no other thread can
+        reap a leader between them. While a leader is an unreaped child its pid
+        (== its process-group id) stays reserved, so killpg can never reach a
         pid recycled into an unrelated group.
 
-        Leaders are reaped (and unregistered from the registry) only after the last
-        signal, and only when ``reap`` is set — the owner side (``session_stop``),
-        where this thread owns the ``Popen`` objects. On the exit path (``reap=False``)
-        the process exits right after and the tool thread may still own the objects,
-        so the leaders are left for the process to exit. If a leader was already
-        reaped while its descendants still hold the group, that group is left
-        unsignalled: ownership can no longer be proven (the same floor PR2 accepted).
+        Leaders are reaped (and unregistered from the registry) only after the
+        last signal, and only when ``reap`` is set — the owner side
+        (``session_stop``), where this thread owns the ``Popen`` objects. On the
+        exit path (``reap=False``) the process exits right after and the tool
+        thread may still own the objects, so the leaders are left for the
+        process to exit. If a leader was already reaped before its escalation
+        while its descendants still hold the group, that group is left
+        unsignalled: ownership can no longer be proven (the same floor PR2
+        accepted).
         """
-        self._signal_owned(leaders, signal.SIGTERM)
-        _wait_for_leader_groups_exit(leaders, _APP_TERM_GRACE_SECONDS)
-        self._kill_owned(leaders)
-        _wait_for_leader_groups_exit(leaders, _APP_KILL_GRACE_SECONDS)
+        with self._lock:
+            for leader in leaders:
+                self._escalating[leader.pid] = self._escalating.get(leader.pid, 0) + 1
+        try:
+            self._signal_owned(leaders, signal.SIGTERM)
+            _wait_for_leader_groups_exit(leaders, _APP_TERM_GRACE_SECONDS)
+            self._kill_owned(leaders)
+            _wait_for_leader_groups_exit(leaders, _APP_KILL_GRACE_SECONDS)
+        finally:
+            with self._lock:
+                for leader in leaders:
+                    left = self._escalating[leader.pid] - 1
+                    if left:
+                        self._escalating[leader.pid] = left
+                    else:
+                        del self._escalating[leader.pid]
         if reap:
             for leader in leaders:
                 self.reap(leader)
@@ -676,25 +786,24 @@ class Session:
         app_name = Path(command[0]).stem if command else "unknown"
         self._app_counter += 1
         log_path = self._info.screenshot_dir / f"app_{app_name}_{self._app_counter}.log"
-        log_file = log_path.open("ab")
-
         # stdin=DEVNULL: an inherited stdin would be the MCP server's JSON-RPC
         # transport, and a launched program that reads it steals requests.
         # start_new_session=True puts the app and its descendants in their own
         # process group so session_stop can stop the whole tree, not just the
         # direct child (a shell script's background jobs, a browser's helpers).
         # Spawn through the registry so the app's group is recorded atomically
-        # with the spawn.
-        proc = process_registry.spawn(
-            command,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=log_file,
-            stderr=log_file,
-            start_new_session=True,
-        )
-        # Close the fd in the parent; child has inherited it
-        log_file.close()
+        # with the spawn. The log fd stays open only for the spawn (the child
+        # inherits its own copy): closing it on the with's exit also covers a
+        # spawn that raises, e.g. a refused spawn after the registry closed.
+        with log_path.open("ab") as log_file:
+            proc = process_registry.spawn(
+                command,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=log_file,
+                start_new_session=True,
+            )
 
         app_info = AppInfo(
             pid=proc.pid,
@@ -1227,21 +1336,22 @@ class LiveSession:
         app_name = Path(command[0]).stem if command else "unknown"
         self._app_counter += 1
         log_path = self._info.screenshot_dir / f"app_{app_name}_{self._app_counter}.log"
-        log_file = log_path.open("ab")
-
         # stdin=DEVNULL: see Session.launch_app. start_new_session=True gives
         # the app its own process group so stop() can signal the whole tree.
         # Spawn through the registry so the app's group is recorded atomically
         # with the spawn (the live session's KWin itself is never recorded).
-        proc = process_registry.spawn(
-            command,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=log_file,
-            stderr=log_file,
-            start_new_session=True,
-        )
-        log_file.close()
+        # The log fd stays open only for the spawn (the child inherits its own
+        # copy): closing it on the with's exit also covers a spawn that raises,
+        # e.g. a refused spawn after the registry closed.
+        with log_path.open("ab") as log_file:
+            proc = process_registry.spawn(
+                command,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=log_file,
+                start_new_session=True,
+            )
 
         app_info = AppInfo(
             pid=proc.pid,

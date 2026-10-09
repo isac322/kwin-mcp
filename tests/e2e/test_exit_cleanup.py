@@ -27,6 +27,15 @@ session with several slow-exiting apps must lose every launched app while KWin
 survives, both when the stop runs and when the busy registry path runs; and a
 signal that arrives while the CLI is tearing the session down must not interrupt
 the teardown and skip the launched apps.
+
+The remaining coverage needs no session at all: a signal that lands inside the
+asyncio loop (mid tool submission, or idle) must still exit 128+signum with the
+cleanup outcome line on stderr — a raising handler there reaches ``main``
+wrapped or swallowed by the SDK's task machinery instead; a CLI exit must sweep
+owned process groups no session claimed; an in-escalation leader must not be
+reaped by a concurrent registry poll (the SIGKILL step would then skip the
+group); and a temp dir registered after ``close()`` must be removed, not
+recorded.
 """
 
 from __future__ import annotations
@@ -63,6 +72,10 @@ SERVER_EXIT_TIMEOUT_TOOL_INFLIGHT_SECONDS = 60.0
 # The bound sits above drain + TERM grace + KILL grace + margin and below the tool's
 # own 40 s duration.
 SERVER_EXIT_TIMEOUT_TOOL_OVERRUN_SECONDS = 15.0
+# No-session exits (idle signal, signal mid-submission): only the exit cleanup
+# itself — the drain plus the registry sweep — can consume time.
+SERVER_EXIT_TIMEOUT_IDLE_SECONDS = 15.0
+
 
 # A distinctive app so its PID, parsed from the launch output, identifies it.
 _APP_COMMAND = "sleep 600"
@@ -465,6 +478,30 @@ def _assert_session_gone(pgid: int | None, app_pid: int | None = None) -> None:
         assert _wait_until(lambda: not _is_live(app_pid), CLEANUP_SETTLE_SECONDS), (
             f"launched app {app_pid} is still running"
         )
+
+
+def _initialize_server(process: subprocess.Popen[str], reader: _LineReader) -> None:
+    """Run the MCP initialize handshake without starting a session.
+
+    The exit-behavior regressions below exercise servers with no session, so the
+    handshake stops after ``notifications/initialized``; the caller drives the
+    interesting request (or signal) itself.
+    """
+    _rpc(
+        reader,
+        process,
+        1,
+        "initialize",
+        {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "exit-cleanup", "version": "0"},
+        },
+    )
+    initialized = json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"})
+    stdin = _stdin(process)
+    stdin.write(initialized + "\n")
+    stdin.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -975,6 +1012,9 @@ def test_registry_spawn_after_close_and_close_waits_for_in_progress_spawn(
         target=lambda: (registry.close(), close_done.set()), daemon=True
     )
     close_thread.start()
+    # While the spawn still holds the registry lock, close() must stay blocked: this
+    # pin catches a close() that proceeds before the in-progress spawn registered.
+    assert not close_done.wait(timeout=0.3), "close() proceeded while the spawn held the lock"
 
     # Release the spawn: it registers its group and releases the lock, so close()
     # (still blocked) can proceed only after the registration.
@@ -1340,3 +1380,225 @@ def test_live_session_serialized_stop_completes_beyond_drain() -> None:
             if server.poll() is None:
                 server.kill()
                 server.wait()
+
+
+# A server whose first tool submission raises SIGTERM into the asyncio loop, at the
+# exact awaitable boundary the signal used to be thrown through.
+_SIGTERM_ON_FIRST_SUBMIT_SERVER = """
+import os
+import signal
+
+import kwin_mcp.server as server
+
+real_submit = server._tool_executor.submit
+
+
+def sigterm_then_submit(*args, **kwargs):
+    server._tool_executor.submit = real_submit
+    os.kill(os.getpid(), signal.SIGTERM)
+    return real_submit(*args, **kwargs)
+
+
+server._tool_executor.submit = sigterm_then_submit
+server.main()
+"""
+
+
+def test_sigterm_during_tool_submission_exits_143_with_stdin_open() -> None:
+    """SIGTERM raised inside the asyncio loop during a tool submission still exits 143.
+
+    The first ``_tool_executor.submit`` (our ``session_stop`` call) kills the process
+    mid-``mcp.run()``. A handler that raises there reaches ``main`` wrapped by the
+    SDK's request task group, so the old ``except _Shutdown`` missed it and the
+    forced exit ran with code 0. Stdin stays open so only the signal path can end
+    the server; exit 143 plus the stderr outcome line proves the signal was
+    recorded and the shared cleanup ran.
+    """
+    server = _spawn_with_stderr([sys.executable, "-c", _SIGTERM_ON_FIRST_SUBMIT_SERVER])
+    reader = _LineReader(_stdout(server))
+    try:
+        _initialize_server(server, reader)
+
+        # The tool needs no session; its submit is what delivers the SIGTERM. The
+        # response is not awaited: the signal path may os._exit before writing it.
+        request = {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "session_stop", "arguments": {}},
+        }
+        stdin = _stdin(server)
+        stdin.write(json.dumps(request) + "\n")
+        stdin.flush()
+
+        exit_code = server.wait(timeout=SERVER_EXIT_TIMEOUT_IDLE_SECONDS)
+        assert exit_code == 143, (
+            f"expected exit 143 when a signal lands mid-submission, got {exit_code}"
+        )
+        stderr = server.stderr.read() if server.stderr is not None else ""
+        assert "kwin-mcp: exit cleanup:" in stderr, (
+            f"the exit outcome line was not written to stderr: {stderr!r}"
+        )
+    finally:
+        if server.poll() is None:
+            server.kill()
+            server.wait()
+
+
+def test_sigint_idle_exits_130_with_stdin_open() -> None:
+    """SIGINT on an idle, session-less server exits 130 while stdin stays open.
+
+    Same class of regression as the mid-submission SIGTERM: a signal that unwinds
+    the asyncio loop must land as the conventional 128+signum exit with the exit
+    cleanup still run, not as a bare loop unwind that exits 0 or wedges. Stdin
+    stays open so EOF cannot end the server first.
+    """
+    server = _spawn([sys.executable, "-m", "kwin_mcp"])
+    reader = _LineReader(_stdout(server))
+    try:
+        _initialize_server(server, reader)
+
+        os.kill(server.pid, signal.SIGINT)
+        exit_code = server.wait(timeout=SERVER_EXIT_TIMEOUT_IDLE_SECONDS)
+        assert exit_code == 130, f"expected exit 130 on SIGINT, got {exit_code}"
+    finally:
+        if server.poll() is None:
+            server.kill()
+            server.wait()
+
+
+def test_registry_escalation_kills_term_ignoring_member_despite_concurrent_poll() -> None:
+    """A registry poll during escalation must not reap the leader before SIGKILL.
+
+    Unit-level, no KWin. The leader's group holds a member that ignores SIGTERM,
+    so the TERM grace expires with the group still alive and the SIGKILL step is
+    what actually kills it. A concurrent ``registry.poll`` that reaped the leader
+    (what ``proc.poll()`` does) would leave ``_leader_reaped`` True and the KILL
+    step would skip the group, leaking the member; the contract requires the
+    escalation's polls to observe the exit without reaping it.
+    """
+    from kwin_mcp.session import OwnedProcessRegistry
+
+    registry = OwnedProcessRegistry()
+    leader = registry.spawn(
+        ["bash", "-c", "bash -c 'trap \"\" TERM; exec sleep 60' & wait"],
+        start_new_session=True,
+    )
+    pgid = leader.pid
+
+    def term_ignoring_member_is_sleeping() -> bool:
+        return any("sleep" in _cmdline(pid) for pid in _group_pids(pgid) if pid != leader.pid)
+
+    try:
+        # The member's ``trap`` runs before its ``exec sleep``, so a live member
+        # already running as ``sleep`` is guaranteed to ignore the pending SIGTERM.
+        assert _wait_until(term_ignoring_member_is_sleeping, 10), (
+            f"the TERM-ignoring member never exec'd sleep; group: {sorted(_group_pids(pgid))}"
+        )
+
+        escalator = threading.Thread(
+            target=lambda: registry.terminate_leaders([leader], reap=False), daemon=True
+        )
+        escalator.start()
+        while escalator.is_alive():
+            registry.poll(leader)
+            time.sleep(0.01)
+        escalator.join()
+
+        # The leader is dead by now, so the registry's poll must report the exit
+        # (without having reaped it mid-escalation, which is what the poll loop
+        # above was hammering on).
+        assert registry.poll(leader) is not None, (
+            "the leader exited during escalation but the registry's poll never saw it"
+        )
+        assert _wait_until(lambda: not _group_pids(pgid), CLEANUP_SETTLE_SECONDS), (
+            f"a TERM-ignoring member survived the escalation: {sorted(_group_pids(pgid))}"
+        )
+    finally:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pgid, signal.SIGKILL)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            leader.wait(timeout=5)
+
+
+def test_registry_register_temp_dir_after_close_removes_dir_and_raises() -> None:
+    """register_temp_dir on a closed registry removes the dir and raises.
+
+    Unit-level, no KWin. After ``close()`` a newly-registered dir would never be
+    visited by ``terminate_all`` (the registry path already ran or is past the
+    point of taking new work), so it must be removed on the spot rather than
+    recorded — the failure mode being asserted is a silent leak, not just a
+    missing RuntimeError.
+    """
+    from kwin_mcp.session import OwnedProcessRegistry
+
+    registry = OwnedProcessRegistry()
+    registry.close()
+    orphan_dir = Path(tempfile.mkdtemp())
+    try:
+        with pytest.raises(RuntimeError):
+            registry.register_temp_dir(orphan_dir)
+        assert not orphan_dir.exists(), (
+            f"register_temp_dir on a closed registry left {orphan_dir} behind"
+        )
+    finally:
+        shutil.rmtree(orphan_dir, ignore_errors=True)
+
+
+# A CLI that spawns an owned process group but never attaches it to a session:
+# on exit the registry sweep is the only thing that can stop it.
+_CLI_OWNED_GROUP_LEAK = """
+import kwin_mcp.cli as cli
+from kwin_mcp.session import process_registry
+
+proc = process_registry.spawn(["sleep", "60"], start_new_session=True)
+
+
+def cmdloop_with_pid(self, *args, **kwargs):
+    print(proc.pid, flush=True)
+    return cli.cmd.Cmd.cmdloop(self, *args, **kwargs)
+
+
+cli.KwinMcpShell.cmdloop = cmdloop_with_pid
+cli.main()
+"""
+
+
+@pytest.mark.parametrize("exit_mode", ["eof", "sigterm"])
+def test_cli_exit_terminates_owned_process_not_attached_to_a_session(exit_mode: str) -> None:
+    """A CLI exit kills an owned group that no session ever claimed.
+
+    The spawned ``sleep`` is a registry leader but never becomes a session app
+    (the launch is orphaned between spawn and registration, e.g. by a failed
+    launch_app), so ``session_stop`` has nothing to stop. Every CLI exit path —
+    EOF on stdin or a shutdown signal — must run the registry sweep so the group
+    is terminated rather than leaked. The pid marker is printed only once the
+    CLI has installed its signal handlers, so the SIGTERM variant cannot race
+    the handler installation.
+    """
+    cli = _spawn([sys.executable, "-c", _CLI_OWNED_GROUP_LEAK])
+    reader = _LineReader(_stdout(cli))
+    sleep_pid: int | None = None
+    try:
+        line = reader.get(timeout=SERVER_EXIT_TIMEOUT_IDLE_SECONDS)
+        assert line is not None, "the CLI never reported the owned process pid"
+        sleep_pid = int(line.strip())
+        assert _is_live(sleep_pid), f"the spawned process {sleep_pid} is not running"
+
+        if exit_mode == "sigterm":
+            # Stdin stays open, so the CLI exits through the signal path alone.
+            os.kill(cli.pid, signal.SIGTERM)
+        else:
+            _stdin(cli).close()
+        exit_code = cli.wait(timeout=SERVER_EXIT_TIMEOUT_IDLE_SECONDS)
+        assert exit_code == 0, f"the CLI did not exit 0 on {exit_mode}, got {exit_code}"
+        assert _wait_until(lambda: not _is_live(sleep_pid), CLEANUP_SETTLE_SECONDS), (
+            f"the owned process {sleep_pid} survived the CLI's {exit_mode} exit"
+        )
+    finally:
+        if sleep_pid is not None:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(sleep_pid, signal.SIGKILL)
+        if cli.poll() is None:
+            cli.kill()
+            cli.wait()

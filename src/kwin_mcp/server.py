@@ -78,15 +78,15 @@ _tool_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kwin-mcp-
 # Set the moment shutdown begins. Tool bodies queued after this point return without
 # running, so queued work cannot start new resources once the server is exiting.
 _shutdown = threading.Event()
-# How long the main thread waits for the final session_stop to START on the tool
-# thread (its first statement sets a flag) before concluding the tool thread is still
-# busy with an in-flight tool. If the stop starts, the main thread waits for it to
-# finish — no forced exit while it runs, and its own waits are bounded. If it does not
-# start, the stop is still queued behind the in-flight tool, so it is cancelled before
-# it runs and the owned process groups are terminated directly from the main thread,
-# without touching the engine. The value is long enough for a short tool to finish and
-# the stop to start (the graceful path) and short enough that a long tool (e.g. a 40 s
-# screenshot_after_ms) triggers the registry path quickly.
+# How long the exit path waits for the final session_stop to START on the tool
+# thread (its first statement sets a flag) before concluding the tool thread is
+# still busy with an in-flight tool. If the stop starts, the exit path waits for
+# it to finish — no forced exit while it runs, and its own waits are bounded. If
+# it does not start, the stop is still queued behind the in-flight tool, so it is
+# cancelled before it runs and the owned process groups are terminated directly,
+# without touching the engine. The value is long enough for a short tool to
+# finish and the stop to start (the graceful path) and short enough that a long
+# tool (e.g. a 40 s screenshot_after_ms) triggers the registry path quickly.
 EXIT_DRAIN_SECONDS = 2.0
 
 # Tool annotations (MCP hints) shared by tools with identical behavior profiles.
@@ -1089,46 +1089,60 @@ def wayland_info(
     return _engine.wayland_info(filter_protocol=filter_protocol)
 
 
-class _Shutdown(BaseException):
-    """Unwind the server on SIGTERM/SIGHUP.
+# Set by the signal handler when the first shutdown signal arrives. The handler
+# can only record the signal: while mcp.run() owns the main thread, raising
+# through it (or blocking it on the stop) unwinds through anyio task groups that
+# wait on the stdio reader's uncancellable stdin readline, so cleanup would not
+# start until the client closed stdin. The daemon watcher thread below waits on
+# this event and runs the shared exit path off the main thread instead.
+_signal_received = threading.Event()
+# The first signal's number, written before the event is set so it is stable by
+# the time the watcher wakes; a later signal must not overwrite it (the handler
+# returns early once shutdown has begun).
+_signal_signum = 0
+# The exit path can be entered twice — the watcher thread on a signal, the main
+# thread when mcp.run() ends — but runs once. The first caller proceeds; a
+# second blocks in acquire() until the winner's os._exit ends the process, so a
+# signal landing mid-cleanup can never start a second stop.
+_finish_lock = threading.Lock()
 
-    A BaseException (not Exception) so no ``except Exception`` in the SDK swallows
-    it: it propagates out of ``mcp.run()`` and ``main`` turns it into the
-    conventional 128+signum exit code.
+
+def _shutdown_handler(signum: int, _frame: object) -> None:
+    # Handlers run serialized on the main thread, so the check-and-set is atomic:
+    # the first signal wins, and once shutdown has begun (an earlier signal set
+    # the event, or the EOF path set _shutdown) a later one is ignored — it must
+    # not wake a second exit path or rewrite the exit code.
+    global _signal_signum
+    if _signal_received.is_set() or _shutdown.is_set():
+        return
+    _signal_signum = signum
+    _signal_received.set()
+
+
+def _signal_watcher() -> NoReturn:
+    """Wait for the first shutdown signal, then exit via the shared finish routine.
+
+    Running on its own thread is what makes the signal path prompt: the cleanup
+    does not have to unwind whatever the main thread was doing when the signal
+    arrived (an in-flight asyncio task, the loop's own waits).
     """
-
-    def __init__(self, signum: int) -> None:
-        super().__init__(signum)
-        self.signum = signum
-
-
-def _shutdown_handler(signum: int, _frame: object) -> NoReturn:
-    # The anyio stdio loop only unwinds on an exception, so convert the signal
-    # into one. Cleanup runs in main's finally, not here (a signal handler must
-    # not do the heavy, bounded stop in its frame).
-    raise _Shutdown(signum)
-
-
-def _ignore_signals() -> None:
-    # One-way transition: once shutdown has begun, a later SIGTERM/SIGHUP/SIGINT must
-    # not throw through the cleanup (a second signal would otherwise abort the stop
-    # half-done and leave the process hanging).
-    for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
-        signal.signal(signum, signal.SIG_IGN)
+    _signal_received.wait()
+    _finish(128 + _signal_signum)
 
 
 def _exit_cleanup() -> str:
     """Stop the session (or terminate the owned groups) at server exit; return the outcome."""
     # The engine is not thread-safe and is owned by the single tool thread, so the
-    # main thread must never call into it while the tool thread may be using it.
-    # The final session_stop therefore always runs on the tool thread (serialized
-    # with any in-flight tool); the main thread only decides whether the stop can
-    # run at all.
+    # thread running the exit path must never call into it while the tool thread
+    # may be using it. The final session_stop therefore always runs on the tool
+    # thread (serialized with any in-flight tool); the exiting thread only decides
+    # whether the stop can run at all.
     stop_started = threading.Event()
 
     def _stop_for_exit() -> None:
-        # First statement: lets the main thread tell "the stop is running on the
-        # tool thread" from "the stop is still queued behind an in-flight tool".
+        # First statement: lets the exiting thread tell "the stop is running on
+        # the tool thread" from "the stop is still queued behind an in-flight
+        # tool".
         stop_started.set()
         _engine.session_stop()
 
@@ -1137,7 +1151,7 @@ def _exit_cleanup() -> str:
     # starts immediately and we wait for it to finish (bounded by its own waits;
     # no forced exit while it runs). If an in-flight tool still holds the tool
     # thread the stop stays queued: cancel it before it runs, then terminate the
-    # owned process groups and temp dirs directly from the main thread.
+    # owned process groups and temp dirs directly, without touching the engine.
     if not stop_started.wait(timeout=EXIT_DRAIN_SECONDS) and stop.cancel():
         # The stop is still pending behind the in-flight tool, so it never runs.
         # Clean up the owned groups and dirs directly, without touching the engine.
@@ -1153,57 +1167,80 @@ def _exit_cleanup() -> str:
     return "serialized session_stop path (completed on the tool thread)"
 
 
+def _finish(exit_code: int) -> NoReturn:
+    """Run the once-only exit cleanup and leave the process with ``exit_code``.
+
+    Whichever path arrives first — the watcher thread after a signal or the main
+    thread when ``mcp.run()`` ends — owns the cleanup; a second caller blocks in
+    ``_finish_lock.acquire()`` until the process exits, so the stop can never run
+    twice.
+    """
+    _finish_lock.acquire()
+    # First statement under the lock: tool bodies queued from now on must not run.
+    _shutdown.set()
+    # Every failure of the cleanup is reported, never raised: the forced exit
+    # below is what keeps interpreter shutdown from joining a busy tool thread.
+    try:
+        outcome = _exit_cleanup()
+    except Exception as exc:
+        outcome = f"cleanup raised: {type(exc).__name__}: {exc}"
+    # On a signal the stdio read worker is still blocked on readline of the stdin
+    # pipe (the client does not close it), and interpreter shutdown would hang
+    # joining that non-daemon thread (or a still-busy tool thread); exit directly
+    # on both the EOF and signal paths once the session is stopped. The outcome
+    # line and the stdio flushes are best-effort: a disconnecting client may have
+    # closed its stderr reader, and that BrokenPipeError must not skip the exit.
+    with contextlib.suppress(Exception):
+        print(f"kwin-mcp: exit cleanup: {outcome}", file=sys.stderr)
+    for stream in (sys.stdout, sys.stderr):
+        with contextlib.suppress(Exception):
+            stream.flush()
+    os._exit(exit_code)
+
+
 def main() -> None:
     """Run the MCP server.
 
     Supports ``--default-live-session`` flag to make session_connect the default
-    session tool instead of session_start, and ``--screenshot-images`` flag to attach
-    captured screenshot PNGs to tool results as image content.
+    session tool instead of session_start, and ``--screenshot-images`` flag to
+    attach captured screenshot PNGs to tool results as image content.
+
+    All exit paths share the once-only cleanup in ``_finish``: ``mcp.run()``
+    returning (stdin EOF) exits 0, an SDK/transport exception exits 1 after a
+    traceback, and the first SIGTERM/SIGHUP/SIGINT exits 128+signum (143/129/130)
+    via the watcher thread — the signal handler only records the signum and never
+    raises, so a signal mid-request cannot stall the cleanup on the loop.
     """
     # Remove our custom flags before MCP framework parses args
     for flag in ("--default-live-session", "--screenshot-images"):
         if flag in sys.argv:
             sys.argv.remove(flag)
-    # SIGINT is left to the asyncio loop (KeyboardInterrupt); SIGTERM and SIGHUP
-    # have no handler by default and would kill the process before any cleanup.
-    for signum in (signal.SIGTERM, signal.SIGHUP):
+    # SIGTERM/SIGHUP have no default handler and would kill the process without
+    # cleanup; SIGINT is included because installing our own handler keeps
+    # asyncio.Runner from installing its KeyboardInterrupt-raising default (it
+    # only replaces signal.default_int_handler), which unwound through the loop
+    # the same way. signal.signal is only allowed on the main thread, so the
+    # handlers are installed here — never inside the watcher thread.
+    for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         signal.signal(signum, _shutdown_handler)
+    # Daemon: a still-pending wait must not keep the process alive on the EOF path.
+    threading.Thread(target=_signal_watcher, name="kwin-mcp-shutdown", daemon=True).start()
     exit_code = 0
     try:
-        try:
-            mcp.run()
-        except _Shutdown as shutdown:
-            exit_code = 128 + shutdown.signum
-        except KeyboardInterrupt:
-            exit_code = 130
-        except Exception:
-            # Surface a transport/SDK failure and exit non-zero instead of the
-            # conventional 0 (the old interpreter-shutdown path did the same). The
-            # code is set first: the report itself may fail on a closed stderr.
-            exit_code = 1
+        mcp.run()
+    except KeyboardInterrupt:
+        # Only a KeyboardInterrupt already pending when our SIGINT handler was
+        # installed (or one raised directly) reaches here; still exit 130.
+        exit_code = 130
+    except Exception:
+        # Surface a transport/SDK failure and exit non-zero instead of the
+        # conventional 0 (the old interpreter-shutdown path did the same). The
+        # report is best-effort: it may itself fail on a closed stderr.
+        exit_code = 1
+        with contextlib.suppress(Exception):
             traceback.print_exc()
     finally:
-        # One-way: from here on a later signal cannot throw through the cleanup.
-        _ignore_signals()
-        _shutdown.set()
-        # Every failure of the cleanup is reported, never raised: the forced exit below
-        # is what keeps interpreter shutdown from joining a busy tool thread.
-        try:
-            outcome = _exit_cleanup()
-        except Exception as exc:
-            outcome = f"cleanup raised: {type(exc).__name__}: {exc}"
-        # On a signal the stdio read worker is still blocked on readline of the stdin
-        # pipe (the client does not close it), and interpreter shutdown would hang
-        # joining that non-daemon thread (or a still-busy tool thread); exit directly
-        # on both the EOF and signal paths once the session is stopped. The outcome
-        # line and the stdio flushes are best-effort: a disconnecting client may have
-        # closed its stderr reader, and that BrokenPipeError must not skip the exit.
-        with contextlib.suppress(Exception):
-            print(f"kwin-mcp: exit cleanup: {outcome}", file=sys.stderr)
-        for stream in (sys.stdout, sys.stderr):
-            with contextlib.suppress(Exception):
-                stream.flush()
-        os._exit(exit_code)
+        _finish(exit_code)
 
 
 if __name__ == "__main__":

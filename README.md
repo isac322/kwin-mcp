@@ -396,6 +396,8 @@ kwin-mcp reads the output topology through KWin scripting immediately before and
 
 The AT-SPI2 accessibility bus within the isolated session is queried via PyGObject (`gi.repository.Atspi`). This provides a structured tree of all UI widgets with their roles (button, text field, menu item, etc.), names, states (focused, enabled, visible, etc.), screen coordinates, and available actions (click, toggle, etc.).
 
+The virtual session's accessibility bus is brought up by D-Bus activation of the distro's `org.a11y.Bus` service. Fedora's SELinux policy denies that activation from a private session bus ([fedora-selinux/selinux-policy#3385](https://github.com/fedora-selinux/selinux-policy/issues/3385)); kwin-mcp then starts the launcher and the registry directly from the `Exec=` lines of the same service files, as the desktop session itself runs them, and `session_start` reports this as a `Warning:` line.
+
 ## System Requirements
 
 | Requirement | Details |
@@ -579,7 +581,7 @@ Coverage includes:
 - virtual KWin engine tests for session lifecycle, AT-SPI2 observation, window geometry and control, closing one window by id (including ids that contain a quote), EIS pointer/keyboard/touch input, clipboard, cleanup, and error handling;
 - failing-session lifecycle regressions that stub `kwin_wayland`/`dbus-run-session` on `PATH`: `session_start` must fail within its startup deadline and surface the captured session stderr plus stray stdout (including a newline-free partial line), and teardown must reap the entire owned process group even when the session leader was already reaped or a descendant ignores `SIGTERM`;
 - a KWin bus-name readiness regression whose `kwin_wayland` stub creates the Wayland socket before starting the real compositor: `session_start` must wait until `org.kde.KWin` has an owner before it sets up EIS input, and must fail with a clear error when KWin exits first or never takes the name;
-- an accessibility-bus check that `org.a11y.Bus` has an owner as soon as `session_start` returns, before any app or AT-SPI2 query could activate it, and that a failed activation (a `dbus-send` stub on `PATH`) is reported as a `Warning:` line in the `session_start` output;
+- an accessibility-bus check that `org.a11y.Bus` has an owner as soon as `session_start` returns, before any app or AT-SPI2 query could activate it, and that a failed activation (a `dbus-send` stub on `PATH`) is reported as a `Warning:` line in the `session_start` output, either after starting the launcher and registry directly (the activation alone denied, as Fedora's SELinux policy does) so apps stay visible to AT-SPI2, or with no accessibility bus left behind when the direct start cannot complete;
 - exact input-schema checks for all 33 registered tools, plus installed-server stdio calls through every MCP wrapper;
 - nested visual tests that start Xvfb and a test-owned KWin compositor inside the container, connect the installed MCP server to it, and verify pixels as well as accessibility state;
 - KCalc before/after pixel transitions and a deterministic GUI probe for mouse hover, cursor inclusion, animation frame bursts, and CJK text (`GUI 검증 42`) rendered differently from a tofu control (`□□`);

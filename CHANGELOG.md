@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The E2E quality step failed under `ty` 0.0.85, which the E2E images resolve fresh: it reports `@contextmanager` and `@asynccontextmanager` functions annotated `-> Iterator[...]` or `-> AsyncIterator[...]` as deprecated. `call_scope` and the E2E harness context managers are now annotated `-> Generator[...]` and `-> AsyncGenerator[...]`; behavior is unchanged, and the locked `ty` passes as before.
+- Accessibility tools (`accessibility_tree`, `find_ui_elements`, `wait_for_element`) now work in virtual sessions on Fedora with SELinux enforcing. The policy denies the D-Bus activation of the AT-SPI2 bus launcher from kwin-mcp's private session bus, and the queries then failed (`AT-SPI2 worker exited`). When the activation fails, `session_start` now starts the launcher and the registry directly from the `Exec=` lines of their D-Bus service files and reports it as a `Warning:` line. If the direct start cannot complete either, the warning is unchanged and no accessibility bus is left behind.
 
 ## [0.10.0] - 2026-09-27
 

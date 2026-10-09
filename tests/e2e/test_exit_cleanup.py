@@ -79,10 +79,10 @@ SERVER_EXIT_TIMEOUT_TOOL_OVERRUN_SECONDS = 15.0
 # No-session exits (idle signal, signal mid-submission): only the exit cleanup
 # itself — the drain plus the registry sweep — can consume time.
 SERVER_EXIT_TIMEOUT_IDLE_SECONDS = 15.0
-# Requests the undrained-stdout regression sends without reading their responses:
-# each tools/list response is tens of KB, so these fill the stdout pipe many times
-# over.
-_UNDRAINED_STDOUT_REQUESTS = 32
+# Pipe size the undrained-stdout check gives the server's stdout: one page, far
+# below a tools/list response (tens of KB), so that one unread response blocks the
+# transport writer.
+_SMALL_PIPE_BYTES = 4096
 
 
 # A distinctive app so its PID, parsed from the launch output, identifies it.
@@ -1484,15 +1484,16 @@ def _unread_stdout_bytes(process: subprocess.Popen[str]) -> int:
 def test_sigterm_with_undrained_stdout_exits_143() -> None:
     """A client that stops reading stdout cannot hold the signal exit.
 
-    The client completes the handshake, then sends ``tools/list`` requests without
-    reading any response until the pipe is full, so the transport writer is blocked
-    on it. The forced exit must not wait on that pipe: SIGTERM still exits 143
-    within the bound.
+    The server's stdout is shrunk to one page, then the client completes the
+    handshake and sends one ``tools/list`` without reading the response, so the
+    transport writer is blocked on the full pipe. The forced exit must not wait on
+    that pipe: SIGTERM still exits 143 within the bound.
     """
     server = _spawn([sys.executable, "-m", "kwin_mcp"])
     try:
         stdin = _stdin(server)
         stdout = _stdout(server)
+        fcntl.fcntl(stdout.fileno(), fcntl.F_SETPIPE_SZ, _SMALL_PIPE_BYTES)
         initialize = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -1509,17 +1510,14 @@ def test_sigterm_with_undrained_stdout_exits_143() -> None:
         assert ready, "server did not answer initialize"
         assert json.loads(stdout.readline())["id"] == 1
         stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
-        for request_id in range(2, 2 + _UNDRAINED_STDOUT_REQUESTS):
-            request = {"jsonrpc": "2.0", "id": request_id, "method": "tools/list", "params": {}}
-            stdin.write(json.dumps(request) + "\n")
+        stdin.write(json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}) + "\n")
         stdin.flush()
 
-        capacity = fcntl.fcntl(stdout.fileno(), fcntl.F_GETPIPE_SZ)
         deadline = time.monotonic() + SERVER_EXIT_TIMEOUT_IDLE_SECONDS
-        while _unread_stdout_bytes(server) < capacity and time.monotonic() < deadline:
+        while _unread_stdout_bytes(server) == 0 and time.monotonic() < deadline:
             time.sleep(0.1)
-        assert _unread_stdout_bytes(server) >= capacity, "the stdout pipe never filled"
-        # The transport writer is now blocked on the full pipe.
+        assert _unread_stdout_bytes(server) > 0, "the server never wrote the tools/list response"
+        # The response is larger than the pipe, so the writer is now blocked on it.
         time.sleep(0.5)
 
         os.kill(server.pid, signal.SIGTERM)
@@ -1531,14 +1529,15 @@ def test_sigterm_with_undrained_stdout_exits_143() -> None:
             server.wait()
 
 
-def test_sigterm_with_full_stderr_exits_143() -> None:
-    """A client that stops reading stderr cannot hold the signal exit.
+@pytest.mark.parametrize(("ending", "expected"), [("sigterm", 143), ("eof", 0)])
+def test_full_stderr_does_not_hold_the_exit(ending: str, expected: int) -> None:
+    """A client that stops reading stderr cannot hold the exit.
 
     Regression: the forced exit printed its outcome line to stderr before
     ``os._exit``. With the stderr pipe full, that write blocked forever, so the
     process never exited and later signals were ignored. The server's stderr is a
-    pipe the test never reads, filled to capacity after the handshake; SIGTERM must
-    still exit 143 within the bound.
+    pipe the test never reads, filled to capacity after the handshake; SIGTERM and
+    stdin EOF must still exit with their codes within the bound.
     """
     stderr_read, stderr_write = os.pipe()
     try:
@@ -1564,9 +1563,12 @@ def test_sigterm_with_full_stderr_exits_143() -> None:
         finally:
             os.close(filler)
 
-        os.kill(server.pid, signal.SIGTERM)
+        if ending == "sigterm":
+            os.kill(server.pid, signal.SIGTERM)
+        else:
+            _stdin(server).close()
         exit_code = server.wait(timeout=SERVER_EXIT_TIMEOUT_IDLE_SECONDS)
-        assert exit_code == 143, f"expected exit 143 on SIGTERM, got {exit_code}"
+        assert exit_code == expected, f"expected exit {expected} on {ending}, got {exit_code}"
     finally:
         if server.poll() is None:
             server.kill()

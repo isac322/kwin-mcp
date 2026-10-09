@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Generator
     from pathlib import Path
 
 type ReportFn = Callable[[float, float | None, str | None], None]
@@ -46,7 +46,7 @@ _scope: contextvars.ContextVar[_Scope | None] = contextvars.ContextVar(
 
 
 @contextmanager
-def call_scope(report: ReportFn | None, *, collect_images: bool) -> Iterator[_Scope]:
+def call_scope(report: ReportFn | None, *, collect_images: bool) -> Generator[_Scope]:
     """Install the scope for one tool call around the engine body invocation.
 
     Set/reset on the calling (tool) thread so nothing leaks into the next call

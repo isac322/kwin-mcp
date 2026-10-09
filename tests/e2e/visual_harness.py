@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
     from typing import BinaryIO
 
 _SCREEN_WIDTH = 1280
@@ -349,7 +349,7 @@ def nested_visual_kwin(
     *,
     scale: float = 1.0,
     screen_size: tuple[int, int] = (_SCREEN_WIDTH, _SCREEN_HEIGHT),
-) -> Iterator[NestedVisualKWin]:
+) -> Generator[NestedVisualKWin]:
     """Run Xvfb and nested KWin, yielding connection details for ``session_connect``.
 
     ``screen_size`` is the physical X11 output size; ``scale`` is applied to the

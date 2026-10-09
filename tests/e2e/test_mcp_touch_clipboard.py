@@ -19,7 +19,7 @@ from _asserts import element_count, kcalc_binary_label
 from mcp_harness import running_mcp_server
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Mapping
+    from collections.abc import AsyncGenerator, Callable, Mapping
     from pathlib import Path
 
 SCREEN_WIDTH = 1280
@@ -78,7 +78,7 @@ async def _virtual_session(
     *,
     app_command: str = "",
     enable_clipboard: bool = False,
-) -> AsyncIterator[McpClient]:
+) -> AsyncGenerator[McpClient]:
     session = _socket_session(app_command=app_command, enable_clipboard=enable_clipboard)
     async with session as (client, _socket):
         yield client
@@ -90,7 +90,7 @@ async def _socket_session(
     app_command: str = "",
     enable_clipboard: bool = True,
     server_env: Mapping[str, str] | None = None,
-) -> AsyncIterator[tuple[McpClient, str]]:
+) -> AsyncGenerator[tuple[McpClient, str]]:
     async with running_mcp_server(env=server_env) as client:
         try:
             output = await client.call_text(
@@ -113,7 +113,7 @@ async def _socket_session(
 
 
 @asynccontextmanager
-async def _prior_clipboard_owner(socket: str, text: str) -> AsyncIterator[subprocess.Popen[bytes]]:
+async def _prior_clipboard_owner(socket: str, text: str) -> AsyncGenerator[subprocess.Popen[bytes]]:
     """Own the isolated selection with a real foreground wl-copy the test controls."""
     assert WL_COPY is not None and WL_PASTE is not None
     env = {**os.environ, "WAYLAND_DISPLAY": socket}

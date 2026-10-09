@@ -39,7 +39,7 @@ from PIL import Image
 from session_harness import live_kwin
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Generator
     from concurrent.futures import Future
     from pathlib import Path
 
@@ -198,13 +198,13 @@ def _assert_owners_released_on_replace(env: dict[str, str], display: str, token:
 
 
 @contextlib.contextmanager
-def _typing(engine: AutomationEngine, text: str) -> Iterator[Future[str]]:
+def _typing(engine: AutomationEngine, text: str) -> Generator[Future[str]]:
     with ThreadPoolExecutor(max_workers=1) as pool:
         yield pool.submit(engine.keyboard_type_unicode, text)
 
 
 @contextlib.contextmanager
-def _paste_target_held(pid: int) -> Iterator[None]:
+def _paste_target_held(pid: int) -> Generator[None]:
     """Freeze KWrite so its requested paste, and thus the restore, waits for the test."""
     os.kill(pid, signal.SIGSTOP)
     try:

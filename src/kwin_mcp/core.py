@@ -1205,6 +1205,75 @@ class AutomationEngine:
             return "No active window."
         return f"Active window:\n{format_window(WindowGeometry.model_validate(window))}"
 
+    def window_set_geometry(
+        self,
+        window_id: str,
+        x: int | None = None,
+        y: int | None = None,
+        width: int | None = None,
+        height: int | None = None,
+    ) -> str:
+        """Move and/or resize one window by exact KWin id."""
+        self._get_session()
+
+        if not window_id:
+            return "window_set_geometry needs a window_id (see window_geometry)."
+
+        if all(value is None for value in (x, y, width, height)):
+            return "window_set_geometry needs at least one of x, y, width or height."
+
+        if width is not None and width <= 0:
+            return "window_set_geometry width must be greater than zero."
+        if height is not None and height <= 0:
+            return "window_set_geometry height must be greater than zero."
+
+        resp = self._run_kwin_query(
+            {
+                "op": "set_geometry",
+                "window_id": window_id,
+                "x": x,
+                "y": y,
+                "width": width,
+                "height": height,
+            }
+        )
+        if not resp["ok"]:
+            return f"Failed to set geometry for {window_id!r}: {resp['error']}"
+
+        result = resp["result"]
+        if not result["found"]:
+            return f"No window with id {window_id!r}."
+
+        # frameGeometry changes are committed asynchronously by KWin.  Reading
+        # the property again inside the same script can therefore return the
+        # old rectangle.  Use a separate compositor query for authoritative
+        # post-action state.
+        observed_resp = self._run_kwin_query({"window_id": window_id})
+        observed = None
+        if observed_resp["ok"] and observed_resp["result"]:
+            observed = observed_resp["result"][0]
+
+        before = result["before"]
+        requested = f"x={x!r}, y={y!r}, width={width!r}, height={height!r}"
+        name = f'{result["app"]} "{result["caption"]}"'
+
+        lines = [
+            f"Geometry set: {name} ({window_id})",
+            f"before:    ({before[0]}, {before[1]}, {before[2]}x{before[3]})",
+            f"requested: {requested}",
+        ]
+
+        if observed is not None:
+            frame = observed["frame"]
+            lines.append(
+                f"observed:  ({frame['x']}, {frame['y']}, {frame['width']}x{frame['height']})"
+            )
+        else:
+            lines.append("observed: unavailable")
+
+        lines.append(f"moveable: {result['moveable']}, resizeable: {result['resizeable']}")
+        return "\n".join(lines)
+
     def window_close(self, window_id: str) -> str:
         """Ask KWin to close one window, addressed by the id window_geometry reports.
 

@@ -67,6 +67,7 @@ EXPECTED_REQUIRED_FIELDS: dict[str, frozenset[str]] = {
     "wayland_info": frozenset(),
     "window_close": frozenset({"window_id"}),
     "window_geometry": frozenset(),
+    "window_set_geometry": frozenset({"window_id"}),
 }
 
 EXPECTED_TOOL_PROPERTIES: dict[str, dict[str, tuple[object, object]]] = {
@@ -220,6 +221,13 @@ EXPECTED_TOOL_PROPERTIES: dict[str, dict[str, tuple[object, object]]] = {
     "wayland_info": {"filter_protocol": ("string", "")},
     "window_close": {"window_id": ("string", NO_DEFAULT)},
     "window_geometry": {"app_name": ("string", ""), "window_id": ("string", "")},
+    "window_set_geometry": {
+        "window_id": ("string", NO_DEFAULT),
+        "x": (NULLABLE_INTEGER, None),
+        "y": (NULLABLE_INTEGER, None),
+        "width": (NULLABLE_INTEGER, None),
+        "height": (NULLABLE_INTEGER, None),
+    },
 }
 
 
@@ -279,7 +287,7 @@ def _result_text(result: CallToolResult) -> str:
 
 @pytest.mark.anyio
 async def test_installed_server_initializes_and_registers_exact_tool_schemas() -> None:
-    assert len(EXPECTED_TOOL_NAMES) == 33
+    assert len(EXPECTED_TOOL_NAMES) == 34
     assert frozenset(EXPECTED_REQUIRED_FIELDS) == EXPECTED_TOOL_NAMES
     assert frozenset(EXPECTED_TOOL_PROPERTIES) == EXPECTED_TOOL_NAMES
 
@@ -374,7 +382,7 @@ async def test_default_live_session_switches_session_tool_recommendations() -> N
         response = await client.session.list_tools()
 
     names = [tool.name for tool in response.tools]
-    assert len(names) == len(set(names)) == 33
+    assert len(names) == len(set(names)) == 34
     assert frozenset(names) == EXPECTED_TOOL_NAMES
     tools = {tool.name: tool for tool in response.tools}
 

@@ -171,6 +171,12 @@ EXPECTED_ANNOTATIONS: dict[str, dict[str, bool]] = {
         "openWorldHint": False,
     },
     "window_geometry": {"readOnlyHint": True, "openWorldHint": False},
+    "window_set_geometry": {
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
     "active_window": {"readOnlyHint": True, "openWorldHint": False},
     "window_close": {
         "readOnlyHint": False,

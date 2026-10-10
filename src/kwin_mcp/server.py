@@ -1067,6 +1067,31 @@ def active_window() -> str:
 
 
 @_tool(annotations=_DESTRUCTIVE_IDEMPOTENT)
+def window_set_geometry(
+    window_id: Annotated[
+        str,
+        Field(description="Exact KWin window id from window_geometry."),
+    ],
+    x: Annotated[int | None, Field(description="New frame x coordinate.")] = None,
+    y: Annotated[int | None, Field(description="New frame y coordinate.")] = None,
+    width: Annotated[int | None, Field(description="New frame width.")] = None,
+    height: Annotated[int | None, Field(description="New frame height.")] = None,
+) -> str:
+    """Move and/or resize one KWin window by exact id.
+
+    Only supplied geometry fields are changed. This bypasses user keyboard
+    shortcut mappings and addresses the compositor window directly.
+    """
+    return _engine.window_set_geometry(
+        window_id=window_id,
+        x=x,
+        y=y,
+        width=width,
+        height=height,
+    )
+
+
+@_tool(annotations=_DESTRUCTIVE_IDEMPOTENT)
 def window_close(
     window_id: Annotated[
         str,

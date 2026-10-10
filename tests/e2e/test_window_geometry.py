@@ -90,6 +90,27 @@ def test_accessibility_rectangles_are_global_screen_coordinates(
     assert (screen_w, screen_h) == (client_w, client_h), elements[:500]
 
 
+def test_window_set_geometry_moves_and_resizes_exact_window(
+    kcalc_session: AutomationEngine,
+) -> None:
+    before = kcalc_session.window_geometry(app_name="kcalc")
+
+    match = re.search(r"^\s+id:\s+(.+)$", before, re.MULTILINE)
+    assert match is not None, before[:500]
+    window_id = match.group(1).strip()
+
+    kcalc_session.window_set_geometry(
+        window_id=window_id,
+        x=80,
+        y=90,
+        width=700,
+        height=520,
+    )
+
+    after = kcalc_session.window_geometry(window_id=window_id)
+    assert _rect(after, "frame") == (80, 90, 700, 520), after[:500]
+
+
 def test_unknown_app_name_reports_no_windows(kcalc_session: AutomationEngine) -> None:
     output = kcalc_session.window_geometry(app_name="no-such-application")
     assert output == "No windows found for 'no-such-application'.", output[:500]

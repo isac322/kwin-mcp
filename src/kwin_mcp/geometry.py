@@ -120,6 +120,49 @@ for (var i = 0; i < windows.length; i++) {
 callDBus("{sink}", "{path}", "{sink}", "Report", activated);
 """
 
+# Direct geometry change by exact KWin internalId.
+#
+# KWin's QRect wrapper is safest when copied to a plain JS object, modified,
+# then assigned back as a whole. Mutating w.frameGeometry.x in place is not
+# reliable across Plasma/KWin versions.
+_SET_GEOMETRY_SCRIPT_TEMPLATE = """
+var target = {window_id};
+var requested = {requested};
+var result = {found: false};
+var windows = workspace.windowList();
+
+for (var i = 0; i < windows.length; i++) {
+    var w = windows[i];
+    if (String(w.internalId) !== target) {
+        continue;
+    }
+
+    var before = w.frameGeometry;
+    var geometry = Object.assign({}, before);
+
+    if (requested.x !== null) geometry.x = requested.x;
+    if (requested.y !== null) geometry.y = requested.y;
+    if (requested.width !== null) geometry.width = requested.width;
+    if (requested.height !== null) geometry.height = requested.height;
+
+    w.frameGeometry = geometry;
+
+    var after = w.frameGeometry;
+    result = {
+        found: true,
+        app: String(w.resourceClass),
+        caption: w.caption,
+        moveable: w.moveable,
+        resizeable: w.resizeable,
+        before: [before.x, before.y, before.width, before.height],
+        after: [after.x, after.y, after.width, after.height]
+    };
+    break;
+}
+
+callDBus("{sink}", "{path}", "{sink}", "Report", JSON.stringify(result));
+"""
+
 # The id reaches the script only as a JSON string literal ({window_id} is
 # replaced with json.dumps output), so a quote or any other character in a
 # caller-supplied id stays data and can never run as KWin script.
@@ -330,6 +373,32 @@ def activate(app_name: str, timeout: float = 5.0) -> str:
     return run_kwin_script(script, timeout)
 
 
+def set_geometry(
+    window_id: str,
+    x: int | None = None,
+    y: int | None = None,
+    width: int | None = None,
+    height: int | None = None,
+    timeout: float = 5.0,
+) -> dict[str, object]:
+    """Set selected frame-geometry fields on exactly one KWin window."""
+    requested = {
+        "x": x,
+        "y": y,
+        "width": width,
+        "height": height,
+    }
+    script = _SET_GEOMETRY_SCRIPT_TEMPLATE
+    script = script.replace("{window_id}", json.dumps(window_id))
+    script = script.replace("{requested}", json.dumps(requested))
+
+    payload = json.loads(run_kwin_script(script, timeout))
+    if not isinstance(payload, dict) or "found" not in payload:
+        msg = f"KWin returned malformed geometry result: {payload!r}"
+        raise RuntimeError(msg)
+    return payload
+
+
 def close(window_id: str, timeout: float = 5.0) -> dict[str, object]:
     """Ask KWin to close the window with exactly this id.
 
@@ -382,6 +451,22 @@ def main() -> None:
             return
         if op == "active_class":
             print(json.dumps({"ok": True, "result": active_class()}))
+            return
+        if op == "set_geometry":
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "result": set_geometry(
+                            window_id=str(request.get("window_id", "")),
+                            x=request.get("x"),
+                            y=request.get("y"),
+                            width=request.get("width"),
+                            height=request.get("height"),
+                        ),
+                    }
+                )
+            )
             return
         if op == "close":
             print(json.dumps({"ok": True, "result": close(str(request.get("window_id", "")))}))

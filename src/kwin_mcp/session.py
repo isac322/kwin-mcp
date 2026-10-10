@@ -364,15 +364,21 @@ class OwnedProcessRegistry:
             self._accessibility_restores.append(dbus_address)
 
     def restore_accessibility(self, dbus_address: str) -> None:
-        """Turn the switch back off if this process turned it on; best-effort, once."""
+        """Turn the switch back off if this process turned it on; best-effort, once.
+
+        Holds the lock across the D-Bus call, like ``switch_accessibility_on``: an
+        exit that starts while a ``session_stop`` is restoring waits in ``close()``
+        for the call to be sent, instead of finding the record already gone and
+        exiting before it.
+        """
         with self._lock:
             if dbus_address not in self._accessibility_restores:
                 return
             self._accessibility_restores.remove(dbus_address)
-        # Outside the lock, best effort: a bus that is gone or refuses the call
-        # leaves the switch as it is.
-        with contextlib.suppress(Exception):
-            set_accessibility_enabled(dbus_address, False)
+            # Best effort: a bus that is gone or refuses the call leaves the
+            # switch as it is.
+            with contextlib.suppress(Exception):
+                set_accessibility_enabled(dbus_address, False)
 
     def _poll_locked(self, proc: subprocess.Popen[bytes]) -> int | None:
         """Report a leader's exit status; must be called under the lock.

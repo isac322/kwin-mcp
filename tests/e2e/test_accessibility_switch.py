@@ -12,6 +12,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import threading
 from typing import TYPE_CHECKING
 
 import dbus
@@ -245,6 +246,49 @@ def test_terminate_all_restores_a_switch_it_turned_on(monkeypatch: pytest.Monkey
     registry.restore_accessibility("unix:path=/run/bus-a")
 
     assert calls == [("unix:path=/run/bus-a", True), ("unix:path=/run/bus-a", False)]
+
+
+def test_exit_waits_for_a_restore_in_progress(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An exit that starts while a stop is restoring the switch waits for the call.
+
+    Otherwise the exit would find the record already taken by the stop and could
+    exit before the stop's call is sent, leaving the switch on.
+    """
+    address = "unix:path=/run/bus-a"
+    calls: list[tuple[str, bool]] = []
+    restoring = threading.Event()
+    release = threading.Event()
+
+    def setter(dbus_address: str, enabled: bool) -> None:
+        if not enabled:
+            restoring.set()
+            release.wait(5)
+        calls.append((dbus_address, enabled))
+
+    monkeypatch.setattr(session_module, "set_accessibility_enabled", setter)
+    registry = OwnedProcessRegistry()
+    registry.switch_accessibility_on(address)
+    stop = threading.Thread(target=registry.restore_accessibility, args=(address,))
+    stop.start()
+    assert restoring.wait(5)
+
+    exited = threading.Event()
+
+    def exit_cleanup() -> None:
+        registry.close()
+        registry.terminate_all()
+        exited.set()
+
+    exit_thread = threading.Thread(target=exit_cleanup)
+    exit_thread.start()
+    try:
+        assert not exited.wait(0.3), "the exit did not wait for the restore in progress"
+    finally:
+        release.set()
+        stop.join(5)
+        exit_thread.join(5)
+    assert exited.is_set()
+    assert calls == [(address, True), (address, False)]
 
 
 def test_restore_leaves_a_switch_it_did_not_turn_on(monkeypatch: pytest.MonkeyPatch) -> None:

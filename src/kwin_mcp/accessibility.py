@@ -175,6 +175,108 @@ def find_elements(
     return [_finalize(info, mapping) for info, mapping in results]
 
 
+def invoke_action(
+    query: str,
+    action_name: str,
+    app_name: str = "",
+) -> dict[str, object]:
+    """Invoke exactly one matching AT-SPI action.
+
+    Matching is case-insensitive. The element query searches name, role and
+    description. The action name must match exactly. Ambiguous matches fail
+    closed and no action is performed.
+    """
+    desktop = Atspi.get_desktop(0)
+    query_lower = query.lower()
+    wanted_action = action_name.lower()
+
+    candidates: list[tuple[object, int, str, str, str, str]] = []
+
+    def visit(element: Atspi.Accessible, application: str) -> None:
+        try:
+            name = element.get_name() or ""
+        except Exception:
+            name = ""
+
+        try:
+            role = element.get_role_name() or "unknown"
+        except Exception:
+            role = "unknown"
+
+        try:
+            description = element.get_description() or ""
+        except Exception:
+            description = ""
+
+        query_match = (
+            query_lower in name.lower()
+            or query_lower in role.lower()
+            or query_lower in description.lower()
+        )
+
+        if query_match:
+            try:
+                action_iface = element.get_action_iface()
+                if action_iface is not None:
+                    for index in range(action_iface.get_n_actions()):
+                        available = action_iface.get_action_name(index) or ""
+                        if available.lower() == wanted_action:
+                            candidates.append(
+                                (
+                                    action_iface,
+                                    index,
+                                    application,
+                                    role,
+                                    name,
+                                    available,
+                                )
+                            )
+            except Exception:
+                pass
+
+        try:
+            child_count = element.get_child_count()
+        except Exception:
+            child_count = 0
+
+        for index in range(child_count):
+            try:
+                child = element.get_child_at_index(index)
+            except Exception:
+                child = None
+            if child is not None:
+                visit(child, application)
+
+    for index in range(desktop.get_child_count()):
+        app = desktop.get_child_at_index(index)
+        if app is None:
+            continue
+
+        application = app.get_name() or ""
+        if app_name and app_name.lower() not in application.lower():
+            continue
+
+        visit(app, application)
+
+    if len(candidates) != 1:
+        return {
+            "matches": len(candidates),
+            "invoked": False,
+        }
+
+    action_iface, index, application, role, name, actual_action = candidates[0]
+    invoked = bool(Atspi.Action.do_action(action_iface, index))
+
+    return {
+        "matches": 1,
+        "invoked": invoked,
+        "app": application,
+        "role": role,
+        "name": name,
+        "action": actual_action,
+    }
+
+
 def list_windows() -> list[dict[str, object]]:
     """List accessible applications with their top-level windows.
 
@@ -764,6 +866,16 @@ def _handle_request(request: dict) -> dict:
         except TimeoutError as exc:
             return {"ok": False, "error": str(exc)}
         return {"ok": True, "result": [asdict(e) for e in elements]}
+
+    if op == "action":
+        return {
+            "ok": True,
+            "result": invoke_action(
+                query=request.get("query", ""),
+                action_name=request.get("action_name", ""),
+                app_name=request.get("app_name", ""),
+            ),
+        }
 
     if op == "list_windows":
         return {"ok": True, "result": list_windows()}

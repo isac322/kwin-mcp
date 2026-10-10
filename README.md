@@ -8,7 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/isac322/kwin-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/isac322/kwin-mcp/actions/workflows/ci.yml)
 
-A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that enables AI agents (Claude Code, Cursor, and other MCP clients) to launch, interact with, and observe any Wayland application in a fully isolated virtual KWin session -- without affecting the user's desktop. It also supports **live desktop automation** by connecting to an existing KWin session (real desktop or container) for collaborative workflows. With 33 MCP tools covering mouse, keyboard, touch, clipboard, accessibility tree inspection, screenshot capture, and window management, kwin-mcp provides everything needed for end-to-end GUI testing and desktop automation on Linux.
+A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that enables AI agents (Claude Code, Cursor, and other MCP clients) to launch, interact with, and observe any Wayland application in a fully isolated virtual KWin session -- without affecting the user's desktop. It also supports **live desktop automation** by connecting to an existing KWin session (real desktop or container) for collaborative workflows. With 34 MCP tools covering mouse, keyboard, touch, clipboard, accessibility tree inspection, screenshot capture, and window management, kwin-mcp provides everything needed for end-to-end GUI testing and desktop automation on Linux.
 
 ## Table of Contents
 
@@ -42,7 +42,7 @@ Run end-to-end GUI tests for KDE/Qt/GTK applications in headless isolated sessio
 
 ### AI-Driven Desktop Automation
 
-Let AI agents like Claude Code autonomously operate desktop applications. The agent reads the accessibility tree to understand the UI, performs actions through 33 MCP tools, and observes the results via screenshots -- creating a complete feedback loop for any Wayland application.
+Let AI agents like Claude Code autonomously operate desktop applications. The agent reads the accessibility tree to understand the UI, performs actions through 34 MCP tools, and observes the results via screenshots -- creating a complete feedback loop for any Wayland application.
 
 ### Live Desktop Collaboration
 
@@ -248,6 +248,12 @@ When an image was downscaled, its `Coordinate space` line keeps the logical orig
 | `accessibility_tree` | `app_name?` `str`, `max_depth?` `int` (15), `role?` `str` | Get the AT-SPI2 widget tree with roles, names, states, coordinates, the text content of editors and entries (`text='...'`, capped at 200 characters), and scrollbar/slider positions (`value=current/max`). Use `role` to filter to specific element types (e.g. `"button"`, `"check box"`). Non-matching elements are hidden but their children are still traversed. |
 | `find_ui_elements` | `query` `str`, `app_name?` `str`, `states?` `list[str]` | Search for UI elements by name, role, or description (case-insensitive); matches report their text content and scrollbar/slider value when they have one. Optionally filter by AT-SPI2 states (e.g. `["focused"]`, `["active", "visible"]`). `query` can be empty when filtering by states only. |
 
+### Accessibility Actions (1 tool)
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `invoke_ui_action` | `query` `str`, `action_name` `str`, `app_name?` `str` | Invoke a native AT-SPI action on exactly one matching element without pointer coordinates. `query` matches element name, role, or description case-insensitively; `action_name` must equal an exposed action name case-insensitively (for example `Press`). `app_name` optionally scopes the search. Zero matches do nothing and ambiguous matches fail closed. State-changing actions are never automatically retried. |
+
 ### Mouse Input (6 tools)
 
 | Tool | Parameters | Description |
@@ -321,7 +327,7 @@ Claude Code / AI Agent
   |
   |  MCP (stdio)
   v
-kwin-mcp server  (33 tools)       kwin-mcp-cli (interactive REPL)
+kwin-mcp server  (34 tools)       kwin-mcp-cli (interactive REPL)
   |                                  |
   +--- both delegate to AutomationEngine (core.py) ---+
   |

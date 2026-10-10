@@ -291,7 +291,7 @@ When an image was downscaled, its `Coordinate space` line keeps the logical orig
 |------|-----------|-------------|
 | `launch_app` | `command` `str`, `env?` `dict` | Launch an application inside the running session. Returns PID and log path. |
 | `list_windows` | _(none)_ | List all accessible application windows with per-window titles and active/focused state markers via AT-SPI2 |
-| `focus_window` | `app_name` `str` | Activate and raise a window by application name (case-insensitive match), via KWin scripting |
+| `focus_window` | `app_name?` `str`, `window_id?` `str` | Activate and raise a window via KWin scripting. Use `window_id` for an exact window from `window_geometry`; otherwise `app_name` uses a case-insensitive application/title match. |
 | `window_geometry` | `app_name?` `str`, `window_id?` `str` | Report each window's KWin id, an `[active]` marker, and frame and client rectangles in **global screen coordinates** via KWin scripting — the same space `find_ui_elements` / `accessibility_tree` report and `mouse_click` / `touch_tap` take. `window_id` filters to one window by exact id. |
 | `active_window` | _(none)_ | Report the window KWin currently treats as active (id, frame, client), e.g. to confirm `focus_window` |
 | `window_close` | `window_id` `str` | Ask exactly one window, addressed by the id from `window_geometry`, to close (like its titlebar button). Disabled in live sessions to protect unsaved work. |

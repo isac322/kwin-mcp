@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- `focus_window` can now target an exact KWin `window_id` from `window_geometry`, allowing one specific window to be activated when several windows belong to the same application. `window_id` takes precedence when both selectors are supplied.
+
 ### Added
 
 - MCP tool annotations on all 33 tools, published in `tools/list` so clients can decide which calls need confirmation. Observation tools such as `accessibility_tree`, `screenshot`, `find_ui_elements`, `wait_for_element`, and `list_windows` are read-only. `window_close`, `session_stop`, and `dbus_call` are destructive, and so are the input tools (`mouse_click`, `mouse_drag`, `keyboard_type`, `keyboard_key`, `touch_tap`, and the others; `mouse_move` excepted) because injected input can trigger any action in the focused app; `session_start` and `launch_app` are destructive as well because they run arbitrary caller commands. `session_start`, `session_connect`, `launch_app`, and `dbus_call` are marked open-world. Input schemas, output schemas, and result text are unchanged.

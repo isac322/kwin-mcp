@@ -151,7 +151,7 @@ The launched app may not yet have registered with AT-SPI2. Add a `wait_for_eleme
 
 ### Live session: input lands on the host instead of the target window
 
-Make sure the target window is focused before injecting input. Call `focus_window(app_name=...)` first. EIS injects globally into the compositor, so whichever window currently has keyboard focus receives the event.
+Make sure the target window is focused before injecting input. Call `focus_window(window_id=...)` when an exact KWin window ID is available from `window_geometry`; otherwise use `focus_window(app_name=...)`. EIS injects globally into the compositor, so whichever window currently has keyboard focus receives the event.
 
 ### Container / kiosk: `session_connect` cannot reach the live KWin
 

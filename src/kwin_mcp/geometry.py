@@ -103,6 +103,7 @@ callDBus("{sink}", "{path}", "{sink}", "Report", JSON.stringify(out));
 # previously active window kept both focus and the foreground.
 _ACTIVATE_SCRIPT_TEMPLATE = """
 var needle = {needle};
+var target = {window_id};
 var activated = "";
 var windows = workspace.windowList();
 for (var i = 0; i < windows.length; i++) {
@@ -111,7 +112,9 @@ for (var i = 0; i < windows.length; i++) {
         continue;
     }
     var haystack = (w.resourceClass + " " + w.caption).toLowerCase();
-    if (haystack.indexOf(needle) !== -1) {
+    var matchesId = target && String(w.internalId) === target;
+    var matchesName = !target && needle && haystack.indexOf(needle) !== -1;
+    if (matchesId || matchesName) {
         workspace.activeWindow = w;
         activated = w.resourceClass + " " + w.caption;
         break;
@@ -324,9 +327,15 @@ def active(timeout: float = 5.0) -> dict[str, object] | None:
     return None
 
 
-def activate(app_name: str, timeout: float = 5.0) -> str:
-    """Activate the first window whose app name or caption matches."""
-    script = _ACTIVATE_SCRIPT_TEMPLATE.replace("{needle}", json.dumps(app_name.lower()))
+def activate(
+    app_name: str = "",
+    window_id: str = "",
+    timeout: float = 5.0,
+) -> str:
+    """Activate one window by exact id, or by app name/caption."""
+    script = _ACTIVATE_SCRIPT_TEMPLATE
+    script = script.replace("{needle}", json.dumps(app_name.lower()))
+    script = script.replace("{window_id}", json.dumps(window_id))
     return run_kwin_script(script, timeout)
 
 
@@ -372,7 +381,17 @@ def main() -> None:
     try:
         op = request.get("op")
         if op == "activate":
-            print(json.dumps({"ok": True, "result": activate(str(request.get("app_name", "")))}))
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "result": activate(
+                            app_name=str(request.get("app_name", "")),
+                            window_id=str(request.get("window_id", "")),
+                        ),
+                    }
+                )
+            )
             return
         if op == "outputs":
             print(json.dumps({"ok": True, "result": outputs()}))

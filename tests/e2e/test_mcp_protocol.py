@@ -40,7 +40,7 @@ EXPECTED_REQUIRED_FIELDS: dict[str, frozenset[str]] = {
     "clipboard_set": frozenset({"text"}),
     "dbus_call": frozenset({"service", "path", "interface", "method"}),
     "find_ui_elements": frozenset({"query"}),
-    "focus_window": frozenset({"app_name"}),
+    "focus_window": frozenset(),
     "keyboard_key": frozenset({"key"}),
     "keyboard_key_down": frozenset({"key"}),
     "keyboard_key_up": frozenset({"key"}),
@@ -90,7 +90,10 @@ EXPECTED_TOOL_PROPERTIES: dict[str, dict[str, tuple[object, object]]] = {
         "app_name": ("string", ""),
         "states": (NULLABLE_ARRAY_OF_STRINGS, None),
     },
-    "focus_window": {"app_name": ("string", NO_DEFAULT)},
+    "focus_window": {
+        "app_name": ("string", ""),
+        "window_id": ("string", ""),
+    },
     "keyboard_key": {
         "key": ("string", NO_DEFAULT),
         "screenshot_after_ms": (NULLABLE_ARRAY_OF_INTEGERS, None),

@@ -1156,19 +1156,30 @@ class AutomationEngine:
         except json.JSONDecodeError:
             return {"ok": False, "error": f"invalid JSON: {result.stdout[:200]}"}
 
-    def focus_window(self, app_name: str) -> str:
-        """Activate a window by application name.
+    def focus_window(self, app_name: str = "", window_id: str = "") -> str:
+        """Activate a window by exact KWin id or application name.
 
-        Activation goes through KWin: AT-SPI2's grab_focus neither raises nor
-        activates windows on Wayland, so it reported success while the previously
-        active window kept both focus and the foreground.
+        ``window_id`` takes precedence when supplied. Activation goes through
+        KWin because AT-SPI2's grab_focus neither raises nor activates windows
+        reliably on Wayland.
         """
         self._get_session()
-        resp = self._run_kwin_query({"op": "activate", "app_name": app_name})
+        if not app_name and not window_id:
+            return "focus_window needs app_name or window_id (see window_geometry)."
+
+        resp = self._run_kwin_query(
+            {"op": "activate", "app_name": app_name, "window_id": window_id}
+        )
         if not resp["ok"]:
-            return f"Failed to focus '{app_name}': {resp['error']}"
+            target = window_id or app_name
+            return f"Failed to focus {target!r}: {resp['error']}"
+
         activated = str(resp["result"]).strip()
-        return f"Focused: {activated}" if activated else f"No window matches '{app_name}'."
+        if activated:
+            return f"Focused: {activated}"
+        if window_id:
+            return f"No window with id {window_id!r}."
+        return f"No window matches '{app_name}'."
 
     def window_geometry_data(self, app_name: str = "", window_id: str = "") -> WindowGeometryResult:
         """Report window positions in global screen coordinates, as data.

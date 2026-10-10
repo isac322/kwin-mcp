@@ -369,7 +369,8 @@ class OwnedProcessRegistry:
             if dbus_address not in self._accessibility_restores:
                 return
             self._accessibility_restores.remove(dbus_address)
-        # Outside the lock, best effort: a vanished bus has no setting left to restore.
+        # Outside the lock, best effort: a bus that is gone or refuses the call
+        # leaves the switch as it is.
         with contextlib.suppress(Exception):
             set_accessibility_enabled(dbus_address, False)
 
@@ -1352,8 +1353,9 @@ def accessibility_enabled(dbus_address: str) -> bool:
 def set_accessibility_enabled(dbus_address: str, enabled: bool) -> None:
     """Set ``org.a11y.Status.IsEnabled`` on the given session bus.
 
-    The call is bounded by ``_A11Y_CALL_TIMEOUT_S``: the exit path restores the
-    switch and must not wait out D-Bus's default 25 s on an unresponsive bus.
+    The ``Set`` call is bounded by ``_A11Y_CALL_TIMEOUT_S``, so the exit path
+    that restores the switch does not wait out D-Bus's default 25 s on it; the
+    connection and the proxy's introspection before it keep their own timeouts.
     """
     import dbus
 

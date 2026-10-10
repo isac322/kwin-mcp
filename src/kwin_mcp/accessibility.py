@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
 
 import gi
 
@@ -61,15 +63,17 @@ class ElementInfo:
 class _WindowMapping:
     """How one AT-SPI top-level maps to a KWin window.
 
-    ``window`` is the matched KWin window dict; ``offset`` is the translation
-    from AT-SPI window-local coordinates to screen coordinates. ``reason`` is
-    set whenever the mapping failed.
+    ``window`` is the matched KWin window dict; ``anchor`` is the screen
+    position of the KWin rectangle the AT-SPI window-local coordinates start
+    from; ``offset`` is the translation from AT-SPI window-local coordinates
+    to screen coordinates. ``reason`` is set whenever the mapping failed.
     """
 
     window: KWinWindow | None
     reason: str
     rect: tuple[int, int, int, int] | None = None
     offset: tuple[int, int] | None = None
+    anchor: tuple[int, int] | None = None
 
 
 # Shared mapping for elements that are not windows at all (the application
@@ -97,7 +101,7 @@ def get_accessibility_tree(
     kwin_before, kwin_error = _kwin_windows()
     desktop = Atspi.get_desktop(0)
     entries: list[tuple[ElementInfo, _WindowMapping]] = []
-    mappings_by_pid: dict[int, list[_WindowMapping]] = {}
+    mappings_by_app: dict[frozenset[int], list[_WindowMapping]] = {}
     role_filter = role.lower()
 
     for i in range(desktop.get_child_count()):
@@ -109,15 +113,14 @@ def get_accessibility_tree(
         if app_name and app_name.lower() not in name.lower():
             continue
 
-        pid, mappings, children = _resolve_app(app, kwin_before, kwin_error)
-        if pid is not None:
-            mappings_by_pid.setdefault(pid, []).extend(mappings)
+        pids, mappings, children = _resolve_app(app, kwin_before, kwin_error)
+        mappings_by_app.setdefault(pids, []).extend(mappings)
         entries.append((_extract_info(app, 0), _UNMAPPED))
         for child, mapping in zip(children, mappings, strict=True):
             if child is not None:
                 _collect_tree(child, mapping, entries, depth=1, max_depth=max_depth)
 
-    _apply_stability(mappings_by_pid, kwin_before, kwin_error)
+    _apply_stability(mappings_by_app, kwin_before, kwin_error)
 
     return [
         _finalize(info, mapping)
@@ -145,7 +148,7 @@ def find_elements(
     kwin_before, kwin_error = _kwin_windows()
     desktop = Atspi.get_desktop(0)
     results: list[tuple[ElementInfo, _WindowMapping]] = []
-    mappings_by_pid: dict[int, list[_WindowMapping]] = {}
+    mappings_by_app: dict[frozenset[int], list[_WindowMapping]] = {}
     query_lower = query.lower()
 
     for i in range(desktop.get_child_count()):
@@ -157,9 +160,8 @@ def find_elements(
         if app_name and app_name.lower() not in name.lower():
             continue
 
-        pid, mappings, children = _resolve_app(app, kwin_before, kwin_error)
-        if pid is not None:
-            mappings_by_pid.setdefault(pid, []).extend(mappings)
+        pids, mappings, children = _resolve_app(app, kwin_before, kwin_error)
+        mappings_by_app.setdefault(pids, []).extend(mappings)
         app_info = _extract_info(app, 0)
         if _matches(app_info, query_lower, states):
             results.append((app_info, _UNMAPPED))
@@ -169,7 +171,7 @@ def find_elements(
                     child, mapping, query_lower, results, depth=1, required_states=states
                 )
 
-    _apply_stability(mappings_by_pid, kwin_before, kwin_error)
+    _apply_stability(mappings_by_app, kwin_before, kwin_error)
     return [_finalize(info, mapping) for info, mapping in results]
 
 
@@ -336,10 +338,20 @@ def _finalize(info: ElementInfo, mapping: _WindowMapping) -> ElementInfo:
 # AT-SPI reports window-local coordinates (CoordType.WINDOW); a Wayland
 # client cannot know where the compositor placed it. KWin does know, so each
 # AT-SPI top-level is matched to exactly one KWin window and the whole
-# subtree is translated by that window's client origin. Any uncertainty —
-# the KWin query failing, no candidate, several candidates, a window set
-# that changed mid-walk — fails closed: elements report "unavailable" with
-# a reason instead of coordinates that would click the wrong place.
+# subtree is translated by the origin of the KWin rectangle it matched.
+# Any uncertainty — the KWin query failing, no candidate, several
+# candidates, a window set that changed mid-walk — fails closed: elements
+# report "unavailable" with a reason instead of coordinates that would
+# click the wrong place.
+#
+# AT-SPI's window-local origin is the client's surface origin. For most
+# windows that is KWin's client geometry; a client-side decorated window
+# (Chromium) draws its shadow inside the surface, so its top-level matches
+# KWin's buffer geometry instead.
+
+_PROC = Path("/proc")
+# Flatpak runs each app instance in its own systemd scope.
+_FLATPAK_SCOPE = re.compile(r"app-flatpak-.+-\d+\.scope")
 
 
 def _kwin_windows() -> tuple[list[KWinWindow], str]:
@@ -359,25 +371,29 @@ def _window_key(window: KWinWindow) -> tuple[object, ...]:
         window["pid"],
         window["caption"],
         *window["client"],
+        *window["buffer"],
     )
 
 
 def _apply_stability(
-    mappings_by_pid: dict[int, list[_WindowMapping]],
+    mappings_by_app: dict[frozenset[int], list[_WindowMapping]],
     kwin_before: list[KWinWindow],
     kwin_error: str,
 ) -> None:
-    """Unmap every top-level of a pid whose KWin window set changed mid-walk.
+    """Unmap every top-level of an app whose KWin window set changed mid-walk.
 
     The AT-SPI traversal takes ~200ms; a window opening, closing or moving
     during it would otherwise translate elements against stale geometry.
+    ``mappings_by_app`` is keyed by the app's window pids; a Flatpak instance
+    can gain a window owner mid-walk, so they are resolved again against the
+    second snapshot.
     """
     if kwin_error:
         return
     kwin_after, after_error = _kwin_windows()
     if after_error:
         # Cannot prove the snapshot was stable; fail closed for everything.
-        for mappings in mappings_by_pid.values():
+        for mappings in mappings_by_app.values():
             for mapping in mappings:
                 if mapping.offset is not None:
                     mapping.window, mapping.offset, mapping.reason = (
@@ -386,36 +402,112 @@ def _apply_stability(
                         "windows-changed",
                     )
         return
-    before_by_pid: dict[int, set[tuple[object, ...]]] = {}
-    for window in kwin_before:
-        before_by_pid.setdefault(window["pid"], set()).add(_window_key(window))
-    after_by_pid: dict[int, set[tuple[object, ...]]] = {}
-    for window in kwin_after:
-        after_by_pid.setdefault(window["pid"], set()).add(_window_key(window))
-    for pid, mappings in mappings_by_pid.items():
-        if before_by_pid.get(pid, set()) != after_by_pid.get(pid, set()):
+    for pids, mappings in mappings_by_app.items():
+        owners = pids.union(*(_window_pids(pid, kwin_after) for pid in pids))
+        before = {_window_key(window) for window in kwin_before if window["pid"] in owners}
+        after = {_window_key(window) for window in kwin_after if window["pid"] in owners}
+        if before != after:
             for mapping in mappings:
                 mapping.window, mapping.offset, mapping.reason = None, None, "windows-changed"
 
 
+def _cgroup(pid: int) -> str | None:
+    """The cgroup v2 path of ``pid``, or None when unreadable."""
+    try:
+        lines = (_PROC / str(pid) / "cgroup").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        if line.startswith("0::"):
+            return line[3:]
+    return None
+
+
+def _window_pids(pid: int, kwin: list[KWinWindow]) -> frozenset[int]:
+    """KWin window pids that belong to the AT-SPI application ``pid``.
+
+    Normally the same pid. A Flatpak app reaches the accessibility bus through
+    its sandbox's ``xdg-dbus-proxy``, so AT-SPI reports the proxy's pid while
+    KWin reports the app's. Both run in the instance's own
+    ``app-flatpak-<app-id>-<n>.scope`` cgroup, which identifies the windows of
+    that instance and no other.
+    """
+    if any(window["pid"] == pid for window in kwin):
+        return frozenset({pid})
+    try:
+        comm = (_PROC / str(pid) / "comm").read_text(encoding="utf-8").strip()
+    except OSError:
+        return frozenset({pid})
+    scope = _cgroup(pid)
+    if comm != "xdg-dbus-proxy" or scope is None:
+        return frozenset({pid})
+    if _FLATPAK_SCOPE.fullmatch(scope.rsplit("/", 1)[-1]) is None:
+        return frozenset({pid})
+    owners = {window["pid"] for window in kwin if _cgroup(window["pid"]) == scope}
+    return frozenset({pid} | owners)
+
+
+class _ExtentsRect(Protocol):
+    """The rectangle members the matcher reads off an AT-SPI extents struct."""
+
+    x: int
+    y: int
+    width: int
+    height: int
+
+
+class _ComponentShape(Protocol):
+    """The AT-SPI Component interface surface the matcher calls."""
+
+    def get_extents(self, coord_type: object, /) -> _ExtentsRect: ...
+
+
+class _AccessibleTopLevel(Protocol):
+    """The AT-SPI top-level surface the matcher calls.
+
+    ``gi.repository.Atspi`` cannot be resolved statically, so the matcher is
+    typed against the methods it actually uses; a real ``Atspi.Accessible``
+    satisfies this protocol structurally, and so can test doubles.
+    """
+
+    def get_name(self) -> str | None: ...
+
+    def get_component_iface(self) -> _ComponentShape | None: ...
+
+
+class _AccessibleApp(Protocol):
+    """The AT-SPI application-root surface the matcher calls."""
+
+    def get_process_id(self) -> int: ...
+
+    def get_child_count(self) -> int: ...
+
+    def get_child_at_index(self, index: int) -> _AccessibleTopLevel | None: ...
+
+
 def _resolve_app(
-    app: Atspi.Accessible,
+    app: _AccessibleApp,
     kwin: list[KWinWindow],
     kwin_error: str,
-) -> tuple[int | None, list[_WindowMapping], list[Atspi.Accessible | None]]:
+) -> tuple[frozenset[int], list[_WindowMapping], list[_AccessibleTopLevel | None]]:
     """Match every AT-SPI top-level of one application to a KWin window.
 
-    Returns (pid, mappings aligned with children, children). The mapping must
-    be a bijection: a child that vanished mid-walk, a top-level with no unique
-    match, or two top-levels claiming the same KWin window unmaps the whole
-    application — a partial mapping could silently click the wrong window.
+    Returns (KWin window pids of the app, mappings aligned with children,
+    children). A child that vanished mid-walk, a top-level with several
+    candidate windows, two top-levels claiming the same KWin window, or a
+    top-level only the caption check tells apart from a same-size sibling
+    unmaps the whole application — a partial mapping could silently click
+    the wrong window. A top-level that no KWin window matches is unmapped
+    alone: it cannot take a window from a sibling, and Chromium keeps
+    hidden omnibox popups as AT-SPI top-levels that report themselves
+    showing.
     """
     try:
         pid: int | None = int(app.get_process_id())
     except Exception:
         pid = None
 
-    children: list[Atspi.Accessible | None] = []
+    children: list[_AccessibleTopLevel | None] = []
     for j in range(app.get_child_count()):
         children.append(app.get_child_at_index(j))
 
@@ -423,12 +515,13 @@ def _resolve_app(
         return [_WindowMapping(None, reason) for _ in children]
 
     if pid is None or pid <= 0:
-        return pid, _unmapped("pid-unavailable"), children
+        return frozenset(), _unmapped("pid-unavailable"), children
     if kwin_error:
-        return pid, _unmapped("kwin-query-failed"), children
+        return frozenset({pid}), _unmapped("kwin-query-failed"), children
     if any(child is None for child in children):
-        return pid, _unmapped("window-set-mismatch"), children
+        return frozenset({pid}), _unmapped("window-set-mismatch"), children
 
+    pids = _window_pids(pid, kwin)
     mappings: list[_WindowMapping] = []
     poisoned = False
     for child in children:
@@ -439,10 +532,15 @@ def _resolve_app(
             # No extents at all: nothing to translate, and nothing to match.
             mappings.append(_WindowMapping(None, "no-extents"))
             continue
-        window, reason = _match_toplevel(pid, name, rect, kwin)
-        if window is None:
+        window, reason, anchor = _match_toplevel(pids, name, rect, kwin)
+        # A caption-only miss does not prove a top-level owns no window:
+        # an unnamed sibling of the same size could still claim that window.
+        if reason == "ambiguous" or (
+            reason == "no-kwin-window"
+            and _match_toplevel(pids, "", rect, kwin)[1] != "no-kwin-window"
+        ):
             poisoned = True
-        mappings.append(_WindowMapping(window, reason, rect))
+        mappings.append(_WindowMapping(window, reason, rect, anchor=anchor))
 
     claimed: dict[str, int] = {}
     for mapping in mappings:
@@ -452,36 +550,46 @@ def _resolve_app(
         for mapping in mappings:
             if mapping.window is not None:
                 mapping.window, mapping.reason = None, "ambiguous-window-match"
-        return pid, mappings, children
+        return pids, mappings, children
 
     for mapping in mappings:
-        if mapping.window is not None and mapping.rect is not None:
-            client = mapping.window["client"]
+        if mapping.window is not None and mapping.rect is not None and mapping.anchor:
             mapping.offset = (
-                client[0] - mapping.rect[0],
-                client[1] - mapping.rect[1],
+                mapping.anchor[0] - mapping.rect[0],
+                mapping.anchor[1] - mapping.rect[1],
             )
-    return pid, mappings, children
+    return pids, mappings, children
 
 
 def _match_toplevel(
-    pid: int,
+    pids: frozenset[int],
     name: str,
     rect: tuple[int, int, int, int],
     kwin: list[KWinWindow],
-) -> tuple[KWinWindow | None, str]:
+) -> tuple[KWinWindow | None, str, tuple[int, int] | None]:
     """Match one AT-SPI top-level to exactly one KWin window.
 
-    No singleton shortcut: every candidate must survive the caption and size
-    checks even when it is the only window of the process.
+    Returns the window, the failure reason, and the screen origin of the KWin
+    rectangle the top-level's window-local coordinates start from. No
+    singleton shortcut: every candidate must survive the caption and size
+    checks even when it is the only window of the process. The size is
+    compared with both the client geometry and the buffer geometry, whose
+    shadow margin a client-side decorated window includes in its own
+    coordinates; exactly one window may match through either. When that
+    window matches through both, the client origin is used.
     """
-    candidates = [w for w in kwin if w["pid"] == pid and _eligible(w)]
+    candidates = [w for w in kwin if w["pid"] in pids and _eligible(w)]
     candidates = [w for w in candidates if _caption_consistent(w["caption"], name)]
     size = (rect[2], rect[3])
-    candidates = [w for w in candidates if (w["client"][2], w["client"][3]) == size]
-    if len(candidates) == 1:
-        return candidates[0], ""
-    return None, "ambiguous" if candidates else "no-kwin-window"
+    # Client rects first, so a window that matches through both keeps its client origin.
+    matches = [(w, w["client"]) for w in candidates] + [(w, w["buffer"]) for w in candidates]
+    matches = [(w, r) for w, r in matches if (r[2], r[3]) == size]
+    if not matches:
+        return None, "no-kwin-window", None
+    if len({w["id"] for w, _ in matches}) > 1:
+        return None, "ambiguous", None
+    window, matched = matches[0]
+    return window, "", (matched[0], matched[1])
 
 
 def _eligible(window: KWinWindow) -> bool:
@@ -518,7 +626,7 @@ def _caption_consistent(caption: str, name: str) -> bool:
     return c == n or c.startswith(n + " — ")
 
 
-def _window_rect(element: Atspi.Accessible) -> tuple[int, int, int, int] | None:
+def _window_rect(element: _AccessibleTopLevel) -> tuple[int, int, int, int] | None:
     """Window-local extents of an AT-SPI element, or None when unavailable."""
     try:
         component = element.get_component_iface()
@@ -548,7 +656,7 @@ def _extract_info(element: Atspi.Accessible, depth: int) -> ElementInfo:
     # Get position and size. WINDOW extents are window-local and reliable for
     # both Qt and GTK; SCREEN extents are (0,0) on GTK4 and already include the
     # output origin for Qt on a second output, so they cannot be used here.
-    # _finalize() adds the matched KWin window's client origin.
+    # _finalize() adds the origin of the matched KWin rectangle.
     x, y, width, height = 0, 0, 0, 0
     has_extents = False
     try:

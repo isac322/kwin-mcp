@@ -168,6 +168,7 @@ Additional arguments after the image command can select a file, node ID, marker,
 | `test_window_close.py` | `window_close` closing only the targeted one of two same-app windows, unknown ids, window ids containing a quote staying data rather than running as KWin script (`window_close` and `window_geometry`), `active_window` and the `[active]` marker following `focus_window`, and `window_close` refused in a live session. |
 | `test_window_control.py` | Focus, smooth/discrete scroll, drag selection, touch swipe and pinch delivery to KWrite, two-finger delivery to the GTK interaction probe, and scrollbar values. |
 | `test_window_geometry.py` | Global client/frame geometry, centered placement, element rectangles reported in screen coordinates, and unknown-window behavior. |
+| `test_window_match.py` | AT-SPI top-level to KWin window matching without KWin (#94): a Chromium frame maps through its buffer geometry and phantom popups stay unmapped alone, same-size windows are told apart by caption, a client-size match and a buffer match are ambiguous, a caption-mismatched frame blocks a same-size sibling's claim, the Flatpak `xdg-dbus-proxy` scope alias applies only to its own instance's windows, and matches stay stable across buffer-only or Flatpak owner changes during the walk. |
 
 Together, the installed MCP files exercise every server wrapper over a real MCP 2.x stdio client/server connection. The engine-level files retain direct coverage of lower-level behavior and cleanup.
 

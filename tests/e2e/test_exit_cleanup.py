@@ -63,6 +63,8 @@ from typing import IO, TYPE_CHECKING
 import pytest
 from session_harness import LiveKWin, live_kwin
 
+from kwin_mcp.session import accessibility_enabled, set_accessibility_enabled
+
 # Bounds for the real (non-stub) session lifecycle.
 SESSION_START_TIMEOUT_SECONDS = 90.0
 SERVER_EXIT_TIMEOUT_SECONDS = 30.0
@@ -358,9 +360,16 @@ def _response_text(response: dict) -> str:
 
 
 def _connect_live_session(
-    process: subprocess.Popen[str], reader: _LineReader, live: LiveKWin
-) -> None:
-    """Initialize the server and connect it to the test-owned live KWin."""
+    process: subprocess.Popen[str],
+    reader: _LineReader,
+    live: LiveKWin,
+    *,
+    enable_accessibility: bool = False,
+) -> str:
+    """Initialize the server and connect it to the test-owned live KWin.
+
+    Returns the ``session_connect`` response text.
+    """
     _rpc(
         reader,
         process,
@@ -386,12 +395,15 @@ def _connect_live_session(
             "arguments": {
                 "dbus_address": live.dbus_address,
                 "wayland_display": live.wayland_display,
+                "enable_accessibility": enable_accessibility,
             },
         },
     )
-    assert "Connected to live KWin session" in _response_text(response), (
-        f"server did not connect to the live session: {_response_text(response)[:200]}"
+    text = _response_text(response)
+    assert "Connected to live KWin session" in text, (
+        f"server did not connect to the live session: {text[:200]}"
     )
+    return text
 
 
 def _launch_live_apps(
@@ -1114,6 +1126,47 @@ def test_live_session_busy_exit_removes_screenshot_dir_keeps_kwin() -> None:
             # The screenshot dir must be removed (keep_screenshots is False by default).
             assert not screenshot_dir.exists(), (
                 f"the live session's screenshot dir survived the busy exit: {screenshot_dir}"
+            )
+            assert live.process.poll() is None, "the live KWin was signalled"
+        finally:
+            if server.poll() is None:
+                server.kill()
+                server.wait()
+
+
+def test_live_session_busy_exit_restores_accessibility_keeps_kwin() -> None:
+    """Busy exit turns the live desktop's accessibility switch back off; KWin survives.
+
+    ``session_connect(enable_accessibility=true)`` turns ``org.a11y.Status.IsEnabled``
+    on and ``session_stop`` turns it back off. When a tool still holds the tool thread
+    at exit, the stop never runs and the registry path cleans up instead; it must
+    restore the switch too, or the desktop keeps accessibility on after the server is
+    gone (and a later connection, seeing it on, would never turn it off).
+    """
+    with live_kwin() as live:
+        # The switch outlives a bus, so start from a known off state.
+        set_accessibility_enabled(live.dbus_address, False)
+        assert not accessibility_enabled(live.dbus_address)
+        server = _spawn_with_stderr([sys.executable, "-m", "kwin_mcp"])
+        reader = _LineReader(_stdout(server))
+        try:
+            text = _connect_live_session(server, reader, live, enable_accessibility=True)
+            assert "Accessibility: switched on for this connection" in text, text
+            assert accessibility_enabled(live.dbus_address)
+
+            # Occupy the tool thread so the busy (registry) path runs.
+            _fire_overrun_tool(server)
+            time.sleep(1.0)
+
+            _stdin(server).close()
+            exit_code = server.wait(timeout=SERVER_EXIT_TIMEOUT_TOOL_OVERRUN_SECONDS)
+            assert exit_code == 0, f"server did not exit 0 on stdin EOF, got {exit_code}"
+            stderr = server.stderr.read() if server.stderr is not None else ""
+            assert "registry" in stderr, (
+                f"expected the stderr outcome line to name the registry path, got: {stderr!r}"
+            )
+            assert not accessibility_enabled(live.dbus_address), (
+                "the busy exit left the live desktop's accessibility switch on"
             )
             assert live.process.poll() is None, "the live KWin was signalled"
         finally:

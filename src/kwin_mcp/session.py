@@ -40,6 +40,16 @@ _STARTUP_READ_TIMEOUT = 60.0
 # needs that name, so the wrapper waits for it before printing READY; this
 # bounds that wait.
 _KWIN_BUS_NAME = "org.kde.KWin"
+# org.a11y.Status.IsEnabled on the session bus is the switch toolkits read to
+# decide whether to expose an accessibility tree. Firefox follows it at runtime;
+# a stock Plasma session leaves it false.
+_A11Y_BUS_NAME = "org.a11y.Bus"
+_A11Y_BUS_PATH = "/org/a11y/bus"
+_A11Y_STATUS_INTERFACE = "org.a11y.Status"
+# Wall-clock bound on one org.a11y.Bus call: the dbus-send subprocess running
+# the whole exchange (connect, auth, call, reply) is killed past this, so a
+# stalled bus never holds the registry lock or the server exit longer.
+_A11Y_CALL_TIMEOUT_S = 5.0
 _KWIN_BUS_NAME_TIMEOUT = 30
 
 
@@ -248,6 +258,11 @@ class OwnedProcessRegistry:
     ``close()`` and ``terminate_all`` have already passed over (leaking it);
     ``register_temp_dir`` likewise removes the dir itself and refuses, because
     the ``terminate_all`` snapshot it missed would never revisit it.
+
+    It also records the live desktops whose accessibility switch
+    (``org.a11y.Status.IsEnabled``) kwin-mcp turned on, so ``terminate_all``
+    turns it back off when ``session_stop`` cannot run. The switch and its
+    record are atomic with respect to ``close()`` in the same way as a spawn.
     """
 
     def __init__(self) -> None:
@@ -255,6 +270,8 @@ class OwnedProcessRegistry:
         self._closed = False
         self._processes: dict[int, subprocess.Popen[bytes]] = {}
         self._temp_dirs: list[Path] = []
+        # Session bus addresses whose accessibility switch this process turned on.
+        self._accessibility_restores: list[str] = []
         # Leaders (by pid) whose terminate_leaders escalation sits between the
         # SIGTERM and the last SIGKILL step: while marked, poll/wait/kill must
         # observe their exit without reaping so _leader_reaped keeps them owned.
@@ -330,6 +347,41 @@ class OwnedProcessRegistry:
         """Drop a temp dir a stop already removed."""
         with self._lock, contextlib.suppress(ValueError):
             self._temp_dirs.remove(path)
+
+    def switch_accessibility_on(self, dbus_address: str) -> None:
+        """Turn a live desktop's accessibility switch on and record it for restoring.
+
+        Holds the lock across the D-Bus call, like ``spawn``: ``close()`` sees the
+        switch either done and recorded or not started, and after ``close()`` it
+        is refused, because the ``terminate_all`` that would turn it back off has
+        already run or is running. The record is taken before the ``Set`` call
+        and kept when it fails: a ``Set`` whose reply was lost may still have
+        applied, and restoring the switch off over one that was never set is
+        harmless.
+        """
+        with self._lock:
+            if self._closed:
+                msg = "the process registry is closed; refusing to switch accessibility on"
+                raise RuntimeError(msg)
+            self._accessibility_restores.append(dbus_address)
+            set_accessibility_enabled(dbus_address, True)
+
+    def restore_accessibility(self, dbus_address: str) -> None:
+        """Turn the switch back off if this process turned it on; best-effort, once.
+
+        Holds the lock across the D-Bus call, like ``switch_accessibility_on``: an
+        exit that starts while a ``session_stop`` is restoring waits in ``close()``
+        for the call to be sent, instead of finding the record already gone and
+        exiting before it.
+        """
+        with self._lock:
+            if dbus_address not in self._accessibility_restores:
+                return
+            self._accessibility_restores.remove(dbus_address)
+            # Best effort: a bus that is gone or refuses the call leaves the
+            # switch as it is.
+            with contextlib.suppress(Exception):
+                set_accessibility_enabled(dbus_address, False)
 
     def _poll_locked(self, proc: subprocess.Popen[bytes]) -> int | None:
         """Report a leader's exit status; must be called under the lock.
@@ -512,7 +564,8 @@ class OwnedProcessRegistry:
         shared wait, SIGKILL to the survivors, one shared wait, then best-effort
         removal of the recorded temp dirs. The leaders are not reaped here: the
         tool thread may still own the ``Popen`` objects, and the process exits
-        immediately afterwards.
+        immediately afterwards. Then every accessibility switch kwin-mcp turned on
+        is turned back off, as ``LiveSession.stop`` would.
 
         If a leader was already reaped while its descendants still hold the
         group, that group is left unsignalled — ownership can no longer be
@@ -522,6 +575,10 @@ class OwnedProcessRegistry:
         with self._lock:
             leaders = list(self._processes.values())
         self.terminate_leaders(leaders, reap=False)
+        with self._lock:
+            restores = list(self._accessibility_restores)
+        for dbus_address in restores:
+            self.restore_accessibility(dbus_address)
         with self._lock:
             dirs = list(self._temp_dirs)
         for path in dirs:
@@ -1119,6 +1176,15 @@ if ! ATSPI_ERR=$(dbus-send --session --print-reply --reply-timeout=10000 \\
     ATSPI_ERR=${{ATSPI_ERR%%$'\\n'*}}
     echo "WARN: AT-SPI bus activation failed, accessibility tools may be unavailable" \\
         "in this session: ${{ATSPI_ERR:-unknown error}}"
+# Switch accessibility on for every app of this session. The a11y bus belongs
+# to this private session bus, so the host desktop's setting is untouched.
+# It is set before any app runs, for apps that read it only at startup.
+elif ! ATSPI_ERR=$(dbus-send --session --print-reply --reply-timeout=10000 \\
+    --dest=org.a11y.Bus /org/a11y/bus org.freedesktop.DBus.Properties.Set \\
+    string:org.a11y.Status string:IsEnabled variant:boolean:true 2>&1 >/dev/null); then
+    ATSPI_ERR=${{ATSPI_ERR%%$'\\n'*}}
+    echo "WARN: AT-SPI accessibility could not be switched on, apps that check it" \\
+        "(such as Firefox) may expose no accessibility tree: ${{ATSPI_ERR:-unknown error}}"
 fi
 
 # Pre-set D-Bus activation environment BEFORE starting KWin.
@@ -1275,6 +1341,89 @@ wait $KWIN_PID
         self.stop()
 
 
+class AccessibilityError(RuntimeError):
+    """One ``org.a11y.Bus`` exchange failed: timeout, bus error, or bad reply."""
+
+
+def _a11y_dbus_send(dbus_address: str, call: list[str]) -> bytes:
+    """Run one org.a11y.Bus call through ``dbus-send``, bounded end to end.
+
+    ``_A11Y_CALL_TIMEOUT_S`` bounds the whole subprocess — connect, auth, call,
+    reply — instead of only the pending call like dbus-python's ``timeout=``
+    did. Past it the child is killed, so a bus that stalls before the call is
+    sent cannot hold the registry lock or the server exit either. ``dbus-send``
+    is already required by the session wrapper. Raises ``AccessibilityError``
+    for every failure: timeout, a missing ``dbus-send``, a nonzero exit, or an
+    unreadable reply.
+    """
+    argv = [
+        "dbus-send",
+        f"--bus={dbus_address}",
+        "--print-reply=literal",
+        f"--reply-timeout={max(1, int(_A11Y_CALL_TIMEOUT_S * 1000))}",
+        f"--dest={_A11Y_BUS_NAME}",
+        _A11Y_BUS_PATH,
+        *call,
+    ]
+    try:
+        result = subprocess.run(argv, capture_output=True, timeout=_A11Y_CALL_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        msg = f"org.a11y.Bus call timed out after {_A11Y_CALL_TIMEOUT_S:g} s"
+        raise AccessibilityError(msg) from None
+    except OSError as exc:
+        msg = f"org.a11y.Bus call failed to run dbus-send: {exc}"
+        raise AccessibilityError(msg) from exc
+    if result.returncode != 0:
+        detail = result.stderr.decode(errors="replace").splitlines()
+        msg = f"org.a11y.Bus call failed: {detail[0] if detail else 'no error output'}"
+        raise AccessibilityError(msg)
+    return result.stdout
+
+
+def accessibility_enabled(dbus_address: str) -> bool:
+    """Read ``org.a11y.Status.IsEnabled`` on the given session bus.
+
+    Raises ``AccessibilityError`` when the bus cannot be reached or its reply
+    cannot be read.
+    """
+    stdout = _a11y_dbus_send(
+        dbus_address,
+        [
+            "org.freedesktop.DBus.Properties.Get",
+            f"string:{_A11Y_STATUS_INTERFACE}",
+            "string:IsEnabled",
+        ],
+    ).decode(errors="replace")
+    # --print-reply=literal prints the variant's value like "boolean true";
+    # anything else is not a readable IsEnabled reply.
+    match stdout.split()[-2:]:
+        case ["boolean", "true"]:
+            return True
+        case ["boolean", "false"]:
+            return False
+        case _:
+            msg = f"org.a11y.Bus replied with an unreadable IsEnabled value: {stdout.strip()!r}"
+            raise AccessibilityError(msg)
+
+
+def set_accessibility_enabled(dbus_address: str, enabled: bool) -> None:
+    """Set ``org.a11y.Status.IsEnabled`` on the given session bus.
+
+    Bounded end to end by ``_A11Y_CALL_TIMEOUT_S``, so a stalled bus never
+    waits out D-Bus's default 25 s under the registry lock or on the exit path
+    that restores the switch. Raises ``AccessibilityError`` on failure.
+    """
+    _a11y_dbus_send(
+        dbus_address,
+        [
+            "org.freedesktop.DBus.Properties.Set",
+            f"string:{_A11Y_STATUS_INTERFACE}",
+            "string:IsEnabled",
+            f"variant:boolean:{'true' if enabled else 'false'}",
+        ],
+    )
+
+
 class LiveSession:
     """Connection to an existing (non-virtual) KWin session.
 
@@ -1311,6 +1460,18 @@ class LiveSession:
     @property
     def wayland_socket(self) -> str:
         return self._info.wayland_socket
+
+    def enable_accessibility(self) -> bool:
+        """Switch ``org.a11y.Status.IsEnabled`` on until ``stop()``.
+
+        Returns False when it was already on; it is then left on at stop.
+        Raises ``AccessibilityError`` when the accessibility bus is unavailable.
+        """
+        if accessibility_enabled(self._info.dbus_address):
+            return False
+        # Recorded in the registry, so a busy server exit restores it too.
+        process_registry.switch_accessibility_on(self._info.dbus_address)
+        return True
 
     def launch_app(self, command: list[str], extra_env: dict[str, str] | None = None) -> AppInfo:
         """Launch an application in the live session.
@@ -1395,6 +1556,9 @@ class LiveSession:
         # never signalled. The launched app leaders are unregistered as they are
         # reaped by _terminate_app_groups, so no explicit drop is needed here.
         _terminate_app_groups(list(self._info.apps.values()))
+
+        # A no-op unless this connection switched accessibility on.
+        process_registry.restore_accessibility(self._info.dbus_address)
 
         # Remove the live session's screenshot dir (registered at connect when
         # keep_screenshots is False), mirroring the registry's retention

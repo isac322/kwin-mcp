@@ -266,6 +266,7 @@ tests/e2e/
 ├── test_clipboard_helper_protocol.py   # Private clipboard helper framing, timeouts, and restore
 ├── test_virtual_session_smoke.py       # Minimum isolated KWin contract
 ├── test_observation_tools.py           # Accessibility, window, log, and Wayland tools
+├── test_accessibility_switch.py        # org.a11y.Status.IsEnabled switch, live opt-in, bounded calls, restore
 ├── test_atspi_worker.py                # AT-SPI worker reuse across session changes and crashes
 ├── test_window_geometry.py             # Global window geometry and element coordinate space
 ├── test_window_close.py                # Window ids, active window, and closing one window by id

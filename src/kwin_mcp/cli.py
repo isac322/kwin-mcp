@@ -23,17 +23,20 @@ Usage:
 from __future__ import annotations
 
 import cmd
+import contextlib
 import inspect
 import json
 import shlex
+import signal
 import sys
 import traceback
 from typing import TYPE_CHECKING, Any, cast
 
 from kwin_mcp.core import AutomationEngine
+from kwin_mcp.session import process_registry
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Generator
 
 
 def _parse_value(value_str: str, annotation: type | None) -> object:
@@ -112,6 +115,49 @@ def _parse_args(method: Callable[..., Any], arg_string: str) -> dict[str, object
     return kwargs
 
 
+# State for deferring shutdown signals while the session is being torn down. A
+# process-directed SIGTERM/SIGHUP can be delivered to any thread, so the deferral lives
+# at the Python handler level (not a per-thread sigmask): the handler records the signal
+# and, once teardown finishes, the context manager re-raises it as KeyboardInterrupt.
+_teardown_depth = 0
+_pending_shutdown_signal: int | None = None
+
+
+def _on_shutdown_signal(signum: int, _frame: object) -> None:
+    """Handle SIGTERM/SIGHUP/SIGINT.
+
+    While the session is being torn down, record the signal and return so it is delivered
+    once teardown finishes; otherwise raise KeyboardInterrupt (the CLI's normal exit path).
+    """
+    global _pending_shutdown_signal
+    if _teardown_depth > 0:
+        _pending_shutdown_signal = signum
+        return
+    raise KeyboardInterrupt
+
+
+@contextlib.contextmanager
+def _defer_shutdown_signals() -> Generator[None]:
+    """Defer SIGTERM/SIGHUP/SIGINT while the session is being torn down.
+
+    A signal arriving mid-teardown would otherwise interrupt the app-kill loop
+    (``LiveSession.stop`` clears its running flag before terminating the apps), and the
+    signal-path cleanup would then see the session as not running and skip the remaining
+    apps. The deferral is at the Python handler level, so it holds no matter which thread
+    receives a process-directed signal; a recorded signal raises KeyboardInterrupt on exit
+    so the CLI still exits through its normal path.
+    """
+    global _teardown_depth, _pending_shutdown_signal
+    _teardown_depth += 1
+    try:
+        yield
+    finally:
+        _teardown_depth -= 1
+        if _teardown_depth == 0 and _pending_shutdown_signal is not None:
+            _pending_shutdown_signal = None
+            raise KeyboardInterrupt
+
+
 class KwinMcpShell(cmd.Cmd):
     """Interactive shell for kwin-mcp automation."""
 
@@ -168,7 +214,12 @@ class KwinMcpShell(cmd.Cmd):
 
         try:
             kwargs = _parse_args(method, arg_string)
-            result = method(**kwargs)
+            if cmd_name == "session_stop":
+                # A signal must not interrupt the teardown (it would skip launched apps).
+                with _defer_shutdown_signals():
+                    result = method(**kwargs)
+            else:
+                result = method(**kwargs)
             print(result)
         except Exception:
             traceback.print_exc()
@@ -225,12 +276,35 @@ class KwinMcpShell(cmd.Cmd):
     do_EOF = do_quit  # noqa: N815
 
     def _cleanup(self) -> None:
-        """Clean up session on exit."""
+        """Clean up the session and sweep any owned processes left outside it on exit."""
         try:
             if self.engine._session is not None and self.engine._session.is_running:
                 print("Stopping session...")
-                print(self.engine.session_stop())
+                # A signal must not interrupt the teardown (it would skip launched apps).
+                with _defer_shutdown_signals():
+                    print(self.engine.session_stop())
         except Exception:
+            traceback.print_exc()
+        finally:
+            self._sweep_owned_processes()
+
+    def _sweep_owned_processes(self) -> None:
+        """Terminate owned groups the session does not know about, then owned temp dirs.
+
+        A signal can interrupt ``launch_app`` between ``process_registry.spawn``
+        (which already registered the child's group) and the session recording the
+        app's ``AppInfo``; ``session_stop`` then never sees that child, so the
+        registry sweeps the residual here. The same applies to a live session, whose
+        KWin is never registered and therefore never touched. The sweep runs on every
+        exit path under the same deferral as the session teardown, so a later signal
+        cannot abort the SIGTERM/SIGKILL escalation mid-flight.
+        """
+        try:
+            with _defer_shutdown_signals():
+                process_registry.close()
+                process_registry.terminate_all()
+        except Exception:
+            # The sweep is the last line of defense: report it, never raise through exit.
             traceback.print_exc()
 
     def postcmd(self, stop: bool, line: str) -> bool:
@@ -258,9 +332,20 @@ def main() -> None:
     args = parser.parse_args()
 
     shell = KwinMcpShell(live_session_mode=args.default_live_session)
+
+    # SIGTERM, SIGHUP, and SIGINT are routed through _on_shutdown_signal so that a
+    # signal during teardown is deferred (not raised through the app-kill loop), and a
+    # signal outside teardown raises KeyboardInterrupt (the CLI's normal exit path).
+    for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(signum, _on_shutdown_signal)
+
     try:
         shell.cmdloop()
     except KeyboardInterrupt:
+        # One-way: a later signal must not throw through the cleanup (it would abort
+        # the stop half-done). _cleanup only catches Exception, not KeyboardInterrupt.
+        for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+            signal.signal(signum, signal.SIG_IGN)
         print("\nInterrupted.")
         shell._cleanup()
 

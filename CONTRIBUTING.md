@@ -159,6 +159,11 @@ The suite collects every test under `tests/e2e`. Together they prove:
   `dbus-run-session`: startup must stay deadline-bounded, report the captured session stderr and
   partial stdout, and leave the owned process group fully reaped — including when the session
   leader was already reaped or a descendant ignores `SIGTERM`.
+- server and CLI exit cleanup driven through the real installed processes: stdin EOF,
+  `SIGTERM`, `SIGHUP`, and `SIGINT` must stop the session exactly as `session_stop`
+  would (live-session KWin and pre-existing apps untouched), a tool outliving the exit
+  drain must not delay the exit, nor may an undrained stdout or a full stderr pipe, and a
+  signal arriving mid-teardown must not interrupt the launched-app kill loop;
 - accessibility-bus startup: `org.a11y.Bus` must have an owner as soon as `session_start`
   returns, and a failed activation (a `dbus-send` stub on `PATH`) must reach the caller as a
   `Warning:` line.
@@ -208,7 +213,7 @@ src/kwin_mcp/
 ├── core.py            # AutomationEngine — MCP-independent automation logic
 ├── server.py          # MCP server (thin wrappers around AutomationEngine)
 ├── cli.py             # Interactive REPL + pipe mode
-├── session.py         # KWin session management (isolated virtual + live desktop)
+├── session.py         # KWin session management (isolated virtual + live) and the owned-process registry for exit cleanup
 ├── screenshot.py      # ScreenShot2, Spectacle, and X11/scrot capture normalized to logical pixels
 ├── accessibility.py   # AT-SPI2 accessibility tree inspection
 ├── geometry.py        # Window geometry, activation, and output topology via KWin scripting
@@ -252,6 +257,8 @@ tests/e2e/
 ├── test_interaction_probe.py           # Full probe interaction feedback loop
 ├── test_input_cleanup.py               # Input state reset across sessions and failures
 ├── test_session_lifecycle.py           # Ownership, teardown, retention, and bounded-startup cleanup
+├── test_exit_cleanup.py                # Server/CLI exit stops the session like session_stop (EOF, signals, drain)
+├── test_cli_signal_deferral.py         # CLI shutdown signals deferred mid-teardown, raised once afterwards
 ├── test_terminal_unicode_paste.py      # Unicode paste chord and next-key integrity in Konsole
 ├── test_unicode_clipboard_lifecycle.py # Unicode paste clipboard snapshot, restore, and cleanup
 ├── test_clipboard_helper_protocol.py   # Private clipboard helper framing, timeouts, and restore
@@ -283,6 +290,8 @@ integrations/
 .claude-plugin/
 └── marketplace.json                                            # Claude Code marketplace catalog
 ```
+
+The exit path is part of `session.py`'s `OwnedProcessRegistry` contract and is worth reading before changing session teardown: the serialized `session_stop` on the tool thread is the primary cleanup when the server exits, and the registry's direct process-group termination and temp-dir removal is the fallback when an in-flight tool still holds the thread after the 2 s drain. The registry signals a group only while its leader is still an unreaped child of the process, so a live-session KWin and pre-existing apps are never reached; `kwin-mcp-cli` reuses the same registry to sweep owned groups that were never attached to a session on exit.
 
 ## Pull Request Process
 

@@ -26,6 +26,7 @@ ARRAY_OF_INTEGER_ARRAYS = ("array", ARRAY_OF_INTEGERS)
 STRING_OBJECT = ("object", "string")
 NULLABLE_ARRAY_OF_STRINGS = ("nullable", ARRAY_OF_STRINGS)
 NULLABLE_ARRAY_OF_INTEGERS = ("nullable", ARRAY_OF_INTEGERS)
+NULLABLE_INTEGER = ("nullable", "integer")
 NULLABLE_ARRAY_OF_INTEGER_ARRAYS = ("nullable", ARRAY_OF_INTEGER_ARRAYS)
 NULLABLE_STRING_OBJECT = ("nullable", STRING_OBJECT)
 # dbus_call args entries are dbus-send strings or typed-JSON objects.
@@ -156,7 +157,11 @@ EXPECTED_TOOL_PROPERTIES: dict[str, dict[str, tuple[object, object]]] = {
         "pid": ("integer", NO_DEFAULT),
         "last_n_lines": ("integer", 50),
     },
-    "screenshot": {"include_cursor": ("boolean", False)},
+    "screenshot": {
+        "include_cursor": ("boolean", False),
+        "region": (NULLABLE_ARRAY_OF_INTEGERS, None),
+        "max_edge": (NULLABLE_INTEGER, None),
+    },
     "session_connect": {
         "dbus_address": ("string", ""),
         "wayland_display": ("string", ""),

@@ -30,6 +30,8 @@ import shlex
 import signal
 import sys
 import traceback
+import types
+import typing
 from typing import TYPE_CHECKING, Any, cast
 
 from kwin_mcp.core import AutomationEngine
@@ -44,15 +46,15 @@ def _parse_value(value_str: str, annotation: type | None) -> object:
     if annotation is None:
         return value_str
 
-    # Unwrap Optional / Union types (e.g. list[int] | None)
-    origin = getattr(annotation, "__origin__", None)
-    args = getattr(annotation, "__args__", None)
-    if origin is type(int | str) and args is not None:
+    # Unwrap Optional / Union types (e.g. list[int] | None, typing.Optional[int]).
+    # get_origin covers both spellings; X | Y unions have no __origin__ at all.
+    origin = typing.get_origin(annotation)
+    if origin is typing.Union or origin is types.UnionType:
         # Get non-None args
-        non_none = [a for a in args if a is not type(None)]
+        non_none = [a for a in typing.get_args(annotation) if a is not type(None)]
         if non_none:
             annotation = non_none[0]
-            origin = getattr(annotation, "__origin__", None)
+            origin = typing.get_origin(annotation)
 
     if annotation is bool:
         return value_str.lower() in ("true", "1", "yes")
@@ -87,8 +89,6 @@ def _parse_args(method: Callable[..., Any], arg_string: str) -> dict[str, object
         return json.loads(arg_string)
 
     # Use get_type_hints() to resolve string annotations from `from __future__ import annotations`
-    import typing
-
     try:
         resolved = typing.get_type_hints(method)
     except Exception:

@@ -364,6 +364,14 @@ kwin-mcp provides three layers of isolation from the host desktop:
 
 These layers separate the session's bus, display, and input from the host desktop. They do not confine the processes: launched apps run as your user with your filesystem permissions and network access, and can still reach the original home directory by absolute path when `isolate_home=true`. Run untrusted applications in a container or VM rather than relying on a virtual session.
 
+### Automatic Session Cleanup at Exit
+
+When the MCP server process ends — on stdio EOF, `SIGTERM`, `SIGHUP`, or `SIGINT` — it stops the active session exactly as `session_stop` would, so a session the client never stopped does not outlive the server. A virtual session's KWin compositor, its `dbus-run-session` wrapper bus, and every app launched through `session_start` or `launch_app` are terminated; in a live `session_connect` session the user's KWin and pre-existing apps are never signalled — only apps kwin-mcp launched are stopped. The exit code follows convention: 0 on a clean EOF, 1 on an unexpected server failure, and 128+signum on a signal (143 for `SIGTERM`, 129 for `SIGHUP`, 130 for `SIGINT`).
+
+The final stop runs on the same single thread as tool calls, serialized with any in-flight tool. If a running tool still holds that thread after a 2 s drain, the server instead terminates the process groups it spawned directly and removes the temporary directories `session_stop` would remove for the session's `keep_home`/`keep_screenshots` retention settings. `kwin-mcp-cli` stops the session on `SIGTERM`/`SIGHUP` through the same path as Ctrl-C, and on exit also terminates any owned process group that was never attached to a session.
+
+Known limits: `SIGKILL` runs no cleanup; a descendant that leaves its launched process group (a double-fork or `setsid` daemon) escapes; and a process group whose leader was already reaped is left alone, because ownership can no longer be proven.
+
 ### Input Injection
 
 Mouse, keyboard, and touch events are injected through KWin's private `org.kde.KWin.EIS.RemoteDesktop` D-Bus interface. This returns a `libei` file descriptor that allows low-level input emulation without requiring the XDG RemoteDesktop portal (which would show a user authorization dialog). The connection uses:

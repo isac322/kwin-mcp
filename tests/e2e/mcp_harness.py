@@ -14,7 +14,7 @@ from mcp.client.stdio import stdio_client
 from mcp.types import TextContent
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping
+    from collections.abc import AsyncGenerator, Mapping
     from typing import Any, TextIO
 
     from mcp.types import CallToolResult, InitializeResult
@@ -145,7 +145,7 @@ def _add_stderr_note(error: BaseException, stderr_path: Path) -> None:
 @asynccontextmanager
 async def running_mcp_server(
     *extra_args: str, env: Mapping[str, str] | None = None
-) -> AsyncIterator[McpTestClient]:
+) -> AsyncGenerator[McpTestClient]:
     """Start and initialize the installed kwin-mcp entrypoint over real stdio.
 
     Environment overrides apply only to the spawned server process.

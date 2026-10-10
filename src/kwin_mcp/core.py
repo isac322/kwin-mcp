@@ -42,7 +42,7 @@ from kwin_mcp.results import (
     search_description,
 )
 from kwin_mcp.screenshot import capture_frame_burst, capture_screenshot_to_file
-from kwin_mcp.session import LiveSession, Session, SessionConfig
+from kwin_mcp.session import LiveSession, Session, SessionConfig, process_registry
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -600,6 +600,13 @@ class AutomationEngine:
         progress.report(2, 3, "Wayland display reachable")
 
         screenshot_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-screenshots-"))
+        # Record the removable screenshot dir so the exit path (when it cannot
+        # run session_stop) mirrors session_stop's retention semantics: a
+        # keep_screenshots=False live session's dir is removed; a
+        # keep_screenshots=True one is the caller's to retain, so it is not
+        # recorded.
+        if not keep_screenshots:
+            process_registry.register_temp_dir(screenshot_dir)
 
         session = LiveSession(dbus_addr, wayland_disp, screenshot_dir)
         session._keep_screenshots = keep_screenshots

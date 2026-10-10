@@ -136,6 +136,7 @@ Additional arguments after the image command can select a file, node ID, marker,
 
 | Test file | Coverage |
 |---|---|
+| `test_accessibility_switch.py` | The `org.a11y.Status.IsEnabled` switch: turned on in virtual sessions without reaching the user's own settings; a live `session_connect` reports the switch, leaves it off by default, and turns it on only with `enable_accessibility=true`, restoring it at `session_stop` and on a server exit — including an exit that lands while a tool still runs or a restore is in progress. Every switch read and write is a bounded `dbus-send` call, and the restore obligation is recorded before the `Set`, so a lost reply still leaves the switch restored. |
 | `test_atspi_worker.py` | The long-lived AT-SPI2 worker: accessibility answers come from the current bus after a crashed session is replaced by `session_start` or `session_connect` without `session_stop`, a killed worker is respawned on the next call, a `SIGSTOP`ped worker is still reaped by `session_stop`, and no helper process stays running after `session_stop`. |
 | `test_cli_signal_deferral.py` | `kwin-mcp-cli` shutdown signals: a `SIGTERM` delivered to any thread during teardown is deferred and raised once afterwards, and outside teardown it raises `KeyboardInterrupt` immediately. |
 | `test_cli_value_parsing.py` | `kwin-mcp-cli` converts key=value arguments for Optional parameters (int, list, dict, bool) on every supported Python. |

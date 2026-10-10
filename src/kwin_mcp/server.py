@@ -327,18 +327,30 @@ def session_connect(
         bool,
         Field(description="Keep screenshot files after session_stop instead of deleting them."),
     ] = False,
+    enable_accessibility: Annotated[
+        bool,
+        Field(
+            description="Switch the desktop's accessibility flag (org.a11y.Status.IsEnabled) "
+            "on until session_stop, so apps that check it, such as Firefox, expose their "
+            "accessibility tree. Desktop-wide while connected; apps that read it only at "
+            "startup must be restarted. Launch Chromium with --force-renderer-accessibility "
+            "to expose web page content; Chromium 154 showed none without it."
+        ),
+    ] = False,
 ) -> str:
     """Connect to an existing KWin session (e.g. the real desktop or a container).
 
     Only use when explicitly asked to interact with a real/existing desktop session.
     For normal GUI automation, use session_start instead (creates an isolated virtual session).
     This connects to a KWin compositor that is already running. Clipboard is always available.
-    Input injection uses KWin EIS when possible, with ydotool as fallback.
+    Input injection uses KWin EIS when possible, with ydotool as fallback. The result's
+    "Accessibility:" line says whether apps expose accessibility trees.
     """
     return _engine.session_connect(
         dbus_address=dbus_address,
         wayland_display=wayland_display,
         keep_screenshots=keep_screenshots,
+        enable_accessibility=enable_accessibility,
     )
 
 

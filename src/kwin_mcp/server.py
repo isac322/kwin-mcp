@@ -53,25 +53,29 @@ if TYPE_CHECKING:
 _MAX_EDGE_FLAG = "--screenshot-max-edge"
 
 
-def _max_edge_flag_span(argv: list[str]) -> tuple[int, int, str] | None:
-    """Locate ``--screenshot-max-edge N`` or ``--screenshot-max-edge=N`` in ``argv``.
+def _max_edge_flag_spans(argv: list[str]) -> list[tuple[int, int, str]]:
+    """Locate every ``--screenshot-max-edge N`` or ``--screenshot-max-edge=N`` in ``argv``.
 
-    Returns the argument slice ``(start, stop)`` and the value text.
+    Returns each argument slice ``(start, stop)`` and its value text, in order.
     """
+    spans: list[tuple[int, int, str]] = []
     for index, arg in enumerate(argv):
         if arg == _MAX_EDGE_FLAG:
             value = argv[index + 1] if index + 1 < len(argv) else ""
-            return index, index + 2, value
-        if arg.startswith(f"{_MAX_EDGE_FLAG}="):
-            return index, index + 1, arg.split("=", 1)[1]
-    return None
+            spans.append((index, index + 2, value))
+        elif arg.startswith(f"{_MAX_EDGE_FLAG}="):
+            spans.append((index, index + 1, arg.split("=", 1)[1]))
+    return spans
 
 
 def _screenshot_max_edge(argv: list[str]) -> int:
-    span = _max_edge_flag_span(argv)
-    if span is None:
+    spans = _max_edge_flag_spans(argv)
+    if not spans:
         return 0
-    value = span[2]
+    if len(spans) > 1:
+        msg = f"kwin-mcp: {_MAX_EDGE_FLAG} may only be specified once"
+        raise SystemExit(msg)
+    value = spans[0][2]
     if not value.isdigit():
         msg = f"kwin-mcp: {_MAX_EDGE_FLAG} needs a pixel count (0 = no limit), got {value!r}"
         raise SystemExit(msg)
@@ -1291,7 +1295,9 @@ def main() -> None:
     for flag in ("--default-live-session", "--screenshot-images"):
         if flag in sys.argv:
             sys.argv.remove(flag)
-    if (span := _max_edge_flag_span(sys.argv)) is not None:
+    # Later slices first so earlier indexes stay valid. A second occurrence already
+    # exited in _screenshot_max_edge above; this drops whichever remains.
+    for span in reversed(_max_edge_flag_spans(sys.argv)):
         del sys.argv[span[0] : span[1]]
     # SIGTERM/SIGHUP have no default handler and would kill the process without
     # cleanup; SIGINT is included because installing our own handler keeps

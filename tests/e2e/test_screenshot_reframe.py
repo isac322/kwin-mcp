@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from _asserts import coordinate_spaces
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from kwin_mcp import screenshot, server
 from kwin_mcp.core import AutomationEngine
@@ -26,7 +26,8 @@ MARKER = (255, 0, 0)
 BACKGROUND = (0, 0, 64)
 _IMAGE_TERM = re.compile(
     r"image (\d+)x(\d+) downscaled: pixel \(px, py\) shows "
-    r"\((-?\d+) \+ px \* (\d+) / (\d+), (-?\d+) \+ py \* (\d+) / (\d+)\)"
+    r"\((-?\d+) \+ \(px \+ 0\.5\) \* (\d+) / (\d+) - 0\.5, "
+    r"(-?\d+) \+ \(py \+ 0\.5\) \* (\d+) / (\d+) - 0\.5\)"
 )
 
 
@@ -65,7 +66,89 @@ def _logical_point(line: str, pixel: tuple[float, float]) -> tuple[float, float]
     match = _IMAGE_TERM.search(line)
     assert match is not None, line
     _, _, ox, width, iw, oy, height, ih = (int(group) for group in match.groups())
-    return ox + pixel[0] * width / iw, oy + pixel[1] * height / ih
+    return (
+        ox + (pixel[0] + 0.5) * width / iw - 0.5,
+        oy + (pixel[1] + 0.5) * height / ih - 0.5,
+    )
+
+
+def test_downscaled_mapping_lands_on_a_narrow_stripe(tmp_path: Path) -> None:
+    """The stated point is the scaled pixel's source center, not its left edge.
+
+    At 12 logical pixels per image pixel, mapping an image pixel to its left
+    edge lands 5.5 px left of what it shows: outside this 4 px stripe.
+    """
+    stripe = (3004, 3008)
+    image = Image.new("RGB", (7680, 1440), (0, 0, 0))
+    ImageDraw.Draw(image).rectangle((stripe[0], 0, stripe[1] - 1, 1439), fill=(255, 255, 255))
+    path = tmp_path / "screenshot.png"
+    image.save(path)
+
+    mapping = reframe_screenshot(path, _mapping((0, 0), (7680, 1440)), max_edge=640)
+
+    assert mapping.image == (640, 120)
+    with Image.open(path) as scaled:
+        # One byte per pixel in mode "L": the brightness of each scaled column.
+        levels = scaled.convert("L").crop((0, 60, 640, 61)).tobytes()
+    brightest = max(range(640), key=levels.__getitem__)
+    logical_x, _ = _logical_point(mapping.describe(), (brightest, 60))
+    assert stripe[0] <= logical_x < stripe[1], (brightest, logical_x)
+
+
+def _alpha_outside(path: Path, keep: tuple[int, int, int, int]) -> list[tuple[int, int]]:
+    """Pixels outside the ``keep`` box (left, top, right, bottom) that are not transparent."""
+    with Image.open(path) as image:
+        alpha = image.convert("RGBA").getchannel("A")
+    left, top, right, bottom = keep
+    return [
+        (px, py)
+        for py in range(alpha.height)
+        for px in range(alpha.width)
+        if not (left <= px < right and top <= py < bottom) and alpha.getpixel((px, py))
+    ]
+
+
+def test_partial_downscale_keeps_uncaptured_pixels_transparent(tmp_path: Path) -> None:
+    """Lanczos must not leak captured alpha past the reported captured region."""
+    image = Image.new("RGBA", (2000, 1000), (0, 0, 0, 0))
+    image.paste((255, 0, 0, 255), (0, 0, 1000, 1000))
+    path = tmp_path / "screenshot.png"
+    image.save(path)
+    captured = ((0, 0, 1000, 1000),)
+
+    mapping = reframe_screenshot(
+        path, _mapping((0, 0), (2000, 1000), captured=captured), max_edge=200
+    )
+
+    assert (mapping.image, mapping.captured) == ((200, 100), captured)
+    # Columns whose source center (px + 0.5) * 10 - 0.5 lies in [0, 1000).
+    assert _alpha_outside(path, (0, 0, 100, 100)) == []
+    with Image.open(path) as scaled:
+        assert scaled.convert("RGBA").getpixel((50, 50)) == (255, 0, 0, 255)
+
+
+def test_crop_then_downscale_masks_at_a_fractional_boundary(tmp_path: Path) -> None:
+    # Workspace at x -500; captured logical x -500..500 is the opaque left part.
+    image = Image.new("RGBA", (2000, 1000), (0, 0, 0, 0))
+    image.paste((255, 0, 0, 255), (0, 0, 1000, 1000))
+    path = tmp_path / "screenshot.png"
+    image.save(path)
+    captured = ((-500, 0, 1000, 1000),)
+
+    mapping = reframe_screenshot(
+        path,
+        _mapping((-500, 0), (2000, 1000), captured=captured),
+        region=(0, 0, 1400, 1000),
+        max_edge=300,
+    )
+
+    assert (mapping.origin, mapping.size, mapping.image) == ((0, 0), (1400, 1000), (300, 214))
+    assert mapping.captured == ((0, 0, 500, 1000),)
+    # fx = 1400 / 300: the captured span ends at ceil(500.5 / fx - 0.5) = 107,
+    # between scaled pixels rather than on a whole-pixel multiple.
+    assert _alpha_outside(path, (0, 0, 107, 214)) == []
+    with Image.open(path) as scaled:
+        assert scaled.convert("RGBA").getpixel((50, 100)) == (255, 0, 0, 255)
 
 
 def test_ultrawide_downscale_states_a_mapping_that_lands_on_the_marker(tmp_path: Path) -> None:
@@ -262,13 +345,69 @@ def test_captures_in_the_same_second_keep_separate_files(
 def test_a_capture_that_fails_after_saving_leaves_no_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    saved = _fake_backend(monkeypatch, fail_after_save=False)
+    _fake_backend(monkeypatch, fail_after_save=False)
     earlier, _ = screenshot.capture_screenshot_to_file(output_dir=tmp_path)
-    _fake_backend(monkeypatch, fail_after_save=True)
+    failing = _fake_backend(monkeypatch, fail_after_save=True)
 
     with pytest.raises(RuntimeError, match="KWin query failed after capture"):
         screenshot.capture_screenshot_to_file(output_dir=tmp_path)
 
-    # The failed capture wrote its own file and removed it; the earlier one is intact.
-    assert saved == [earlier]
+    # The failed capture wrote only into its private directory, which is gone;
+    # the earlier one is intact.
+    assert len(failing) == 1 and failing[0].parent.parent == tmp_path
+    assert not failing[0].parent.exists()
     assert sorted(path.name for path in tmp_path.iterdir()) == [earlier.name]
+
+
+@pytest.mark.parametrize("fail_after_save", [True, False], ids=["fails", "succeeds"])
+def test_a_name_taken_during_the_capture_is_never_overwritten_or_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fail_after_save: bool
+) -> None:
+    """Another caller publishes this second's name while our capture runs.
+
+    Choosing the name before capturing and writing the backend's image straight
+    to it would overwrite that caller's file, and deleting it on failure would
+    remove it; only publishing a finished capture to a free name avoids both.
+    """
+    _fake_backend(monkeypatch, fail_after_save=False)
+    other = tmp_path / "screenshot_20261009_023307.png"
+    other_bytes = b"another caller's PNG"
+
+    def capture(_address: str, path: Path, *, include_cursor: bool) -> tuple[Path, FrameMapping]:
+        other.write_bytes(other_bytes)
+        Image.new("RGB", (64, 32), BACKGROUND).save(path)
+        if fail_after_save:
+            raise RuntimeError("KWin query failed after capture")
+        return path, _mapping((0, 0), (64, 32))
+
+    monkeypatch.setattr(screenshot, "capture_screenshot_dbus", capture)
+
+    if fail_after_save:
+        with pytest.raises(RuntimeError, match="KWin query failed after capture"):
+            screenshot.capture_screenshot_to_file(output_dir=tmp_path)
+        assert other.read_bytes() == other_bytes
+        assert sorted(path.name for path in tmp_path.iterdir()) == [other.name]
+        return
+
+    published, _ = screenshot.capture_screenshot_to_file(output_dir=tmp_path)
+
+    assert published.name == "screenshot_20261009_023307_1.png"
+    assert other.read_bytes() == other_bytes
+    with Image.open(published) as image:
+        assert image.size == (64, 32)
+    assert sorted(path.name for path in tmp_path.iterdir()) == [other.name, published.name]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["kwin-mcp", "--screenshot-max-edge", "1568", "--screenshot-max-edge", "2576"],
+        ["kwin-mcp", "--screenshot-max-edge=1568", "--screenshot-max-edge=2576"],
+        ["kwin-mcp", "--screenshot-max-edge", "1568", "--screenshot-max-edge=2576"],
+        ["kwin-mcp", "--screenshot-max-edge", "1568", "--screenshot-max-edge=wide"],
+        ["kwin-mcp", "--screenshot-max-edge", "1568", "--screenshot-max-edge"],
+    ],
+)
+def test_repeated_max_edge_flag_stops_the_server(argv: list[str]) -> None:
+    with pytest.raises(SystemExit, match="--screenshot-max-edge may only be specified once"):
+        server._screenshot_max_edge(argv)

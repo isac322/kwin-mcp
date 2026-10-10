@@ -1018,7 +1018,8 @@ FRAME_DELAYS = [0, 100]
 SCALED_SLACK_PX = 4
 _IMAGE_TERM = re.compile(
     r"image (\d+)x(\d+) downscaled: pixel \(px, py\) shows "
-    r"\((-?\d+) \+ px \* (\d+) / (\d+), (-?\d+) \+ py \* (\d+) / (\d+)\)"
+    r"\((-?\d+) \+ \(px \+ 0\.5\) \* (\d+) / (\d+) - 0\.5, "
+    r"(-?\d+) \+ \(py \+ 0\.5\) \* (\d+) / (\d+) - 0\.5\)"
 )
 
 
@@ -1117,8 +1118,9 @@ async def test_downscaled_pixels_map_back_to_a_working_click(tmp_path: Path) -> 
             for scaled, full in zip(bbox, full_bbox, strict=True)
         ), (bbox, full_bbox)
 
-        click_x = round((bbox[0] + bbox[2]) / 2 * fx)
-        click_y = round((bbox[1] + bbox[3]) / 2 * fy)
+        # The stated formula: a scaled pixel shows its source pixel center.
+        click_x = round(((bbox[0] + bbox[2]) / 2 + 0.5) * fx - 0.5)
+        click_y = round(((bbox[1] + bbox[3]) / 2 + 0.5) * fy - 0.5)
         assert rect[0] <= click_x < rect[0] + rect[2], (rect, click_x)
         assert rect[1] <= click_y < rect[1] + rect[3], (rect, click_y)
         before = _status_name(

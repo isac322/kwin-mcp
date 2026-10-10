@@ -10,8 +10,10 @@ virtual screen geometry and may be negative. The per-capture
 :class:`FrameMapping` reports origin, size, backend and coverage.
 :func:`reframe_screenshot` can crop a saved capture to a logical region and
 downscale it; a downscaled image then reports its pixel size next to the
-logical size, and pixel ``(px, py)`` shows logical point
-``(origin_x + px * width / image_width, origin_y + py * height / image_height)``.
+logical size, and pixel ``(px, py)`` shows the logical point its resampled
+source pixels center on,
+``(origin_x + (px + 0.5) * width / image_width - 0.5,
+origin_y + (py + 0.5) * height / image_height - 0.5)``.
 
 Backends deliver different pixel spaces, verified against upstream sources:
 
@@ -54,6 +56,7 @@ import select
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -171,9 +174,13 @@ class FrameMapping:
             text += f" (captured {regions}; other pixels are transparent)"
         if self.image is not None:
             (ox, oy), (width, height), (iw, ih) = self.origin, self.size, self.image
+            # Resampling centers output pixel px on source pixel-index
+            # (px + 0.5) * W / w - 0.5, so the stated point is the pixel's
+            # nominal source center, not its left/top edge.
             text += (
                 f"; image {iw}x{ih} downscaled: pixel (px, py) shows "
-                f"({ox} + px * {width} / {iw}, {oy} + py * {height} / {ih})"
+                f"({ox} + (px + 0.5) * {width} / {iw} - 0.5, "
+                f"{oy} + (py + 0.5) * {height} / {ih} - 0.5)"
             )
         # Before/after bracketing cannot see a transient topology change that
         # reverted inside the capture, so this is stability observed, not a
@@ -987,6 +994,8 @@ def reframe_screenshot(
         factor = max_edge / max(width, height)
         scaled = (max(1, round(width * factor)), max(1, round(height * factor)))
         image = image.resize(scaled, PILImage.Resampling.LANCZOS)
+        if mapping.captured:
+            image = _mask_to_captured(image, mapping, (width, height))
         mapping = dataclasses.replace(mapping, image=scaled)
     # Write beside the target and rename, so a failed save never leaves a
     # truncated PNG under the reported path.
@@ -997,6 +1006,36 @@ def reframe_screenshot(
     finally:
         partial.unlink(missing_ok=True)
     return mapping
+
+
+def _mask_to_captured(image: Image, mapping: FrameMapping, logical: tuple[int, int]) -> Image:
+    """Clear every downscaled pixel whose source center lies outside ``mapping.captured``.
+
+    Lanczos taps reach past a captured edge, so resampling leaks partial alpha
+    (and color) into pixels the mapping reports as transparent. Output pixel
+    ``px`` is centered on source pixel-index ``(px + 0.5) * fx - 0.5``; it is
+    kept iff that center falls in a captured span ``[x - ox, x - ox + w)``,
+    i.e. ``ceil((x - ox + 0.5) / fx - 0.5) <= px < ceil((x + w - ox + 0.5) / fx - 0.5)``.
+    """
+    from PIL import Image as PILImage
+    from PIL import ImageDraw
+
+    (ox, oy), (lw, lh) = mapping.origin or (0, 0), mapping.size or logical
+    iw, ih = image.size
+    fx, fy = lw / iw, lh / ih
+    mask = PILImage.new("L", image.size, 0)
+    draw = ImageDraw.Draw(mask)
+    for x, y, w, h in mapping.captured:
+        left = math.ceil((x - ox + 0.5) / fx - 0.5)
+        right = math.ceil((x + w - ox + 0.5) / fx - 0.5)
+        top = math.ceil((y - oy + 0.5) / fy - 0.5)
+        bottom = math.ceil((y + h - oy + 0.5) / fy - 0.5)
+        if right <= left or bottom <= top:
+            continue
+        draw.rectangle((left, top, right - 1, bottom - 1), fill=255)
+    # Same masking as ``_compose``: uncaptured pixels become transparent black.
+    empty = PILImage.new("RGBA", image.size, (0, 0, 0, 0))
+    return PILImage.composite(image.convert("RGBA"), empty, mask)
 
 
 # ── Public capture entry points ──────────────────────────────────────────
@@ -1011,6 +1050,11 @@ def capture_screenshot_to_file(
 ) -> tuple[Path, FrameMapping]:
     """Capture a logical-space screenshot and save it to a file.
 
+    The backends write into a private directory beside the destination, and
+    only a finished capture is published, by hard-linking it to a free name.
+    A failed capture therefore never touches a public file, and a name taken
+    by another caller in the meantime is never overwritten or deleted.
+
     Args:
         dbus_address: D-Bus session bus address for the isolated session.
         wayland_socket: Wayland socket name for the isolated session.
@@ -1024,30 +1068,35 @@ def capture_screenshot_to_file(
         output_dir = Path("/tmp")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    output_path = _unclaimed_path(output_dir, f"screenshot_{time.strftime('%Y%m%d_%H%M%S')}")
-    try:
-        return _capture_screenshot_file(
-            dbus_address, wayland_socket, output_path, include_cursor=include_cursor
+    stem = f"screenshot_{time.strftime('%Y%m%d_%H%M%S')}"
+    # A backend can save the image and fail afterwards, e.g. when the topology
+    # observation after a Spectacle capture fails; removing the private
+    # directory discards only this attempt's files.
+    with tempfile.TemporaryDirectory(prefix=".capture-", dir=output_dir) as private_dir:
+        private = Path(private_dir) / "capture.png"
+        _, mapping = _capture_screenshot_file(
+            dbus_address, wayland_socket, private, include_cursor=include_cursor
         )
-    except BaseException:
-        # A backend can save the image and fail afterwards, e.g. when the topology
-        # observation after a Spectacle capture fails. The caller gets no path.
-        output_path.unlink(missing_ok=True)
-        raise
+        return _publish(private, output_dir, stem), mapping
 
 
-def _unclaimed_path(directory: Path, stem: str) -> Path:
-    """``stem.png`` in ``directory``, or ``stem_N.png`` when that name is taken.
+def _publish(private: Path, directory: Path, stem: str) -> Path:
+    """Link ``private`` to ``stem.png`` in ``directory``, or ``stem_N.png`` if taken.
 
     Names carry the second of the capture, so two captures in one second would
-    otherwise share a file. Captures run one at a time on the tool thread.
+    otherwise share a file. ``os.link`` fails instead of replacing an existing
+    name, so claiming a name and writing it are one atomic step.
     """
     path = directory / f"{stem}.png"
     suffix = 1
-    while path.exists():
-        path = directory / f"{stem}_{suffix}.png"
-        suffix += 1
-    return path
+    while True:
+        try:
+            os.link(private, path)
+        except FileExistsError:
+            path = directory / f"{stem}_{suffix}.png"
+            suffix += 1
+            continue
+        return path
 
 
 def _capture_screenshot_file(

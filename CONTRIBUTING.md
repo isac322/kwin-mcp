@@ -253,12 +253,14 @@ tests/e2e/
 ├── test_mcp_pointer_keyboard.py        # Installed stdio pointer and keyboard flow
 ├── test_mcp_touch_clipboard.py         # Installed stdio touch and clipboard flow
 ├── test_screenshot_behavior.py         # Capture backends, frames, errors, and cleanup
+├── test_screenshot_reframe.py          # Synthetic crop/downscale mappings, flag parsing, and capture-file cleanup
 ├── test_visual_qa.py                   # Pixel-backed nested compositor oracles
 ├── test_interaction_probe.py           # Full probe interaction feedback loop
 ├── test_input_cleanup.py               # Input state reset across sessions and failures
 ├── test_session_lifecycle.py           # Ownership, teardown, retention, and bounded-startup cleanup
 ├── test_exit_cleanup.py                # Server/CLI exit stops the session like session_stop (EOF, signals, drain)
 ├── test_cli_signal_deferral.py         # CLI shutdown signals deferred mid-teardown, raised once afterwards
+├── test_cli_value_parsing.py           # CLI key=value conversion of Optional parameters
 ├── test_terminal_unicode_paste.py      # Unicode paste chord and next-key integrity in Konsole
 ├── test_unicode_clipboard_lifecycle.py # Unicode paste clipboard snapshot, restore, and cleanup
 ├── test_clipboard_helper_protocol.py   # Private clipboard helper framing, timeouts, and restore

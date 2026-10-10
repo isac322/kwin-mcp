@@ -48,6 +48,8 @@ _KWIN_BUS_NAME = "org.kde.KWin"
 _A11Y_BUS_NAME = "org.a11y.Bus"
 _A11Y_BUS_PATH = "/org/a11y/bus"
 _A11Y_STATUS_INTERFACE = "org.a11y.Status"
+# Bound on a call that sets the accessibility switch.
+_A11Y_CALL_TIMEOUT_S = 5.0
 _KWIN_BUS_NAME_TIMEOUT = 30
 
 
@@ -256,6 +258,11 @@ class OwnedProcessRegistry:
     ``close()`` and ``terminate_all`` have already passed over (leaking it);
     ``register_temp_dir`` likewise removes the dir itself and refuses, because
     the ``terminate_all`` snapshot it missed would never revisit it.
+
+    It also records the live desktops whose accessibility switch
+    (``org.a11y.Status.IsEnabled``) kwin-mcp turned on, so ``terminate_all``
+    turns it back off when ``session_stop`` cannot run. The switch and its
+    record are atomic with respect to ``close()`` in the same way as a spawn.
     """
 
     def __init__(self) -> None:
@@ -263,6 +270,8 @@ class OwnedProcessRegistry:
         self._closed = False
         self._processes: dict[int, subprocess.Popen[bytes]] = {}
         self._temp_dirs: list[Path] = []
+        # Session bus addresses whose accessibility switch this process turned on.
+        self._accessibility_restores: list[str] = []
         # Leaders (by pid) whose terminate_leaders escalation sits between the
         # SIGTERM and the last SIGKILL step: while marked, poll/wait/kill must
         # observe their exit without reaping so _leader_reaped keeps them owned.
@@ -338,6 +347,31 @@ class OwnedProcessRegistry:
         """Drop a temp dir a stop already removed."""
         with self._lock, contextlib.suppress(ValueError):
             self._temp_dirs.remove(path)
+
+    def switch_accessibility_on(self, dbus_address: str) -> None:
+        """Turn a live desktop's accessibility switch on and record it for restoring.
+
+        Holds the lock across the D-Bus call, like ``spawn``: ``close()`` sees the
+        switch either done and recorded or not started, and after ``close()`` it
+        is refused, because the ``terminate_all`` that would turn it back off has
+        already run or is running.
+        """
+        with self._lock:
+            if self._closed:
+                msg = "the process registry is closed; refusing to switch accessibility on"
+                raise RuntimeError(msg)
+            set_accessibility_enabled(dbus_address, True)
+            self._accessibility_restores.append(dbus_address)
+
+    def restore_accessibility(self, dbus_address: str) -> None:
+        """Turn the switch back off if this process turned it on; best-effort, once."""
+        with self._lock:
+            if dbus_address not in self._accessibility_restores:
+                return
+            self._accessibility_restores.remove(dbus_address)
+        # Outside the lock, best effort: a vanished bus has no setting left to restore.
+        with contextlib.suppress(Exception):
+            set_accessibility_enabled(dbus_address, False)
 
     def _poll_locked(self, proc: subprocess.Popen[bytes]) -> int | None:
         """Report a leader's exit status; must be called under the lock.
@@ -520,7 +554,8 @@ class OwnedProcessRegistry:
         shared wait, SIGKILL to the survivors, one shared wait, then best-effort
         removal of the recorded temp dirs. The leaders are not reaped here: the
         tool thread may still own the ``Popen`` objects, and the process exits
-        immediately afterwards.
+        immediately afterwards. Then every accessibility switch kwin-mcp turned on
+        is turned back off, as ``LiveSession.stop`` would.
 
         If a leader was already reaped while its descendants still hold the
         group, that group is left unsignalled — ownership can no longer be
@@ -530,6 +565,10 @@ class OwnedProcessRegistry:
         with self._lock:
             leaders = list(self._processes.values())
         self.terminate_leaders(leaders, reap=False)
+        with self._lock:
+            restores = list(self._accessibility_restores)
+        for dbus_address in restores:
+            self.restore_accessibility(dbus_address)
         with self._lock:
             dirs = list(self._temp_dirs)
         for path in dirs:
@@ -1311,10 +1350,16 @@ def accessibility_enabled(dbus_address: str) -> bool:
 
 
 def set_accessibility_enabled(dbus_address: str, enabled: bool) -> None:
-    """Set ``org.a11y.Status.IsEnabled`` on the given session bus."""
+    """Set ``org.a11y.Status.IsEnabled`` on the given session bus.
+
+    The call is bounded by ``_A11Y_CALL_TIMEOUT_S``: the exit path restores the
+    switch and must not wait out D-Bus's default 25 s on an unresponsive bus.
+    """
     import dbus
 
-    _a11y_status(dbus_address).Set(_A11Y_STATUS_INTERFACE, "IsEnabled", dbus.Boolean(enabled))
+    _a11y_status(dbus_address).Set(
+        _A11Y_STATUS_INTERFACE, "IsEnabled", dbus.Boolean(enabled), timeout=_A11Y_CALL_TIMEOUT_S
+    )
 
 
 class LiveSession:
@@ -1341,9 +1386,6 @@ class LiveSession:
         self._running = True
         self._app_counter: int = 0
         self._keep_screenshots: bool = False
-        # True when this connection switched accessibility on and stop() must
-        # switch it back off.
-        self._restore_accessibility: bool = False
 
     @property
     def is_running(self) -> bool:
@@ -1365,8 +1407,8 @@ class LiveSession:
         """
         if accessibility_enabled(self._info.dbus_address):
             return False
-        set_accessibility_enabled(self._info.dbus_address, True)
-        self._restore_accessibility = True
+        # Recorded in the registry, so a busy server exit restores it too.
+        process_registry.switch_accessibility_on(self._info.dbus_address)
         return True
 
     def launch_app(self, command: list[str], extra_env: dict[str, str] | None = None) -> AppInfo:
@@ -1453,11 +1495,8 @@ class LiveSession:
         # reaped by _terminate_app_groups, so no explicit drop is needed here.
         _terminate_app_groups(list(self._info.apps.values()))
 
-        if self._restore_accessibility:
-            self._restore_accessibility = False
-            # Best effort: a vanished bus has no setting left to restore.
-            with contextlib.suppress(Exception):
-                set_accessibility_enabled(self._info.dbus_address, False)
+        # A no-op unless this connection switched accessibility on.
+        process_registry.restore_accessibility(self._info.dbus_address)
 
         # Remove the live session's screenshot dir (registered at connect when
         # keep_screenshots is False), mirroring the registry's retention

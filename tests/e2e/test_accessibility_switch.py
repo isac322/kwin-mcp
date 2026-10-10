@@ -18,8 +18,14 @@ import pytest
 from session_harness import live_kwin
 
 from kwin_mcp import core
+from kwin_mcp import session as session_module
 from kwin_mcp.core import AutomationEngine
-from kwin_mcp.session import LiveSession, accessibility_enabled, set_accessibility_enabled
+from kwin_mcp.session import (
+    LiveSession,
+    OwnedProcessRegistry,
+    accessibility_enabled,
+    set_accessibility_enabled,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -148,15 +154,71 @@ def test_live_connect_reports_an_unreadable_switch(
     assert line == "Accessibility: org.a11y.Status unavailable (no accessibility bus)"
 
 
-def test_stop_survives_a_switch_it_cannot_restore(tmp_path: Path) -> None:
+def _record_switches(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, bool]]:
+    calls: list[tuple[str, bool]] = []
+
+    def record(dbus_address: str, enabled: bool) -> None:
+        calls.append((dbus_address, enabled))
+
+    monkeypatch.setattr(session_module, "set_accessibility_enabled", record)
+    return calls
+
+
+def test_stop_survives_a_switch_it_cannot_restore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A bus that went away leaves nothing to restore; stop still completes."""
     screenshots = tmp_path / "screenshots"
     screenshots.mkdir()
-    session = LiveSession("unix:path=/nonexistent/bus", "wayland-x", screenshots)
-    session._restore_accessibility = True
+    address = "unix:path=/nonexistent/bus"
+    registry = OwnedProcessRegistry()
+    monkeypatch.setattr(session_module, "process_registry", registry)
+    with monkeypatch.context() as patched:
+        _record_switches(patched)
+        registry.switch_accessibility_on(address)
+    session = LiveSession(address, "wayland-x", screenshots)
 
     session.stop()
 
     assert not session.is_running
-    assert not session._restore_accessibility
     assert not screenshots.exists()
+    # The failed restore still drops the record: nothing is left for the exit path.
+    calls = _record_switches(monkeypatch)
+    registry.terminate_all()
+    assert calls == []
+
+
+def test_terminate_all_restores_a_switch_it_turned_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The busy-exit path turns the switch back off once; a later stop does not repeat it."""
+    calls = _record_switches(monkeypatch)
+    registry = OwnedProcessRegistry()
+
+    registry.switch_accessibility_on("unix:path=/run/bus-a")
+    registry.close()
+    registry.terminate_all()
+    registry.restore_accessibility("unix:path=/run/bus-a")
+
+    assert calls == [("unix:path=/run/bus-a", True), ("unix:path=/run/bus-a", False)]
+
+
+def test_restore_leaves_a_switch_it_did_not_turn_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _record_switches(monkeypatch)
+    registry = OwnedProcessRegistry()
+
+    registry.restore_accessibility("unix:path=/run/bus-a")
+    registry.terminate_all()
+
+    assert calls == []
+
+
+def test_switch_on_is_refused_after_close(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Once the exit path has started, a connect can no longer turn the switch on."""
+    calls = _record_switches(monkeypatch)
+    registry = OwnedProcessRegistry()
+    registry.close()
+
+    with pytest.raises(RuntimeError, match="refusing to switch accessibility on"):
+        registry.switch_accessibility_on("unix:path=/run/bus-a")
+
+    registry.terminate_all()
+    assert calls == []

@@ -46,8 +46,10 @@ class KWinWindow(TypedDict):
 
     ``id`` is KWin's ``internalId``: stable for the lifetime of the window and
     never reused, so it can address one window among several of the same app.
-    ``frame``/``client`` are ``[x, y, width, height]`` in global logical
-    coordinates, rounded once from KWin's qreal values.
+    ``frame``/``client``/``buffer`` are ``[x, y, width, height]`` in global
+    logical coordinates, rounded once from KWin's qreal values. ``buffer`` is
+    the client's whole surface, including the shadow a client-side decorated
+    window (Chromium, for example) draws around itself.
     """
 
     pid: int
@@ -64,6 +66,7 @@ class KWinWindow(TypedDict):
     active: bool
     frame: list[int]
     client: list[int]
+    buffer: list[int]
 
 
 # KWin scripts run in a sandboxed QJSEngine with no file or socket access, so
@@ -79,6 +82,7 @@ for (var i = 0; i < windows.length; i++) {
     var w = windows[i];
     var f = w.frameGeometry;
     var c = w.clientGeometry;
+    var b = w.bufferGeometry;
     out.push({
         pid: w.pid, id: String(w.internalId),
         resourceClass: String(w.resourceClass), caption: w.caption,
@@ -87,7 +91,8 @@ for (var i = 0; i < windows.length; i++) {
         desktop: w.desktopWindow, dock: w.dock, notification: w.notification,
         active: w === workspace.activeWindow,
         frame: [f.x, f.y, f.width, f.height],
-        client: [c.x, c.y, c.width, c.height]
+        client: [c.x, c.y, c.width, c.height],
+        buffer: [b.x, b.y, b.width, b.height]
     });
 }
 callDBus("{sink}", "{path}", "{sink}", "Report", JSON.stringify(out));
@@ -200,6 +205,7 @@ def _parse_windows(payload: str) -> list[KWinWindow]:
                     # round once here so every consumer sees integers.
                     frame=[round(float(v)) for v in record["frame"]],
                     client=[round(float(v)) for v in record["client"]],
+                    buffer=[round(float(v)) for v in record["buffer"]],
                 )
             )
         except (KeyError, TypeError, ValueError):

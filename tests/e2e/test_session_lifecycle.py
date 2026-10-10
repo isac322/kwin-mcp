@@ -445,6 +445,15 @@ def test_session_start_starts_the_accessibility_bus_directly_when_activation_is_
 
     monkeypatch.undo()
     assert _a11y_bus_has_owner(engine).split()[-1:] == ["true"]
+    # The switch is set on a directly started bus as on an activated one.
+    reply = engine.dbus_call(
+        service="org.a11y.Bus",
+        path="/org/a11y/bus",
+        interface="org.freedesktop.DBus.Properties",
+        method="Get",
+        args=["string:org.a11y.Status", "string:IsEnabled"],
+    )
+    assert reply.split()[-1:] == ["true"], reply
     # The directly started registry serves apps like an activated one.
     assert engine.launch_app("kcalc").startswith("App launched: kcalc (PID=")
     assert element_count(wait_for_app("kcalc")) > 0

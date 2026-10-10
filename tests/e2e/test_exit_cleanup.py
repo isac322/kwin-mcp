@@ -63,7 +63,7 @@ from typing import IO, TYPE_CHECKING
 import pytest
 from session_harness import LiveKWin, live_kwin
 
-from kwin_mcp.session import accessibility_enabled
+from kwin_mcp.session import accessibility_enabled, set_accessibility_enabled
 
 # Bounds for the real (non-stub) session lifecycle.
 SESSION_START_TIMEOUT_SECONDS = 90.0
@@ -1144,7 +1144,9 @@ def test_live_session_busy_exit_restores_accessibility_keeps_kwin() -> None:
     gone (and a later connection, seeing it on, would never turn it off).
     """
     with live_kwin() as live:
-        assert not accessibility_enabled(live.dbus_address), "the live bus started switched on"
+        # The switch outlives a bus, so start from a known off state.
+        set_accessibility_enabled(live.dbus_address, False)
+        assert not accessibility_enabled(live.dbus_address)
         server = _spawn_with_stderr([sys.executable, "-m", "kwin_mcp"])
         reader = _LineReader(_stdout(server))
         try:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+import subprocess
 from typing import TYPE_CHECKING
 
 import dbus
@@ -53,6 +54,47 @@ def test_virtual_session_switches_accessibility_on(
     assert reply.split()[-1:] == ["true"], reply
 
 
+def _fresh_bus_switch(set_to: bool | None = None) -> bool:
+    """Read the switch on a new, unrelated session bus, optionally setting it first.
+
+    at-spi stores the switch in GSettings, so a value written through the user's
+    dconf database is what any later bus, such as the host desktop's, starts with.
+    """
+    prefix = "dbus-send --session --print-reply --reply-timeout=10000 --dest=org.a11y.Bus "
+    prefix += "/org/a11y/bus org.freedesktop.DBus.Properties."
+    script = ""
+    if set_to is not None:
+        value = "true" if set_to else "false"
+        script += f"{prefix}Set string:org.a11y.Status string:IsEnabled variant:boolean:{value}"
+        script += " >/dev/null && "
+    script += f"{prefix}Get string:org.a11y.Status string:IsEnabled"
+    result = subprocess.run(
+        ["dbus-run-session", "--", "sh", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    )
+    return result.stdout.split()[-1] == "true"
+
+
+def test_virtual_session_switch_does_not_reach_the_user_settings(
+    start_session: Callable[..., str],
+) -> None:
+    """The virtual session's switch does not reach the user's own settings.
+
+    at-spi stores the switch in GSettings; in a virtual session dconf writes it
+    under the per-session ``XDG_CONFIG_HOME``, so a new bus elsewhere, such as the
+    host desktop's, still starts with it off.
+    """
+    assert not _fresh_bus_switch(set_to=False)
+
+    output = start_session()
+    assert "Session started. Wayland socket: " in output, output
+
+    assert not _fresh_bus_switch(), "the virtual session switched the user's setting on"
+
+
 def test_live_connect_reports_the_switch_off_and_leaves_it_off(engine: AutomationEngine) -> None:
     with live_kwin() as live:
         assert not accessibility_enabled(live.dbus_address)
@@ -92,18 +134,22 @@ def test_live_connect_switches_accessibility_on_until_session_stop(
 def test_live_connect_leaves_a_switch_that_was_already_on(engine: AutomationEngine) -> None:
     with live_kwin() as live:
         set_accessibility_enabled(live.dbus_address, True)
+        try:
+            output = engine.session_connect(
+                dbus_address=live.dbus_address,
+                wayland_display=live.wayland_display,
+                enable_accessibility=True,
+            )
+            assert _accessibility_lines(output) == [
+                "Accessibility: on (org.a11y.Status.IsEnabled)"
+            ], output
 
-        output = engine.session_connect(
-            dbus_address=live.dbus_address,
-            wayland_display=live.wayland_display,
-            enable_accessibility=True,
-        )
-        assert _accessibility_lines(output) == ["Accessibility: on (org.a11y.Status.IsEnabled)"], (
-            output
-        )
-
-        assert engine.session_stop() == "Disconnected from live session."
-        assert accessibility_enabled(live.dbus_address)
+            assert engine.session_stop() == "Disconnected from live session."
+            assert accessibility_enabled(live.dbus_address)
+        finally:
+            # The switch outlives this bus (later live buses start with it on),
+            # so turn it back off for the tests that follow.
+            set_accessibility_enabled(live.dbus_address, False)
 
 
 def test_virtual_session_reports_a_switch_it_could_not_set(

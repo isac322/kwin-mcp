@@ -4,8 +4,10 @@ Thin wrapper that registers MCP tools with parameter descriptions,
 delegating all logic to AutomationEngine in core.py.
 
 Supports ``--default-live-session`` flag to switch the default session mode
-from virtual (isolated) to live (real desktop), and ``--screenshot-images`` flag
-to attach the screenshot PNGs a tool call captured as MCP image content.
+from virtual (isolated) to live (real desktop), ``--screenshot-images`` flag
+to attach the screenshot PNGs a tool call captured as MCP image content, and
+``--screenshot-max-edge N`` to downscale every screenshot and frame so its
+longer side is at most N pixels.
 """
 
 from __future__ import annotations
@@ -48,12 +50,44 @@ if TYPE_CHECKING:
     from concurrent.futures import Future
     from types import FunctionType
 
+_MAX_EDGE_FLAG = "--screenshot-max-edge"
+
+
+def _max_edge_flag_spans(argv: list[str]) -> list[tuple[int, int, str]]:
+    """Locate every ``--screenshot-max-edge N`` or ``--screenshot-max-edge=N`` in ``argv``.
+
+    Returns each argument slice ``(start, stop)`` and its value text, in order.
+    """
+    spans: list[tuple[int, int, str]] = []
+    for index, arg in enumerate(argv):
+        if arg == _MAX_EDGE_FLAG:
+            value = argv[index + 1] if index + 1 < len(argv) else ""
+            spans.append((index, index + 2, value))
+        elif arg.startswith(f"{_MAX_EDGE_FLAG}="):
+            spans.append((index, index + 1, arg.split("=", 1)[1]))
+    return spans
+
+
+def _screenshot_max_edge(argv: list[str]) -> int:
+    spans = _max_edge_flag_spans(argv)
+    if not spans:
+        return 0
+    if len(spans) > 1:
+        msg = f"kwin-mcp: {_MAX_EDGE_FLAG} may only be specified once"
+        raise SystemExit(msg)
+    value = spans[0][2]
+    if not value.isdigit():
+        msg = f"kwin-mcp: {_MAX_EDGE_FLAG} needs a pixel count (0 = no limit), got {value!r}"
+        raise SystemExit(msg)
+    return int(value)
+
+
 mcp = MCPServer("kwin-mcp", version=importlib.metadata.version("kwin-mcp"))
-_engine = AutomationEngine()
 
 # Detect custom flags early (before MCP framework consumes args)
 _live_session_mode = "--default-live-session" in sys.argv
 _screenshot_images = "--screenshot-images" in sys.argv
+_engine = AutomationEngine(screenshot_max_edge=_screenshot_max_edge(sys.argv))
 
 # Tool descriptions that replace the docstrings when --default-live-session is active.
 _LIVE_SESSION_DESCRIPTIONS: dict[str, str] = {
@@ -294,18 +328,30 @@ def session_connect(
         bool,
         Field(description="Keep screenshot files after session_stop instead of deleting them."),
     ] = False,
+    enable_accessibility: Annotated[
+        bool,
+        Field(
+            description="Switch the desktop's accessibility flag (org.a11y.Status.IsEnabled) "
+            "on until session_stop, so apps that check it, such as Firefox, expose their "
+            "accessibility tree. Desktop-wide while connected; apps that read it only at "
+            "startup must be restarted. Launch Chromium with --force-renderer-accessibility "
+            "to expose web page content; Chromium 154 showed none without it."
+        ),
+    ] = False,
 ) -> str:
     """Connect to an existing KWin session (e.g. the real desktop or a container).
 
     Only use when explicitly asked to interact with a real/existing desktop session.
     For normal GUI automation, use session_start instead (creates an isolated virtual session).
     This connects to a KWin compositor that is already running. Clipboard is always available.
-    Input injection uses KWin EIS when possible, with ydotool as fallback.
+    Input injection uses KWin EIS when possible, with ydotool as fallback. The result's
+    "Accessibility:" line says whether apps expose accessibility trees.
     """
     return _engine.session_connect(
         dbus_address=dbus_address,
         wayland_display=wayland_display,
         keep_screenshots=keep_screenshots,
+        enable_accessibility=enable_accessibility,
     )
 
 
@@ -330,18 +376,40 @@ def screenshot(
         bool,
         Field(description="If true, render the mouse cursor in the screenshot."),
     ] = False,
+    region: Annotated[
+        list[int] | None,
+        Field(
+            description="Crop to [x, y, width, height] in the global logical coordinates "
+            "mouse tools take. The part outside the captured workspace is dropped. "
+            "Omit for every output.",
+            min_length=4,
+            max_length=4,
+        ),
+    ] = None,
+    max_edge: Annotated[
+        int | None,
+        Field(
+            description="Downscale so the longer side is at most this many pixels "
+            "(0 = full resolution). Omit to use the server's --screenshot-max-edge.",
+            ge=0,
+        ),
+    ] = None,
 ) -> str:
     """Capture a screenshot of the isolated session.
 
-    Requires an active session. Captures every output and returns the saved
-    PNG path and size plus a "Coordinate space" line. The image is in global
-    logical coordinates: pixel (px, py) shows the point (origin_x + px,
-    origin_y + py) that mouse and touch tools take, whatever the output
-    scale. The origin can be negative on multi-monitor layouts. "coverage
-    partial" lists the regions the capture backend delivered; other pixels
-    are transparent. Frames from screenshot_after_ms carry the same line.
+    Requires an active session. Captures every output, or only ``region``, and
+    returns the saved PNG path and size plus a "Coordinate space" line. The
+    image is in global logical coordinates: pixel (px, py) shows the point
+    (origin_x + px, origin_y + py) that mouse and touch tools take, whatever
+    the output scale. The origin can be negative on multi-monitor layouts.
+    "coverage partial" lists the regions the capture backend delivered; other
+    pixels are transparent. When the image was downscaled, the line also names
+    its pixel size and the formula that maps a pixel back to a logical point.
+    To read small text on a large desktop, take a downscaled overview, then a
+    full-resolution ``region`` around the area of interest. Frames from
+    screenshot_after_ms carry the same line and follow --screenshot-max-edge.
     """
-    return _engine.screenshot(include_cursor=include_cursor)
+    return _engine.screenshot(include_cursor=include_cursor, region=region, max_edge=max_edge)
 
 
 def _structured(text: str, data: BaseModel) -> CallToolResult:
@@ -1226,8 +1294,9 @@ def main() -> None:
     """Run the MCP server.
 
     Supports ``--default-live-session`` flag to make session_connect the default
-    session tool instead of session_start, and ``--screenshot-images`` flag to
-    attach captured screenshot PNGs to tool results as image content.
+    session tool instead of session_start, ``--screenshot-images`` flag to attach
+    captured screenshot PNGs to tool results as image content, and
+    ``--screenshot-max-edge N`` to bound every screenshot's longer side.
 
     All exit paths share the once-only cleanup in ``_finish``: ``mcp.run()``
     returning (stdin EOF) exits 0, an SDK/transport exception exits 1 after a
@@ -1239,6 +1308,10 @@ def main() -> None:
     for flag in ("--default-live-session", "--screenshot-images"):
         if flag in sys.argv:
             sys.argv.remove(flag)
+    # Later slices first so earlier indexes stay valid. A second occurrence already
+    # exited in _screenshot_max_edge above; this drops whichever remains.
+    for span in reversed(_max_edge_flag_spans(sys.argv)):
+        del sys.argv[span[0] : span[1]]
     # SIGTERM/SIGHUP have no default handler and would kill the process without
     # cleanup; SIGINT is included because installing our own handler keeps
     # asyncio.Runner from installing its KeyboardInterrupt-raising default (it

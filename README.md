@@ -190,6 +190,9 @@ kwin-mcp-cli --default-live-session
 
 # Attach captured screenshots to tool results as MCP image content
 kwin-mcp --screenshot-images
+
+# Downscale every screenshot so its longer side is at most 2576 pixels
+kwin-mcp --screenshot-images --screenshot-max-edge 2576
 ```
 
 ### Screenshot Images in Tool Results (`--screenshot-images`)
@@ -217,6 +220,16 @@ Any JSON MCP config takes the flag as another argument:
 
 The flag is off by default because every attached frame is sent to the model and costs context tokens, and a `screenshot_after_ms` burst attaches all of its frames — there is no cap. In a live session (`session_connect` or `--default-live-session`) the images are your real desktop's pixels, so enabling the flag sends them to the model provider.
 
+### Screenshot Size (`--screenshot-max-edge`, `region`, `max_edge`)
+
+A screenshot of a large desktop can be too big for a model. A 7680x1440 workspace is an 11-megapixel PNG of several megabytes. A model provider downscales an oversized image before the model sees it, and the model's pixel coordinates then refer to the resized image, which the `Coordinate space` line does not describe. kwin-mcp can bound and crop the image itself, so the line stays exact:
+
+- `--screenshot-max-edge N` downscales every saved screenshot and `screenshot_after_ms` frame so its longer side is at most `N` pixels, keeping the aspect ratio. `0`, the default, keeps full resolution. The bound must keep the image within the provider's limits, or the provider resizes it again and the formula below no longer matches the model's coordinates. According to [Anthropic's vision documentation](https://platform.claude.com/docs/en/build-with-claude/vision#evaluate-image-size) (checked 2026-10-10), Claude 4.7 and later models take at most 2576 pixels on the long edge and 4784 visual tokens of 28x28 pixels; earlier models take 1568 pixels and 1568 tokens. 2576 suits a wide desktop such as 7680x1440 (2576x483); a 16:9 image fits at 2576x1449 on the newer models and 1456x819 on earlier ones, and a squarer image or crop needs a smaller bound. The flag may be given only once; repeating it is a startup error.
+- `screenshot`'s `max_edge` overrides the flag for one call; `max_edge=0` returns full resolution.
+- `screenshot`'s `region` (`[x, y, width, height]` in global logical coordinates) crops the capture to that rectangle. The part outside the captured workspace is dropped, and the `Coordinate space` line reports the crop's origin and size. A region that misses the workspace entirely is an error.
+
+When an image was downscaled, its `Coordinate space` line keeps the logical origin and size and adds the image's pixel size and the mapping from the saved image's pixels: each image pixel maps to the logical point at its source pixel's center, for example `image 2576x483 downscaled: pixel (px, py) shows (0 + (px + 0.5) * 7680 / 2576 - 0.5, 0 + (py + 0.5) * 1440 / 483 - 0.5)`. Small text is unreadable in a downscaled overview of a wide desktop, so take the overview first, then a `region` around the area of interest at full resolution.
+
 ## Available Tools
 
 ### Session Management (3 tools)
@@ -224,14 +237,14 @@ The flag is off by default because every attached frame is sent to the model and
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `session_start` | `app_command?` `str`, `screen_width?` `int` (1920), `screen_height?` `int` (1080), `enable_clipboard?` `bool` (false), `keep_screenshots?` `bool` (false), `isolate_home?` `bool` (false), `keep_home?` `bool` (false), `env?` `dict` | Start an isolated KWin Wayland session, optionally launching an app. Set `enable_clipboard=true` to enable clipboard tools (requires `wl-clipboard`). Set `keep_screenshots=true` to preserve screenshot files after `session_stop`. Set `isolate_home=true` to create a temporary HOME with isolated XDG directories (config, data, cache, state), so apps use fresh settings instead of the host user's. Set `keep_home=true` to preserve the isolated home directory after `session_stop`. Pass extra environment variables via `env`. Startup is deadline-bounded: a failed handshake raises `RuntimeError` with the captured session stderr and stray stdout. |
-| `session_connect` | `dbus_address?` `str`, `wayland_display?` `str`, `keep_screenshots?` `bool` (false) | Connect to an existing KWin session (real desktop or container). Defaults to `$DBUS_SESSION_BUS_ADDRESS` and `$WAYLAND_DISPLAY`. Clipboard is always enabled. `session_stop` only disconnects without killing KWin or pre-existing apps. |
+| `session_connect` | `dbus_address?` `str`, `wayland_display?` `str`, `keep_screenshots?` `bool` (false), `enable_accessibility?` `bool` (false) | Connect to an existing KWin session (real desktop or container). Defaults to `$DBUS_SESSION_BUS_ADDRESS` and `$WAYLAND_DISPLAY`. Clipboard is always enabled. `session_stop` only disconnects without killing KWin or pre-existing apps. The result's `Accessibility:` line reports the desktop's `org.a11y.Status.IsEnabled` switch; `enable_accessibility=true` turns it on until `session_stop` (see [Accessibility Tree](#accessibility-tree)). |
 | `session_stop` | _(none)_ | Stop the session and clean up. For virtual sessions: signals the whole session process group (`SIGTERM`, then `SIGKILL` for members that remain), so descendants still stop even if the session leader already exited. For live sessions: disconnects without killing KWin or pre-existing apps. |
 
 ### Observation (3 tools)
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `screenshot` | `include_cursor?` `bool` (false) | Capture the whole workspace as a PNG. Returns the file path and a `Coordinate space` line with the image's logical origin, size, capture backend, and coverage. Image pixel `(px, py)` is the global logical point `(origin_x + px, origin_y + py)`, the same space `mouse_click` and `touch_tap` take. |
+| `screenshot` | `include_cursor?` `bool` (false), `region?` `list[int]`, `max_edge?` `int` | Capture the whole workspace, or the `[x, y, width, height]` `region` of it, as a PNG. Returns the file path and a `Coordinate space` line with the image's logical origin, size, capture backend, and coverage. Image pixel `(px, py)` is the global logical point `(origin_x + px, origin_y + py)`, the same space `mouse_click` and `touch_tap` take. `max_edge` downscales so the longer side is at most that many pixels (`0` = full resolution; default from `--screenshot-max-edge`); a downscaled image's line adds its pixel size and the pixel-to-logical formula. See [Screenshot Size](#screenshot-size---screenshot-max-edge-region-max_edge). |
 | `accessibility_tree` | `app_name?` `str`, `max_depth?` `int` (15), `role?` `str` | Get the AT-SPI2 widget tree with roles, names, states, coordinates, the text content of editors and entries (`text='...'`, capped at 200 characters), and scrollbar/slider positions (`value=current/max`). Use `role` to filter to specific element types (e.g. `"button"`, `"check box"`). Non-matching elements are hidden but their children are still traversed. |
 | `find_ui_elements` | `query` `str`, `app_name?` `str`, `states?` `list[str]` | Search for UI elements by name, role, or description (case-insensitive); matches report their text content and scrollbar/slider value when they have one. Optionally filter by AT-SPI2 states (e.g. `["focused"]`, `["active", "visible"]`). `query` can be empty when filtering by states only. |
 
@@ -407,6 +420,8 @@ kwin-mcp reads the output topology through KWin scripting immediately before and
 ### Accessibility Tree
 
 The AT-SPI2 accessibility bus within the isolated session is queried via PyGObject (`gi.repository.Atspi`). This provides a structured tree of all UI widgets with their roles (button, text field, menu item, etc.), names, states (focused, enabled, visible, etc.), screen coordinates, and available actions (click, toggle, etc.).
+
+Firefox, like other apps that check it, exposes an accessibility tree only while the session's `org.a11y.Status.IsEnabled` switch is on, and a stock Plasma session leaves it off. Virtual sessions switch it on before any app starts; their accessibility bus is private, so the host desktop is unaffected. A live session (`session_connect`) does not change it by default; the result's `Accessibility:` line says whether it is on. Pass `enable_accessibility=true` to switch it on for the whole desktop until `session_stop`, which switches it back off (unless it was already on before the connection). The restore turns the switch back off whenever this connection turned it on, so a change the user makes to the switch while connected is overwritten at `session_stop`; enabling accessibility before connecting keeps it on. Every switch read and write is bounded to a few seconds, so a stalled desktop bus cannot hold `session_stop` or the server's exit. Firefox follows the change at runtime; an app that reads the switch only at startup must be restarted. The server's exit switches it back off too, including when a tool is still running. Restoring is best-effort: a server killed with `SIGKILL`, or a bus that refuses the call, leaves the switch on. Launch Chromium with `--force-renderer-accessibility` to expose web page content: in Chromium 154 the switch alone gave only empty window frames, and the flag gave the page tree whatever the switch.
 
 ## System Requirements
 
@@ -592,6 +607,7 @@ Coverage includes:
 - failing-session lifecycle regressions that stub `kwin_wayland`/`dbus-run-session` on `PATH`: `session_start` must fail within its startup deadline and surface the captured session stderr plus stray stdout (including a newline-free partial line), and teardown must reap the entire owned process group even when the session leader was already reaped or a descendant ignores `SIGTERM`;
 - a KWin bus-name readiness regression whose `kwin_wayland` stub creates the Wayland socket before starting the real compositor: `session_start` must wait until `org.kde.KWin` has an owner before it sets up EIS input, and must fail with a clear error when KWin exits first or never takes the name;
 - an accessibility-bus check that `org.a11y.Bus` has an owner as soon as `session_start` returns, before any app or AT-SPI2 query could activate it, and that a failed activation (a `dbus-send` stub on `PATH`) is reported as a `Warning:` line in the `session_start` output;
+- the `org.a11y.Status.IsEnabled` switch: on in virtual sessions, and in live sessions reported, left off by default, switched on by `enable_accessibility=true`, and restored by `session_stop` and by a server exit while a tool is still running;
 - exact input-schema checks for all 33 registered tools, plus installed-server stdio calls through every MCP wrapper;
 - nested visual tests that start Xvfb and a test-owned KWin compositor inside the container, connect the installed MCP server to it, and verify pixels as well as accessibility state;
 - KCalc before/after pixel transitions and a deterministic GUI probe for mouse hover, cursor inclusion, animation frame bursts, and CJK text (`GUI 검증 42`) rendered differently from a tofu control (`□□`);

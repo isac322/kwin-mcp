@@ -190,6 +190,9 @@ kwin-mcp-cli --default-live-session
 
 # Attach captured screenshots to tool results as MCP image content
 kwin-mcp --screenshot-images
+
+# Downscale every screenshot so its longer side is at most 2576 pixels
+kwin-mcp --screenshot-images --screenshot-max-edge 2576
 ```
 
 ### Screenshot Images in Tool Results (`--screenshot-images`)
@@ -217,6 +220,16 @@ Any JSON MCP config takes the flag as another argument:
 
 The flag is off by default because every attached frame is sent to the model and costs context tokens, and a `screenshot_after_ms` burst attaches all of its frames — there is no cap. In a live session (`session_connect` or `--default-live-session`) the images are your real desktop's pixels, so enabling the flag sends them to the model provider.
 
+### Screenshot Size (`--screenshot-max-edge`, `region`, `max_edge`)
+
+A screenshot of a large desktop can be too big for a model. A 7680x1440 workspace is an 11-megapixel PNG of several megabytes. A model provider downscales an oversized image before the model sees it, and the model's pixel coordinates then refer to the resized image, which the `Coordinate space` line does not describe. kwin-mcp can bound and crop the image itself, so the line stays exact:
+
+- `--screenshot-max-edge N` downscales every saved screenshot and `screenshot_after_ms` frame so its longer side is at most `N` pixels, keeping the aspect ratio. `0`, the default, keeps full resolution. The bound must keep the image within the provider's limits, or the provider resizes it again and the formula below no longer matches the model's coordinates. According to [Anthropic's vision documentation](https://platform.claude.com/docs/en/build-with-claude/vision#evaluate-image-size) (checked 2026-10-10), Claude 4.7 and later models take at most 2576 pixels on the long edge and 4784 visual tokens of 28x28 pixels; earlier models take 1568 pixels and 1568 tokens. 2576 suits a wide desktop such as 7680x1440 (2576x483); a 16:9 image fits at 2576x1449 on the newer models and 1456x819 on earlier ones, and a squarer image or crop needs a smaller bound. The flag may be given only once; repeating it is a startup error.
+- `screenshot`'s `max_edge` overrides the flag for one call; `max_edge=0` returns full resolution.
+- `screenshot`'s `region` (`[x, y, width, height]` in global logical coordinates) crops the capture to that rectangle. The part outside the captured workspace is dropped, and the `Coordinate space` line reports the crop's origin and size. A region that misses the workspace entirely is an error.
+
+When an image was downscaled, its `Coordinate space` line keeps the logical origin and size and adds the image's pixel size and the mapping from the saved image's pixels: each image pixel maps to the logical point at its source pixel's center, for example `image 2576x483 downscaled: pixel (px, py) shows (0 + (px + 0.5) * 7680 / 2576 - 0.5, 0 + (py + 0.5) * 1440 / 483 - 0.5)`. Small text is unreadable in a downscaled overview of a wide desktop, so take the overview first, then a `region` around the area of interest at full resolution.
+
 ## Available Tools
 
 ### Session Management (3 tools)
@@ -231,7 +244,7 @@ The flag is off by default because every attached frame is sent to the model and
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `screenshot` | `include_cursor?` `bool` (false) | Capture the whole workspace as a PNG. Returns the file path and a `Coordinate space` line with the image's logical origin, size, capture backend, and coverage. Image pixel `(px, py)` is the global logical point `(origin_x + px, origin_y + py)`, the same space `mouse_click` and `touch_tap` take. |
+| `screenshot` | `include_cursor?` `bool` (false), `region?` `list[int]`, `max_edge?` `int` | Capture the whole workspace, or the `[x, y, width, height]` `region` of it, as a PNG. Returns the file path and a `Coordinate space` line with the image's logical origin, size, capture backend, and coverage. Image pixel `(px, py)` is the global logical point `(origin_x + px, origin_y + py)`, the same space `mouse_click` and `touch_tap` take. `max_edge` downscales so the longer side is at most that many pixels (`0` = full resolution; default from `--screenshot-max-edge`); a downscaled image's line adds its pixel size and the pixel-to-logical formula. See [Screenshot Size](#screenshot-size---screenshot-max-edge-region-max_edge). |
 | `accessibility_tree` | `app_name?` `str`, `max_depth?` `int` (15), `role?` `str` | Get the AT-SPI2 widget tree with roles, names, states, coordinates, the text content of editors and entries (`text='...'`, capped at 200 characters), and scrollbar/slider positions (`value=current/max`). Use `role` to filter to specific element types (e.g. `"button"`, `"check box"`). Non-matching elements are hidden but their children are still traversed. |
 | `find_ui_elements` | `query` `str`, `app_name?` `str`, `states?` `list[str]` | Search for UI elements by name, role, or description (case-insensitive); matches report their text content and scrollbar/slider value when they have one. Optionally filter by AT-SPI2 states (e.g. `["focused"]`, `["active", "visible"]`). `query` can be empty when filtering by states only. |
 

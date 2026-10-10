@@ -26,15 +26,13 @@ from kwin_mcp import progress
 if TYPE_CHECKING:
     from typing import IO
 
-# Upper bound for the startup handshake. The wrapper itself is bounded: the
-# AT-SPI bus activation call gives up after 10 s (--reply-timeout) and the
-# socket wait after ~30 s, about 40 s in the worst case. A failed activation
-# adds the direct start of the launcher and registry: two 5 s name waits (each
-# up to 6 s with its last 0.5 s reply and the clock's 1 s granularity) and a
-# 5 s address call, at most 17 s. This bound only covers
+# Upper bound for the startup handshake. Each wrapper step is bounded on its
+# own: D-Bus calls by --reply-timeout, the direct AT-SPI start, the socket wait
+# and the KWin bus-name wait by the clock. Their worst cases can add up past
+# this bound, so it does not guarantee the wrapper reports first; it is the
+# parent's deadline, after which the session group is torn down. It also covers
 # cases the wrapper cannot report: a leader killed while descendants keep
-# stdout open, or a partial line that never terminates. 60 s leaves the wrapper
-# room to report first so its FAILED diagnostics reach the caller.
+# stdout open, or a partial line that never terminates.
 _STARTUP_READ_TIMEOUT = 60.0
 
 # KWin creates its Wayland socket early in startup but owns org.kde.KWin on
@@ -1146,10 +1144,11 @@ class Session:
 echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
 
 # Ensure all child processes are cleaned up on exit.
-# The AT-SPI bus launcher and registryd are started via D-Bus
-# auto-activation below; they are terminated automatically when our
-# isolated session bus exits (dbus-run-session tears the bus down on
-# parent exit), so we only need to track KWin explicitly here.
+# The AT-SPI bus launcher and registryd are normally started via D-Bus
+# auto-activation below and exit with our isolated session bus
+# (dbus-run-session tears the bus down on parent exit). When activation is
+# denied they are started directly as children of this script, in its process
+# group, which session_stop signals as a whole. Only KWin is tracked here.
 cleanup() {{
     kill $KWIN_PID 2>/dev/null
     wait $KWIN_PID 2>/dev/null
@@ -1167,10 +1166,9 @@ trap cleanup EXIT TERM INT HUP
 # the wrapper already requires, so no extra dependency is introduced.
 # ATSPI_DBUS_IMPLEMENTATION=dbus-daemon (set in _build_env) prevents
 # dbus-broker from sharing the host's a11y bus.
-# The registry daemon comes up on its own when apps first touch the a11y
-# bus, so no manual bootstrap is needed here. Activation failure is reported
-# to the caller instead of being hidden: without the bus the first AT-SPI2
-# query itself activates the launcher and always returns an empty result.
+# After a successful activation the registry daemon comes up on its own when
+# apps first touch the a11y bus, so no manual bootstrap is needed. Activation
+# failure is reported to the caller instead of being hidden.
 #
 # When activation fails, the launcher and the registry are started directly
 # from the Exec= lines of the same service files. Fedora's SELinux policy

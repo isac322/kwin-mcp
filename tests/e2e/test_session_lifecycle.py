@@ -572,6 +572,178 @@ def test_live_session_disconnect_terminates_and_reaps_launched_process(
 
 
 # ---------------------------------------------------------------------------
+# Launched-app process-group teardown
+#
+# launch_app puts every app in its own process group so session_stop stops the
+# whole tree, not just the direct child. These launch an app that forks a
+# background descendant which ignores SIGTERM, then prove the descendant is
+# gone after stop() while an unrelated process group — and, in live mode, the
+# connected compositor — survive.
+#
+# The descendant deliberately ignores SIGTERM: a well-behaved one is reaped by
+# the surrounding process-group signal the container tears down anyway, so on
+# the old direct-child-only teardown it would not survive and the regression
+# would be unobservable. A TERM-ignoring descendant survives the old code and
+# only the new group-wide SIGKILL escalation removes it.
+# ---------------------------------------------------------------------------
+
+# How long stop() waits between SIGTERM and SIGKILL for a launched app's group,
+# and after the SIGKILL. The two-phase escalation shares these across all apps.
+APP_TERM_GRACE_SECONDS: float = getattr(session_module, "_APP_TERM_GRACE_SECONDS", 3.0)
+APP_KILL_GRACE_SECONDS: float = getattr(session_module, "_APP_KILL_GRACE_SECONDS", 2.0)
+
+
+def _term_holder(tmp_path: Path, tag: str) -> str:
+    """A bash helper that ignores SIGTERM and then execs a tagged sleeper."""
+    holder = tmp_path / "term-holder.sh"
+    holder.write_text(f"#!/bin/bash\ntrap '' TERM\nexec -a {tag} sleep infinity\n")
+    holder.chmod(0o755)
+    return str(holder)
+
+
+def _descendant_command(holder: str) -> str:
+    """An app whose backgrounded descendant is the TERM-ignoring helper."""
+    return f"bash -c '{shlex.quote(holder)} & sleep infinity'"
+
+
+def test_session_stop_stops_launched_app_descendants(
+    tmp_path: Path, engine: AutomationEngine, start_session: Callable[..., str]
+) -> None:
+    """A launched app's SIGTERM-ignoring background descendant must not survive
+    session_stop, and only via the group's SIGKILL escalation.
+
+    The descendant ignores SIGTERM, so the TERM grace is fully used up before
+    the SIGKILL escalation reaches it; a direct-child-only teardown would leave
+    it running and return long before that.
+    """
+    tag = f"appgroup-desc-{os.getpid()}"
+    holder = _term_holder(tmp_path, tag)
+    neighbor = _spawn_neighbor(f"neighbor-desc-{os.getpid()}")
+    try:
+        start_session()
+        launch_output = engine.launch_app(_descendant_command(holder))
+        _launched_pid(launch_output)
+        assert _wait_until(lambda: bool(_tagged_pids(tag)), PROCESS_EXIT_TIMEOUT_SECONDS), (
+            "background descendant never started"
+        )
+
+        started = time.monotonic()
+        assert engine.session_stop() == "Session stopped."
+        elapsed = time.monotonic() - started
+
+        gone = _wait_until(lambda: not _tagged_pids(tag), PROCESS_EXIT_TIMEOUT_SECONDS)
+        assert gone, f"app descendant survived session_stop: {_tagged_pids(tag)}"
+        assert elapsed >= APP_TERM_GRACE_SECONDS - 0.5, elapsed
+        assert neighbor.poll() is None, "unrelated neighbor process was killed"
+    finally:
+        engine.session_stop()
+        _reap(neighbor)
+
+
+def test_live_session_stop_terminates_launched_app_descendants(
+    tmp_path: Path,
+    engine: AutomationEngine,
+) -> None:
+    """In a live session a launched app's descendant must not outlive stop()."""
+    tag = f"appgroup-live-{os.getpid()}"
+    holder = _term_holder(tmp_path, tag)
+    neighbor = _spawn_neighbor(f"neighbor-live-{os.getpid()}")
+    with live_kwin() as live:
+        try:
+            output = engine.session_connect(
+                dbus_address=live.dbus_address,
+                wayland_display=live.wayland_display,
+            )
+            assert output.startswith("Connected to live KWin session."), output
+            launch_output = engine.launch_app(_descendant_command(holder))
+            _launched_pid(launch_output)
+            assert _wait_until(lambda: bool(_tagged_pids(tag)), PROCESS_EXIT_TIMEOUT_SECONDS), (
+                "background descendant never started"
+            )
+
+            assert engine.session_stop() == "Disconnected from live session."
+
+            gone = _wait_until(lambda: not _tagged_pids(tag), PROCESS_EXIT_TIMEOUT_SECONDS)
+            assert gone, f"app descendant survived live stop(): {_tagged_pids(tag)}"
+            assert live.process.poll() is None, "connected compositor was killed"
+            assert live.socket_path.is_socket()
+            assert neighbor.poll() is None, "unrelated neighbor process was killed"
+        finally:
+            engine.session_stop()
+    _reap(neighbor)
+
+
+def test_session_stop_keeps_app_leader_unreaped_until_last_signal(
+    tmp_path: Path, engine: AutomationEngine, start_session: Callable[..., str]
+) -> None:
+    """The launched app's leader stays unreaped (a zombie) until the last group
+    signal, so its pid (== its process-group id) is reserved and a killpg on
+    that group cannot reach a pid recycled into an unrelated group.
+
+    The leader exits immediately while a SIGTERM-ignoring descendant lingers;
+    the descendant must be killed by the group escalation and the leader must
+    remain a zombie (unreaped) through the whole escalation, not just be
+    reaped early while the group is still being signalled.
+    """
+    tag = f"appgroup-leader-{os.getpid()}"
+    holder = _term_holder(tmp_path, tag)
+    neighbor = _spawn_neighbor(f"neighbor-leader-{os.getpid()}")
+    try:
+        start_session()
+        # The leader (bash) exits right after forking the backgrounded,
+        # SIGTERM-ignoring descendant, which lingers in the leader's group.
+        launch_output = engine.launch_app(f"bash -c '{shlex.quote(holder)} & exit 0'")
+        leader_pid = _launched_pid(launch_output)
+        assert _wait_until(lambda: bool(_tagged_pids(tag)), PROCESS_EXIT_TIMEOUT_SECONDS), (
+            "background descendant never started"
+        )
+        # The leader has exited and, being unreaped, is a zombie before stop().
+        assert _wait_until(
+            lambda: _is_zombie(leader_pid),
+            PROCESS_EXIT_TIMEOUT_SECONDS,
+        ), "leader did not become a zombie before session_stop"
+
+        # Run session_stop on a worker and poll the leader's state through the
+        # escalation; it must stay a zombie (unreaped) until the final reaping.
+        stop_result: list[str] = []
+        stop_error: list[BaseException] = []
+
+        def _stop() -> None:
+            try:
+                stop_result.append(engine.session_stop())
+            except BaseException as exc:
+                stop_error.append(exc)
+
+        worker = threading.Thread(target=_stop)
+        stop_started = time.monotonic()
+        worker.start()
+        observations = 0
+        zombie_observations = 0
+        stop_budget = APP_TERM_GRACE_SECONDS + APP_KILL_GRACE_SECONDS
+        while worker.is_alive() and time.monotonic() - stop_started < stop_budget + 5:
+            observations += 1
+            if _is_zombie(leader_pid):
+                zombie_observations += 1
+            time.sleep(0.05)
+        worker.join(timeout=5)
+        assert not worker.is_alive(), "session_stop did not complete in time"
+        if stop_error:
+            raise stop_error[0]
+
+        assert stop_result and stop_result[0] == "Session stopped."
+        gone = _wait_until(lambda: not _tagged_pids(tag), PROCESS_EXIT_TIMEOUT_SECONDS)
+        assert gone, f"app descendant survived session_stop: {_tagged_pids(tag)}"
+        assert zombie_observations >= observations // 2, (
+            f"leader was not held unreaped through the escalation "
+            f"(zombie {zombie_observations}/{observations} polls)"
+        )
+        assert neighbor.poll() is None, "unrelated neighbor process was killed"
+    finally:
+        engine.session_stop()
+        _reap(neighbor)
+
+
+# ---------------------------------------------------------------------------
 # Failing-compositor lifecycle regression tests (issue #48)
 #
 # These drive the real Session against PATH stubs for its external binaries
@@ -653,6 +825,12 @@ def _live_kwin_pids() -> set[int]:
 def _leader_reaped(pid: int) -> bool:
     """A directly owned leader must be gone from /proc, not left as a zombie."""
     return not (Path("/proc") / str(pid)).exists()
+
+
+def _is_zombie(pid: int) -> bool:
+    """Whether pid is currently an unreaped zombie (state Z) in /proc."""
+    stat = _proc_stat(pid)
+    return stat is not None and stat[0] == "Z"
 
 
 def _wait_until(predicate: Callable[[], object], timeout: float) -> bool:

@@ -270,6 +270,7 @@ tests/e2e/
 ├── test_window_geometry.py             # Global window geometry and element coordinate space
 ├── test_window_close.py                # Window ids, active window, and closing one window by id
 ├── test_window_control.py              # Focus, scroll, drag, and touch behavior
+├── test_window_match.py                # Chromium/Flatpak AT-SPI top-levels matched to KWin windows via buffer geometry and captions
 ├── test_pointer_reconnect.py           # Clicks reach a window mapped under a parked pointer
 ├── test_dbus_args.py                   # dbus_call argument parser (no session needed)
 ├── test_dbus_call.py                   # dbus_call arguments as received by a test D-Bus service

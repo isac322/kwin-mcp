@@ -108,7 +108,7 @@ def _chromium_window(window_id: str, caption: str) -> KWinWindow:
 
 
 def _offsets(app: _App, kwin: list[KWinWindow]) -> list[tuple[tuple[int, int] | None, str]]:
-    _, mappings, _ = _resolve_app(app, kwin, "")  # type: ignore[arg-type]
+    _, mappings, _ = _resolve_app(app, kwin, "")
     return [(mapping.offset, mapping.reason) for mapping in mappings]
 
 
@@ -167,6 +167,29 @@ def test_a_caption_that_differs_is_not_matched_through_the_buffer() -> None:
     ]
 
 
+@pytest.mark.parametrize("sibling_size", [(1018, 738), (1050, 780)])
+@pytest.mark.parametrize("named_first", [True, False])
+def test_a_caption_only_miss_unmaps_a_same_size_sibling(
+    sibling_size: tuple[int, int], named_first: bool
+) -> None:
+    """The unmatched error-page frame must not leave its window to a sibling.
+
+    Chromium's error page names its frame differently from its KWin caption,
+    so only the caption check keeps it from its own window. An unnamed
+    sibling top-level of the same size — carrying the elements a caller
+    acts on, such as a button — would otherwise claim that window alone and
+    publish its elements with the wrong window's coordinates.
+    """
+    named = _TopLevel("example.invalid - Network error - Chromium", sibling_size)
+    unnamed = _TopLevel("", sibling_size)
+    children = [named, unnamed] if named_first else [unnamed, named]
+    app = _App(3675, children)
+    kwin = [_chromium_window("w1", "example.invalid - Chromium")]
+
+    expected = [(None, "no-kwin-window"), (None, "ambiguous-window-match")]
+    assert _offsets(app, kwin) == (expected if named_first else expected[::-1])
+
+
 def test_client_geometry_wins_when_it_matches() -> None:
     """A server-side decorated window keeps the client origin, as before."""
     app = _App(42, [_TopLevel("Calculator", (400, 500))])
@@ -213,7 +236,7 @@ def test_an_ambiguous_top_level_unmaps_a_mapped_sibling() -> None:
 def _stable_offsets(
     app: _App, before: list[KWinWindow], after: list[KWinWindow], monkeypatch: pytest.MonkeyPatch
 ) -> list[tuple[tuple[int, int] | None, str]]:
-    pids, mappings, _ = _resolve_app(app, before, "")  # type: ignore[arg-type]
+    pids, mappings, _ = _resolve_app(app, before, "")
     monkeypatch.setattr(accessibility, "_kwin_windows", lambda: (after, ""))
     _apply_stability({pids: mappings}, before, "")
     return [(mapping.offset, mapping.reason) for mapping in mappings]
@@ -254,7 +277,7 @@ def test_flatpak_proxy_pid_maps_to_the_windows_of_its_own_instance(proc: Path) -
         _window(300, "w2", "Inbox - Betterbird", [500, 20, 1200, 800]),
     ]
 
-    pids, mappings, _ = _resolve_app(app, kwin, "")  # type: ignore[arg-type]
+    pids, mappings, _ = _resolve_app(app, kwin, "")
 
     assert pids == frozenset({287882, 287894})
     assert [(m.offset, m.reason) for m in mappings] == [((10, 20), "")]
@@ -275,7 +298,7 @@ def test_other_pids_without_windows_get_no_alias(proc: Path, comm: str, scope: s
     app = _App(100, [_TopLevel("Inbox", (1200, 800))])
     kwin = [_window(200, "w1", "Inbox", [10, 20, 1200, 800])]
 
-    pids, mappings, _ = _resolve_app(app, kwin, "")  # type: ignore[arg-type]
+    pids, mappings, _ = _resolve_app(app, kwin, "")
 
     assert pids == frozenset({100})
     assert [(m.offset, m.reason) for m in mappings] == [(None, "no-kwin-window")]

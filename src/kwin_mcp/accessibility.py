@@ -15,7 +15,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import gi
 
@@ -338,10 +338,11 @@ def _finalize(info: ElementInfo, mapping: _WindowMapping) -> ElementInfo:
 # AT-SPI reports window-local coordinates (CoordType.WINDOW); a Wayland
 # client cannot know where the compositor placed it. KWin does know, so each
 # AT-SPI top-level is matched to exactly one KWin window and the whole
-# subtree is translated by that window's client origin. Any uncertainty —
-# the KWin query failing, no candidate, several candidates, a window set
-# that changed mid-walk — fails closed: elements report "unavailable" with
-# a reason instead of coordinates that would click the wrong place.
+# subtree is translated by the origin of the KWin rectangle it matched.
+# Any uncertainty — the KWin query failing, no candidate, several
+# candidates, a window set that changed mid-walk — fails closed: elements
+# report "unavailable" with a reason instead of coordinates that would
+# click the wrong place.
 #
 # AT-SPI's window-local origin is the client's surface origin. For most
 # windows that is KWin's client geometry; a client-side decorated window
@@ -446,27 +447,67 @@ def _window_pids(pid: int, kwin: list[KWinWindow]) -> frozenset[int]:
     return frozenset({pid} | owners)
 
 
+class _ExtentsRect(Protocol):
+    """The rectangle members the matcher reads off an AT-SPI extents struct."""
+
+    x: int
+    y: int
+    width: int
+    height: int
+
+
+class _ComponentShape(Protocol):
+    """The AT-SPI Component interface surface the matcher calls."""
+
+    def get_extents(self, coord_type: object, /) -> _ExtentsRect: ...
+
+
+class _AccessibleTopLevel(Protocol):
+    """The AT-SPI top-level surface the matcher calls.
+
+    ``gi.repository.Atspi`` cannot be resolved statically, so the matcher is
+    typed against the methods it actually uses; a real ``Atspi.Accessible``
+    satisfies this protocol structurally, and so can test doubles.
+    """
+
+    def get_name(self) -> str | None: ...
+
+    def get_component_iface(self) -> _ComponentShape | None: ...
+
+
+class _AccessibleApp(Protocol):
+    """The AT-SPI application-root surface the matcher calls."""
+
+    def get_process_id(self) -> int: ...
+
+    def get_child_count(self) -> int: ...
+
+    def get_child_at_index(self, index: int) -> _AccessibleTopLevel | None: ...
+
+
 def _resolve_app(
-    app: Atspi.Accessible,
+    app: _AccessibleApp,
     kwin: list[KWinWindow],
     kwin_error: str,
-) -> tuple[frozenset[int], list[_WindowMapping], list[Atspi.Accessible | None]]:
+) -> tuple[frozenset[int], list[_WindowMapping], list[_AccessibleTopLevel | None]]:
     """Match every AT-SPI top-level of one application to a KWin window.
 
     Returns (KWin window pids of the app, mappings aligned with children,
     children). A child that vanished mid-walk, a top-level with several
-    candidate windows, or two top-levels claiming the same KWin window unmaps
-    the whole application — a partial mapping could silently click the wrong
-    window. A top-level that no KWin window matches is unmapped alone: it
-    cannot take a window from a sibling, and Chromium keeps hidden omnibox
-    popups as AT-SPI top-levels that report themselves showing.
+    candidate windows, two top-levels claiming the same KWin window, or a
+    top-level only the caption check tells apart from a same-size sibling
+    unmaps the whole application — a partial mapping could silently click
+    the wrong window. A top-level that no KWin window matches is unmapped
+    alone: it cannot take a window from a sibling, and Chromium keeps
+    hidden omnibox popups as AT-SPI top-levels that report themselves
+    showing.
     """
     try:
         pid: int | None = int(app.get_process_id())
     except Exception:
         pid = None
 
-    children: list[Atspi.Accessible | None] = []
+    children: list[_AccessibleTopLevel | None] = []
     for j in range(app.get_child_count()):
         children.append(app.get_child_at_index(j))
 
@@ -492,7 +533,12 @@ def _resolve_app(
             mappings.append(_WindowMapping(None, "no-extents"))
             continue
         window, reason, anchor = _match_toplevel(pids, name, rect, kwin)
-        if reason == "ambiguous":
+        # A caption-only miss does not prove a top-level owns no window:
+        # an unnamed sibling of the same size could still claim that window.
+        if reason == "ambiguous" or (
+            reason == "no-kwin-window"
+            and _match_toplevel(pids, "", rect, kwin)[1] != "no-kwin-window"
+        ):
             poisoned = True
         mappings.append(_WindowMapping(window, reason, rect, anchor=anchor))
 
@@ -580,7 +626,7 @@ def _caption_consistent(caption: str, name: str) -> bool:
     return c == n or c.startswith(n + " — ")
 
 
-def _window_rect(element: Atspi.Accessible) -> tuple[int, int, int, int] | None:
+def _window_rect(element: _AccessibleTopLevel) -> tuple[int, int, int, int] | None:
     """Window-local extents of an AT-SPI element, or None when unavailable."""
     try:
         component = element.get_component_iface()
@@ -610,7 +656,7 @@ def _extract_info(element: Atspi.Accessible, depth: int) -> ElementInfo:
     # Get position and size. WINDOW extents are window-local and reliable for
     # both Qt and GTK; SCREEN extents are (0,0) on GTK4 and already include the
     # output origin for Qt on a second output, so they cannot be used here.
-    # _finalize() adds the matched KWin window's client origin.
+    # _finalize() adds the origin of the matched KWin rectangle.
     x, y, width, height = 0, 0, 0, 0
     has_extents = False
     try:

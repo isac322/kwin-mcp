@@ -47,6 +47,7 @@ from kwin_mcp.screenshot import (
     reframe_screenshot,
 )
 from kwin_mcp.session import (
+    AccessibilityError,
     LiveSession,
     Session,
     SessionConfig,
@@ -665,8 +666,6 @@ class AutomationEngine:
     @staticmethod
     def _live_accessibility(session: LiveSession, dbus_addr: str, *, enable: bool) -> str:
         """Apply ``enable_accessibility`` and describe the desktop's accessibility switch."""
-        import dbus as dbus_module
-
         try:
             if enable:
                 if not session.enable_accessibility():
@@ -679,8 +678,8 @@ class AutomationEngine:
                 )
             if accessibility_enabled(dbus_addr):
                 return "Accessibility: on (org.a11y.Status.IsEnabled)"
-        except dbus_module.DBusException as exc:
-            return f"Accessibility: org.a11y.Status unavailable ({exc.get_dbus_message()})"
+        except AccessibilityError as exc:
+            return f"Accessibility: org.a11y.Status unavailable ({exc})"
         return (
             "Accessibility: off (org.a11y.Status.IsEnabled is false), so apps that check it, "
             "such as Firefox, expose no accessibility tree. Reconnect with "

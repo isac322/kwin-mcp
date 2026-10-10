@@ -26,8 +26,6 @@ from kwin_mcp import progress
 if TYPE_CHECKING:
     from typing import IO
 
-    import dbus
-
 # Upper bound for the startup handshake. The wrapper itself is bounded: the
 # AT-SPI bus activation call gives up after 10 s (--reply-timeout) and the
 # socket wait after ~30 s, about 40 s in the worst case. This bound only covers
@@ -48,7 +46,9 @@ _KWIN_BUS_NAME = "org.kde.KWin"
 _A11Y_BUS_NAME = "org.a11y.Bus"
 _A11Y_BUS_PATH = "/org/a11y/bus"
 _A11Y_STATUS_INTERFACE = "org.a11y.Status"
-# Bound on a call that sets the accessibility switch.
+# Wall-clock bound on one org.a11y.Bus call: the dbus-send subprocess running
+# the whole exchange (connect, auth, call, reply) is killed past this, so a
+# stalled bus never holds the registry lock or the server exit longer.
 _A11Y_CALL_TIMEOUT_S = 5.0
 _KWIN_BUS_NAME_TIMEOUT = 30
 
@@ -354,14 +354,17 @@ class OwnedProcessRegistry:
         Holds the lock across the D-Bus call, like ``spawn``: ``close()`` sees the
         switch either done and recorded or not started, and after ``close()`` it
         is refused, because the ``terminate_all`` that would turn it back off has
-        already run or is running.
+        already run or is running. The record is taken before the ``Set`` call
+        and kept when it fails: a ``Set`` whose reply was lost may still have
+        applied, and restoring the switch off over one that was never set is
+        harmless.
         """
         with self._lock:
             if self._closed:
                 msg = "the process registry is closed; refusing to switch accessibility on"
                 raise RuntimeError(msg)
-            set_accessibility_enabled(dbus_address, True)
             self._accessibility_restores.append(dbus_address)
+            set_accessibility_enabled(dbus_address, True)
 
     def restore_accessibility(self, dbus_address: str) -> None:
         """Turn the switch back off if this process turned it on; best-effort, once.
@@ -1338,35 +1341,86 @@ wait $KWIN_PID
         self.stop()
 
 
-def _a11y_status(dbus_address: str) -> dbus.Interface:
-    import dbus
-    import dbus.bus
+class AccessibilityError(RuntimeError):
+    """One ``org.a11y.Bus`` exchange failed: timeout, bus error, or bad reply."""
 
-    bus = dbus.bus.BusConnection(dbus_address)
-    return dbus.Interface(
-        bus.get_object(_A11Y_BUS_NAME, _A11Y_BUS_PATH), "org.freedesktop.DBus.Properties"
-    )
+
+def _a11y_dbus_send(dbus_address: str, call: list[str]) -> bytes:
+    """Run one org.a11y.Bus call through ``dbus-send``, bounded end to end.
+
+    ``_A11Y_CALL_TIMEOUT_S`` bounds the whole subprocess — connect, auth, call,
+    reply — instead of only the pending call like dbus-python's ``timeout=``
+    did. Past it the child is killed, so a bus that stalls before the call is
+    sent cannot hold the registry lock or the server exit either. ``dbus-send``
+    is already required by the session wrapper. Raises ``AccessibilityError``
+    for every failure: timeout, a missing ``dbus-send``, a nonzero exit, or an
+    unreadable reply.
+    """
+    argv = [
+        "dbus-send",
+        f"--bus={dbus_address}",
+        "--print-reply=literal",
+        f"--reply-timeout={max(1, int(_A11Y_CALL_TIMEOUT_S * 1000))}",
+        f"--dest={_A11Y_BUS_NAME}",
+        _A11Y_BUS_PATH,
+        *call,
+    ]
+    try:
+        result = subprocess.run(argv, capture_output=True, timeout=_A11Y_CALL_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        msg = f"org.a11y.Bus call timed out after {_A11Y_CALL_TIMEOUT_S:g} s"
+        raise AccessibilityError(msg) from None
+    except OSError as exc:
+        msg = f"org.a11y.Bus call failed to run dbus-send: {exc}"
+        raise AccessibilityError(msg) from exc
+    if result.returncode != 0:
+        detail = result.stderr.decode(errors="replace").splitlines()
+        msg = f"org.a11y.Bus call failed: {detail[0] if detail else 'no error output'}"
+        raise AccessibilityError(msg)
+    return result.stdout
 
 
 def accessibility_enabled(dbus_address: str) -> bool:
     """Read ``org.a11y.Status.IsEnabled`` on the given session bus.
 
-    Raises ``dbus.DBusException`` when the accessibility bus is unavailable.
+    Raises ``AccessibilityError`` when the bus cannot be reached or its reply
+    cannot be read.
     """
-    return bool(_a11y_status(dbus_address).Get(_A11Y_STATUS_INTERFACE, "IsEnabled"))
+    stdout = _a11y_dbus_send(
+        dbus_address,
+        [
+            "org.freedesktop.DBus.Properties.Get",
+            f"string:{_A11Y_STATUS_INTERFACE}",
+            "string:IsEnabled",
+        ],
+    ).decode(errors="replace")
+    # --print-reply=literal prints the variant's value like "boolean true";
+    # anything else is not a readable IsEnabled reply.
+    match stdout.split()[-2:]:
+        case ["boolean", "true"]:
+            return True
+        case ["boolean", "false"]:
+            return False
+        case _:
+            msg = f"org.a11y.Bus replied with an unreadable IsEnabled value: {stdout.strip()!r}"
+            raise AccessibilityError(msg)
 
 
 def set_accessibility_enabled(dbus_address: str, enabled: bool) -> None:
     """Set ``org.a11y.Status.IsEnabled`` on the given session bus.
 
-    The ``Set`` call is bounded by ``_A11Y_CALL_TIMEOUT_S``, so the exit path
-    that restores the switch does not wait out D-Bus's default 25 s on it; the
-    connection and the proxy's introspection before it keep their own timeouts.
+    Bounded end to end by ``_A11Y_CALL_TIMEOUT_S``, so a stalled bus never
+    waits out D-Bus's default 25 s under the registry lock or on the exit path
+    that restores the switch. Raises ``AccessibilityError`` on failure.
     """
-    import dbus
-
-    _a11y_status(dbus_address).Set(
-        _A11Y_STATUS_INTERFACE, "IsEnabled", dbus.Boolean(enabled), timeout=_A11Y_CALL_TIMEOUT_S
+    _a11y_dbus_send(
+        dbus_address,
+        [
+            "org.freedesktop.DBus.Properties.Set",
+            f"string:{_A11Y_STATUS_INTERFACE}",
+            "string:IsEnabled",
+            f"variant:boolean:{'true' if enabled else 'false'}",
+        ],
     )
 
 
@@ -1411,7 +1465,7 @@ class LiveSession:
         """Switch ``org.a11y.Status.IsEnabled`` on until ``stop()``.
 
         Returns False when it was already on; it is then left on at stop.
-        Raises ``dbus.DBusException`` when the accessibility bus is unavailable.
+        Raises ``AccessibilityError`` when the accessibility bus is unavailable.
         """
         if accessibility_enabled(self._info.dbus_address):
             return False

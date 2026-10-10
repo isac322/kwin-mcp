@@ -13,9 +13,9 @@ import shlex
 import shutil
 import subprocess
 import threading
+import time
 from typing import TYPE_CHECKING
 
-import dbus
 import pytest
 from session_harness import live_kwin
 
@@ -23,6 +23,7 @@ from kwin_mcp import core
 from kwin_mcp import session as session_module
 from kwin_mcp.core import AutomationEngine
 from kwin_mcp.session import (
+    AccessibilityError,
     LiveSession,
     OwnedProcessRegistry,
     accessibility_enabled,
@@ -190,7 +191,7 @@ def test_live_connect_reports_an_unreadable_switch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enable: bool
 ) -> None:
     def unavailable(*_args: object) -> bool:
-        raise dbus.exceptions.DBusException("no accessibility bus")
+        raise AccessibilityError("no accessibility bus")
 
     monkeypatch.setattr(core, "accessibility_enabled", unavailable)
     monkeypatch.setattr(LiveSession, "enable_accessibility", unavailable)
@@ -312,3 +313,215 @@ def test_switch_on_is_refused_after_close(monkeypatch: pytest.MonkeyPatch) -> No
 
     registry.terminate_all()
     assert calls == []
+
+
+@pytest.mark.parametrize("path", ["stop", "exit"])
+def test_a_switch_that_may_have_applied_is_restored(
+    path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``Set`` whose reply never arrived may still have applied, so the record
+    taken before the call is kept when the call fails: the switch is turned back
+    off by ``session_stop`` and, when a tool is still running, by the busy-exit
+    registry cleanup.
+    """
+    address = "unix:path=/run/bus-a"
+    desktop = {address: False}
+
+    def setter(dbus_address: str, enabled: bool) -> None:
+        desktop[dbus_address] = enabled
+        if enabled:
+            raise AccessibilityError("reply lost")
+
+    monkeypatch.setattr(session_module, "set_accessibility_enabled", setter)
+    registry = OwnedProcessRegistry()
+    monkeypatch.setattr(session_module, "process_registry", registry)
+    with pytest.raises(AccessibilityError, match="reply lost"):
+        registry.switch_accessibility_on(address)
+    assert desktop[address] is True
+
+    if path == "stop":
+        screenshots = tmp_path / "screenshots"
+        screenshots.mkdir()
+        session = LiveSession(address, "wayland-x", screenshots)
+        session.stop()
+    else:
+        registry.close()
+        registry.terminate_all()
+
+    assert desktop[address] is False
+
+
+def _stalling_dbus_send(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, timeout_s: float = 0.5
+) -> Path:
+    """Stand a never-answering ``dbus-send`` first on PATH; return its pid file.
+
+    Each spawned stub appends its own pid and ``exec``s ``sleep``, so the pid
+    file's lines are the long-lived processes a bounded call must have killed.
+    """
+    real_sleep = shutil.which("sleep")
+    assert real_sleep is not None, "sleep not found in PATH"
+    stub_dir = tmp_path / "stub-bin"
+    stub_dir.mkdir()
+    pids_file = tmp_path / "dbus-send-pids"
+    pids_file.touch()
+    stub = stub_dir / "dbus-send"
+    stub.write_text(f"#!/bin/sh\necho $$ >> {shlex.quote(str(pids_file))}\nexec {real_sleep} 60\n")
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{stub_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(session_module, "_A11Y_CALL_TIMEOUT_S", timeout_s)
+    return pids_file
+
+
+def test_a11y_helpers_give_up_on_a_stalled_bus(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bus that never answers fails ``AccessibilityError`` within the bound,
+    and the timed-out ``dbus-send`` is killed instead of left running.
+    """
+    pids_file = _stalling_dbus_send(tmp_path, monkeypatch)
+    address = "unix:path=/nonexistent/bus"
+
+    started = time.monotonic()
+    with pytest.raises(AccessibilityError, match="timed out"):
+        accessibility_enabled(address)
+    with pytest.raises(AccessibilityError, match="timed out"):
+        set_accessibility_enabled(address, True)
+    assert time.monotonic() - started < 5.0
+
+    pids = [int(line) for line in pids_file.read_text().splitlines()]
+    assert len(pids) == 2
+    for pid in pids:
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+
+
+def test_the_registry_cleanup_survives_a_stalled_bus(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``switch_accessibility_on`` under the registry lock stays bounded too, and
+    the recorded switch still gets a bounded restore attempt on the exit path.
+    """
+    pids_file = _stalling_dbus_send(tmp_path, monkeypatch)
+    registry = OwnedProcessRegistry()
+
+    started = time.monotonic()
+    with pytest.raises(AccessibilityError, match="timed out"):
+        registry.switch_accessibility_on("unix:path=/nonexistent/bus")
+    registry.close()
+    registry.terminate_all()
+    assert time.monotonic() - started < 5.0
+
+    for line in pids_file.read_text().splitlines():
+        with pytest.raises(ProcessLookupError):
+            os.kill(int(line), 0)
+
+
+def _answering_dbus_send(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reply: str = "",
+    *,
+    stderr: str = "",
+    exit_code: int = 0,
+) -> Path:
+    """Stand a ``dbus-send`` stub first on PATH; return the file argv is logged to."""
+    stub_dir = tmp_path / "stub-bin"
+    stub_dir.mkdir()
+    argv_file = tmp_path / "dbus-send-argv"
+    (tmp_path / "reply").write_text(reply)
+    (tmp_path / "stderr").write_text(stderr)
+    stub = stub_dir / "dbus-send"
+    stub.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$@\" > {shlex.quote(str(argv_file))}\n"
+        f"cat {shlex.quote(str(tmp_path / 'reply'))}\n"
+        f"cat {shlex.quote(str(tmp_path / 'stderr'))} >&2\n"
+        f"exit {exit_code}\n"
+    )
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{stub_dir}{os.pathsep}{os.environ['PATH']}")
+    return argv_file
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    [
+        # dbus-send --print-reply=literal for Properties.Get's variant<boolean>.
+        ("   variant       boolean true\n", True),
+        ("   variant       boolean false\n", False),
+    ],
+)
+def test_accessibility_enabled_reads_a_literal_reply(
+    reply: str, expected: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    argv_file = _answering_dbus_send(tmp_path, monkeypatch, reply)
+
+    assert accessibility_enabled("unix:path=/run/bus-a") is expected
+    reply_timeout_ms = max(1, int(session_module._A11Y_CALL_TIMEOUT_S * 1000))
+    assert argv_file.read_text().splitlines() == [
+        "--bus=unix:path=/run/bus-a",
+        "--print-reply=literal",
+        f"--reply-timeout={reply_timeout_ms}",
+        "--dest=org.a11y.Bus",
+        "/org/a11y/bus",
+        "org.freedesktop.DBus.Properties.Get",
+        "string:org.a11y.Status",
+        "string:IsEnabled",
+    ]
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "",
+        "method return time=1.000 sender=:1.2 -> destination=:1.3\n",
+        '   variant       string "yes"\n',
+        "   variant       int32 1\n",
+        "garbage\n",
+    ],
+)
+def test_accessibility_enabled_rejects_an_unreadable_reply(
+    reply: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _answering_dbus_send(tmp_path, monkeypatch, reply)
+
+    with pytest.raises(AccessibilityError, match="unreadable IsEnabled value"):
+        accessibility_enabled("unix:path=/run/bus-a")
+
+
+def test_set_accessibility_enabled_sends_a_variant_boolean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    argv_file = _answering_dbus_send(tmp_path, monkeypatch)
+
+    set_accessibility_enabled("unix:path=/run/bus-a", True)
+
+    reply_timeout_ms = max(1, int(session_module._A11Y_CALL_TIMEOUT_S * 1000))
+    assert argv_file.read_text().splitlines() == [
+        "--bus=unix:path=/run/bus-a",
+        "--print-reply=literal",
+        f"--reply-timeout={reply_timeout_ms}",
+        "--dest=org.a11y.Bus",
+        "/org/a11y/bus",
+        "org.freedesktop.DBus.Properties.Set",
+        "string:org.a11y.Status",
+        "string:IsEnabled",
+        "variant:boolean:true",
+    ]
+
+
+def test_a11y_helpers_report_a_bus_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """dbus-send's own error (nonzero exit) is one ``AccessibilityError`` line."""
+    _answering_dbus_send(
+        tmp_path,
+        monkeypatch,
+        stderr="Error org.freedesktop.DBus.Error.ServiceUnknown: The name org.a11y.Bus "
+        "was not provided by any .service files\n",
+        exit_code=1,
+    )
+
+    with pytest.raises(AccessibilityError, match="ServiceUnknown"):
+        accessibility_enabled("unix:path=/nonexistent/bus")
+    with pytest.raises(AccessibilityError, match="ServiceUnknown"):
+        set_accessibility_enabled("unix:path=/nonexistent/bus", True)

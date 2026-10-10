@@ -1297,9 +1297,10 @@ fi
 # the session needs that name, so the wrapper waits for it here; READY only
 # means callers may talk to KWin immediately. The wait never hangs: stop as
 # soon as KWin dies, and give up after {_KWIN_BUS_NAME_TIMEOUT} s so a hung
-# bus name claim still reaches FAILED before the parent's handshake
-# deadline. dbus-send --reply-timeout bounds each probe reply; a bus that
-# stalls authentication leaves the parent deadline as the outer bound.
+# bus name claim reports FAILED. If earlier steps already used most of the
+# parent's handshake deadline, that deadline ends the startup first.
+# dbus-send --reply-timeout bounds each probe reply; a bus that stalls
+# authentication leaves the parent deadline as the outer bound.
 KWIN_NAME_DEADLINE=$((SECONDS + {int(_KWIN_BUS_NAME_TIMEOUT)}))
 while true; do
     kill -0 $KWIN_PID 2>/dev/null || break

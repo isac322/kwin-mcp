@@ -8,7 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/isac322/kwin-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/isac322/kwin-mcp/actions/workflows/ci.yml)
 
-A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that enables AI agents (Claude Code, Cursor, and other MCP clients) to launch, interact with, and observe any Wayland application in a fully isolated virtual KWin session -- without affecting the user's desktop. It also supports **live desktop automation** by connecting to an existing KWin session (real desktop or container) for collaborative workflows. With 33 MCP tools covering mouse, keyboard, touch, clipboard, accessibility tree inspection, screenshot capture, and window management, kwin-mcp provides everything needed for end-to-end GUI testing and desktop automation on Linux.
+A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that enables AI agents (Claude Code, Cursor, and other MCP clients) to launch, interact with, and observe any Wayland application in an isolated virtual KWin session -- without affecting the user's desktop display or input. It also supports **live desktop automation** by connecting to an existing KWin session (real desktop or container) for collaborative workflows. With 33 MCP tools covering mouse, keyboard, touch, clipboard, accessibility tree inspection, screenshot capture, and window management, kwin-mcp provides everything needed for end-to-end GUI testing and desktop automation on Linux.
 
 ## Table of Contents
 
@@ -27,7 +27,7 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that e
 
 ## Why kwin-mcp?
 
-- **Isolated sessions** -- Each session runs in its own `dbus-run-session` + `kwin_wayland --virtual` sandbox. Your host desktop is never affected.
+- **Isolated sessions** -- Each session runs in its own `dbus-run-session` + `kwin_wayland --virtual` compositor. Your host desktop never receives its windows or input. This is not a filesystem or network sandbox; see [Isolation scope](#isolation-scope).
 - **Live session support** -- Connect to a real KDE Plasma desktop or a KWin instance inside a container (e.g. `systemd-nspawn`) for collaborative "share my screen" workflows.
 - **No screenshots required for interaction** -- The AT-SPI2 accessibility tree gives the AI agent structured widget data (roles, names, coordinates, states, available actions), so it can interact with UI elements without relying solely on vision.
 - **Zero authorization prompts** -- Uses KWin's private EIS (Emulated Input Server) D-Bus interface directly, bypassing the XDG RemoteDesktop portal. No user confirmation dialogs.
@@ -236,7 +236,7 @@ When an image was downscaled, its `Coordinate space` line keeps the logical orig
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `session_start` | `app_command?` `str`, `screen_width?` `int` (1920), `screen_height?` `int` (1080), `enable_clipboard?` `bool` (false), `keep_screenshots?` `bool` (false), `isolate_home?` `bool` (false), `keep_home?` `bool` (false), `env?` `dict` | Start an isolated KWin Wayland session, optionally launching an app. Set `enable_clipboard=true` to enable clipboard tools (requires `wl-clipboard`). Set `keep_screenshots=true` to preserve screenshot files after `session_stop`. Set `isolate_home=true` to create a temporary HOME with isolated XDG directories (config, data, cache, state), preventing apps from reading/writing host user settings. Set `keep_home=true` to preserve the isolated home directory after `session_stop`. Pass extra environment variables via `env`. Startup is deadline-bounded: a failed handshake raises `RuntimeError` with the captured session stderr and stray stdout. |
+| `session_start` | `app_command?` `str`, `screen_width?` `int` (1920), `screen_height?` `int` (1080), `enable_clipboard?` `bool` (false), `keep_screenshots?` `bool` (false), `isolate_home?` `bool` (false), `keep_home?` `bool` (false), `env?` `dict` | Start an isolated KWin Wayland session, optionally launching an app. Set `enable_clipboard=true` to enable clipboard tools (requires `wl-clipboard`). Set `keep_screenshots=true` to preserve screenshot files after `session_stop`. Set `isolate_home=true` to create a temporary HOME with isolated XDG directories (config, data, cache, state), so apps use fresh settings instead of the host user's. Set `keep_home=true` to preserve the isolated home directory after `session_stop`. Pass extra environment variables via `env`. Startup is deadline-bounded: a failed handshake raises `RuntimeError` with the captured session stderr and stray stdout. |
 | `session_connect` | `dbus_address?` `str`, `wayland_display?` `str`, `keep_screenshots?` `bool` (false), `enable_accessibility?` `bool` (false) | Connect to an existing KWin session (real desktop or container). Defaults to `$DBUS_SESSION_BUS_ADDRESS` and `$WAYLAND_DISPLAY`. Clipboard is always enabled. `session_stop` only disconnects without killing KWin or pre-existing apps. The result's `Accessibility:` line reports the desktop's `org.a11y.Status.IsEnabled` switch; `enable_accessibility=true` turns it on until `session_stop` (see [Accessibility Tree](#accessibility-tree)). |
 | `session_stop` | _(none)_ | Stop the session and clean up. For virtual sessions: signals the whole session process group (`SIGTERM`, then `SIGKILL` for members that remain), so descendants still stop even if the session leader already exited. For live sessions: disconnects without killing KWin or pre-existing apps. |
 
@@ -371,7 +371,11 @@ kwin-mcp provides three layers of isolation from the host desktop:
 1. **D-Bus isolation** -- `dbus-run-session` creates a private session bus. The isolated session's services (KWin, AT-SPI2, portals) are invisible to the host.
 2. **Display isolation** -- `kwin_wayland --virtual` creates its own Wayland compositor with a virtual framebuffer. No windows appear on the host display.
 3. **Input isolation** -- Input events are injected through KWin's EIS interface into the isolated compositor only. The host desktop receives no input from kwin-mcp.
-4. **Home directory isolation** (optional) -- When `isolate_home=true` is set in `session_start`, a temporary HOME directory is created with isolated XDG directories (`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME`). Apps in the session cannot read or modify host user settings (e.g. `~/.config/kdeglobals`), improving test reproducibility and safety. `XDG_RUNTIME_DIR` is intentionally not isolated because the Wayland socket resides there.
+4. **Home directory isolation** (optional) -- When `isolate_home=true` is set in `session_start`, a temporary HOME directory is created with isolated XDG directories (`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME`). Apps that follow the XDG base directories read and write these instead of host user settings (e.g. `~/.config/kdeglobals`), improving test reproducibility. `XDG_RUNTIME_DIR` is intentionally not isolated because the Wayland socket resides there.
+
+#### Isolation scope
+
+These layers separate the session's bus, display, and input from the host desktop. They do not confine the processes: launched apps run as your user with your filesystem permissions and network access, and can still reach the original home directory by absolute path when `isolate_home=true`. Run untrusted applications in a container or VM rather than relying on a virtual session.
 
 ### Automatic Session Cleanup at Exit
 

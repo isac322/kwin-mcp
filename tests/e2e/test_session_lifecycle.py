@@ -367,10 +367,11 @@ def test_session_start_reports_a_failed_accessibility_bus_activation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Only the wrapper resolves dbus-send through the patched PATH; the stub
-    # stands in for a distro without an org.a11y.Bus service file. The
-    # org.kde.KWin ownership probe below must pass through to the real
-    # dbus-send or start() could never see KWin register.
+    # Only the wrapper resolves dbus-send through the patched PATH. The stub
+    # fails the activation and every later GetAddress, so the direct start of
+    # the launcher cannot complete either and must leave no bus behind. The
+    # NameHasOwner probes (org.kde.KWin, and the direct start's own wait) must
+    # pass through to the real dbus-send or start() could never see KWin register.
     real_dbus_send = shutil.which("dbus-send")
     assert real_dbus_send is not None, "dbus-send not found in PATH"
     _install_stub(
@@ -400,6 +401,141 @@ def test_session_start_reports_a_failed_accessibility_bus_activation(
 
     monkeypatch.undo()
     assert _a11y_bus_has_owner(engine).split()[-1:] == ["false"]
+
+
+def test_session_start_starts_the_accessibility_bus_directly_when_activation_is_denied(
+    engine: AutomationEngine,
+    start_session: Callable[..., str],
+    wait_for_app: Callable[[str], str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Fedora's SELinux policy denies the launcher's activation from a private
+    # session bus with exactly this error; a direct start works. The stub
+    # denies only the first GetAddress, the activation.
+    real_dbus_send = shutil.which("dbus-send")
+    assert real_dbus_send is not None, "dbus-send not found in PATH"
+    marker = tmp_path / "activation-denied"
+    _install_stub(
+        tmp_path,
+        monkeypatch,
+        "dbus-send",
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        "    *org.a11y.Bus.GetAddress*)\n"
+        f"        if [ ! -e {shlex.quote(str(marker))} ]; then\n"
+        f"            : > {shlex.quote(str(marker))}\n"
+        "            echo 'Error org.freedesktop.DBus.Error.Spawn.ExecFailed: Failed to execute"
+        " program org.a11y.Bus: Permission denied' >&2\n"
+        "            exit 1\n"
+        "        fi;;\n"
+        "esac\n"
+        f'exec {shlex.quote(real_dbus_send)} "$@"\n',
+    )
+
+    output = start_session()
+
+    assert "Session started. Wayland socket: " in output, output
+    warnings = [line for line in output.splitlines() if line.startswith("Warning: ")]
+    assert warnings == [
+        "Warning: AT-SPI bus activation failed (Error org.freedesktop.DBus.Error.Spawn.ExecFailed:"
+        " Failed to execute program org.a11y.Bus: Permission denied); started the accessibility"
+        " bus and registry directly instead"
+    ], output
+
+    monkeypatch.undo()
+    assert _a11y_bus_has_owner(engine).split()[-1:] == ["true"]
+    # The switch is set on a directly started bus as on an activated one.
+    reply = engine.dbus_call(
+        service="org.a11y.Bus",
+        path="/org/a11y/bus",
+        interface="org.freedesktop.DBus.Properties",
+        method="Get",
+        args=["string:org.a11y.Status", "string:IsEnabled"],
+    )
+    assert reply.split()[-1:] == ["true"], reply
+    # The directly started registry serves apps like an activated one.
+    assert engine.launch_app("kcalc").startswith("App launched: kcalc (PID=")
+    assert element_count(wait_for_app("kcalc")) > 0
+
+
+def _accessibility_daemons() -> int:
+    """Running accessibility bus daemons (the launcher's dbus-daemon or broker)."""
+    count = 0
+    for cmdline in Path("/proc").glob("[0-9]*/cmdline"):
+        try:
+            if b"at-spi2/accessibility.conf" in cmdline.read_bytes():
+                count += 1
+        except OSError:
+            continue
+    return count
+
+
+def test_session_start_stops_the_direct_launcher_when_the_registry_fails(
+    engine: AutomationEngine,
+    start_session: Callable[..., str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Activation is denied; the launcher then starts directly, but the registry
+    # named by the first service file on XDG_DATA_DIRS exits at once. The
+    # half-started bus, launcher and its daemon, must not outlive the attempt.
+    real_service = next(
+        (
+            Path(root) / "dbus-1/services/org.a11y.Bus.service"
+            for root in ("/usr/local/share", "/usr/share")
+            if (Path(root) / "dbus-1/services/org.a11y.Bus.service").is_file()
+        ),
+        None,
+    )
+    assert real_service is not None, "no org.a11y.Bus service file"
+    data_dir = tmp_path / "share"
+    (data_dir / "dbus-1/services").mkdir(parents=True)
+    (data_dir / "dbus-1/accessibility-services").mkdir(parents=True)
+    (data_dir / "dbus-1/services/org.a11y.Bus.service").write_text(real_service.read_text())
+    (data_dir / "dbus-1/accessibility-services/org.a11y.atspi.Registry.service").write_text(
+        "[D-BUS Service]\nName=org.a11y.atspi.Registry\nExec=/bin/false\n"
+    )
+    monkeypatch.setenv(
+        "XDG_DATA_DIRS",
+        f"{data_dir}:{os.environ.get('XDG_DATA_DIRS', '/usr/local/share:/usr/share')}",
+    )
+    real_dbus_send = shutil.which("dbus-send")
+    assert real_dbus_send is not None, "dbus-send not found in PATH"
+    marker = tmp_path / "activation-denied"
+    _install_stub(
+        tmp_path,
+        monkeypatch,
+        "dbus-send",
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        "    *org.a11y.Bus.GetAddress*)\n"
+        f"        if [ ! -e {shlex.quote(str(marker))} ]; then\n"
+        f"            : > {shlex.quote(str(marker))}\n"
+        "            echo 'Error org.freedesktop.DBus.Error.Spawn.ExecFailed: Failed to execute"
+        " program org.a11y.Bus: Permission denied' >&2\n"
+        "            exit 1\n"
+        "        fi;;\n"
+        "esac\n"
+        f'exec {shlex.quote(real_dbus_send)} "$@"\n',
+    )
+    daemons_before = _accessibility_daemons()
+
+    output = start_session()
+
+    warnings = [line for line in output.splitlines() if line.startswith("Warning: ")]
+    assert warnings == [
+        "Warning: AT-SPI bus activation failed, accessibility tools may be unavailable in this"
+        " session: Error org.freedesktop.DBus.Error.Spawn.ExecFailed: Failed to execute program"
+        " org.a11y.Bus: Permission denied"
+    ], output
+    monkeypatch.undo()
+    assert _a11y_bus_has_owner(engine).split()[-1:] == ["false"]
+    # The launcher stops its daemon on SIGTERM; allow that exit a moment.
+    deadline = time.monotonic() + 3.0
+    while _accessibility_daemons() != daemons_before and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert _accessibility_daemons() == daemons_before
 
 
 def test_connects_to_the_second_compositor_without_owning_it(

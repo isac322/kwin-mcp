@@ -46,7 +46,14 @@ from kwin_mcp.screenshot import (
     capture_screenshot_to_file,
     reframe_screenshot,
 )
-from kwin_mcp.session import LiveSession, Session, SessionConfig, process_registry
+from kwin_mcp.session import (
+    AccessibilityError,
+    LiveSession,
+    Session,
+    SessionConfig,
+    accessibility_enabled,
+    process_registry,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -553,8 +560,13 @@ class AutomationEngine:
         dbus_address: str = "",
         wayland_display: str = "",
         keep_screenshots: bool = False,
+        enable_accessibility: bool = False,
     ) -> str:
-        """Connect to an existing KWin session (e.g. the real desktop)."""
+        """Connect to an existing KWin session (e.g. the real desktop).
+
+        ``enable_accessibility`` switches ``org.a11y.Status.IsEnabled`` on for the
+        connection when it is off; ``session_stop`` switches it back off.
+        """
         if self._session is not None and self._session.is_running:
             return "Session already running. Call session_stop first."
 
@@ -646,8 +658,33 @@ class AutomationEngine:
                     "Screenshot and accessibility tools still work."
                 )
 
+        result += "\n" + self._live_accessibility(session, dbus_addr, enable=enable_accessibility)
+
         progress.report(3, 3, "Input backend ready")
         return result
+
+    @staticmethod
+    def _live_accessibility(session: LiveSession, dbus_addr: str, *, enable: bool) -> str:
+        """Apply ``enable_accessibility`` and describe the desktop's accessibility switch."""
+        try:
+            if enable:
+                if not session.enable_accessibility():
+                    return "Accessibility: on (org.a11y.Status.IsEnabled)"
+                return (
+                    "Accessibility: switched on for this connection "
+                    "(org.a11y.Status.IsEnabled); session_stop switches it back off. "
+                    "Firefox follows it at once; an app that reads it only at startup "
+                    "must be restarted."
+                )
+            if accessibility_enabled(dbus_addr):
+                return "Accessibility: on (org.a11y.Status.IsEnabled)"
+        except AccessibilityError as exc:
+            return f"Accessibility: org.a11y.Status unavailable ({exc})"
+        return (
+            "Accessibility: off (org.a11y.Status.IsEnabled is false), so apps that check it, "
+            "such as Firefox, expose no accessibility tree. Reconnect with "
+            "enable_accessibility=true to switch it on until session_stop."
+        )
 
     def session_stop(self) -> str:
         """Stop the current session and clean up."""

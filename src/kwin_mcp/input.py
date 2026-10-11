@@ -429,26 +429,36 @@ class EISClient:
         except dbus.DBusException as exc:
             msg = f"KWin EIS interface unavailable: {exc}"
             raise RuntimeError(msg) from exc
-        fd = result[0].take()
+        fd: int | None = result[0].take()
         self._cookie = int(result[1])
 
-        # Create libei sender context
-        self._ei = lib.ei_new_sender(None)
-        if not self._ei:
-            msg = "Failed to create EI context"
-            raise RuntimeError(msg)
+        # From here on every failure must release what was acquired so far: the
+        # socket fd until libei takes it, the ei context and devices, and the
+        # KWin-side connection behind the cookie.
+        try:
+            # Create libei sender context
+            self._ei = lib.ei_new_sender(None)
+            if not self._ei:
+                msg = "Failed to create EI context"
+                raise RuntimeError(msg)
 
-        lib.ei_configure_name(self._ei, b"kwin-mcp")
+            lib.ei_configure_name(self._ei, b"kwin-mcp")
 
-        ret = lib.ei_setup_backend_fd(self._ei, fd)
-        if ret != 0:
-            lib.ei_unref(self._ei)
-            self._ei = 0
-            msg = f"ei_setup_backend_fd failed: {ret}"
-            raise RuntimeError(msg)
+            # libei owns the fd once ei_setup_backend_fd is called, even when it fails.
+            backend_fd, fd = fd, None
+            ret = lib.ei_setup_backend_fd(self._ei, backend_fd)
+            if ret != 0:
+                msg = f"ei_setup_backend_fd failed: {ret}"
+                raise RuntimeError(msg)
 
-        # Process handshake events to get devices
-        self._negotiate_devices()
+            # Process handshake events to get devices
+            self._negotiate_devices()
+        except BaseException:
+            if fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+            self.close()
+            raise
 
     def _negotiate_devices(self, timeout: float = 5.0) -> None:
         """Process EIS handshake events until pointer + keyboard are usable.
@@ -756,39 +766,47 @@ class EISClient:
         self._flush()
 
     def close(self) -> None:
-        """Clean up the EIS connection without waiting; never raises."""
-        if not self._ei:
-            return
-        lib = _get_libei()
-        # Handle events already delivered so no call targets a removed device.
-        with contextlib.suppress(OSError, ValueError):
-            self._drain_events(0.0)
+        """Clean up the EIS connection without waiting; never raises.
 
-        # After DISCONNECT libei has already removed every device, so only
-        # release references then.
-        for touch, _device in self._active_touches.values():
+        Safe on a partially set up client: the libei context is released only
+        when one exists, and the KWin-side connection is disconnected whenever a
+        cookie was handed out, after libei let go of the socket.
+        """
+        if self._ei:
+            lib = _get_libei()
+            # Handle events already delivered so no call targets a removed device.
+            with contextlib.suppress(OSError, ValueError):
+                self._drain_events(0.0)
+
+            # After DISCONNECT libei has already removed every device, so only
+            # release references then.
+            for touch, _device in self._active_touches.values():
+                if not self._disconnected:
+                    lib.ei_touch_up(touch)
+                lib.ei_touch_unref(touch)
+            self._active_touches.clear()
+
             if not self._disconnected:
-                lib.ei_touch_up(touch)
-            lib.ei_touch_unref(touch)
-        self._active_touches.clear()
+                slot_devices = {getattr(self, attr) for _role, attr in self._DEVICE_SLOTS}
+                for device in slot_devices & self._emulating:
+                    lib.ei_device_stop_emulating(device)
+            self._emulating.clear()
+            for _role, attr in self._DEVICE_SLOTS:
+                device = getattr(self, attr)
+                if device:
+                    lib.ei_device_unref(device)
+                    setattr(self, attr, 0)
 
-        if not self._disconnected:
-            slot_devices = {getattr(self, attr) for _role, attr in self._DEVICE_SLOTS}
-            for device in slot_devices & self._emulating:
-                lib.ei_device_stop_emulating(device)
-        self._emulating.clear()
-        for _role, attr in self._DEVICE_SLOTS:
-            device = getattr(self, attr)
-            if device:
-                lib.ei_device_unref(device)
-                setattr(self, attr, 0)
+            # Release the context before KWin drops the connection: a disconnect
+            # first makes libei's final message hit a closed socket ("failed to
+            # send message ... Broken pipe").
+            lib.ei_unref(self._ei)
+            self._ei = 0
 
         if self._eis_iface and self._cookie:
             with contextlib.suppress(dbus.DBusException):
                 self._eis_iface.disconnect(dbus.Int32(self._cookie))
-
-        lib.ei_unref(self._ei)
-        self._ei = 0
+        self._cookie = 0
 
 
 # Bounds for the transient clipboard helper (``python -m kwin_mcp.clipboard``).
@@ -1227,15 +1245,22 @@ class InputBackend:
             self._held_buttons.discard(btn_code)
 
     def keyboard_type(self, text: str) -> None:
-        """Type a string of text character by character."""
+        """Type a string of text character by character.
+
+        Raises ValueError before typing anything when the text holds a character
+        the US QWERTY key map cannot produce (``keyboard_type_unicode`` can).
+        """
+        unsupported = dict.fromkeys(char for char in text if char not in _CHAR_KEY_MAP)
+        if unsupported:
+            chars = ", ".join(repr(char) for char in unsupported)
+            msg = f"keyboard_type cannot type {chars}; use keyboard_type_unicode"
+            raise ValueError(msg)
+
         total = len(text)
         last_report = time.monotonic()
+        reported = 0
         for index, char in enumerate(text, 1):
-            entry = _CHAR_KEY_MAP.get(char)
-            if entry is None:
-                continue
-
-            keycode, needs_shift = entry
+            keycode, needs_shift = _CHAR_KEY_MAP[char]
             if needs_shift:
                 self._client.keyboard_key(_MODIFIER_KEYS["shift"], _PRESSED)
                 time.sleep(0.01)
@@ -1253,7 +1278,12 @@ class InputBackend:
             now = time.monotonic()
             if now - last_report >= _TYPE_REPORT_INTERVAL_S:
                 last_report = now
+                reported = index
                 progress.report(index, total, f"Typed {index}/{total} characters")
+
+        # Always end at total; a repeated equal value would open a new phase.
+        if reported < total:
+            progress.report(total, total, f"Typed {total}/{total} characters")
 
     def keyboard_key(self, key: str) -> None:
         """Press a key combination (e.g., 'ctrl+c', 'Return', 'alt+F4').
@@ -1415,7 +1445,7 @@ class InputBackend:
         Args:
             from_x, from_y: Starting coordinates (center of finger group).
             to_x, to_y: Ending coordinates.
-            fingers: Number of fingers (2-5).
+            fingers: Number of fingers (at least 1).
             duration_ms: Duration of the swipe.
         """
         steps = max(10, duration_ms // 10)
@@ -1563,14 +1593,19 @@ def _key_name_to_evdev(name: str) -> int | None:
 
 
 def _resolve_modifiers(modifiers: list[str] | None) -> list[int]:
-    """Resolve modifier key names to evdev keycodes."""
+    """Resolve modifier key names to evdev keycodes.
+
+    Raises ValueError for an unknown or empty name, before any input is sent.
+    """
     if not modifiers:
         return []
     codes: list[int] = []
     for mod in modifiers:
         code = _MODIFIER_KEYS.get(mod.lower())
-        if code is not None:
-            codes.append(code)
+        if code is None:
+            msg = f"Unknown modifier: {mod!r}"
+            raise ValueError(msg)
+        codes.append(code)
     return codes
 
 

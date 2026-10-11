@@ -158,7 +158,7 @@ EXPECTED_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "clipboard_get": {"readOnlyHint": True, "openWorldHint": False},
     "clipboard_set": {
         "readOnlyHint": False,
-        "destructiveHint": False,
+        "destructiveHint": True,
         "idempotentHint": True,
         "openWorldHint": False,
     },

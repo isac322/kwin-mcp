@@ -360,3 +360,110 @@ async def test_invalid_key_and_button_are_tool_errors_without_killing_server() -
         finally:
             if session_running:
                 assert await client.call_text("session_stop") == "Session stopped."
+
+
+async def _probe_oracle(client: McpTestClient) -> tuple[str, str, str]:
+    """The probe state an input event would change: entry text, click and drag status."""
+    tree = await client.call_text("accessibility_tree", {"app_name": PROBE_SELECTOR})
+    return (
+        _entry_text(tree),
+        _status_name(tree, "click_status:"),
+        _status_name(tree, "drag_status:"),
+    )
+
+
+async def _assert_tool_error(
+    client: McpTestClient, tool_name: str, arguments: dict[str, object], *fragments: str
+) -> None:
+    result = await client.call_result(tool_name, arguments)
+    text = _result_text(result)
+    assert result.is_error is True, (tool_name, arguments, text)
+    for fragment in fragments:
+        assert fragment in text, (tool_name, arguments, fragment, text)
+
+
+@pytest.mark.anyio
+async def test_invalid_input_arguments_are_tool_errors_before_any_input() -> None:
+    """Malformed gesture, modifier and text arguments send nothing to the session."""
+    async with running_mcp_server() as client:
+        session_running = False
+        try:
+            start = await client.call_text(
+                "session_start",
+                {"screen_width": SCREEN_WIDTH, "screen_height": SCREEN_HEIGHT},
+            )
+            session_running = True
+            assert "Input backend: KWin EIS" in start, start
+            await _launch_probe(client)
+            x, y = await _global_element_center(client, "Click Target")
+            before = await _probe_oracle(client)
+            assert before[0] == "", before
+
+            for fingers in (0, -1):
+                await _assert_tool_error(
+                    client,
+                    "touch_multi_swipe",
+                    {"from_x": x, "from_y": y, "to_x": x + 200, "to_y": y, "fingers": fingers},
+                    "fingers",
+                )
+
+            for waypoints in ([[x, y]], [[1]], [[]], [[x, y, 1, 2]]):
+                await _assert_tool_error(
+                    client,
+                    "mouse_drag",
+                    {
+                        "from_x": x,
+                        "from_y": y,
+                        "to_x": x + 100,
+                        "to_y": y,
+                        "waypoints": waypoints,
+                    },
+                    "waypoints[0]",
+                )
+
+            drag = {"from_x": x, "from_y": y, "to_x": x + 100, "to_y": y}
+            for modifiers, bad_name in ((["hyper"], "'hyper'"), (["ctrl", ""], "''")):
+                await _assert_tool_error(
+                    client,
+                    "mouse_click",
+                    {"x": x, "y": y, "modifiers": modifiers},
+                    f"Unknown modifier: {bad_name}",
+                )
+                await _assert_tool_error(
+                    client,
+                    "mouse_drag",
+                    {**drag, "modifiers": modifiers},
+                    f"Unknown modifier: {bad_name}",
+                )
+
+            await _assert_tool_error(
+                client,
+                "keyboard_type",
+                {"text": "héllo€!"},
+                "'é'",
+                "'€'",
+                "keyboard_type_unicode",
+            )
+            await _assert_tool_error(client, "keyboard_type_unicode", {"text": "a\x00b"}, "NUL")
+
+            # Give any event that did reach the probe time to show.
+            await anyio.sleep(0.5)
+            assert await _probe_oracle(client) == before
+        finally:
+            if session_running:
+                assert await client.call_text("session_stop") == "Session stopped."
+
+
+@pytest.mark.anyio
+async def test_session_stop_releases_libei_without_broken_pipe_warning() -> None:
+    """libei lets go of the socket before KWin drops the EIS connection."""
+    async with running_mcp_server() as client:
+        start = await client.call_text(
+            "session_start",
+            {"screen_width": SCREEN_WIDTH, "screen_height": SCREEN_HEIGHT},
+        )
+        try:
+            assert "Input backend: KWin EIS" in start, start
+        finally:
+            assert await client.call_text("session_stop") == "Session stopped."
+        assert "failed to send message" not in client.stderr_text(), client.stderr_text()

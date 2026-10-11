@@ -999,11 +999,17 @@ class AutomationEngine:
         screenshot_after_ms: list[int] | None = None,
     ) -> str:
         """Drag from one point to another in the isolated session."""
-        inp = self._get_input()
-        btn = MouseButton(button)
         wp: list[tuple[int, int, int]] | None = None
         if waypoints:
-            wp = [(w[0], w[1], w[2]) for w in waypoints]
+            wp = []
+            for index, waypoint in enumerate(waypoints):
+                if len(waypoint) != 3:
+                    msg = f"waypoints[{index}] must be [x, y, dwell_ms], got {waypoint}"
+                    raise ValueError(msg)
+                wx, wy, dwell_ms = waypoint
+                wp.append((wx, wy, dwell_ms))
+        inp = self._get_input()
+        btn = MouseButton(button)
         inp.mouse_drag(from_x, from_y, to_x, to_y, button=btn, modifiers=modifiers, waypoints=wp)
 
         desc = f"Dragged from ({from_x}, {from_y}) to ({to_x}, {to_y})"
@@ -1037,15 +1043,25 @@ class AutomationEngine:
 
     # ── Keyboard tools ────────────────────────────────────────────────────
 
+    # Caller text longer than this is echoed as its length only, so a large
+    # payload does not come back into the client's context.
+    _ECHO_MAX_CHARS = 200
+
+    def _echo(self, text: str) -> str:
+        """Render caller text for a result: its repr, or ``<N characters>`` when long."""
+        if len(text) <= self._ECHO_MAX_CHARS:
+            return repr(text)
+        return f"<{len(text)} characters>"
+
     def keyboard_type(
         self,
         text: str,
         screenshot_after_ms: list[int] | None = None,
     ) -> str:
-        """Type ASCII text into the currently focused element."""
+        """Type text the US QWERTY key map can produce into the focused element."""
         inp = self._get_input()
         inp.keyboard_type(text)
-        result = f"Typed: {text!r}"
+        result = f"Typed: {self._echo(text)}"
         return self._with_frame_capture(result, screenshot_after_ms)
 
     def keyboard_type_unicode(
@@ -1054,6 +1070,10 @@ class AutomationEngine:
         screenshot_after_ms: list[int] | None = None,
     ) -> str:
         """Type arbitrary Unicode text including non-ASCII characters."""
+        # NUL can neither travel in wtype's argv nor be typed meaningfully.
+        if "\0" in text:
+            msg = "text must not contain NUL characters"
+            raise ValueError(msg)
         inp = self._get_input()
 
         # Both routes are Wayland clients: without the session's WAYLAND_DISPLAY
@@ -1067,7 +1087,10 @@ class AutomationEngine:
             return str(focus["result"]) if focus["ok"] else None
 
         ok = inp.keyboard_type_unicode(text, env=self._session_env(), focused_class=focused_class)
-        result = f"Typed unicode: {text!r}" if ok else f"Failed to type unicode: {text!r}"
+        if not ok:
+            msg = f"Failed to type unicode: {self._echo(text)}"
+            raise RuntimeError(msg)
+        result = f"Typed unicode: {self._echo(text)}"
         return self._with_frame_capture(result, screenshot_after_ms)
 
     def keyboard_key(
@@ -1152,6 +1175,9 @@ class AutomationEngine:
         screenshot_after_ms: list[int] | None = None,
     ) -> str:
         """Perform a multi-finger swipe gesture."""
+        if fingers < 1:
+            msg = f"touch_multi_swipe fingers must be at least 1, got {fingers}"
+            raise ValueError(msg)
         inp = self._get_input()
         inp.touch_multi_swipe(from_x, from_y, to_x, to_y, fingers=fingers, duration_ms=duration_ms)
         desc = (
@@ -1165,10 +1191,11 @@ class AutomationEngine:
     def clipboard_get(self) -> str:
         """Read the current clipboard content in the isolated session."""
         if not self._clipboard_enabled:
-            return (
+            msg = (
                 "Clipboard not enabled. Pass enable_clipboard=True to session_start, "
                 "or use session_connect (clipboard is always enabled for live sessions)."
             )
+            raise RuntimeError(msg)
 
         env = self._session_env()
         try:
@@ -1178,47 +1205,53 @@ class AutomationEngine:
                 capture_output=True,
                 timeout=5,
             )
-        except FileNotFoundError:
-            return _INSTALL_HINTS["wl-paste"]
+        except FileNotFoundError as exc:
+            raise RuntimeError(_INSTALL_HINTS["wl-paste"]) from exc
         if result.returncode != 0:
-            return f"Failed to read clipboard: {result.stderr.decode(errors='replace')}"
+            msg = f"Failed to read clipboard: {result.stderr.decode(errors='replace')}"
+            raise RuntimeError(msg)
         return result.stdout.decode(errors="replace")
 
     def clipboard_set(self, text: str) -> str:
         """Set the clipboard content in the isolated session."""
         if not self._clipboard_enabled:
-            return (
+            msg = (
                 "Clipboard not enabled. Pass enable_clipboard=True to session_start, "
                 "or use session_connect (clipboard is always enabled for live sessions)."
             )
+            raise RuntimeError(msg)
 
         env = self._session_env()
+        # The text goes through stdin: argv is size-limited (E2BIG) and cannot
+        # carry NUL. Output stays on DEVNULL because the forked owner inherits it.
         try:
             proc = subprocess.Popen(
-                ["wl-copy", "--", text],
+                ["wl-copy", "--type", "text/plain;charset=utf-8"],
                 env=env,
-                stdin=subprocess.DEVNULL,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
-        except FileNotFoundError:
-            return _INSTALL_HINTS["wl-copy"]
+        except FileNotFoundError as exc:
+            raise RuntimeError(_INSTALL_HINTS["wl-copy"]) from exc
         # The exit is the readiness signal; the forked owner intentionally
         # outlives this call and serves the text until something replaces it.
         try:
-            returncode = proc.wait(timeout=_CLIPBOARD_SET_TIMEOUT)
+            proc.communicate(text.encode(), timeout=_CLIPBOARD_SET_TIMEOUT)
         except subprocess.TimeoutExpired:
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(proc.pid, signal.SIGKILL)
-            proc.wait()
-            return (
+            proc.communicate()
+            msg = (
                 "Failed to set clipboard: wl-copy did not confirm the selection "
                 f"within {_CLIPBOARD_SET_TIMEOUT:g}s"
             )
-        if returncode != 0:
-            return f"Failed to set clipboard: wl-copy exited with status {returncode}"
-        return f"Clipboard set: {text!r}"
+            raise RuntimeError(msg) from None
+        if proc.returncode != 0:
+            msg = f"Failed to set clipboard: wl-copy exited with status {proc.returncode}"
+            raise RuntimeError(msg)
+        return f"Clipboard set: {self._echo(text)}"
 
     # ── Wait-for-UI tools ─────────────────────────────────────────────────
 

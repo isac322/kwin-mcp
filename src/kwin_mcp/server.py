@@ -739,8 +739,9 @@ def keyboard_type(
     text: Annotated[
         str,
         Field(
-            description="ASCII text to type. For non-ASCII (Korean, CJK, emoji), "
-            "use keyboard_type_unicode instead."
+            description="Text to type on a US QWERTY layout (letters, digits, punctuation, "
+            "space, tab, newline). Any other character (Korean, CJK, emoji, accented "
+            "characters, \\r) is rejected; use keyboard_type_unicode for it."
         ),
     ],
     screenshot_after_ms: Annotated[
@@ -751,11 +752,12 @@ def keyboard_type(
         ),
     ] = None,
 ) -> str:
-    """Type ASCII text into the currently focused element.
+    """Type text into the currently focused element with individual key presses.
 
-    Simulates individual key presses for each character. Only supports ASCII
-    characters. For non-ASCII text (Korean, CJK, emoji, accented characters),
-    use keyboard_type_unicode instead.
+    Simulates individual key presses for each character of the US QWERTY
+    layout. Text containing any other character is rejected as a tool error
+    before anything is typed; use keyboard_type_unicode for non-ASCII text
+    (Korean, CJK, emoji, accented characters).
     """
     return _engine.keyboard_type(text=text, screenshot_after_ms=screenshot_after_ms)
 
@@ -778,10 +780,11 @@ def keyboard_type_unicode(
     paste on it (Konsole, GNOME Terminal, kitty, foot, st, ...), Ctrl+V
     elsewhere. The previous clipboard content (all its formats) is restored
     after the paste, and the text is marked as secret so KDE's clipboard
-    history skips it. Returns a failure when the clipboard could not be
+    history skips it. Fails as a tool error when the clipboard could not be
     taken or nothing requested the text, and without pressing any key when
     the focused window is a recognized terminal with no clipboard paste
-    chord (xterm, urxvt) or cannot be identified.
+    chord (xterm, urxvt) or cannot be identified. Text containing NUL
+    characters is rejected.
     Use this instead of keyboard_type when the text contains non-ASCII
     characters (e.g. Korean, CJK, emoji, accented characters).
     """
@@ -944,7 +947,14 @@ def touch_multi_swipe(
     ],
     to_x: Annotated[int, Field(description="Ending X coordinate in pixels.")],
     to_y: Annotated[int, Field(description="Ending Y coordinate in pixels.")],
-    fingers: Annotated[int, Field(description="Number of fingers (2-5).")] = 3,
+    fingers: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Number of fingers (default 3). KWin consumes swipes with 3 or more "
+            "fingers as global gestures.",
+        ),
+    ] = 3,
     duration_ms: Annotated[int, Field(description="Duration of the swipe in milliseconds.")] = 300,
     screenshot_after_ms: Annotated[
         list[int] | None,
@@ -975,21 +985,24 @@ def clipboard_get() -> str:
     """Read the current clipboard content in the isolated session.
 
     Requires enable_clipboard=true in session_start and wl-clipboard
-    installed. Returns the clipboard text or an error message if clipboard
-    is not enabled or empty.
+    installed. Returns the clipboard text. Fails as a tool error when the
+    clipboard is not enabled, wl-paste is missing, or the clipboard is
+    empty or unreadable.
     """
     return _engine.clipboard_get()
 
 
-@_tool(annotations=_NON_DESTRUCTIVE_IDEMPOTENT)
+@_tool(annotations=_DESTRUCTIVE_IDEMPOTENT)
 def clipboard_set(
     text: Annotated[str, Field(description="Text to copy to clipboard.")],
 ) -> str:
     """Set the clipboard content in the isolated session.
 
     Requires enable_clipboard=true in session_start and wl-clipboard
-    installed. The content remains available until replaced by another
-    clipboard_set call or the session ends.
+    installed. Replaces the current selection with text of any size. The
+    content remains available until replaced by another clipboard_set call
+    or the session ends. The confirmation echoes text of up to 200
+    characters; longer text is reported as its length.
     """
     return _engine.clipboard_set(text=text)
 

@@ -73,6 +73,11 @@ class McpClient(Protocol):
     ) -> Any: ...
 
 
+def _result_text(result: object) -> str:
+    content = getattr(result, "content", [])
+    return "\n".join(str(getattr(block, "text", "")) for block in content)
+
+
 @asynccontextmanager
 async def _virtual_session(
     *,
@@ -352,12 +357,14 @@ async def test_clipboard_disabled_guards_return_without_hanging() -> None:
             assert "Session started" in output, output
 
             with anyio.fail_after(2):
-                get_output = await client.call_text("clipboard_get")
-            assert get_output == CLIPBOARD_DISABLED_HINT
+                get_result = await client.call_result("clipboard_get")
+            assert get_result.is_error is True, _result_text(get_result)
+            assert CLIPBOARD_DISABLED_HINT in _result_text(get_result)
 
             with anyio.fail_after(2):
-                set_output = await client.call_text("clipboard_set", {"text": "disabled"})
-            assert set_output == CLIPBOARD_DISABLED_HINT
+                set_result = await client.call_result("clipboard_set", {"text": "disabled"})
+            assert set_result.is_error is True, _result_text(set_result)
+            assert CLIPBOARD_DISABLED_HINT in _result_text(set_result)
         finally:
             if session_running:
                 await client.call_result("session_stop")
@@ -380,6 +387,36 @@ async def test_clipboard_roundtrip_and_paste_cross_stdio(tmp_path: Path) -> None
 
         await client.call_text("keyboard_key", {"key": "ctrl+v"})
         await _wait_for_text(client, payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param("".join(chr(0x41 + index % 26) for index in range(256 * 1024)), id="256KiB"),
+        pytest.param("a\x00b", id="nul"),
+    ],
+)
+async def test_clipboard_set_roundtrips_large_and_nul_text(payload: str) -> None:
+    # argv cannot carry either payload (E2BIG / embedded null byte); stdin can.
+    async with _socket_session() as (client, _socket):
+        set_result = await client.call_result("clipboard_set", {"text": payload})
+        assert set_result.is_error is not True, _result_text(set_result)[:500]
+        assert await client.call_text("clipboard_get") == payload
+
+
+async def test_clipboard_set_echoes_long_text_as_its_length() -> None:
+    at_limit = "b" * 200
+    long_payload = "L" * 150 + "-long-payload-" + "M" * 150
+    async with _socket_session() as (client, _socket):
+        assert await client.call_text("clipboard_set", {"text": at_limit}) == (
+            f"Clipboard set: {at_limit!r}"
+        )
+
+        output = await client.call_text("clipboard_set", {"text": long_payload})
+        assert output == f"Clipboard set: <{len(long_payload)} characters>", output
+        assert long_payload not in output
+        assert "-long-payload-" not in output
+        assert await client.call_text("clipboard_get") == long_payload
 
 
 async def test_unicode_paste_restores_prior_clipboard_with_its_own_owner(tmp_path: Path) -> None:
@@ -405,13 +442,17 @@ async def test_unicode_paste_restores_prior_clipboard_with_its_own_owner(tmp_pat
 async def test_unicode_paste_clears_text_when_clipboard_was_empty(tmp_path: Path) -> None:
     async with _socket_session() as (client, _socket):
         await _open_kwrite(client, tmp_path, "unicode-empty")
-        assert (await client.call_text("clipboard_get")).startswith("Failed to read clipboard")
+        empty = await client.call_result("clipboard_get")
+        assert empty.is_error is True, _result_text(empty)
+        assert "Failed to read clipboard" in _result_text(empty)
 
         output = await client.call_text("keyboard_type_unicode", {"text": UNICODE_MARKER})
 
         assert output == f"Typed unicode: {UNICODE_MARKER!r}"
         await _wait_for_text(client, UNICODE_MARKER)
-        assert (await client.call_text("clipboard_get")).startswith("Failed to read clipboard")
+        empty_after = await client.call_result("clipboard_get")
+        assert empty_after.is_error is True, _result_text(empty_after)
+        assert "Failed to read clipboard" in _result_text(empty_after)
 
 
 async def test_unicode_paste_waits_for_slow_prior_owner(tmp_path: Path) -> None:
@@ -441,14 +482,17 @@ async def test_unicode_paste_fails_without_pasting_when_prior_owner_never_answer
         async with _prior_clipboard_owner(socket, PRIOR_CLIPBOARD) as owner:
             owner.send_signal(signal.SIGSTOP)
             try:
-                output = await client.call_text("keyboard_type_unicode", {"text": UNICODE_MARKER})
+                result = await client.call_result(
+                    "keyboard_type_unicode", {"text": UNICODE_MARKER}
+                )
                 # No Ctrl+V was sent, so nothing can arrive late.
                 assert await _focused_text(client) == ""
                 assert owner.poll() is None
             finally:
                 owner.send_signal(signal.SIGCONT)
 
-            assert output == f"Failed to type unicode: {UNICODE_MARKER!r}"
+            assert result.is_error is True, _result_text(result)
+            assert f"Failed to type unicode: {UNICODE_MARKER!r}" in _result_text(result)
             assert await client.call_text("clipboard_get") == PRIOR_CLIPBOARD
 
 
@@ -465,9 +509,12 @@ async def test_unicode_paste_rejects_oversized_multiline_text_without_side_effec
         await _open_kwrite(client, tmp_path, "unicode-oversized")
         async with _prior_clipboard_owner(socket, PRIOR_CLIPBOARD) as owner:
             with anyio.fail_after(INPUT_TIMEOUT_SECONDS):
-                output = await client.call_text("keyboard_type_unicode", {"text": oversized})
+                result = await client.call_result("keyboard_type_unicode", {"text": oversized})
 
-            assert output == f"Failed to type unicode: {oversized!r}"
+            assert result.is_error is True
+            assert f"Failed to type unicode: <{len(oversized)} characters>" in _result_text(
+                result
+            )
             assert await _focused_text(client) == ""
             # The original owner was never replaced, so nothing took the selection.
             assert owner.poll() is None
@@ -494,9 +541,10 @@ async def test_clipboard_set_reports_slow_wl_copy_failure(tmp_path: Path) -> Non
         _socket_session(server_env=server_env) as (client, socket),
         _prior_clipboard_owner(socket, PRIOR_CLIPBOARD),
     ):
-        output = await client.call_text("clipboard_set", {"text": "never-set-45"})
+        result = await client.call_result("clipboard_set", {"text": "never-set-45"})
 
-        assert output == "Failed to set clipboard: wl-copy exited with status 2"
+        assert result.is_error is True, _result_text(result)
+        assert "Failed to set clipboard: wl-copy exited with status 2" in _result_text(result)
         assert await client.call_text("clipboard_get") == PRIOR_CLIPBOARD
 
 

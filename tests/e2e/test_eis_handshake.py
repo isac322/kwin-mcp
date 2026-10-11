@@ -696,3 +696,102 @@ def test_keyboard_removal_queued_by_a_send_fails_the_next_key(
 
     assert elapsed < FIRST_FAILURE_SECONDS, elapsed
     assert libei.device_calls == []
+
+
+COOKIE = 7
+
+
+class _SetupLibei(_ScriptedLibei):
+    """``_ScriptedLibei`` plus the context setup calls ``EISClient._setup`` makes."""
+
+    def __init__(self, fd: int, *, setup_result: int) -> None:
+        super().__init__([], fd)
+        self._setup_result = setup_result
+        self.unref_calls = 0
+
+    def ei_new_sender(self, _user_data: object) -> int:
+        return EI_CONTEXT
+
+    def ei_configure_name(self, ei: int, _name: bytes) -> None:
+        assert ei == EI_CONTEXT
+
+    def ei_setup_backend_fd(self, ei: int, _fd: int) -> int:
+        assert ei == EI_CONTEXT
+        return self._setup_result
+
+    def ei_unref(self, ei: int) -> None:
+        assert ei == EI_CONTEXT
+        self.unref_calls += 1
+
+
+class _FakeUnixFd:
+    """The ``dbus.types.UnixFd`` connectToEIS returns."""
+
+    def __init__(self, fd: int) -> None:
+        self._fd = fd
+
+    def take(self) -> int:
+        return self._fd
+
+
+class _FakeEisInterface:
+    """KWin's EIS D-Bus interface: hands out ``fd`` and records disconnects."""
+
+    def __init__(self, fd: int) -> None:
+        self._fd = fd
+        self.disconnects: list[int] = []
+        # The D-Bus method name is camelCase, which a method definition would misname.
+        self.connectToEIS = self._connect_to_eis
+
+    def _connect_to_eis(self, _capabilities: object) -> tuple[_FakeUnixFd, int]:
+        return _FakeUnixFd(self._fd), COOKIE
+
+    def disconnect(self, cookie: int) -> None:
+        self.disconnects.append(int(cookie))
+
+
+class _FakeBus:
+    def get_object(self, _name: str, _path: str) -> object:
+        return object()
+
+
+def _setup_through_fakes(
+    monkeypatch: pytest.MonkeyPatch, libei: _SetupLibei, iface: _FakeEisInterface
+) -> None:
+    """Run the real ``EISClient.__init__``/``_setup`` against ``libei`` and ``iface``."""
+    monkeypatch.setattr(kwin_input, "_libei", libei)
+    monkeypatch.setattr(kwin_input, "DBusGMainLoop", lambda **_kwargs: None)
+    monkeypatch.setattr(kwin_input.dbus.bus, "BusConnection", lambda _address: _FakeBus())
+    monkeypatch.setattr(kwin_input.dbus, "Interface", lambda _obj, _name: iface)
+    kwin_input.EISClient("unix:path=/nonexistent")
+
+
+def test_failed_backend_setup_releases_context_and_disconnects(
+    monkeypatch: pytest.MonkeyPatch, eis_pipe: tuple[int, int]
+) -> None:
+    libei = _SetupLibei(eis_pipe[0], setup_result=-1)
+    iface = _FakeEisInterface(eis_pipe[0])
+
+    with pytest.raises(RuntimeError, match="ei_setup_backend_fd failed"):
+        _setup_through_fakes(monkeypatch, libei, iface)
+
+    assert iface.disconnects == [COOKIE]
+    assert libei.unref_calls == 1
+
+
+def test_failed_negotiation_releases_context_and_disconnects(
+    monkeypatch: pytest.MonkeyPatch, eis_pipe: tuple[int, int]
+) -> None:
+    libei = _SetupLibei(eis_pipe[0], setup_result=0)
+    iface = _FakeEisInterface(eis_pipe[0])
+
+    def negotiate(_client: kwin_input.EISClient, timeout: float = 5.0) -> None:
+        msg = "negotiation failed"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(kwin_input.EISClient, "_negotiate_devices", negotiate)
+    with pytest.raises(RuntimeError, match="negotiation failed"):
+        _setup_through_fakes(monkeypatch, libei, iface)
+
+    assert iface.disconnects == [COOKIE]
+    assert libei.unref_calls == 1

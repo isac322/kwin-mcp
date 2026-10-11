@@ -1222,10 +1222,29 @@ class AutomationEngine:
         if all(value is None for value in (x, y, width, height)):
             return "window_set_geometry needs at least one of x, y, width or height."
 
+        supplied = (("x", x), ("y", y), ("width", width), ("height", height))
+
+        # The CLI forwards raw JSON without MCP schema validation, so a field
+        # can arrive as a bool, float or string; KWin only understands real
+        # ints. Reject anything else before touching the compositor.
+        for field, value in supplied:
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+                return f"window_set_geometry {field} must be an integer, got {value!r}."
+
         if width is not None and width <= 0:
             return "window_set_geometry width must be greater than zero."
         if height is not None and height <= 0:
             return "window_set_geometry height must be greater than zero."
+
+        # KWin and QSize store geometry as signed 32-bit ints; larger magnitudes
+        # would overflow or reach the compositor script as +/-Infinity.
+        int32_max = 2**31 - 1
+        for field, value in supplied:
+            if value is not None and abs(value) > int32_max:
+                return (
+                    f"window_set_geometry {field} must be within the signed 32-bit "
+                    f"range, got {value}."
+                )
 
         resp = self._run_kwin_query(
             {
@@ -1250,15 +1269,22 @@ class AutomationEngine:
         # post-action state.
         observed_resp = self._run_kwin_query({"window_id": window_id})
         observed = None
-        if observed_resp["ok"] and observed_resp["result"]:
-            observed = observed_resp["result"][0]
+        observation_error = None
+        if observed_resp["ok"]:
+            if observed_resp["result"]:
+                observed = observed_resp["result"][0]
+        else:
+            observation_error = str(observed_resp["error"])
 
         before = result["before"]
         requested = f"x={x!r}, y={y!r}, width={width!r}, height={height!r}"
         name = f'{result["app"]} "{result["caption"]}"'
 
+        # frameGeometry changes are committed asynchronously: the observed
+        # rectangle is post-action compositor state, not proof that every
+        # requested field was applied.
         lines = [
-            f"Geometry set: {name} ({window_id})",
+            f"Geometry update requested: {name} ({window_id})",
             f"before:    ({before[0]}, {before[1]}, {before[2]}x{before[3]})",
             f"requested: {requested}",
         ]
@@ -1268,6 +1294,16 @@ class AutomationEngine:
             lines.append(
                 f"observed:  ({frame['x']}, {frame['y']}, {frame['width']}x{frame['height']})"
             )
+            pending = [
+                field for field, value in supplied if value is not None and frame[field] != value
+            ]
+            if pending:
+                lines.append(
+                    f"not yet applied: {', '.join(pending)} "
+                    "(the client may still be applying the change; verify with window_geometry)"
+                )
+        elif observation_error is not None:
+            lines.append(f"observation failed: {observation_error}")
         else:
             lines.append("observed: unavailable")
 

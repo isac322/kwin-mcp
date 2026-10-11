@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/isac322-kwin-mcp-badge.png)](https://mseep.ai/app/isac322-kwin-mcp)
+
 # kwin-mcp
 
 **Model Context Protocol server for Linux desktop GUI automation on KDE Plasma 6 Wayland**

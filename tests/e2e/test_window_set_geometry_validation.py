@@ -4,11 +4,14 @@ These tests stub the KWin query worker, so they run without a KWin session.
 They exercise values the CLI can forward from raw JSON, bypassing MCP schema
 validation: bools, floats, strings and magnitudes beyond the signed 32-bit
 range KWin's geometry fields use. Invalid arguments raise ValueError before
-anything reaches the compositor.
+anything reaches the compositor. Failed or empty KWin answers to the window
+tools (focus_window, active_window, window_set_geometry, window_close) raise
+RuntimeError.
 """
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -16,7 +19,7 @@ import pytest
 import kwin_mcp.core as core
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from kwin_mcp.core import AutomationEngine
 
@@ -197,16 +200,82 @@ def test_size_beyond_the_workspace_is_rejected_without_observation(
 
 
 @pytest.mark.parametrize(
-    ("fields", "message"),
+    ("window_id", "message"),
     [
-        ({"window_id": ""}, "needs a window_id"),
-        ({"window_id": "id"}, "needs at least one of x, y, width or height"),
+        ("", "needs a window_id"),
+        ("id", "needs at least one of x, y, width or height"),
     ],
     ids=["empty-id", "no-field"],
 )
-def test_missing_arguments_are_rejected_before_the_session(
-    fields: dict[str, str], message: str
-) -> None:
+def test_missing_arguments_are_rejected_before_the_session(window_id: str, message: str) -> None:
     # No session is stubbed: the argument check must not depend on session state.
     with pytest.raises(ValueError, match=message):
-        core.AutomationEngine().window_set_geometry(**fields)
+        core.AutomationEngine().window_set_geometry(window_id=window_id)
+
+
+def _engine_answering(
+    monkeypatch: pytest.MonkeyPatch, response: dict[str, object]
+) -> AutomationEngine:
+    """Engine with a session stub whose KWin worker answers every query with ``response``."""
+    engine = core.AutomationEngine()
+    monkeypatch.setattr(engine, "_get_session", lambda: object())
+    monkeypatch.setattr(engine, "_run_kwin_query", lambda _request: response)
+    return engine
+
+
+_CLOSED_WINDOW = {"found": True, "app": "app", "caption": "fixed", "closeable": False}
+
+
+@pytest.mark.parametrize(
+    ("call", "response", "fragment"),
+    [
+        (
+            lambda engine: engine.focus_window(app_name="kcalc"),
+            {"ok": True, "result": ""},
+            "No window matches 'kcalc'",
+        ),
+        (
+            lambda engine: engine.active_window(),
+            {"ok": False, "error": "script timed out"},
+            "Active window unavailable: script timed out",
+        ),
+        (
+            lambda engine: engine.window_set_geometry(window_id="id", x=1),
+            {"ok": False, "error": "script timed out"},
+            "Failed to set geometry for 'id': script timed out",
+        ),
+        (
+            lambda engine: engine.window_set_geometry(window_id="id", x=1),
+            {"ok": True, "result": {"found": False}},
+            "No window with id 'id'",
+        ),
+        (
+            lambda engine: engine.window_close(window_id="id"),
+            {"ok": False, "error": "script timed out"},
+            "Failed to close window 'id': script timed out",
+        ),
+        (
+            lambda engine: engine.window_close(window_id="id"),
+            {"ok": True, "result": _CLOSED_WINDOW},
+            "cannot be closed",
+        ),
+    ],
+    ids=[
+        "focus-no-match",
+        "active-unavailable",
+        "set-geometry-failed",
+        "set-geometry-no-window",
+        "close-failed",
+        "close-refused",
+    ],
+)
+def test_kwin_failures_raise_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+    call: Callable[[AutomationEngine], str],
+    response: dict[str, object],
+    fragment: str,
+) -> None:
+    """A failed or empty KWin answer is a tool error, not a success string."""
+    engine = _engine_answering(monkeypatch, response)
+    with pytest.raises(RuntimeError, match=re.escape(fragment)):
+        call(engine)

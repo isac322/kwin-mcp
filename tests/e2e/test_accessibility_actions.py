@@ -77,7 +77,7 @@ def test_invoke_ui_action_works_on_background_window(
 def test_invoke_ui_action_fails_closed_on_ambiguous_match(
     kcalc_session: AutomationEngine,
 ) -> None:
-    with pytest.raises(RuntimeError, match="^Refused ambiguous AT-SPI action:"):
+    with pytest.raises(RuntimeError, match=r"^Refused ambiguous AT-SPI action:"):
         kcalc_session.invoke_ui_action(
             query="button",
             action_name="Press",
@@ -450,3 +450,80 @@ def test_incomplete_discovery_names_the_application_and_suggests_app_name(
 
     assert result == 'Invoked AT-SPI action: Press on [push button] "Seven" in kcalc'
     assert action_calls == ["Seven"]
+
+
+class _BrokenStdin:
+    """Worker stdin whose reader is gone: the request line cannot be written."""
+
+    def write(self, _data: bytes) -> int:
+        raise BrokenPipeError
+
+    def flush(self) -> None:
+        return None
+
+
+class _AcceptingStdin:
+    def write(self, data: bytes) -> int:
+        return len(data)
+
+    def flush(self) -> None:
+        return None
+
+
+def _engine_with_worker(
+    monkeypatch: pytest.MonkeyPatch, spawn: Callable[[], object]
+) -> core.AutomationEngine:
+    """Engine running the real ``_run_atspi`` against the worker ``spawn`` returns."""
+    engine = core.AutomationEngine()
+    monkeypatch.setattr(engine, "_get_session", lambda: object())
+    monkeypatch.setattr(engine, "_ensure_atspi_worker", spawn)
+    monkeypatch.setattr(engine, "_teardown_atspi_worker", lambda: None)
+    return engine
+
+
+def test_invoke_ui_action_unsent_request_has_no_may_have_run_note(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker that exited before the request was written cannot have run the action."""
+    worker = types.SimpleNamespace(stdin=_BrokenStdin(), stdout=object())
+    engine = _engine_with_worker(monkeypatch, lambda: worker)
+
+    with pytest.raises(core.AtspiRequestNotSentError) as failure:
+        engine.invoke_ui_action(query="Seven", action_name="Press")
+    message = str(failure.value)
+    assert message == "AT-SPI2 query failed: AT-SPI2 worker exited before the request was sent"
+    assert "may still have run" not in message, message
+
+
+def test_invoke_ui_action_refused_worker_spawn_has_no_may_have_run_note(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker the process registry refused to start never received the request."""
+    refusal = "the process registry is closed: refusing to spawn a new process"
+
+    def refuse() -> object:
+        raise RuntimeError(refusal)
+
+    engine = _engine_with_worker(monkeypatch, refuse)
+
+    with pytest.raises(core.AtspiRequestNotSentError) as failure:
+        engine.invoke_ui_action(query="Seven", action_name="Press")
+    assert str(failure.value) == refusal
+
+
+def test_invoke_ui_action_worker_death_after_send_warns_the_action_may_have_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker that took the request and then exited may have invoked the action."""
+    import os
+
+    read_fd, write_fd = os.pipe()
+    os.close(write_fd)
+    with os.fdopen(read_fd, "rb") as stdout:
+        worker = types.SimpleNamespace(stdin=_AcceptingStdin(), stdout=stdout, poll=lambda: 1)
+        engine = _engine_with_worker(monkeypatch, lambda: worker)
+
+        with pytest.raises(RuntimeError, match="may still have run") as failure:
+            engine.invoke_ui_action(query="Seven", action_name="Press")
+    assert not isinstance(failure.value, core.AtspiRequestNotSentError)
+    assert str(failure.value).startswith("AT-SPI2 query failed: AT-SPI2 worker exited (status 1)")

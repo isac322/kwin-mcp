@@ -148,6 +148,20 @@ _CHAR_KEY_MAP[" "] = (57, False)  # space
 _CHAR_KEY_MAP["\t"] = (15, False)  # tab
 _CHAR_KEY_MAP["\n"] = (28, False)  # enter
 
+
+def check_typeable(text: str) -> None:
+    """Raise ValueError naming every character the US QWERTY key map cannot produce.
+
+    The single source of truth for what ``keyboard_type`` accepts, so callers can
+    reject unsupported text before touching any input backend.
+    """
+    unsupported = dict.fromkeys(char for char in text if char not in _CHAR_KEY_MAP)
+    if unsupported:
+        chars = ", ".join(repr(char) for char in unsupported)
+        msg = f"keyboard_type cannot type {chars}; use keyboard_type_unicode"
+        raise ValueError(msg)
+
+
 # Button states
 _PRESSED = 1
 _RELEASED = 0
@@ -1250,11 +1264,7 @@ class InputBackend:
         Raises ValueError before typing anything when the text holds a character
         the US QWERTY key map cannot produce (``keyboard_type_unicode`` can).
         """
-        unsupported = dict.fromkeys(char for char in text if char not in _CHAR_KEY_MAP)
-        if unsupported:
-            chars = ", ".join(repr(char) for char in unsupported)
-            msg = f"keyboard_type cannot type {chars}; use keyboard_type_unicode"
-            raise ValueError(msg)
+        check_typeable(text)
 
         total = len(text)
         last_report = time.monotonic()

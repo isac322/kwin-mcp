@@ -7,6 +7,7 @@ value must still be at most the total and greater than the previous one.
 
 from __future__ import annotations
 
+import itertools
 import types
 from typing import TYPE_CHECKING
 
@@ -55,10 +56,10 @@ def test_wait_for_element_progress_never_exceeds_total(
         result = engine.wait_for_element("zzz", timeout_ms=TIMEOUT_MS)
 
     assert result.startswith(f"Timeout after {TIMEOUT_MS}ms"), result
-    # The worker request itself may run past the wait's own deadline.
     assert requests[0]["op"] == "wait"
-    assert requests[0]["timeout_s"] == TIMEOUT_MS / 1000 + core._ATSPI_TIMEOUT_S
     assert events, events
     values = [value for value, _, _ in events]
-    assert all(later > earlier for earlier, later in zip(values, values[1:], strict=False)), events
+    assert all(later > earlier for earlier, later in itertools.pairwise(values)), events
     assert all(total == TIMEOUT_MS and value <= total for value, total, _ in events), events
+    # The worker request itself may run past the wait's own deadline.
+    assert requests[0]["timeout_s"] == TIMEOUT_MS / 1000 + core._ATSPI_TIMEOUT_S

@@ -1281,10 +1281,11 @@ def test_live_session_busy_exit_restores_accessibility_keeps_kwin() -> None:
 def _busy_exit_virtual_isolated_home(arguments: dict[str, bool]) -> tuple[Path, Path]:
     """Busy-exit a virtual isolated-home session; return (home dir, screenshot dir).
 
-    Starts ``session_start`` with ``isolate_home=True`` plus ``arguments``, takes a
-    screenshot so the screenshot dir has content, then fires an overrun tool and
-    closes stdin so the registry path cleans up. The screenshot dir is located from
-    the screenshot's output path.
+    Starts ``session_start`` with ``isolate_home=True`` plus ``arguments`` and an
+    initial app, then fires an overrun tool and closes stdin so the registry path
+    cleans up. The app's log file lives in the screenshot dir, so the dir is located
+    from the reported ``App log:`` path and has content without capturing a
+    screenshot (capture is unavailable in some virtual-session environments).
     """
     server = _spawn_with_stderr([sys.executable, "-m", "kwin_mcp"])
     reader = _LineReader(_stdout(server))
@@ -1309,18 +1310,22 @@ def _busy_exit_virtual_isolated_home(arguments: dict[str, bool]) -> tuple[Path, 
             server,
             2,
             "tools/call",
-            {"name": "session_start", "arguments": {"isolate_home": True, **arguments}},
+            {
+                "name": "session_start",
+                "arguments": {
+                    "isolate_home": True,
+                    "app_command": "sh -c 'echo started; exec sleep 600'",
+                    **arguments,
+                },
+            },
         )
         text = _response_text(response)
         match = re.search(r"Isolated home: (\S+)", text)
         assert match, f"no isolated home in response: {text[:200]}"
         home_dir = Path(match.group(1))
         assert home_dir.is_dir(), f"isolated home does not exist: {home_dir}"
-
-        response = _rpc(reader, server, 3, "tools/call", {"name": "screenshot", "arguments": {}})
-        text = _response_text(response)
-        match = re.search(r"Screenshot saved: (\S+)", text)
-        assert match, f"no screenshot path in response: {text[:200]}"
+        match = re.search(r"App log: (\S+)", text)
+        assert match, f"no app log path in response: {text[:200]}"
         screenshot_dir = Path(match.group(1)).parent
         assert screenshot_dir.is_dir(), f"screenshot dir does not exist: {screenshot_dir}"
         assert not screenshot_dir.is_relative_to(home_dir), (

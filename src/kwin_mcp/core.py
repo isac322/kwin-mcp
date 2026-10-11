@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 from xml.etree import ElementTree
 
 from kwin_mcp import progress
-from kwin_mcp.input import InputBackend, MouseButton
+from kwin_mcp.input import InputBackend, MouseButton, check_typeable
 from kwin_mcp.results import (
     AccessibilityTreeResult,
     FindUIElementsResult,
@@ -66,6 +66,20 @@ _ATSPI_HEARTBEAT_S = 0.25
 # exit on stdin EOF before it is killed.
 _ATSPI_TIMEOUT_S = 30.0
 _ATSPI_EXIT_GRACE_S = 2.0
+
+
+class AtspiRequestNotSentError(RuntimeError):
+    """An AT-SPI2 request failed before any attempt reached the worker.
+
+    The worker could not be started (e.g. the process registry refused the
+    spawn) or exited before the request line was written, so the request
+    cannot have run.
+    """
+
+
+class _RequestNotSentError(EOFError):
+    """The worker's stdin was gone before the request line was written."""
+
 
 # Install hints for external binaries
 _INSTALL_HINTS: dict[str, str] = {
@@ -393,7 +407,7 @@ class AutomationEngine:
             proc.stdin.write(line)
             proc.stdin.flush()
         except (BrokenPipeError, ConnectionResetError) as exc:
-            raise EOFError("AT-SPI2 worker exited before the request was sent") from exc
+            raise _RequestNotSentError("AT-SPI2 worker exited before the request was sent") from exc
 
         deadline = time.monotonic() + timeout_s
         fd = proc.stdout.fileno()
@@ -431,24 +445,39 @@ class AutomationEngine:
         discards the worker and retries once on a fresh one. ``heartbeat`` is
         called periodically while a response is awaited. ``timeout_s`` bounds
         each attempt; requests that wait inside the worker pass a longer one.
+
+        Raises :class:`AtspiRequestNotSentError` when no attempt wrote the
+        request to a worker (so it cannot have run), ``RuntimeError`` otherwise.
         """
         line = json.dumps({"op": op, **kwargs}).encode() + b"\n"
         last_error = ""
+        sent = False
         with self._atspi_lock:
             attempts = 2 if retry else 1
             for attempt in range(attempts):
                 if attempt > 0:
                     time.sleep(0.5)
-                proc = self._ensure_atspi_worker()
+                try:
+                    proc = self._ensure_atspi_worker()
+                except RuntimeError as exc:
+                    if sent:
+                        raise
+                    raise AtspiRequestNotSentError(str(exc)) from exc
                 try:
                     resp = self._atspi_exchange(proc, line, heartbeat, timeout_s)
+                except _RequestNotSentError as exc:
+                    last_error = f"AT-SPI2 query failed: {exc}"
                 except TimeoutError:
+                    sent = True
                     last_error = f"AT-SPI2 query timed out after {timeout_s:g}s (op={op})"
                 except EOFError as exc:
+                    sent = True
                     last_error = f"AT-SPI2 query failed: {exc}"
                 except json.JSONDecodeError as exc:
+                    sent = True
                     last_error = f"AT-SPI2 query returned invalid JSON: {exc}"
                 else:
+                    sent = True
                     if "worker_error" not in resp:
                         return resp
                     last_error = f"AT-SPI2 query failed: {resp['worker_error']}"
@@ -458,7 +487,7 @@ class AutomationEngine:
             msg = f"{last_error}. Retried once but still failed — the AT-SPI2 bus may be unstable."
         else:
             msg = last_error
-        raise RuntimeError(msg)
+        raise (RuntimeError if sent else AtspiRequestNotSentError)(msg)
 
     def _teardown_atspi_worker(self) -> None:
         """Stop the AT-SPI worker with bounded latency.
@@ -875,8 +904,9 @@ class AutomationEngine:
 
         self._get_session()
 
-        # The worker may finish the walk and invoke the action even after this
-        # request timed out or the worker was torn down.
+        # Once the request reached the worker, the worker may finish the walk and
+        # invoke the action even after this request timed out or the worker was
+        # torn down. A request that never reached a worker cannot have run.
         try:
             resp = self._run_atspi(
                 "action",
@@ -885,6 +915,8 @@ class AutomationEngine:
                 action_name=action_name,
                 app_name=app_name,
             )
+        except AtspiRequestNotSentError:
+            raise
         except RuntimeError as exc:
             raise RuntimeError(
                 f"{exc}. The action may still have run; check the UI before retrying."
@@ -1059,6 +1091,7 @@ class AutomationEngine:
         screenshot_after_ms: list[int] | None = None,
     ) -> str:
         """Type text the US QWERTY key map can produce into the focused element."""
+        check_typeable(text)
         inp = self._get_input()
         inp.keyboard_type(text)
         result = f"Typed: {self._echo(text)}"

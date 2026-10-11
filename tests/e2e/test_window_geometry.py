@@ -99,8 +99,29 @@ def _kcalc_window(engine: AutomationEngine) -> WindowGeometry:
     return windows[0]
 
 
+_SETTLE_INTERVAL_SECONDS = 0.2
+_SETTLE_TIMEOUT_SECONDS = 5.0
+
+
+def _settled_kcalc_window(engine: AutomationEngine) -> WindowGeometry:
+    """The kcalc window once two reads ``_SETTLE_INTERVAL_SECONDS`` apart agree.
+
+    KWin may still be placing or resizing a freshly mapped window; acting on a
+    frame that is about to change would make "before"/"unchanged" checks race.
+    """
+    deadline = time.monotonic() + _SETTLE_TIMEOUT_SECONDS
+    previous = _kcalc_window(engine)
+    while True:
+        time.sleep(_SETTLE_INTERVAL_SECONDS)
+        current = _kcalc_window(engine)
+        if current == previous:
+            return current
+        assert time.monotonic() < deadline, f"kcalc window kept changing: {previous} -> {current}"
+        previous = current
+
+
 def test_set_geometry_before_line_is_pre_call_frame(kcalc_session: AutomationEngine) -> None:
-    window = _kcalc_window(kcalc_session)
+    window = _settled_kcalc_window(kcalc_session)
     frame = window.frame
     target = (frame.x + 37, frame.y + 23)
 
@@ -115,7 +136,7 @@ def test_set_geometry_before_line_is_pre_call_frame(kcalc_session: AutomationEng
 def test_set_geometry_beyond_the_workspace_is_rejected(
     kcalc_session: AutomationEngine, screen_size: tuple[int, int]
 ) -> None:
-    window = _kcalc_window(kcalc_session)
+    window = _settled_kcalc_window(kcalc_session)
     screen_width, _ = screen_size
 
     with pytest.raises(

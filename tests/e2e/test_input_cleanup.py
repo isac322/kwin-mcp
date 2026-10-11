@@ -467,3 +467,11 @@ async def test_session_stop_releases_libei_without_broken_pipe_warning() -> None
         finally:
             assert await client.call_text("session_stop") == "Session stopped."
         assert "failed to send message" not in client.stderr_text(), client.stderr_text()
+
+
+def test_touch_multi_swipe_rejects_zero_fingers_without_a_session() -> None:
+    """The engine checks ``fingers`` before it needs an input backend (KWin-free)."""
+    from kwin_mcp.core import AutomationEngine
+
+    with pytest.raises(ValueError, match="fingers must be at least 1, got 0"):
+        AutomationEngine().touch_multi_swipe(10, 10, 100, 100, fingers=0)

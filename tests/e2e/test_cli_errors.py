@@ -8,12 +8,14 @@ traceback.
 
 from __future__ import annotations
 
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
 from kwin_mcp.cli import KwinMcpShell
-from kwin_mcp.core import AutomationEngine
+
+if TYPE_CHECKING:
+    from kwin_mcp.core import AutomationEngine
 
 
 class _StubEngine:

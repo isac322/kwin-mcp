@@ -203,7 +203,7 @@ class EchoService:
         ``D-Bus call failed:``.
         """
         self._record_path.write_text("", encoding="utf-8")
-        with pytest.raises(ValueError, match="^D-Bus call failed:") as exc_info:
+        with pytest.raises(ValueError, match=r"^D-Bus call failed:") as exc_info:
             self.engine.dbus_call(service, OBJECT_PATH, INTERFACE, method, args)
         lines = self._record_path.read_text(encoding="utf-8").splitlines()
         return str(exc_info.value), [json.loads(line) for line in lines]
@@ -367,7 +367,7 @@ def test_argument_count_mismatch_is_rejected(
 
 def test_overload_error_lists_every_candidate(echo: EchoService) -> None:
     """KWin's loadScript is exported twice (s and ss); a third arg fails clearly."""
-    with pytest.raises(ValueError, match="^D-Bus call failed:") as exc_info:
+    with pytest.raises(ValueError, match=r"^D-Bus call failed:") as exc_info:
         echo.engine.dbus_call(
             "org.kde.KWin",
             "/Scripting",
@@ -422,7 +422,7 @@ def test_kwin_void_method_returns_empty_reply(echo: EchoService, arg: str | dict
 
 def test_unknown_service_raises_dbus_error(echo: EchoService) -> None:
     with pytest.raises(
-        RuntimeError, match="^D-Bus error: org.freedesktop.DBus.Error.ServiceUnknown"
+        RuntimeError, match=r"^D-Bus error: org\.freedesktop\.DBus\.Error\.ServiceUnknown"
     ):
         echo.engine.dbus_call("org.example.DefinitelyDoesNotExist", "/x", "org.example.X", "Foo")
 

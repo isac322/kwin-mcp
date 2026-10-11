@@ -205,12 +205,18 @@ def _tool[F: FunctionType](
 
 
 def _register_tools(*, live_session_mode: bool, screenshot_images: bool) -> None:
-    """Register every recorded tool body with the parsed server flags applied."""
-    for fn, annotations, images in _tool_bodies:
+    """Register every recorded tool body with the parsed server flags applied.
+
+    Idempotent: a tool registered by an earlier call is replaced, so calling ``main()``
+    again registers each tool once, with the flags of the latest call.
+    """
+    for fn, tool_annotations, images in _tool_bodies:
+        with contextlib.suppress(ToolError):
+            mcp.remove_tool(fn.__name__)
         description = _LIVE_SESSION_DESCRIPTIONS.get(fn.__name__) if live_session_mode else None
         _register_tool(
             fn,
-            annotations=annotations,
+            annotations=tool_annotations,
             attach_images=images and screenshot_images,
             description=description,
         )

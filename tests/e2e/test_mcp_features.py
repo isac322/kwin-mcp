@@ -267,7 +267,7 @@ async def test_tools_publish_annotations_and_keep_schemas_with_and_without_image
         plain = (await client.session.list_tools()).tools
     async with running_mcp_server(SCREENSHOT_IMAGES_FLAG) as client:
         flagged = (await client.session.list_tools()).tools
-        # The flag is stripped before the SDK parses argv, so the server stays usable.
+        # main() parses the flag (the SDK never reads argv), so the server stays usable.
         assert await client.session.send_ping() is not None
 
     plain_table = _tool_table(plain)

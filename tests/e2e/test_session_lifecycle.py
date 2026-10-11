@@ -95,12 +95,12 @@ def test_double_start_keeps_the_original_compositor(
 ) -> None:
     first_output = start_session()
     first_socket = _output_value(first_output, "Session started. Wayland socket: ")
-    pids_after_first_start = _kwin_pids()
+    pids_after_first_start = _live_kwin_pids()
 
     with pytest.raises(RuntimeError, match=SESSION_ALREADY_RUNNING):
         engine.session_start(screen_width=640, screen_height=480)
 
-    assert _kwin_pids() == pids_after_first_start
+    assert _live_kwin_pids() == pids_after_first_start
     assert (Path(os.environ["XDG_RUNTIME_DIR"]) / first_socket).is_socket()
 
 
@@ -116,7 +116,7 @@ def test_stop_without_a_session_and_repeated_stop_are_safe(
 def test_bad_app_command_raises_a_clear_error(
     engine: AutomationEngine, start_session: Callable[..., str]
 ) -> None:
-    kwin_before = _kwin_pids()
+    kwin_before = _live_kwin_pids()
 
     with pytest.raises(FileNotFoundError) as exc_info:
         start_session(BAD_BINARY)
@@ -127,7 +127,9 @@ def test_bad_app_command_raises_a_clear_error(
     assert "No such file or directory" in str(error)
     assert BAD_BINARY in str(error)
     # The failed start rolled back atomically: no compositor and no session remain.
-    assert _kwin_pids() == kwin_before
+    # Only live compositors count: the rolled-back KWin is orphaned to the container's
+    # reaperless PID 1 and stays a zombie there (see _is_live).
+    assert _live_kwin_pids() == kwin_before
     assert engine.session_stop() == "No session running."
     # A following start succeeds instead of reporting a running session.
     assert "Session started" in start_session()

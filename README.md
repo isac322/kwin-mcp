@@ -181,6 +181,9 @@ kwin-mcp
 # As a Python module
 python -m kwin_mcp
 
+# Print the server's usage and options, then exit (does not start the server)
+kwin-mcp --help
+
 # Interactive CLI (REPL for rapid testing)
 kwin-mcp-cli
 

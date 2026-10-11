@@ -21,6 +21,12 @@ RUNTIME_IMPORTS = (
     "dbus.mainloop.glib",
     "PIL.Image",
 )
+SERVER_FLAGS = ("--default-live-session", "--screenshot-images", "--screenshot-max-edge")
+SERVER_HELP_COMMANDS = (
+    (VENV_BIN / "kwin-mcp", "--help"),
+    (VENV_BIN / "kwin-mcp", "-h"),
+    (VENV_BIN / "python", "-m", "kwin_mcp", "--help"),
+)
 
 
 def test_kwin_mcp_is_loaded_from_the_runtime_venv() -> None:
@@ -91,3 +97,48 @@ def test_cli_help_runs_without_a_kwin_executable_on_path() -> None:
     assert result.returncode == 0, result.stderr
     assert "usage:" in result.stdout
     assert "--default-live-session" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "command",
+    SERVER_HELP_COMMANDS,
+    ids=("kwin-mcp--help", "kwin-mcp-h", "python-m-kwin_mcp--help"),
+)
+def test_server_help_prints_usage_without_starting_the_stdio_server(
+    command: tuple[Path | str, ...],
+) -> None:
+    environment = os.environ.copy()
+    environment["PATH"] = str(VENV_BIN)
+    argv = [str(arg) for arg in command]
+
+    # stdin stays open: a server that ignored --help would block serving MCP on it
+    # instead of exiting, so the wait below times out rather than passing on EOF.
+    process = subprocess.Popen(
+        argv,
+        env=environment,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        try:
+            returncode = process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pytest.fail(f"{argv} started the MCP server instead of printing help and exiting")
+        assert process.stdout is not None
+        assert process.stderr is not None
+        stdout = process.stdout.read()
+        stderr = process.stderr.read()
+    finally:
+        process.kill()
+        process.wait()
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+
+    assert returncode == 0, stderr
+    assert "usage: kwin-mcp" in stdout
+    for flag in SERVER_FLAGS:
+        assert flag in stdout, flag
+    assert stderr == ""

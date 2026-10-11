@@ -89,6 +89,31 @@ _live_session_mode = "--default-live-session" in sys.argv
 _screenshot_images = "--screenshot-images" in sys.argv
 _engine = AutomationEngine(screenshot_max_edge=_screenshot_max_edge(sys.argv))
 
+# Printed by ``-h``/``--help``. Help exits before the MCP server starts, so a person who
+# runs ``kwin-mcp --help`` gets an answer instead of a silent stdio server.
+_USAGE = """\
+usage: kwin-mcp [-h] [--default-live-session] [--screenshot-images] [--screenshot-max-edge N]
+
+kwin-mcp: MCP server for GUI automation on KDE Plasma 6 Wayland.
+
+It speaks the Model Context Protocol (MCP) over stdio and is meant to be launched by
+an MCP client (e.g. Claude Code), not run interactively. For an interactive REPL,
+run kwin-mcp-cli.
+
+options:
+  -h, --help              show this help message and exit
+  --default-live-session  make session_connect (the live desktop) the default session
+                          tool instead of session_start (an isolated virtual session)
+  --screenshot-images     attach captured screenshot PNGs to tool results as MCP image
+                          content
+  --screenshot-max-edge N
+                          downscale every screenshot and frame so its longer side is at
+                          most N pixels (0 = no limit, the default); may be given once;
+                          --screenshot-max-edge=N is also accepted
+
+Documentation: https://github.com/isac322/kwin-mcp#readme
+"""
+
 # Tool descriptions that replace the docstrings when --default-live-session is active.
 _LIVE_SESSION_DESCRIPTIONS: dict[str, str] = {
     "session_start": (
@@ -1348,7 +1373,10 @@ def _finish(exit_code: int, failure: str = "") -> NoReturn:
 
 
 def main() -> None:
-    """Run the MCP server.
+    """Run the MCP server, or print usage and exit 0 for ``-h``/``--help``.
+
+    ``-h``/``--help`` is handled first: it prints ``_USAGE`` to stdout and exits 0
+    without starting the server, reading stdin, or installing signal handlers.
 
     Supports ``--default-live-session`` flag to make session_connect the default
     session tool instead of session_start, ``--screenshot-images`` flag to attach
@@ -1361,6 +1389,12 @@ def main() -> None:
     via the watcher thread — the signal handler only records the signum and never
     raises, so a signal mid-request cannot stall the cleanup on the loop.
     """
+    # Help must not start the stdio server: it would block on stdin (or exit
+    # silently on EOF) instead of answering the person who asked for usage.
+    if "-h" in sys.argv[1:] or "--help" in sys.argv[1:]:
+        sys.stdout.write(_USAGE)
+        sys.stdout.flush()
+        raise SystemExit(0)
     # Remove our custom flags before MCP framework parses args
     for flag in ("--default-live-session", "--screenshot-images"):
         if flag in sys.argv:

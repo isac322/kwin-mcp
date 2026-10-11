@@ -45,7 +45,7 @@ STRUCTURED_TOOL_PROPERTIES: dict[str, frozenset[str]] = {
     "accessibility_tree": frozenset({"elements"}),
     "find_ui_elements": frozenset({"query", "states", "elements"}),
     "list_windows": frozenset({"applications"}),
-    "window_geometry": frozenset({"windows", "error"}),
+    "window_geometry": frozenset({"windows"}),
 }
 
 
@@ -167,7 +167,6 @@ def _assert_list_windows(text: str, structured: dict[str, Any]) -> None:
 
 def _assert_window_geometry(text: str, structured: dict[str, Any]) -> None:
     assert text == format_window_geometry(WindowGeometryResult.model_validate(structured), "", "")
-    assert structured["error"] is None, structured
     windows = structured["windows"]
     assert text.splitlines()[0] == f"Windows ({len(windows)}):", text
     assert any("kwrite" in window["app"].lower() for window in windows), structured
@@ -220,7 +219,7 @@ async def test_typed_tools_return_schema_valid_structured_content_matching_text(
             missing_text, missing_geometry = await _call_structured(
                 client, schemas, "window_geometry", {"window_id": missing_id}
             )
-            assert missing_geometry == {"windows": [], "error": None}, missing_geometry
+            assert missing_geometry == {"windows": []}, missing_geometry
             assert missing_text == f"No window with id {missing_id!r}."
 
             tree_text, tree = await _call_structured(

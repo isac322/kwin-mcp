@@ -259,14 +259,6 @@ def test_format_window_geometry_reports_no_windows(
     assert format_window_geometry(WindowGeometryResult(), app_name, window_id) == expected
 
 
-def test_format_window_geometry_reports_kwin_failure_before_filters() -> None:
-    result = WindowGeometryResult(error="KWin query timed out after 30s")
-
-    assert format_window_geometry(result, "kcalc", "{x}") == (
-        "Window geometry unavailable: KWin query timed out after 30s"
-    )
-
-
 def test_format_list_windows_renders_state_markers_and_child_counts() -> None:
     result = ListWindowsResult(
         applications=[

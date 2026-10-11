@@ -176,8 +176,7 @@ def test_vanished_window_readback_says_it_no_longer_exists(
     assert [request.get("op") for request in requests] == ["set_geometry", None], requests
     assert "Geometry update requested:" in output, output[:500]
     assert (
-        "observed: window no longer exists (it closed or its client exited)"
-        in output.splitlines()
+        "observed: window no longer exists (it closed or its client exited)" in output.splitlines()
     ), output[:500]
 
 

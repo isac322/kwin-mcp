@@ -482,9 +482,7 @@ async def test_unicode_paste_fails_without_pasting_when_prior_owner_never_answer
         async with _prior_clipboard_owner(socket, PRIOR_CLIPBOARD) as owner:
             owner.send_signal(signal.SIGSTOP)
             try:
-                result = await client.call_result(
-                    "keyboard_type_unicode", {"text": UNICODE_MARKER}
-                )
+                result = await client.call_result("keyboard_type_unicode", {"text": UNICODE_MARKER})
                 # No Ctrl+V was sent, so nothing can arrive late.
                 assert await _focused_text(client) == ""
                 assert owner.poll() is None
@@ -512,9 +510,7 @@ async def test_unicode_paste_rejects_oversized_multiline_text_without_side_effec
                 result = await client.call_result("keyboard_type_unicode", {"text": oversized})
 
             assert result.is_error is True
-            assert f"Failed to type unicode: <{len(oversized)} characters>" in _result_text(
-                result
-            )
+            assert f"Failed to type unicode: <{len(oversized)} characters>" in _result_text(result)
             assert await _focused_text(client) == ""
             # The original owner was never replaced, so nothing took the selection.
             assert owner.poll() is None

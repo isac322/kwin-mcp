@@ -74,9 +74,7 @@ def test_second_burst_never_overwrites_the_first_bursts_frames(
     assert sorted(tmp_path.iterdir()) == sorted([p1, p2])
 
 
-def test_failed_burst_publishes_no_frames(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_failed_burst_publishes_no_frames(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _fake_screenshot2(monkeypatch, fail_on_frame=2)
 
     def spectacle_unavailable(*_args: object, **_kwargs: object) -> None:

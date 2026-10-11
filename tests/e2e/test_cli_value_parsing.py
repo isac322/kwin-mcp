@@ -56,7 +56,7 @@ def test_plain_int_annotation_still_converts() -> None:
 
 def test_quoted_json_list_arg_converts_to_list() -> None:
     engine = AutomationEngine()
-    kwargs = cli._parse_args(engine.find_ui_elements, 'query=x states=\'["focused"]\'')
+    kwargs = cli._parse_args(engine.find_ui_elements, "query=x states='[\"focused\"]'")
 
     assert kwargs["states"] == ["focused"]
 

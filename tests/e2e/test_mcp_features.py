@@ -59,6 +59,12 @@ EXPECTED_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "screenshot": {"readOnlyHint": True, "openWorldHint": False},
     "accessibility_tree": {"readOnlyHint": True, "openWorldHint": False},
     "find_ui_elements": {"readOnlyHint": True, "openWorldHint": False},
+    "invoke_ui_action": {
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    },
     "mouse_click": {
         "readOnlyHint": False,
         "destructiveHint": True,

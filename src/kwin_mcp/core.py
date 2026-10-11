@@ -1308,34 +1308,39 @@ class AutomationEngine:
         KWin because AT-SPI2's grab_focus neither raises nor activates windows
         reliably on Wayland.
         """
-        self._get_session()
         if not app_name and not window_id:
-            return "focus_window needs app_name or window_id (see window_geometry)."
+            msg = "focus_window needs app_name or window_id (see window_geometry)."
+            raise ValueError(msg)
+        self._get_session()
 
         resp = self._run_kwin_query(
             {"op": "activate", "app_name": app_name, "window_id": window_id}
         )
         if not resp["ok"]:
             target = window_id or app_name
-            return f"Failed to focus {target!r}: {resp['error']}"
+            msg = f"Failed to focus {target!r}: {resp['error']}"
+            raise RuntimeError(msg)
 
         activated = str(resp["result"]).strip()
         if activated:
             return f"Focused: {activated}"
         if window_id:
-            return f"No window with id {window_id!r}."
-        return f"No window matches '{app_name}'."
+            msg = f"No window with id {window_id!r}."
+        else:
+            msg = f"No window matches '{app_name}'."
+        raise RuntimeError(msg)
 
     def window_geometry_data(self, app_name: str = "", window_id: str = "") -> WindowGeometryResult:
         """Report window positions in global screen coordinates, as data.
 
-        A failed KWin query is reported in ``error`` rather than raised, so the
-        tool stays a soft (non-error) outcome as before.
+        Raises RuntimeError when KWin cannot be queried; an empty ``windows``
+        list means the query succeeded and nothing matched.
         """
         self._get_session()
         resp = self._run_kwin_query({"app_name": app_name, "window_id": window_id})
         if not resp["ok"]:
-            return WindowGeometryResult(error=str(resp["error"]))
+            msg = f"Window geometry unavailable: {resp['error']}"
+            raise RuntimeError(msg)
         return WindowGeometryResult.model_validate({"windows": resp["result"]})
 
     def window_geometry(self, app_name: str = "", window_id: str = "") -> str:
@@ -1344,7 +1349,8 @@ class AutomationEngine:
         Element rectangles from find_ui_elements and accessibility_tree are
         already translated to this same coordinate space; this tool remains
         useful for locating whole windows and diagnosing placement. Each window
-        carries its KWin id, which window_id filters on and window_close takes.
+        carries its KWin id, which window_id filters on and which
+        focus_window(window_id=), window_set_geometry and window_close take.
         """
         return format_window_geometry(
             self.window_geometry_data(app_name, window_id), app_name, window_id
@@ -1355,7 +1361,8 @@ class AutomationEngine:
         self._get_session()
         resp = self._run_kwin_query({"op": "active"})
         if not resp["ok"]:
-            return f"Active window unavailable: {resp['error']}"
+            msg = f"Active window unavailable: {resp['error']}"
+            raise RuntimeError(msg)
         window = resp["result"]
         if window is None:
             return "No active window."
@@ -1370,13 +1377,13 @@ class AutomationEngine:
         height: int | None = None,
     ) -> str:
         """Move and/or resize one window by exact KWin id."""
-        self._get_session()
-
         if not window_id:
-            return "window_set_geometry needs a window_id (see window_geometry)."
+            msg = "window_set_geometry needs a window_id (see window_geometry)."
+            raise ValueError(msg)
 
         if all(value is None for value in (x, y, width, height)):
-            return "window_set_geometry needs at least one of x, y, width or height."
+            msg = "window_set_geometry needs at least one of x, y, width or height."
+            raise ValueError(msg)
 
         supplied = (("x", x), ("y", y), ("width", width), ("height", height))
 
@@ -1385,23 +1392,28 @@ class AutomationEngine:
         # ints. Reject anything else before touching the compositor.
         for field, value in supplied:
             if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
-                return f"window_set_geometry {field} must be an integer, got {value!r}."
+                msg = f"window_set_geometry {field} must be an integer, got {value!r}."
+                raise ValueError(msg)
 
         if width is not None and width <= 0:
-            return "window_set_geometry width must be greater than zero."
+            msg = "window_set_geometry width must be greater than zero."
+            raise ValueError(msg)
         if height is not None and height <= 0:
-            return "window_set_geometry height must be greater than zero."
+            msg = "window_set_geometry height must be greater than zero."
+            raise ValueError(msg)
 
-        # KWin and QSize store geometry as signed 32-bit ints; larger magnitudes
-        # would overflow or reach the compositor script as +/-Infinity.
-        int32_max = 2**31 - 1
+        # KWin geometry is a QRectF; bounding every field to the signed 32-bit
+        # range keeps the value exact on its way through JSON and the script's
+        # JS numbers.
         for field, value in supplied:
-            if value is not None and abs(value) > int32_max:
-                return (
+            if value is not None and not -(2**31) <= value <= 2**31 - 1:
+                msg = (
                     f"window_set_geometry {field} must be within the signed 32-bit "
                     f"range, got {value}."
                 )
+                raise ValueError(msg)
 
+        self._get_session()
         resp = self._run_kwin_query(
             {
                 "op": "set_geometry",
@@ -1413,24 +1425,31 @@ class AutomationEngine:
             }
         )
         if not resp["ok"]:
-            return f"Failed to set geometry for {window_id!r}: {resp['error']}"
+            msg = f"Failed to set geometry for {window_id!r}: {resp['error']}"
+            raise RuntimeError(msg)
 
         result = resp["result"]
         if not result["found"]:
-            return f"No window with id {window_id!r}."
+            msg = f"No window with id {window_id!r}."
+            raise RuntimeError(msg)
+
+        # The script refuses sizes beyond the live workspace without assigning
+        # anything, so there is no post-action state to observe.
+        rejected = result.get("rejected")
+        if rejected is not None:
+            oversized = width if rejected == "width" else height
+            msg = (
+                f"window_set_geometry {rejected} must be at most {result['limit']} "
+                f"(the KWin workspace {rejected}; start the session with a larger screen "
+                f"for bigger windows), got {oversized}."
+            )
+            raise ValueError(msg)
 
         # frameGeometry changes are committed asynchronously by KWin.  Reading
         # the property again inside the same script can therefore return the
         # old rectangle.  Use a separate compositor query for authoritative
         # post-action state.
         observed_resp = self._run_kwin_query({"window_id": window_id})
-        observed = None
-        observation_error = None
-        if observed_resp["ok"]:
-            if observed_resp["result"]:
-                observed = observed_resp["result"][0]
-        else:
-            observation_error = str(observed_resp["error"])
 
         before = result["before"]
         requested = f"x={x!r}, y={y!r}, width={width!r}, height={height!r}"
@@ -1445,8 +1464,13 @@ class AutomationEngine:
             f"requested: {requested}",
         ]
 
-        if observed is not None:
-            frame = observed["frame"]
+        if not observed_resp["ok"]:
+            lines.append(f"observation failed: {observed_resp['error']}")
+        elif not observed_resp["result"]:
+            # The request was dispatched; the window went away before the readback.
+            lines.append("observed: window no longer exists (it closed or its client exited)")
+        else:
+            frame = observed_resp["result"][0]["frame"]
             lines.append(
                 f"observed:  ({frame['x']}, {frame['y']}, {frame['width']}x{frame['height']})"
             )
@@ -1458,10 +1482,6 @@ class AutomationEngine:
                     f"not yet applied: {', '.join(pending)} "
                     "(the client may still be applying the change; verify with window_geometry)"
                 )
-        elif observation_error is not None:
-            lines.append(f"observation failed: {observation_error}")
-        else:
-            lines.append("observed: unavailable")
 
         lines.append(f"moveable: {result['moveable']}, resizeable: {result['resizeable']}")
         return "\n".join(lines)
@@ -1473,23 +1493,28 @@ class AutomationEngine:
         own applications, and unlike input actions it cannot be watched and
         interrupted step by step.
         """
+        if not window_id:
+            msg = "window_close needs a window_id (see window_geometry)."
+            raise ValueError(msg)
         session = self._get_session()
         if isinstance(session, LiveSession):
-            return (
+            msg = (
                 "window_close is disabled in live sessions: it could discard unsaved work "
                 "on the real desktop. Close the window through the app's own UI instead."
             )
-        if not window_id:
-            return "window_close needs a window_id (see window_geometry)."
+            raise RuntimeError(msg)
         resp = self._run_kwin_query({"op": "close", "window_id": window_id})
         if not resp["ok"]:
-            return f"Failed to close window {window_id!r}: {resp['error']}"
+            msg = f"Failed to close window {window_id!r}: {resp['error']}"
+            raise RuntimeError(msg)
         result = resp["result"]
         if not result["found"]:
-            return f"No window with id {window_id!r}."
+            msg = f"No window with id {window_id!r}."
+            raise RuntimeError(msg)
         name = f'{result["app"]} "{result["caption"]}"'
         if not result["closeable"]:
-            return f"Window {name} ({window_id}) cannot be closed."
+            msg = f"Window {name} ({window_id}) cannot be closed."
+            raise RuntimeError(msg)
         return (
             f"Close requested: {name} ({window_id}). The app may keep the window open, "
             "for example to ask about unsaved changes; check window_geometry."

@@ -1143,11 +1143,17 @@ def list_windows() -> Annotated[CallToolResult, ListWindowsResult]:
 def focus_window(
     app_name: Annotated[
         str,
-        Field(description="Application name/caption substring to focus."),
+        Field(
+            description="Application name/caption substring to focus. "
+            "Required unless window_id is given."
+        ),
     ] = "",
     window_id: Annotated[
         str,
-        Field(description="Exact KWin window id from window_geometry; takes precedence."),
+        Field(
+            description="Exact KWin window id from window_geometry; takes precedence. "
+            "Required unless app_name is given."
+        ),
     ] = "",
 ) -> str:
     """Activate and raise one KWin window.
@@ -1175,7 +1181,8 @@ def window_geometry(
     already translated to this same coordinate space; this tool remains
     useful for locating whole windows and diagnosing placement. Each window
     lists its KWin id (stable while the window exists) and an [active] marker
-    on the active window. Pass the id to window_close.
+    on the active window. Pass the id to focus_window(window_id=),
+    window_set_geometry or window_close.
     """
     data = _engine.window_geometry_data(app_name=app_name, window_id=window_id)
     return _structured(format_window_geometry(data, app_name, window_id), data)
@@ -1197,10 +1204,32 @@ def window_set_geometry(
         str,
         Field(description="Exact KWin window id from window_geometry."),
     ],
-    x: Annotated[int | None, Field(description="New frame x coordinate.")] = None,
-    y: Annotated[int | None, Field(description="New frame y coordinate.")] = None,
-    width: Annotated[int | None, Field(description="New frame width.")] = None,
-    height: Annotated[int | None, Field(description="New frame height.")] = None,
+    x: Annotated[
+        int | None,
+        Field(description="New frame x coordinate (signed 32-bit).", ge=-(2**31), le=2**31 - 1),
+    ] = None,
+    y: Annotated[
+        int | None,
+        Field(description="New frame y coordinate (signed 32-bit).", ge=-(2**31), le=2**31 - 1),
+    ] = None,
+    width: Annotated[
+        int | None,
+        Field(
+            description="New frame width: positive and at most the KWin workspace width "
+            "(start the session with a larger screen for bigger windows).",
+            gt=0,
+            le=2**31 - 1,
+        ),
+    ] = None,
+    height: Annotated[
+        int | None,
+        Field(
+            description="New frame height: positive and at most the KWin workspace height "
+            "(start the session with a larger screen for bigger windows).",
+            gt=0,
+            le=2**31 - 1,
+        ),
+    ] = None,
 ) -> str:
     """Move and/or resize one KWin window by exact id.
 

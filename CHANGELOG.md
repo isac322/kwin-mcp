@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-12
+
 ### Added
 
 - Added `window_set_geometry`, which moves and/or resizes exactly one window using the stable KWin id returned by `window_geometry`. Callers may change any subset of x, y, width, and height; at least one field is required, each field must be an integer within the full signed 32-bit range (-2147483648 to 2147483647), and width/height must be positive and at most the KWin workspace width/height, so the KWin script refuses an oversized request without changing the window (start the session with a larger screen for bigger windows); the current frame of an already larger window is never checked. The result's `before:` line is the frame KWin reported immediately before the request. The tool re-queries KWin after the request and reports the compositor-observed frame geometry, naming any field the client has not applied yet, or `observed: window no longer exists (it closed or its client exited)` when the window went away before the readback. Invalid arguments, an unknown window id, and a failed KWin request are MCP tool errors.
@@ -281,7 +283,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keyboard input: text typing and key combinations via KWin EIS
 - FastMCP-based MCP server with stdio transport
 
-[Unreleased]: https://github.com/isac322/kwin-mcp/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/isac322/kwin-mcp/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/isac322/kwin-mcp/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/isac322/kwin-mcp/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/isac322/kwin-mcp/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/isac322/kwin-mcp/compare/v0.8.0...v0.9.0

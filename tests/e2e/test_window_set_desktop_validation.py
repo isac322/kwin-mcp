@@ -50,6 +50,14 @@ def _readback(window_desktops: list[str] | None, current: str = DESK_1) -> dict[
     return {"desktops": _DESKTOPS, "current": current, "window": window}
 
 
+_CHILD = {
+    "id": "{child}",
+    "app": "transient_probe.py",
+    "caption": "Transient Probe Dialog",
+    "desktops": [DESK_1],
+}
+
+
 def _engine_with_stubbed_kwin(
     monkeypatch: pytest.MonkeyPatch,
     set_response: dict[str, Any] | None = None,
@@ -293,6 +301,50 @@ def test_window_on_all_desktops_is_reported_for_restoring(
     assert "(all desktops)" in engine.window_set_desktop(WINDOW, DESK_2)
 
 
+# ── window_set_desktop: related-window refusals ──────────────────────────
+
+
+def test_related_window_refusal_raises_without_readback(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine, requests = _engine_with_stubbed_kwin(
+        monkeypatch,
+        set_response={"ok": True, "result": _set_result(refused="related", related=[_CHILD])},
+    )
+
+    with pytest.raises(RuntimeError) as raised:
+        engine.window_set_desktop_data(window_id=WINDOW, desktop_id=DESK_2)
+
+    message = str(raised.value)
+    assert message.startswith("Refused: KWin would also move 1 related window(s)"), message
+    assert '{child} transient_probe.py "Transient Probe Dialog"' in message, message
+    assert "nothing was changed" in message, message
+    # A refusal is definite: the script assigned nothing, so there is no readback.
+    assert len(requests) == 1, requests
+
+
+def test_unsupported_relationship_refusal_raises_without_readback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine, requests = _engine_with_stubbed_kwin(
+        monkeypatch, set_response={"ok": True, "result": _set_result(refused="unsupported")}
+    )
+
+    with pytest.raises(RuntimeError, match="X11 group transient") as raised:
+        engine.window_set_desktop_data(window_id=WINDOW, desktop_id=DESK_2)
+
+    assert "nothing was changed" in str(raised.value)
+    assert len(requests) == 1, requests
+
+
+def test_unknown_desktop_takes_precedence_over_a_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Unknown targets keep their own error; the guard only runs once both exist.
+    engine, _ = _engine_with_stubbed_kwin(
+        monkeypatch, set_response={"ok": True, "result": _set_result(desktopFound=False)}
+    )
+
+    with pytest.raises(RuntimeError, match="No virtual desktop with id"):
+        engine.window_set_desktop_data(window_id=WINDOW, desktop_id=DESK_2)
+
+
 # ── malformed KWin script output ─────────────────────────────────────────
 
 
@@ -357,6 +409,11 @@ def test_desktops_refuses_malformed_output(monkeypatch: pytest.MonkeyPatch, payl
         _set_result(desktopFound=False),
         {"windowFound": False, "desktopFound": True, "current": DESK_1},
         {"windowFound": False, "desktopFound": False, "current": DESK_1},
+        _set_result(refused="unsupported"),
+        _set_result(refused="related", related=[_CHILD]),
+        _set_result(
+            refused="related", related=[_CHILD, {**_CHILD, "id": "{main}", "desktops": []}]
+        ),
     ],
 )
 def test_set_desktop_accepts_well_formed_output(
@@ -384,6 +441,21 @@ def test_set_desktop_accepts_well_formed_output(
         _set_result(before=[1]),
         {k: v for k, v in _set_result().items() if k != "beforeOnAllDesktops"},
         _set_result(beforeOnAllDesktops=None),
+        _set_result(refused="other"),
+        _set_result(refused=True),
+        _set_result(related=[_CHILD]),
+        _set_result(refused="unsupported", related=[_CHILD]),
+        _set_result(refused="unsupported", desktopFound=False),
+        _set_result(refused="related"),
+        _set_result(refused="related", related=[]),
+        _set_result(refused="related", related=_CHILD),
+        _set_result(refused="related", related=[_CHILD], desktopFound=False),
+        _set_result(refused="related", related=["{child}"]),
+        _set_result(refused="related", related=[{k: v for k, v in _CHILD.items() if k != "id"}]),
+        _set_result(refused="related", related=[{**_CHILD, "app": None}]),
+        _set_result(refused="related", related=[{**_CHILD, "caption": 1}]),
+        _set_result(refused="related", related=[{**_CHILD, "desktops": DESK_1}]),
+        _set_result(refused="related", related=[{**_CHILD, "desktops": [1]}]),
     ],
 )
 def test_set_desktop_refuses_malformed_output(

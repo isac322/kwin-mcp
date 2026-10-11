@@ -1295,7 +1295,10 @@ def window_set_desktop(
     The operation neither requests nor changes the current desktop and does not
     activate the window. A window that was on all desktops ends up on only this
     one. Missing ids, an unknown window or desktop, and a request whose result
-    did not come back are tool errors. applied is true when a separate KWin
+    did not come back are tool errors, and so is a request KWin would carry over
+    to related windows (its transients, or the main window of a modal dialog)
+    unless they are already on that desktop: it is refused before anything
+    moves. applied is true when a separate KWin
     query observes the window on exactly that desktop; when that readback fails
     the window may already have moved. The current desktop before and after is
     observed and reported alongside.

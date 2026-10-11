@@ -262,6 +262,16 @@ callDBus("{sink}", "{path}", "{sink}", "Report", JSON.stringify({
 # Assign exactly one window, by exact internalId, to exactly one virtual desktop,
 # by exact id. Nothing is assigned unless both are found. currentDesktop is only
 # read, never written, and the window is not activated or raised.
+#
+# KWin's Window::setDesktops (checked at v6.3.6 and unchanged through 6.7) also
+# sets the desktops of every transient of the window, recursively, and, when the
+# window is modal, of its main windows. To move only the requested window, the
+# script follows those relationships first and refuses, without assigning
+# anything, when a related window is not already on exactly the requested
+# desktop. Scripts see transientFor and modal but not transients() or
+# mainWindows(); an X11 group transient (transient, no transientFor) belongs to
+# main windows a script cannot see, so while one exists the outcome cannot be
+# known and the request is refused too. Nothing is ever moved back afterwards.
 _SET_DESKTOP_SCRIPT_TEMPLATE = """
 var target = {window_id};
 var wanted = {desktop_id};
@@ -270,6 +280,56 @@ var result = {
     windowFound: false, desktopFound: false,
     current: current ? String(current.id) : null
 };
+
+function desktopIds(w) {
+    var ids = [];
+    for (var k = 0; k < w.desktops.length; k++) {
+        ids.push(String(w.desktops[k].id));
+    }
+    return ids;
+}
+
+function refusal(start, desktopId, windows) {
+    for (var u = 0; u < windows.length; u++) {
+        if (windows[u].transient && !windows[u].transientFor) {
+            return {refused: "unsupported"};
+        }
+    }
+    var closure = [start];
+    var seen = {};
+    seen[String(start.internalId)] = true;
+    for (var c = 0; c < closure.length; c++) {
+        var w = closure[c];
+        var id = String(w.internalId);
+        for (var t = 0; t < windows.length; t++) {
+            var other = windows[t];
+            var otherId = String(other.internalId);
+            if (other.transientFor && String(other.transientFor.internalId) === id
+                    && !seen[otherId]) {
+                seen[otherId] = true;
+                closure.push(other);
+            }
+        }
+        if (w.modal && w.transientFor && !seen[String(w.transientFor.internalId)]) {
+            seen[String(w.transientFor.internalId)] = true;
+            closure.push(w.transientFor);
+        }
+    }
+    var related = [];
+    for (var r = 1; r < closure.length; r++) {
+        var ids = desktopIds(closure[r]);
+        if (ids.length !== 1 || ids[0] !== desktopId) {
+            related.push({
+                id: String(closure[r].internalId),
+                app: String(closure[r].resourceClass),
+                caption: String(closure[r].caption),
+                desktops: ids
+            });
+        }
+    }
+    return related.length ? {refused: "related", related: related} : null;
+}
+
 var desktop = null;
 var list = workspace.desktops;
 for (var i = 0; i < list.length; i++) {
@@ -285,15 +345,19 @@ for (var j = 0; j < windows.length; j++) {
     if (!w.normalWindow || String(w.internalId) !== target) {
         continue;
     }
-    var before = [];
-    for (var k = 0; k < w.desktops.length; k++) {
-        before.push(String(w.desktops[k].id));
-    }
     result.windowFound = true;
-    result.before = before;
+    result.before = desktopIds(w);
     result.beforeOnAllDesktops = w.onAllDesktops;
     if (desktop !== null) {
-        w.desktops = [desktop];
+        var refused = refusal(w, String(desktop.id), windows);
+        if (refused !== null) {
+            result.refused = refused.refused;
+            if (refused.related) {
+                result.related = refused.related;
+            }
+        } else {
+            w.desktops = [desktop];
+        }
     }
     break;
 }
@@ -571,9 +635,32 @@ def _valid_set_desktop(payload: object) -> bool:
         return False
     if not payload["windowFound"]:
         return True
-    return _is_id_list(payload.get("before")) and isinstance(
-        payload.get("beforeOnAllDesktops"), bool
-    )
+    if not (
+        _is_id_list(payload.get("before")) and isinstance(payload.get("beforeOnAllDesktops"), bool)
+    ):
+        return False
+    refused = payload.get("refused")
+    if refused is None:
+        return "related" not in payload
+    # The guard runs only after both the window and the desktop were found.
+    if refused == "unsupported":
+        return payload["desktopFound"] and "related" not in payload
+    if refused == "related":
+        related = payload.get("related")
+        return (
+            payload["desktopFound"]
+            and isinstance(related, list)
+            and bool(related)
+            and all(
+                isinstance(window, dict)
+                and isinstance(window.get("id"), str)
+                and isinstance(window.get("app"), str)
+                and isinstance(window.get("caption"), str)
+                and _is_id_list(window.get("desktops"))
+                for window in related
+            )
+        )
+    return False
 
 
 def desktops(window_id: str = "", timeout: float = 5.0) -> dict[str, object]:
@@ -596,8 +683,10 @@ def set_desktop(window_id: str, desktop_id: str, timeout: float = 5.0) -> dict[s
 
     Returns ``{"windowFound", "desktopFound", "current"}`` and, when the window
     was found, its ``before`` desktop ids and ``beforeOnAllDesktops``. The
-    assignment happens only when both were found; read it back with
-    ``desktops(window_id)``.
+    assignment happens only when both were found and KWin would move no other
+    window; otherwise ``refused`` is ``"related"`` (with the ``related`` windows
+    that would also move) or ``"unsupported"`` (an X11 group transient exists)
+    and nothing is assigned. Read an assignment back with ``desktops(window_id)``.
     """
     script = _render_script(
         _SET_DESKTOP_SCRIPT_TEMPLATE, {"window_id": window_id, "desktop_id": desktop_id}

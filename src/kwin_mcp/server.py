@@ -680,6 +680,34 @@ def mouse_button_up(
 # ── Keyboard tools ───────────────────────────────────────────────────────
 
 
+@_tool(annotations=_DESTRUCTIVE)
+def invoke_ui_action(
+    query: Annotated[
+        str,
+        Field(description="Element name, role or description to match."),
+    ],
+    action_name: Annotated[
+        str,
+        Field(description='Exact AT-SPI action name, for example "Press".'),
+    ],
+    app_name: Annotated[
+        str,
+        Field(description="Optional application-name filter."),
+    ] = "",
+) -> str:
+    """Invoke a native AT-SPI action without pointer coordinates.
+
+    Exactly one element must match the query, app filter and action name.
+    Ambiguous matches fail closed. State-changing accessibility calls are not
+    automatically retried because repeating an action could trigger it twice.
+    """
+    return _engine.invoke_ui_action(
+        query=query,
+        action_name=action_name,
+        app_name=app_name,
+    )
+
+
 @_tool(annotations=_DESTRUCTIVE, images=True)
 def keyboard_type(
     text: Annotated[

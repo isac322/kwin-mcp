@@ -175,6 +175,155 @@ def find_elements(
     return [_finalize(info, mapping) for info, mapping in results]
 
 
+# Acting on an element found by an incomplete discovery could trigger the
+# wrong control, so any unreadable node in the searched scope — even a
+# non-candidate — fails the request closed instead of being skipped. The
+# depth limit exists for the same reason: no match may hide below it.
+_ACTION_SEARCH_MAX_DEPTH = 64
+
+
+class _IncompleteDiscoveryError(Exception):
+    """A read needed to evaluate every element in scope failed."""
+
+
+def invoke_action(
+    query: str,
+    action_name: str,
+    app_name: str = "",
+) -> dict[str, object]:
+    """Invoke exactly one matching AT-SPI action.
+
+    Matching is case-insensitive. The element query searches name, role and
+    description. The action name must match exactly. Ambiguous matches fail
+    closed and no action is performed.
+
+    Discovery must be complete before anything is invoked: every element in
+    the searched scope is fully read, because a read failure could hide the
+    real unique match — or a second match that must refuse the action. Any
+    failed read, and any subtree deeper than ``_ACTION_SEARCH_MAX_DEPTH``,
+    raises :class:`_IncompleteDiscovery`; the request branch in
+    ``_handle_request`` converts it into an ``ok: False`` response.
+    """
+    desktop = Atspi.get_desktop(0)
+    query_lower = query.lower()
+    wanted_action = action_name.lower()
+
+    candidates: list[tuple[object, int, str, str, str, str]] = []
+
+    def visit(element: Atspi.Accessible, application: str, depth: int) -> None:
+        if depth > _ACTION_SEARCH_MAX_DEPTH:
+            raise _IncompleteDiscoveryError(
+                f"accessibility subtree deeper than {_ACTION_SEARCH_MAX_DEPTH} levels"
+            )
+
+        try:
+            name = element.get_name() or ""
+        except Exception as exc:
+            raise _IncompleteDiscoveryError(f"could not read element name: {exc}") from exc
+
+        try:
+            role = element.get_role_name() or "unknown"
+        except Exception as exc:
+            raise _IncompleteDiscoveryError(f"could not read element role: {exc}") from exc
+
+        try:
+            description = element.get_description() or ""
+        except Exception as exc:
+            raise _IncompleteDiscoveryError(f"could not read element description: {exc}") from exc
+
+        query_match = (
+            query_lower in name.lower()
+            or query_lower in role.lower()
+            or query_lower in description.lower()
+        )
+
+        if query_match:
+            # An element without an Action interface is not a candidate;
+            # every other failure to enumerate its actions is a read fault.
+            try:
+                action_iface = element.get_action_iface()
+            except Exception as exc:
+                raise _IncompleteDiscoveryError(f"could not read action interface: {exc}") from exc
+            if action_iface is not None:
+                try:
+                    action_count = action_iface.get_n_actions()
+                except Exception as exc:
+                    raise _IncompleteDiscoveryError(f"could not read action count: {exc}") from exc
+                for index in range(action_count):
+                    try:
+                        available = action_iface.get_action_name(index) or ""
+                    except Exception as exc:
+                        raise _IncompleteDiscoveryError(
+                            f"could not read action name: {exc}"
+                        ) from exc
+                    if available.lower() == wanted_action:
+                        candidates.append(
+                            (
+                                action_iface,
+                                index,
+                                application,
+                                role,
+                                name,
+                                available,
+                            )
+                        )
+
+        try:
+            child_count = element.get_child_count()
+        except Exception as exc:
+            raise _IncompleteDiscoveryError(f"could not read child count: {exc}") from exc
+
+        for index in range(child_count):
+            try:
+                child = element.get_child_at_index(index)
+            except Exception as exc:
+                raise _IncompleteDiscoveryError(f"could not read child: {exc}") from exc
+            if child is not None:
+                visit(child, application, depth + 1)
+
+    try:
+        app_count = desktop.get_child_count()
+    except Exception as exc:
+        raise _IncompleteDiscoveryError(f"could not read desktop child count: {exc}") from exc
+
+    for index in range(app_count):
+        try:
+            app = desktop.get_child_at_index(index)
+        except Exception as exc:
+            raise _IncompleteDiscoveryError(f"could not read desktop child: {exc}") from exc
+        if app is None:
+            continue
+
+        # The app filter decides scope, so the name of every application is
+        # needed even when a filter would later exclude it.
+        try:
+            application = app.get_name() or ""
+        except Exception as exc:
+            raise _IncompleteDiscoveryError(f"could not read application name: {exc}") from exc
+        if app_name and app_name.lower() not in application.lower():
+            continue
+
+        visit(app, application, 0)
+
+    if len(candidates) != 1:
+        return {
+            "matches": len(candidates),
+            "invoked": False,
+        }
+
+    action_iface, index, application, role, name, actual_action = candidates[0]
+    invoked = bool(Atspi.Action.do_action(action_iface, index))
+
+    return {
+        "matches": 1,
+        "invoked": invoked,
+        "app": application,
+        "role": role,
+        "name": name,
+        "action": actual_action,
+    }
+
+
 def list_windows() -> list[dict[str, object]]:
     """List accessible applications with their top-level windows.
 
@@ -764,6 +913,20 @@ def _handle_request(request: dict) -> dict:
         except TimeoutError as exc:
             return {"ok": False, "error": str(exc)}
         return {"ok": True, "result": [asdict(e) for e in elements]}
+
+    if op == "action":
+        try:
+            result = invoke_action(
+                query=request.get("query", ""),
+                action_name=request.get("action_name", ""),
+                app_name=request.get("app_name", ""),
+            )
+        except _IncompleteDiscoveryError as exc:
+            # Incomplete discovery is a refused action, not a broken worker:
+            # report it as a regular error so the caller surfaces a refusal
+            # instead of discarding and retrying a worker that is still fine.
+            return {"ok": False, "error": f"Incomplete discovery: {exc}"}
+        return {"ok": True, "result": result}
 
     if op == "list_windows":
         return {"ok": True, "result": list_windows()}

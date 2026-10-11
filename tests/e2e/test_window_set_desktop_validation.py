@@ -1,15 +1,18 @@
 """Unit coverage for virtual_desktops and window_set_desktop request handling.
 
 These tests stub the KWin query worker or the KWin script runner, so they run
-without a KWin session. They pin which requests reach KWin, that nothing is
-assigned unless both ids are found, how the separate readback decides
-``applied`` while the current desktop is reported alongside rather than folded
-into it, and that malformed script output is refused before the engine reads it.
+without a KWin session. They pin that bad ids raise before any session lookup,
+that a failed query, an unknown window or desktop, and an assignment whose
+result did not come back raise without a readback, how the separate readback
+decides ``applied`` while the current desktop is reported alongside rather than
+folded into it, and that malformed script output is refused before the engine
+reads it.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -77,7 +80,6 @@ def test_virtual_desktops_reports_ids_names_and_current(monkeypatch: pytest.Monk
     data = engine.virtual_desktops_data()
 
     assert requests == [{"op": "desktops"}], requests
-    assert data.error is None
     assert [(d.id, d.name, d.current) for d in data.desktops] == [
         (DESK_1, "Desktop 1", True),
         (DESK_2, "Work 2", False),
@@ -87,15 +89,13 @@ def test_virtual_desktops_reports_ids_names_and_current(monkeypatch: pytest.Monk
     assert DESK_2 in output, output
 
 
-def test_virtual_desktops_query_failure_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_virtual_desktops_query_failure_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     engine, _ = _engine_with_stubbed_kwin(
         monkeypatch, desktops_response={"ok": False, "error": "KWin query timed out after 30s"}
     )
 
-    data = engine.virtual_desktops_data()
-
-    assert data.desktops == []
-    assert data.error == "KWin query timed out after 30s"
+    with pytest.raises(RuntimeError, match="Virtual desktops unavailable: KWin query timed out"):
+        engine.virtual_desktops_data()
 
 
 # ── window_set_desktop: validation ───────────────────────────────────────
@@ -108,17 +108,21 @@ def test_virtual_desktops_query_failure_is_reported(monkeypatch: pytest.MonkeyPa
         (WINDOW, "", "desktop_id"),
         (None, DESK_2, "window_id"),
         (WINDOW, 2, "desktop_id"),
+        ("", "", "window_id"),
     ],
 )
-def test_missing_or_non_string_id_is_rejected_without_dispatch(
+def test_missing_or_non_string_id_raises_before_session_or_dispatch(
     monkeypatch: pytest.MonkeyPatch, window_id: Any, desktop_id: Any, missing: str
 ) -> None:
     engine, requests = _engine_with_stubbed_kwin(monkeypatch)
 
-    data = engine.window_set_desktop_data(window_id=window_id, desktop_id=desktop_id)
+    def no_session() -> object:
+        raise AssertionError("argument errors must not depend on session state")
 
-    assert data.applied is False
-    assert data.error is not None and f"needs a {missing}" in data.error, data
+    monkeypatch.setattr(engine, "_get_session", no_session)
+
+    with pytest.raises(ValueError, match=re.escape(f"window_set_desktop needs a {missing}")):
+        engine.window_set_desktop_data(window_id=window_id, desktop_id=desktop_id)
     assert requests == [], requests
 
 
@@ -137,51 +141,63 @@ def test_assignment_is_dispatched_by_exact_ids_and_read_back(
         {"op": "desktops", "window_id": WINDOW},
     ], requests
     assert data.applied is True
-    assert data.error is None
     assert data.before == [DESK_1]
     assert data.before_on_all_desktops is False
     assert data.observed == [DESK_2]
     assert data.current_desktop_id_before == DESK_1
     assert data.current_desktop_id_after == DESK_1
-    assert "Window desktop set:" in engine.window_set_desktop(WINDOW, DESK_2)
+    assert data.observation_error is None
+    assert engine.window_set_desktop(WINDOW, DESK_2).startswith("Window desktop set:")
 
 
-def test_unknown_window_reports_error_without_readback(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unknown_window_raises_without_readback(monkeypatch: pytest.MonkeyPatch) -> None:
     engine, requests = _engine_with_stubbed_kwin(
         monkeypatch,
-        set_response={"ok": True, "result": _set_result(windowFound=False, before=None)},
+        set_response={
+            "ok": True,
+            "result": {"windowFound": False, "desktopFound": True, "current": DESK_1},
+        },
     )
 
-    data = engine.window_set_desktop_data(window_id="{missing}", desktop_id=DESK_2)
-
-    assert data.applied is False
-    assert data.error == "No window with id '{missing}'."
-    assert data.before is None
+    with pytest.raises(RuntimeError, match=re.escape("No window with id '{missing}'.")):
+        engine.window_set_desktop_data(window_id="{missing}", desktop_id=DESK_2)
     assert len(requests) == 1, requests
 
 
-def test_unknown_desktop_reports_error_without_readback(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unknown_desktop_raises_without_readback(monkeypatch: pytest.MonkeyPatch) -> None:
     engine, requests = _engine_with_stubbed_kwin(
         monkeypatch, set_response={"ok": True, "result": _set_result(desktopFound=False)}
     )
 
-    data = engine.window_set_desktop_data(window_id=WINDOW, desktop_id="missing-desk")
-
-    assert data.applied is False
-    assert data.error == "No virtual desktop with id 'missing-desk'."
-    assert data.before == [DESK_1]
+    with pytest.raises(RuntimeError, match=re.escape("No virtual desktop with id 'missing-desk'.")):
+        engine.window_set_desktop_data(window_id=WINDOW, desktop_id="missing-desk")
     assert len(requests) == 1, requests
 
 
-def test_failed_assignment_query_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
-    engine, _ = _engine_with_stubbed_kwin(
-        monkeypatch, set_response={"ok": False, "error": "KWin did not answer the script within 5s"}
+@pytest.mark.parametrize(
+    "error",
+    [
+        "KWin did not answer the script within 5s",
+        "KWin query timed out after 30s",
+        "KWin returned a malformed desktop assignment result: {}",
+    ],
+)
+def test_assignment_without_a_result_raises_and_keeps_the_uncertainty(
+    monkeypatch: pytest.MonkeyPatch, error: str
+) -> None:
+    engine, requests = _engine_with_stubbed_kwin(
+        monkeypatch, set_response={"ok": False, "error": error}
     )
 
-    data = engine.window_set_desktop_data(window_id=WINDOW, desktop_id=DESK_2)
+    with pytest.raises(RuntimeError) as raised:
+        engine.window_set_desktop_data(window_id=WINDOW, desktop_id=DESK_2)
 
-    assert data.applied is False
-    assert data.error is not None and "did not answer" in data.error
+    message = str(raised.value)
+    assert error in message, message
+    # The script may have assigned the window before its reply was lost.
+    assert "may already have moved" in message, message
+    assert "unchanged" not in message, message
+    assert len(requests) == 1, requests
 
 
 @pytest.mark.parametrize("observed", [[DESK_1], [], [DESK_1, DESK_2]])
@@ -196,10 +212,14 @@ def test_readback_other_than_exactly_the_target_is_not_applied(
 
     assert data.applied is False
     assert data.observed == observed
-    assert data.error is not None and "did not put the window on exactly" in data.error
+    assert data.observation_error is None
+    assert data.before == [DESK_1]
+    assert engine.window_set_desktop(WINDOW, DESK_2).startswith("Window desktop not confirmed:")
 
 
-def test_failed_readback_is_not_applied(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_failed_readback_keeps_the_dispatched_state_and_the_uncertainty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     engine, _ = _engine_with_stubbed_kwin(
         monkeypatch, desktops_response={"ok": False, "error": "KWin query timed out after 30s"}
     )
@@ -207,9 +227,15 @@ def test_failed_readback_is_not_applied(monkeypatch: pytest.MonkeyPatch) -> None
     data = engine.window_set_desktop_data(window_id=WINDOW, desktop_id=DESK_2)
 
     assert data.applied is False
+    assert data.before == [DESK_1]
+    assert data.current_desktop_id_before == DESK_1
     assert data.observed is None
     assert data.current_desktop_id_after is None
-    assert data.error is not None and "Readback failed" in data.error
+    assert data.observation_error == "KWin query timed out after 30s"
+    output = engine.window_set_desktop(WINDOW, DESK_2)
+    assert output.startswith("Window desktop not confirmed:"), output
+    assert "may already have moved" in output, output
+    assert "unchanged" not in output, output
 
 
 def test_window_gone_on_readback_is_not_applied(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -221,7 +247,9 @@ def test_window_gone_on_readback_is_not_applied(monkeypatch: pytest.MonkeyPatch)
 
     assert data.applied is False
     assert data.observed is None
-    assert data.error is not None and "not found on readback" in data.error
+    assert data.current_desktop_id_after == DESK_1
+    assert data.observation_error is not None
+    assert "no longer exists" in data.observation_error
 
 
 def test_current_desktop_change_is_reported_separately(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -234,9 +262,19 @@ def test_current_desktop_change_is_reported_separately(monkeypatch: pytest.Monke
     data = engine.window_set_desktop_data(window_id=WINDOW, desktop_id=DESK_2)
 
     assert data.applied is True
-    assert data.error is None
     assert data.current_desktop_id_before == DESK_1
     assert data.current_desktop_id_after == DESK_2
+
+
+def test_already_on_target_is_an_idempotent_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine, _ = _engine_with_stubbed_kwin(
+        monkeypatch, set_response={"ok": True, "result": _set_result(before=[DESK_2])}
+    )
+
+    data = engine.window_set_desktop_data(window_id=WINDOW, desktop_id=DESK_2)
+
+    assert data.applied is True
+    assert data.before == data.observed == [DESK_2]
 
 
 def test_window_on_all_desktops_is_reported_for_restoring(
@@ -274,7 +312,6 @@ _GOOD_DESKTOPS: dict[str, Any] = {
     [
         _GOOD_DESKTOPS,
         {**_GOOD_DESKTOPS, "window": None},
-        {**_GOOD_DESKTOPS, "current": None},
     ],
 )
 def test_desktops_accepts_well_formed_output(
@@ -296,6 +333,7 @@ def test_desktops_accepts_well_formed_output(
         {**_GOOD_DESKTOPS, "desktops": [{"id": DESK_1, "name": "Desktop 1", "current": 1}]},
         {k: v for k, v in _GOOD_DESKTOPS.items() if k != "current"},
         {**_GOOD_DESKTOPS, "current": 7},
+        {**_GOOD_DESKTOPS, "current": None},
         {k: v for k, v in _GOOD_DESKTOPS.items() if k != "window"},
         {**_GOOD_DESKTOPS, "window": []},
         {**_GOOD_DESKTOPS, "window": {"onAllDesktops": False}},
@@ -318,7 +356,7 @@ def test_desktops_refuses_malformed_output(monkeypatch: pytest.MonkeyPatch, payl
         _set_result(before=[], beforeOnAllDesktops=True),
         _set_result(desktopFound=False),
         {"windowFound": False, "desktopFound": True, "current": DESK_1},
-        {"windowFound": False, "desktopFound": False, "current": None},
+        {"windowFound": False, "desktopFound": False, "current": DESK_1},
     ],
 )
 def test_set_desktop_accepts_well_formed_output(
@@ -340,6 +378,7 @@ def test_set_desktop_accepts_well_formed_output(
         _set_result(desktopFound=1),
         {k: v for k, v in _set_result().items() if k != "current"},
         _set_result(current=["x"]),
+        _set_result(current=None),
         {k: v for k, v in _set_result().items() if k != "before"},
         _set_result(before=DESK_1),
         _set_result(before=[1]),

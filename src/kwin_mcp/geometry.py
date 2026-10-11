@@ -133,7 +133,13 @@ callDBus("{sink}", "{path}", "{sink}", "Report", activated);
 #
 # KWin's QRect wrapper is safest when copied to a plain JS object, modified,
 # then assigned back as a whole. Mutating w.frameGeometry.x in place is not
-# reliable across Plasma/KWin versions.
+# reliable across Plasma/KWin versions. The pre-request frame is copied too:
+# keeping the wrapper itself would report the new frame after the assignment.
+#
+# A requested width/height larger than the workspace (the bounding rectangle
+# of all outputs) is rejected without assigning anything; only supplied fields
+# are compared, so moving an already oversized window keeps working. The check
+# runs here so the live workspace is read in the same round trip.
 _SET_GEOMETRY_SCRIPT_TEMPLATE = """
 var target = {window_id};
 var requested = {requested};
@@ -146,26 +152,35 @@ for (var i = 0; i < windows.length; i++) {
         continue;
     }
 
-    var before = w.frameGeometry;
-    var geometry = Object.assign({}, before);
-
-    if (requested.x !== null) geometry.x = requested.x;
-    if (requested.y !== null) geometry.y = requested.y;
-    if (requested.width !== null) geometry.width = requested.width;
-    if (requested.height !== null) geometry.height = requested.height;
-
-    w.frameGeometry = geometry;
-
-    var after = w.frameGeometry;
+    var before = Object.assign({}, w.frameGeometry);
+    var area = workspace.virtualScreenGeometry;
     result = {
         found: true,
         app: String(w.resourceClass),
         caption: w.caption,
         moveable: w.moveable,
         resizeable: w.resizeable,
-        before: [before.x, before.y, before.width, before.height],
-        after: [after.x, after.y, after.width, after.height]
+        before: [before.x, before.y, before.width, before.height]
     };
+
+    if (requested.width !== null && requested.width > area.width) {
+        result.rejected = "width";
+        result.limit = area.width;
+        break;
+    }
+    if (requested.height !== null && requested.height > area.height) {
+        result.rejected = "height";
+        result.limit = area.height;
+        break;
+    }
+
+    var geometry = Object.assign({}, before);
+    if (requested.x !== null) geometry.x = requested.x;
+    if (requested.y !== null) geometry.y = requested.y;
+    if (requested.width !== null) geometry.width = requested.width;
+    if (requested.height !== null) geometry.height = requested.height;
+
+    w.frameGeometry = geometry;
     break;
 }
 
@@ -533,7 +548,7 @@ def _valid_desktops(payload: object) -> bool:
             and isinstance(desktop.get("current"), bool)
         ):
             return False
-    if "current" not in payload or not isinstance(payload["current"], str | None):
+    if not isinstance(payload.get("current"), str):
         return False
     if "window" not in payload:
         return False
@@ -551,8 +566,7 @@ def _valid_set_desktop(payload: object) -> bool:
         isinstance(payload, dict)
         and isinstance(payload.get("windowFound"), bool)
         and isinstance(payload.get("desktopFound"), bool)
-        and "current" in payload
-        and isinstance(payload["current"], str | None)
+        and isinstance(payload.get("current"), str)
     ):
         return False
     if not payload["windowFound"]:
@@ -565,7 +579,7 @@ def _valid_set_desktop(payload: object) -> bool:
 def desktops(window_id: str = "", timeout: float = 5.0) -> dict[str, object]:
     """Ask KWin for its virtual desktops and, optionally, one window's desktops.
 
-    Returns ``{"desktops": [{"id", "name", "current"}], "current": id | None,
+    Returns ``{"desktops": [{"id", "name", "current"}], "current": id,
     "window": {"desktops": [id], "onAllDesktops": bool} | None}``; ``window`` is
     None when ``window_id`` is empty or no window has exactly that id.
     """

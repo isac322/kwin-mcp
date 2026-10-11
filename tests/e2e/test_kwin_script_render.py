@@ -103,7 +103,9 @@ def test_close_keeps_the_id_inside_its_string_literal(
 def test_set_desktop_keeps_each_id_inside_its_string_literal(
     monkeypatch: pytest.MonkeyPatch, window_id: str, desktop_id: str
 ) -> None:
-    scripts = _capture(monkeypatch, {"windowFound": False, "desktopFound": False, "current": None})
+    scripts = _capture(
+        monkeypatch, {"windowFound": False, "desktopFound": False, "current": "desktop"}
+    )
 
     geometry.set_desktop(window_id, desktop_id)
 
@@ -119,7 +121,7 @@ def test_set_desktop_keeps_each_id_inside_its_string_literal(
 def test_desktops_keeps_the_id_inside_its_string_literal(
     monkeypatch: pytest.MonkeyPatch, window_id: str
 ) -> None:
-    scripts = _capture(monkeypatch, {"desktops": [], "current": None, "window": None})
+    scripts = _capture(monkeypatch, {"desktops": [], "current": "desktop", "window": None})
 
     geometry.desktops(window_id)
 

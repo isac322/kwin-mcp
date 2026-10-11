@@ -85,6 +85,12 @@ SERVER_EXIT_TIMEOUT_IDLE_SECONDS = 15.0
 # below a tools/list response (tens of KB), so that one unread response blocks the
 # transport writer.
 _SMALL_PIPE_BYTES = 4096
+# How long an AT-SPI worker may take to die after the server exits. The registry
+# path signals it with the other owned groups, so it is gone within the TERM/KILL
+# graces; an unowned worker would only exit once its own query timed out.
+_ATSPI_WORKER_SETTLE_SECONDS = 5.0
+# The wait_for_element target that never appears, so the tool runs its full timeout.
+_MISSING_ELEMENT_QUERY = "no-such-element-xyz"
 
 
 # A distinctive app so its PID, parsed from the launch output, identifies it.
@@ -193,6 +199,18 @@ def _group_pids(pgid: int) -> set[int]:
             continue
         stat = _proc_stat(entry.name)
         if stat is not None and stat[1] == pgid:
+            result.add(int(entry.name))
+    return result
+
+
+def _atspi_workers() -> set[int]:
+    """Live AT-SPI worker pids (``python -m kwin_mcp.accessibility --serve``), any owner."""
+    result = set()
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit() or not _is_live(entry.name):
+            continue
+        argv = _cmdline(entry.name)
+        if "kwin_mcp.accessibility" in argv and "--serve" in argv:
             result.add(int(entry.name))
     return result
 
@@ -643,7 +661,33 @@ def test_eof_while_session_start_running_stops_the_session() -> None:
             server.wait()
 
 
-def test_eof_while_tool_running_exits_bounded_and_clean() -> None:
+def _wait_for_new_atspi_worker(before: set[int]) -> None:
+    """Wait until an AT-SPI worker that was not running before has started."""
+    assert _wait_until(lambda: _atspi_workers() - before, CLEANUP_SETTLE_SECONDS), (
+        "the in-flight wait_for_element did not start an AT-SPI worker"
+    )
+
+
+def _assert_atspi_workers_gone(before: set[int]) -> None:
+    """No AT-SPI worker started during the test survives the server's exit."""
+    assert _wait_until(lambda: not (_atspi_workers() - before), _ATSPI_WORKER_SETTLE_SECONDS), (
+        f"AT-SPI workers survived the server exit: {sorted(_atspi_workers() - before)}"
+    )
+
+
+def _wait_for_element_request(request_id: int, *, progress_token: bool) -> dict[str, object]:
+    """A ``wait_for_element`` call that runs its full 15 s timeout (the target never appears)."""
+    params: dict[str, object] = {
+        "name": "wait_for_element",
+        "arguments": {"query": _MISSING_ELEMENT_QUERY, "timeout_ms": 15000},
+    }
+    if progress_token:
+        params["_meta"] = {"progressToken": f"busy-exit-{request_id}"}
+    return {"jsonrpc": "2.0", "id": request_id, "method": "tools/call", "params": params}
+
+
+@pytest.mark.parametrize("progress_token", [False, True], ids=["no-token", "progress-token"])
+def test_eof_while_tool_running_exits_bounded_and_clean(progress_token: bool) -> None:
     """Closing stdin while a tool is running still exits bounded and leaves no survivors.
 
     Regression: on stdio EOF the SDK cancels in-flight handlers without stopping the
@@ -651,10 +695,17 @@ def test_eof_while_tool_running_exits_bounded_and_clean() -> None:
     with the tool body still running on the tool thread — the engine is not
     thread-safe, and the two could tear the session down in opposite orders (the stop
     racing the in-flight tool, or the tool's a11y worker being killed mid-exchange).
-    The final stop must run on the tool thread, serialized with the in-flight tool, so
-    the process always exits within the bound with the session fully torn down.
+    The final stop is queued on the tool thread behind the in-flight tool; the 15 s
+    wait outlives the exit drain, so the stop is cancelled and the registry path
+    terminates the owned groups, the AT-SPI worker included.
+
+    The tool's progress heartbeats keep firing after the request was cancelled. They
+    must not create progress coroutines the closing loop never awaits (a
+    ``RuntimeWarning: coroutine ... was never awaited`` on stderr), with or without a
+    progressToken, and no orphaned worker may print a BrokenPipeError traceback.
     """
-    server = _spawn([sys.executable, "-m", "kwin_mcp"])
+    workers_before = _atspi_workers()
+    server = _spawn_with_stderr([sys.executable, "-m", "kwin_mcp"])
     reader = _LineReader(_stdout(server))
     try:
         app_pid = _start_server_session(server, reader)
@@ -665,33 +716,85 @@ def test_eof_while_tool_running_exits_bounded_and_clean() -> None:
         # Occupy the tool thread with a long read-only wait on an element that never
         # appears; the response is not awaited, so the tool is still running when the
         # client disconnects.
-        request = {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/call",
-            "params": {
-                "name": "wait_for_element",
-                "arguments": {"query": "no-such-element-xyz", "timeout_ms": 15000},
-            },
-        }
         stdin = _stdin(server)
+        request = _wait_for_element_request(2, progress_token=progress_token)
         stdin.write(json.dumps(request) + "\n")
         stdin.flush()
-        # The tool is now running on the tool thread.
+        # The tool is now running on the tool thread, in the AT-SPI worker.
+        _wait_for_new_atspi_worker(workers_before)
         time.sleep(1.0)
         assert _group_pids(pgid), "session group died before the client disconnected"
 
         # Disconnect (EOF) while the tool is still running: the server must exit 0
         # within the bound (no hang on the in-flight tool) and tear the whole session
-        # down (compositor, wrapper, app).
+        # down (compositor, wrapper, app, AT-SPI worker).
         stdin.close()
         exit_code = server.wait(timeout=SERVER_EXIT_TIMEOUT_TOOL_INFLIGHT_SECONDS)
         assert exit_code == 0, f"server did not exit 0 on stdin EOF, got {exit_code}"
         _assert_session_gone(pgid, app_pid)
+        _assert_atspi_workers_gone(workers_before)
+        # Read only once every process that inherited the pipe is gone.
+        stderr = server.stderr.read() if server.stderr is not None else ""
+        assert "never awaited" not in stderr, stderr
+        assert "RuntimeWarning" not in stderr, stderr
+        assert "Traceback" not in stderr, stderr
     finally:
         if server.poll() is None:
             server.kill()
             server.wait()
+
+
+@pytest.mark.parametrize("exit_mode", ["eof", "sigterm"])
+def test_busy_exit_terminates_the_atspi_worker(exit_mode: str) -> None:
+    """A busy exit on a live session leaves no AT-SPI worker and no BrokenPipeError.
+
+    Regression: the worker was a plain ``Popen`` outside the owned-process registry.
+    When a busy tool makes the exit take the registry path, ``terminate_all`` only
+    reached registered groups, so the worker of the in-flight ``wait_for_element``
+    outlived the server and later printed a BrokenPipeError traceback on the
+    inherited stderr. Now the registry owns the worker and terminates it.
+    """
+    with live_kwin() as live:
+        workers_before = _atspi_workers()
+        server = _spawn_with_stderr([sys.executable, "-m", "kwin_mcp"])
+        reader = _LineReader(_stdout(server))
+        try:
+            _connect_live_session(server, reader, live)
+            request = {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "wait_for_element",
+                    "arguments": {"query": _MISSING_ELEMENT_QUERY, "timeout_ms": 20000},
+                },
+            }
+            stdin = _stdin(server)
+            stdin.write(json.dumps(request) + "\n")
+            stdin.flush()
+            _wait_for_new_atspi_worker(workers_before)
+            time.sleep(1.0)
+
+            if exit_mode == "eof":
+                stdin.close()
+                expected_code = 0
+            else:
+                os.kill(server.pid, signal.SIGTERM)
+                expected_code = 128 + signal.SIGTERM
+            exit_code = server.wait(timeout=SERVER_EXIT_TIMEOUT_TOOL_OVERRUN_SECONDS)
+            assert exit_code == expected_code, f"expected exit {expected_code}, got {exit_code}"
+            _assert_atspi_workers_gone(workers_before)
+            # Read only once every process that inherited the pipe is gone.
+            stderr = server.stderr.read() if server.stderr is not None else ""
+            assert "registry" in stderr, (
+                f"expected the stderr outcome line to name the registry path, got: {stderr!r}"
+            )
+            assert "BrokenPipeError" not in stderr, stderr
+            assert live.process.poll() is None, "the live KWin was signalled"
+        finally:
+            if server.poll() is None:
+                server.kill()
+                server.wait()
 
 
 def test_second_sigterm_during_cleanup_still_exits() -> None:
@@ -1175,16 +1278,14 @@ def test_live_session_busy_exit_restores_accessibility_keeps_kwin() -> None:
                 server.wait()
 
 
-def test_virtual_keep_home_busy_exit_removes_screenshots_keeps_home() -> None:
-    """Busy exit on a virtual keep_home session removes home/.screenshots; home kept (F7).
+def _busy_exit_virtual_isolated_home(arguments: dict[str, bool]) -> tuple[Path, Path]:
+    """Busy-exit a virtual isolated-home session; return (home dir, screenshot dir).
 
-    The registry must remove exactly what ``session_stop`` would remove. A virtual
-    session with ``keep_home=True`` and default ``keep_screenshots`` has its
-    ``home/.screenshots`` removed by ``session_stop`` (the home itself is kept); the
-    busy-exit registry path must do the same. Start the session with
-    ``isolate_home=True, keep_home=True``, take a screenshot (so ``home/.screenshots``
-    exists), then fire an overrun tool and close stdin: ``home/.screenshots`` must be
-    removed and the home kept.
+    Starts ``session_start`` with ``isolate_home=True`` plus ``arguments`` and an
+    initial app, then fires an overrun tool and closes stdin so the registry path
+    cleans up. The app's log file lives in the screenshot dir, so the dir is located
+    from the reported ``App log:`` path and has content without capturing a
+    screenshot (capture is unavailable in some virtual-session environments).
     """
     server = _spawn_with_stderr([sys.executable, "-m", "kwin_mcp"])
     reader = _LineReader(_stdout(server))
@@ -1204,7 +1305,6 @@ def test_virtual_keep_home_busy_exit_removes_screenshots_keeps_home() -> None:
         stdin = _stdin(server)
         stdin.write(initialized + "\n")
         stdin.flush()
-        # Start a virtual session with an isolated, kept home.
         response = _rpc(
             reader,
             server,
@@ -1212,7 +1312,11 @@ def test_virtual_keep_home_busy_exit_removes_screenshots_keeps_home() -> None:
             "tools/call",
             {
                 "name": "session_start",
-                "arguments": {"isolate_home": True, "keep_home": True},
+                "arguments": {
+                    "isolate_home": True,
+                    "app_command": "sh -c 'echo started; exec sleep 600'",
+                    **arguments,
+                },
             },
         )
         text = _response_text(response)
@@ -1220,11 +1324,13 @@ def test_virtual_keep_home_busy_exit_removes_screenshots_keeps_home() -> None:
         assert match, f"no isolated home in response: {text[:200]}"
         home_dir = Path(match.group(1))
         assert home_dir.is_dir(), f"isolated home does not exist: {home_dir}"
-
-        # Take a screenshot so home/.screenshots exists with content.
-        _rpc(reader, server, 3, "tools/call", {"name": "screenshot", "arguments": {}})
-        screenshots = home_dir / ".screenshots"
-        assert screenshots.is_dir(), f"home/.screenshots does not exist: {screenshots}"
+        match = re.search(r"App log: (\S+)", text)
+        assert match, f"no app log path in response: {text[:200]}"
+        screenshot_dir = Path(match.group(1)).parent
+        assert screenshot_dir.is_dir(), f"screenshot dir does not exist: {screenshot_dir}"
+        assert not screenshot_dir.is_relative_to(home_dir), (
+            f"the screenshot dir is inside the isolated home: {screenshot_dir}"
+        )
 
         # Occupy the tool thread so the busy (registry) path runs.
         _fire_overrun_tool(server)
@@ -1237,13 +1343,44 @@ def test_virtual_keep_home_busy_exit_removes_screenshots_keeps_home() -> None:
         assert "registry" in stderr, (
             f"expected the stderr outcome line to name the registry path, got: {stderr!r}"
         )
-        # home/.screenshots must be removed; the home itself is kept.
-        assert not screenshots.exists(), f"home/.screenshots survived the busy exit: {screenshots}"
-        assert home_dir.is_dir(), f"the kept home was removed: {home_dir}"
+        return home_dir, screenshot_dir
     finally:
         if server.poll() is None:
             server.kill()
             server.wait()
+
+
+def test_virtual_keep_home_busy_exit_removes_screenshot_dir_keeps_home() -> None:
+    """Busy exit on a virtual keep_home session removes the screenshot dir; home kept (F7).
+
+    The registry must remove exactly what ``session_stop`` would remove, and the two
+    retention flags are independent: ``keep_home=True`` keeps the isolated home, the
+    default ``keep_screenshots=False`` removes the separate screenshot dir.
+    """
+    home_dir, screenshot_dir = _busy_exit_virtual_isolated_home({"keep_home": True})
+    try:
+        assert not screenshot_dir.exists(), (
+            f"the screenshot dir survived the busy exit: {screenshot_dir}"
+        )
+        assert home_dir.is_dir(), f"the kept home was removed: {home_dir}"
+    finally:
+        shutil.rmtree(home_dir, ignore_errors=True)
+
+
+def test_virtual_keep_screenshots_busy_exit_keeps_screenshot_dir_removes_home() -> None:
+    """Busy exit on a virtual keep_screenshots session keeps the screenshot dir only.
+
+    The mirror of the keep_home case: ``keep_screenshots=True`` keeps the separate
+    screenshot dir (screenshots and app logs), the default ``keep_home=False``
+    removes the isolated home.
+    """
+    home_dir, screenshot_dir = _busy_exit_virtual_isolated_home({"keep_screenshots": True})
+    try:
+        assert screenshot_dir.is_dir(), f"the kept screenshot dir was removed: {screenshot_dir}"
+        assert any(screenshot_dir.iterdir()), f"the kept screenshot dir is empty: {screenshot_dir}"
+        assert not home_dir.exists(), f"the isolated home survived the busy exit: {home_dir}"
+    finally:
+        shutil.rmtree(screenshot_dir, ignore_errors=True)
 
 
 # The app locks a subdirectory of its isolated home, so the busy-exit registry path

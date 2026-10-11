@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
 BAD_BINARY = "definitely-not-a-real-binary"
-SESSION_ALREADY_RUNNING = "Session already running. Call session_stop first."
+SESSION_ALREADY_RUNNING = "Session already running"
 LAUNCHED_PID = re.compile(r"\(PID=(\d+)\)")
 PROCESS_EXIT_TIMEOUT_SECONDS = 5.0
 A11Y_BUS_NAME = "org.a11y.Bus"
@@ -38,7 +38,6 @@ XDG_HOME_DIRECTORIES = (
     Path(".local/share"),
     Path(".local/state"),
     Path(".cache"),
-    Path(".screenshots"),
 )
 
 
@@ -96,12 +95,12 @@ def test_double_start_keeps_the_original_compositor(
 ) -> None:
     first_output = start_session()
     first_socket = _output_value(first_output, "Session started. Wayland socket: ")
-    pids_after_first_start = _kwin_pids()
+    pids_after_first_start = _live_kwin_pids()
 
-    second_output = engine.session_start(screen_width=640, screen_height=480)
+    with pytest.raises(RuntimeError, match=SESSION_ALREADY_RUNNING):
+        engine.session_start(screen_width=640, screen_height=480)
 
-    assert second_output == SESSION_ALREADY_RUNNING
-    assert _kwin_pids() == pids_after_first_start
+    assert _live_kwin_pids() == pids_after_first_start
     assert (Path(os.environ["XDG_RUNTIME_DIR"]) / first_socket).is_socket()
 
 
@@ -117,6 +116,8 @@ def test_stop_without_a_session_and_repeated_stop_are_safe(
 def test_bad_app_command_raises_a_clear_error(
     engine: AutomationEngine, start_session: Callable[..., str]
 ) -> None:
+    kwin_before = _live_kwin_pids()
+
     with pytest.raises(FileNotFoundError) as exc_info:
         start_session(BAD_BINARY)
 
@@ -125,7 +126,13 @@ def test_bad_app_command_raises_a_clear_error(
     assert error.filename == BAD_BINARY
     assert "No such file or directory" in str(error)
     assert BAD_BINARY in str(error)
-    assert engine.session_stop() == "Session stopped."
+    # The failed start rolled back atomically: no compositor and no session remain.
+    # Only live compositors count: the rolled-back KWin is orphaned to the container's
+    # reaperless PID 1 and stays a zombie there (see _is_live).
+    assert _live_kwin_pids() == kwin_before
+    assert engine.session_stop() == "No session running."
+    # A following start succeeds instead of reporting a running session.
+    assert "Session started" in start_session()
 
 
 def test_session_start_propagates_environment_to_the_initial_app(
@@ -217,27 +224,39 @@ def test_isolated_home_cleanup_and_keep_home(
         assert all((kept_home / path).is_dir() for path in XDG_HOME_DIRECTORIES)
         assert engine.session_stop() == "Session stopped."
         assert kept_home.is_dir()
-        assert all((kept_home / path).is_dir() for path in XDG_HOME_DIRECTORIES[:-1])
+        assert all((kept_home / path).is_dir() for path in XDG_HOME_DIRECTORIES)
     finally:
         engine.session_stop()
         shutil.rmtree(kept_home, ignore_errors=True)
 
 
-@pytest.mark.parametrize("keep_screenshots", [False, True], ids=["remove", "retain"])
+@pytest.mark.parametrize("keep_screenshots", [False, True], ids=["drop-shots", "keep-shots"])
+@pytest.mark.parametrize("keep_home", [False, True], ids=["drop-home", "keep-home"])
+@pytest.mark.parametrize("isolate_home", [False, True], ids=["host-home", "isolated-home"])
 def test_virtual_session_artifact_cleanup_respects_retention(
     engine: AutomationEngine,
     start_session: Callable[..., str],
+    isolate_home: bool,
+    keep_home: bool,
     keep_screenshots: bool,
 ) -> None:
+    """keep_screenshots alone decides the screenshot/app-log dir, keep_home alone the home."""
     screenshot_dir: Path | None = None
+    home: Path | None = None
     try:
         output = start_session(
             "printf virtual-retention-payload",
+            isolate_home=isolate_home,
+            keep_home=keep_home,
             keep_screenshots=keep_screenshots,
         )
+        if isolate_home:
+            home = Path(_output_value(output, "Isolated home: "))
         pid = _launched_pid(output)
         log_path = _app_log_path(output)
         screenshot_dir = log_path.parent
+        if home is not None:
+            assert not screenshot_dir.is_relative_to(home), (screenshot_dir, home)
         assert _wait_for_app_log(engine, pid, "virtual-retention-payload") == (
             "virtual-retention-payload"
         )
@@ -246,10 +265,14 @@ def test_virtual_session_artifact_cleanup_respects_retention(
         assert engine.session_stop() == "Session stopped."
         assert log_path.exists() is keep_screenshots
         assert screenshot_dir.exists() is keep_screenshots
+        if home is not None:
+            assert home.exists() is keep_home
     finally:
         engine.session_stop()
         if screenshot_dir is not None:
             shutil.rmtree(screenshot_dir, ignore_errors=True)
+        if home is not None:
+            shutil.rmtree(home, ignore_errors=True)
 
 
 def test_isolated_home_retains_app_logs_when_both_retention_flags_are_enabled(
@@ -262,10 +285,11 @@ def test_isolated_home_retains_app_logs_when_both_retention_flags_are_enabled(
         keep_screenshots=True,
     )
     home = Path(_output_value(output, "Isolated home: "))
+    log_path: Path | None = None
     try:
         pid = _launched_pid(output)
         log_path = _app_log_path(output)
-        assert log_path.parent == home / ".screenshots"
+        assert not log_path.is_relative_to(home), (log_path, home)
         assert _wait_for_app_log(engine, pid, "isolated-home-retention-payload") == (
             "isolated-home-retention-payload"
         )
@@ -277,6 +301,8 @@ def test_isolated_home_retains_app_logs_when_both_retention_flags_are_enabled(
     finally:
         engine.session_stop()
         shutil.rmtree(home, ignore_errors=True)
+        if log_path is not None:
+            shutil.rmtree(log_path.parent, ignore_errors=True)
 
 
 def test_session_stop_removes_the_wayland_socket(
@@ -450,12 +476,14 @@ def test_session_connect_rejects_an_explicit_unreachable_dbus_address(
 ) -> None:
     dbus_address = f"unix:path={tmp_path / 'missing-session-bus'}"
 
-    output = engine.session_connect(
-        dbus_address=dbus_address,
-        wayland_display="wayland-missing",
-    )
+    with pytest.raises(RuntimeError) as exc_info:
+        engine.session_connect(
+            dbus_address=dbus_address,
+            wayland_display="wayland-missing",
+        )
 
-    assert output.startswith(f"Cannot reach KWin on D-Bus ({dbus_address}):"), output
+    message = str(exc_info.value)
+    assert message.startswith(f"Cannot reach KWin on D-Bus ({dbus_address}):"), message
     assert engine.session_stop() == "No session running."
 
 
@@ -465,12 +493,14 @@ def test_session_connect_rejects_an_explicit_missing_wayland_socket(
     with live_kwin() as live:
         missing_display = f"wayland-missing-{uuid4().hex}"
         try:
-            output = engine.session_connect(
-                dbus_address=live.dbus_address,
-                wayland_display=missing_display,
-            )
+            with pytest.raises(RuntimeError) as exc_info:
+                engine.session_connect(
+                    dbus_address=live.dbus_address,
+                    wayland_display=missing_display,
+                )
 
-            assert output.startswith(f"Cannot reach Wayland display ({missing_display}):"), output
+            message = str(exc_info.value)
+            assert message.startswith(f"Cannot reach Wayland display ({missing_display}):"), message
             assert engine.session_stop() == "No session running."
             assert live.process.poll() is None
             assert live.socket_path.is_socket()
@@ -484,13 +514,17 @@ def test_session_connect_auto_discovery_reports_each_missing_environment_variabl
     monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
 
-    assert engine.session_connect() == (
+    with pytest.raises(RuntimeError, match=r"^No D-Bus address available\. ") as exc_info:
+        engine.session_connect()
+    assert str(exc_info.value) == (
         "No D-Bus address available. Provide dbus_address parameter "
         "or ensure $DBUS_SESSION_BUS_ADDRESS is set."
     )
 
     monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/not-consulted")
-    assert engine.session_connect() == (
+    with pytest.raises(RuntimeError, match=r"^No Wayland display available\. ") as exc_info:
+        engine.session_connect()
+    assert str(exc_info.value) == (
         "No Wayland display available. Provide wayland_display parameter "
         "or ensure $WAYLAND_DISPLAY is set."
     )
@@ -505,13 +539,11 @@ def test_session_connect_rejects_replacing_an_active_virtual_session(
     socket_path = Path(os.environ["XDG_RUNTIME_DIR"]) / socket_name
 
     with live_kwin() as live:
-        assert (
+        with pytest.raises(RuntimeError, match=SESSION_ALREADY_RUNNING):
             engine.session_connect(
                 dbus_address=live.dbus_address,
                 wayland_display=live.wayland_display,
             )
-            == SESSION_ALREADY_RUNNING
-        )
         assert socket_path.is_socket()
         assert live.process.poll() is None
         assert live.socket_path.is_socket()

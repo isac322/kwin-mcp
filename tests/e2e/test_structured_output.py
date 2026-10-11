@@ -21,11 +21,15 @@ from kwin_mcp.results import (
     AccessibilityTreeResult,
     FindUIElementsResult,
     ListWindowsResult,
+    VirtualDesktopsResult,
     WindowGeometryResult,
+    WindowSetDesktopResult,
     format_find,
     format_list_windows,
     format_tree,
+    format_virtual_desktops,
     format_window_geometry,
+    format_window_set_desktop,
 )
 
 if TYPE_CHECKING:
@@ -46,8 +50,8 @@ STRUCTURED_TOOL_PROPERTIES: dict[str, frozenset[str]] = {
     "accessibility_tree": frozenset({"elements"}),
     "find_ui_elements": frozenset({"query", "states", "elements"}),
     "list_windows": frozenset({"applications"}),
-    "window_geometry": frozenset({"windows", "error"}),
-    "virtual_desktops": frozenset({"desktops", "error"}),
+    "window_geometry": frozenset({"windows"}),
+    "virtual_desktops": frozenset({"desktops"}),
     "window_set_desktop": frozenset(
         {
             "window_id",
@@ -58,7 +62,7 @@ STRUCTURED_TOOL_PROPERTIES: dict[str, frozenset[str]] = {
             "observed",
             "current_desktop_id_before",
             "current_desktop_id_after",
-            "error",
+            "observation_error",
         }
     ),
 }
@@ -188,7 +192,6 @@ def _assert_list_windows(text: str, structured: dict[str, Any]) -> None:
 
 def _assert_window_geometry(text: str, structured: dict[str, Any]) -> None:
     assert text == format_window_geometry(WindowGeometryResult.model_validate(structured), "", "")
-    assert structured["error"] is None, structured
     windows = structured["windows"]
     assert text.splitlines()[0] == f"Windows ({len(windows)}):", text
     assert any("kwrite" in window["app"].lower() for window in windows), structured
@@ -237,11 +240,53 @@ async def test_typed_tools_return_schema_valid_structured_content_matching_text(
             geometry_text, geometry = await _wait_for_single_active_window(client, schemas)
             _assert_window_geometry(geometry_text, geometry)
 
+            desktops_text, desktops = await _call_structured(client, schemas, "virtual_desktops")
+            assert desktops_text == format_virtual_desktops(
+                VirtualDesktopsResult.model_validate(desktops)
+            )
+            assert [d["current"] for d in desktops["desktops"]].count(True) == 1, desktops
+            current_id = next(d["id"] for d in desktops["desktops"] if d["current"])
+            window_id = geometry["windows"][0]["id"]
+            # Already on the current desktop: an idempotent, observable no-op.
+            set_text, placed = await _call_structured(
+                client,
+                schemas,
+                "window_set_desktop",
+                {"window_id": window_id, "desktop_id": current_id},
+            )
+            assert set_text == format_window_set_desktop(
+                WindowSetDesktopResult.model_validate(placed)
+            )
+            assert placed["applied"] is True, placed
+            assert placed["before"] == placed["observed"] == [current_id], placed
+            assert placed["current_desktop_id_before"] == current_id, placed
+            assert placed["current_desktop_id_after"] == current_id, placed
+            assert placed["observation_error"] is None, placed
+
+            # An unknown window or desktop is a tool error without structured content.
+            for arguments, message in (
+                (
+                    {
+                        "window_id": "{00000000-0000-0000-0000-000000000000}",
+                        "desktop_id": current_id,
+                    },
+                    "No window with id",
+                ),
+                (
+                    {"window_id": window_id, "desktop_id": "no-such-desktop"},
+                    "No virtual desktop with id",
+                ),
+            ):
+                refused = await client.call_result("window_set_desktop", arguments)
+                assert refused.is_error is True, _text(refused)
+                assert refused.structured_content is None, refused.structured_content
+                assert message in _text(refused), _text(refused)
+
             missing_id = "{00000000-0000-0000-0000-000000000000}"
             missing_text, missing_geometry = await _call_structured(
                 client, schemas, "window_geometry", {"window_id": missing_id}
             )
-            assert missing_geometry == {"windows": [], "error": None}, missing_geometry
+            assert missing_geometry == {"windows": []}, missing_geometry
             assert missing_text == f"No window with id {missing_id!r}."
 
             tree_text, tree = await _call_structured(

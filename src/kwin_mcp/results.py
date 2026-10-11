@@ -33,7 +33,10 @@ class WindowGeometry(BaseModel):
     """One KWin window as reported by window_geometry."""
 
     id: str = Field(
-        description="KWin internalId; pass to window_geometry(window_id=) or window_close."
+        description=(
+            "KWin internalId; pass to window_geometry(window_id=), focus_window(window_id=), "
+            "window_set_geometry or window_close."
+        )
     )
     app: str = Field(description="KWin resource class (Wayland app_id).")
     caption: str
@@ -46,7 +49,6 @@ class WindowGeometryResult(BaseModel):
     """Result of window_geometry."""
 
     windows: list[WindowGeometry] = Field(default_factory=list)
-    error: str | None = Field(default=None, description="Set when KWin could not be queried.")
 
 
 def format_window(w: WindowGeometry) -> str:
@@ -63,8 +65,6 @@ def format_window(w: WindowGeometry) -> str:
 
 def format_window_geometry(r: WindowGeometryResult, app_name: str = "", window_id: str = "") -> str:
     """Render a window_geometry result for the given filters."""
-    if r.error is not None:
-        return f"Window geometry unavailable: {r.error}"
     if not r.windows:
         if window_id:
             return f"No window with id {window_id!r}."
@@ -92,13 +92,10 @@ class VirtualDesktopsResult(BaseModel):
     desktops: list[VirtualDesktop] = Field(
         default_factory=list, description="In KWin's desktop order."
     )
-    error: str | None = Field(default=None, description="Set when KWin could not be queried.")
 
 
 def format_virtual_desktops(r: VirtualDesktopsResult) -> str:
     """Render a virtual_desktops result."""
-    if r.error is not None:
-        return f"Virtual desktops unavailable: {r.error}"
     if not r.desktops:
         return "No virtual desktops found."
     lines = [f"Virtual desktops ({len(r.desktops)}):"]
@@ -109,56 +106,56 @@ def format_virtual_desktops(r: VirtualDesktopsResult) -> str:
 
 
 class WindowSetDesktopResult(BaseModel):
-    """Result of window_set_desktop.
+    """Result of a window_set_desktop request that KWin accepted for a found window and desktop.
 
-    ``applied`` reports only the assignment. Whether the user's current desktop
-    stayed the same is reported separately, by the two ``current_desktop_id_*``
-    fields, so a caller can check it and an unexpected change stays visible.
+    ``applied`` reports only the assignment, as observed by a separate readback.
+    Whether the user's current desktop stayed the same is reported separately,
+    by the two ``current_desktop_id_*`` fields, so a caller can check it and an
+    unexpected change stays visible. When the readback could not observe the
+    window, ``applied`` is false but the window may already have moved.
     """
 
     window_id: str
     desktop_id: str
     applied: bool = Field(
-        default=False,
-        description="True when the window and desktop were found and a separate KWin "
-        "query observed the window on exactly [desktop_id].",
+        description="True when a separate KWin query observed the window on exactly [desktop_id]."
     )
-    before: list[str] | None = Field(
-        default=None,
-        description="The window's desktop ids before the change ([] = on all desktops); "
-        "null when the window was not found.",
+    before: list[str] = Field(
+        description="The window's desktop ids before the change ([] = on all desktops)."
     )
-    before_on_all_desktops: bool | None = Field(
-        default=None, description="Whether the window was on all desktops before the change."
+    before_on_all_desktops: bool = Field(
+        description="Whether the window was on all desktops before the change."
     )
     observed: list[str] | None = Field(
-        default=None,
-        description="The window's desktop ids read back after the change; null when unavailable.",
+        description="The window's desktop ids read back after the change; null when the "
+        "readback could not observe the window."
     )
-    current_desktop_id_before: str | None = Field(
-        default=None, description="Current desktop id when the change was made."
+    current_desktop_id_before: str = Field(
+        description="Current desktop id when the change was requested."
     )
     current_desktop_id_after: str | None = Field(
-        default=None, description="Current desktop id read back after the change."
+        description="Current desktop id read back after the change; null when the readback failed."
     )
-    error: str | None = Field(
-        default=None, description="Why the window was not observed on exactly [desktop_id]."
+    observation_error: str | None = Field(
+        description="Why the readback could not observe the window (query failure, or the "
+        "window no longer exists); null when it was observed."
     )
 
 
 def format_window_set_desktop(r: WindowSetDesktopResult) -> str:
     """Render a window_set_desktop result."""
-    if r.before is None:
-        return f"Window desktop unchanged: {r.error}"
+    status = "set" if r.applied else "not confirmed"
     lines = [
-        f"Window desktop {'set' if r.applied else 'not confirmed'}: "
-        f"{r.window_id} -> {r.desktop_id}",
+        f"Window desktop {status}: {r.window_id} -> {r.desktop_id}",
         f"before:   {r.before}{' (all desktops)' if r.before_on_all_desktops else ''}",
-        f"observed: {r.observed if r.observed is not None else 'unavailable'}",
-        f"current desktop: {r.current_desktop_id_before} -> {r.current_desktop_id_after}",
     ]
-    if r.error is not None:
-        lines.append(f"error: {r.error}")
+    if r.observation_error is not None:
+        lines.append(
+            f"observation failed: {r.observation_error} (the window may already have moved)"
+        )
+    else:
+        lines.append(f"observed: {r.observed}")
+    lines.append(f"current desktop: {r.current_desktop_id_before} -> {r.current_desktop_id_after}")
     return "\n".join(lines)
 
 
@@ -279,7 +276,10 @@ def format_tree(r: AccessibilityTreeResult) -> str:
 class AccessibleWindow(BaseModel):
     """One AT-SPI top-level of an application."""
 
-    title: str = Field(description='AT-SPI name; "(untitled)" when empty.')
+    title: str = Field(
+        description="Raw AT-SPI name; may be empty ('(untitled)') or differ from the KWin "
+        "caption, which window_geometry reports."
+    )
     active: bool
     focused: bool
 

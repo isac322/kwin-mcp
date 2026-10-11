@@ -11,6 +11,8 @@ import json
 import time
 from typing import TYPE_CHECKING
 
+import pytest
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -23,16 +25,15 @@ _WAIT_SECONDS = 15.0
 
 
 def _add_two_desktops(engine: AutomationEngine) -> list[VirtualDesktop]:
+    # dbus_call raises when the call fails.
     for position, name in ((1, "Two"), (2, "Three")):
-        output = engine.dbus_call(
+        engine.dbus_call(
             *_MANAGER,
             _MANAGER_INTERFACE,
             "createDesktop",
             [f"uint32:{position}", f"string:{name}"],
         )
-        assert not output.startswith(("D-Bus call failed:", "D-Bus error:")), output
     data = engine.virtual_desktops_data()
-    assert data.error is None, data.error
     assert len(data.desktops) == 3, data
     return data.desktops
 
@@ -96,7 +97,7 @@ def test_window_set_desktop_moves_exactly_one_window_without_switching(
 
     data = kcalc_session.window_set_desktop_data(window_id=moved_id, desktop_id=target.id)
 
-    assert data.error is None, data
+    assert data.observation_error is None, data
     assert data.applied is True, data
     assert data.before == [current.id], data
     assert data.before_on_all_desktops is False, data
@@ -127,18 +128,15 @@ def test_unknown_window_or_desktop_changes_nothing(kcalc_session: AutomationEngi
     target = next(d for d in desktops if not d.current)
     (window_id,) = _kcalc_ids(kcalc_session, 1)[:1]
 
-    missing_window = kcalc_session.window_set_desktop_data(
-        window_id="{00000000-0000-0000-0000-000000000000}", desktop_id=target.id
-    )
-    assert missing_window.applied is False
-    assert missing_window.error is not None and "No window with id" in missing_window.error
+    with pytest.raises(RuntimeError, match="No window with id"):
+        kcalc_session.window_set_desktop_data(
+            window_id="{00000000-0000-0000-0000-000000000000}", desktop_id=target.id
+        )
 
-    missing_desktop = kcalc_session.window_set_desktop_data(
-        window_id=window_id, desktop_id="00000000-0000-0000-0000-000000000000"
-    )
-    assert missing_desktop.applied is False
-    assert missing_desktop.error is not None
-    assert "No virtual desktop with id" in missing_desktop.error
+    with pytest.raises(RuntimeError, match="No virtual desktop with id"):
+        kcalc_session.window_set_desktop_data(
+            window_id=window_id, desktop_id="00000000-0000-0000-0000-000000000000"
+        )
 
     # Neither call moved the window.
     check = kcalc_session.window_set_desktop_data(window_id=window_id, desktop_id=current.id)

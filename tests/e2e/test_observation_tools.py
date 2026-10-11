@@ -369,4 +369,19 @@ def test_wayland_info_reports_command_errors(
     command.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path))
 
-    assert kcalc_session.wayland_info() == ("wayland-info failed: synthetic wayland-info failure\n")
+    with pytest.raises(RuntimeError, match=r"^wayland-info failed: synthetic wayland-info failure"):
+        kcalc_session.wayland_info()
+
+
+def test_wait_for_element_longer_than_the_atspi_request_timeout_times_out_softly(
+    kcalc_session: AutomationEngine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wait longer than the per-request bound returns its own timeout, not a worker kill."""
+    from kwin_mcp import core
+
+    monkeypatch.setattr(core, "_ATSPI_TIMEOUT_S", 1.0)
+
+    result = kcalc_session.wait_for_element("zzz", timeout_ms=2500)
+
+    assert result.startswith("Timeout after 2500ms"), result

@@ -26,6 +26,19 @@ SERVER_HELP_COMMANDS = (
     (VENV_BIN / "kwin-mcp", "--help"),
     (VENV_BIN / "kwin-mcp", "-h"),
     (VENV_BIN / "python", "-m", "kwin_mcp", "--help"),
+    # Help wins over any other argument, even an invalid one before or after it.
+    (VENV_BIN / "kwin-mcp", "--screenshot-max-edge", "abc", "--help"),
+    (VENV_BIN / "kwin-mcp", "--help", "--screenshot-max-edge", "abc"),
+)
+# Arguments the server rejects as a usage error (exit 2) before it starts serving,
+# with the stable fragment of argparse's error line.
+SERVER_USAGE_ERRORS = (
+    (("--bogus-flag",), "unrecognized arguments: --bogus-flag"),
+    (("extra",), "unrecognized arguments: extra"),
+    # An abbreviation of --default-live-session must not switch on live mode.
+    (("--default",), "unrecognized arguments: --default"),
+    # Superscript two: str.isdigit() accepts it, int() raises ValueError.
+    (("--screenshot-max-edge", "\u00b2"), "needs a pixel count"),
 )
 
 
@@ -99,20 +112,14 @@ def test_cli_help_runs_without_a_kwin_executable_on_path() -> None:
     assert "--default-live-session" in result.stdout
 
 
-@pytest.mark.parametrize(
-    "command",
-    SERVER_HELP_COMMANDS,
-    ids=("kwin-mcp--help", "kwin-mcp-h", "python-m-kwin_mcp--help"),
-)
-def test_server_help_prints_usage_without_starting_the_stdio_server(
-    command: tuple[Path | str, ...],
-) -> None:
+def _run_server_with_stdin_open(argv: list[str]) -> tuple[int, str, str]:
+    """Run the server with stdin held open; return its exit code, stdout and stderr.
+
+    A server that went on to serve MCP would block on the open stdin instead of
+    exiting, so the bounded wait fails the test rather than passing on EOF.
+    """
     environment = os.environ.copy()
     environment["PATH"] = str(VENV_BIN)
-    argv = [str(arg) for arg in command]
-
-    # stdin stays open: a server that ignored --help would block serving MCP on it
-    # instead of exiting, so the wait below times out rather than passing on EOF.
     process = subprocess.Popen(
         argv,
         env=environment,
@@ -125,7 +132,7 @@ def test_server_help_prints_usage_without_starting_the_stdio_server(
         try:
             returncode = process.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            pytest.fail(f"{argv} started the MCP server instead of printing help and exiting")
+            pytest.fail(f"{argv} started the MCP server instead of exiting")
         assert process.stdout is not None
         assert process.stderr is not None
         stdout = process.stdout.read()
@@ -136,9 +143,47 @@ def test_server_help_prints_usage_without_starting_the_stdio_server(
         for stream in (process.stdin, process.stdout, process.stderr):
             if stream is not None:
                 stream.close()
+    return returncode, stdout, stderr
+
+
+@pytest.mark.parametrize(
+    "command",
+    SERVER_HELP_COMMANDS,
+    ids=(
+        "kwin-mcp--help",
+        "kwin-mcp-h",
+        "python-m-kwin_mcp--help",
+        "invalid-max-edge-then-help",
+        "help-then-invalid-max-edge",
+    ),
+)
+def test_server_help_prints_usage_without_starting_the_stdio_server(
+    command: tuple[Path | str, ...],
+) -> None:
+    returncode, stdout, stderr = _run_server_with_stdin_open([str(arg) for arg in command])
 
     assert returncode == 0, stderr
     assert "usage: kwin-mcp" in stdout
     for flag in SERVER_FLAGS:
         assert flag in stdout, flag
     assert stderr == ""
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    SERVER_USAGE_ERRORS,
+    ids=("unknown-option", "positional", "abbreviation", "non-ascii-max-edge"),
+)
+def test_server_rejects_invalid_arguments_with_a_usage_error(
+    args: tuple[str, ...], message: str
+) -> None:
+    returncode, stdout, stderr = _run_server_with_stdin_open([str(VENV_BIN / "kwin-mcp"), *args])
+
+    assert returncode == 2, stderr
+    assert stderr.startswith("usage: kwin-mcp "), stderr
+    assert "kwin-mcp: error: " in stderr, stderr
+    assert message in stderr, stderr
+    assert "Traceback" not in stderr, stderr
+    # Rejected before the server starts: no MCP output and no exit-cleanup report.
+    assert stdout == ""
+    assert "exit cleanup" not in stderr, stderr

@@ -432,7 +432,8 @@ async def test_engine_exception_is_a_tool_error_and_server_survives() -> None:
 
         assert cleanup_result is not None
         assert cleanup_result.is_error is False
-        assert _result_text(cleanup_result) == "Session stopped."
+        # The failed start rolled back, so no session is left to stop.
+        assert _result_text(cleanup_result) == "No session running."
         assert await client.call_text("session_stop") == "No session running."
 
 

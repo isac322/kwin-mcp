@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from kwin_mcp import accessibility
+from kwin_mcp import accessibility, core
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -77,25 +77,26 @@ def test_invoke_ui_action_works_on_background_window(
 def test_invoke_ui_action_fails_closed_on_ambiguous_match(
     kcalc_session: AutomationEngine,
 ) -> None:
-    result = kcalc_session.invoke_ui_action(
-        query="button",
-        action_name="Press",
-        app_name="kcalc",
-    )
-
-    assert result.startswith("Refused ambiguous AT-SPI action:"), result
+    with pytest.raises(RuntimeError, match="^Refused ambiguous AT-SPI action:"):
+        kcalc_session.invoke_ui_action(
+            query="button",
+            action_name="Press",
+            app_name="kcalc",
+        )
 
 
 def test_invoke_ui_action_respects_application_filter(
     kcalc_session: AutomationEngine,
 ) -> None:
-    result = kcalc_session.invoke_ui_action(
-        query="Seven",
-        action_name="Press",
-        app_name="definitely-not-kcalc",
-    )
-
-    assert result == ("No element matching 'Seven' exposes AT-SPI action 'Press'.")
+    with pytest.raises(
+        RuntimeError,
+        match=re.escape("No element matching 'Seven' exposes AT-SPI action 'Press'."),
+    ):
+        kcalc_session.invoke_ui_action(
+            query="Seven",
+            action_name="Press",
+            app_name="definitely-not-kcalc",
+        )
 
 
 # ── Incomplete-discovery refusal (fake AT-SPI, no session needed) ────────
@@ -321,4 +322,131 @@ def test_invoke_ui_action_invokes_a_match_at_the_depth_limit(
     response = _run_action_request([buried])
 
     assert response["ok"] is True
+    assert action_calls == ["Seven"]
+
+
+# ── Engine results over the fake worker (no session needed) ──────────────
+
+
+def _engine_over_fake_worker(monkeypatch: pytest.MonkeyPatch) -> core.AutomationEngine:
+    """Engine whose AT-SPI requests are answered by the worker dispatch over the fakes."""
+    engine = core.AutomationEngine()
+    monkeypatch.setattr(engine, "_get_session", lambda: object())
+
+    def run_atspi(op: str, *, retry: bool = True, **kwargs: object) -> dict:
+        # State-changing requests must never be retried.
+        assert retry is False
+        return accessibility._handle_request({"op": op, **kwargs})
+
+    monkeypatch.setattr(engine, "_run_atspi", run_atspi)
+    return engine
+
+
+@pytest.mark.parametrize(
+    ("query", "action_name", "message"),
+    [("", "Press", "needs a query"), ("Seven", "", "needs an action_name")],
+)
+def test_invoke_ui_action_rejects_empty_arguments_without_a_session(
+    query: str, action_name: str, message: str
+) -> None:
+    """Argument errors are ValueErrors raised before the session is looked up."""
+    with pytest.raises(ValueError, match=message):
+        core.AutomationEngine().invoke_ui_action(query=query, action_name=action_name)
+
+
+def test_invoke_ui_action_failed_request_warns_the_action_may_have_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A timed-out or dead worker may still finish the walk and invoke the action."""
+    engine = core.AutomationEngine()
+    monkeypatch.setattr(engine, "_get_session", lambda: object())
+
+    def time_out(op: str, **_kwargs: object) -> dict:
+        msg = f"AT-SPI2 query timed out after 30s (op={op})"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(engine, "_run_atspi", time_out)
+
+    with pytest.raises(RuntimeError, match="may still have run") as failure:
+        engine.invoke_ui_action(query="Seven", action_name="Press")
+    assert str(failure.value).startswith("AT-SPI2 query timed out after 30s (op=action)")
+
+
+def test_invoke_ui_action_reports_an_unconfirmed_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dispatch that raises (e.g. a modal dialog blocks the reply) is sent, not failed."""
+    calls: list[str] = []
+
+    def _do_action(iface: _FakeAction, index: int) -> bool:
+        calls.append(iface.owner.name)
+        msg = "Timeout was reached"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(
+        accessibility,
+        "Atspi",
+        types.SimpleNamespace(
+            get_desktop=lambda _index: _DESKTOP[0],
+            Action=types.SimpleNamespace(do_action=_do_action),
+        ),
+    )
+
+    response = _run_action_request([_action_button()])
+
+    assert response == {
+        "ok": True,
+        "result": {
+            "matches": 1,
+            "invoked": None,
+            "error": "Timeout was reached",
+            "app": "kcalc",
+            "role": "push button",
+            "name": "Seven",
+            "action": "Press",
+        },
+    }
+
+    result = _engine_over_fake_worker(monkeypatch).invoke_ui_action(
+        query="Seven", action_name="Press", app_name="kcalc"
+    )
+
+    assert result == (
+        "Sent AT-SPI action 'Press' to [push button] \"Seven\" in kcalc, but the "
+        "application did not confirm (Timeout was reached); the action may have run "
+        "— check the UI before retrying."
+    )
+    assert "did not confirm" in result
+    assert calls == ["Seven", "Seven"]
+
+
+def test_incomplete_discovery_names_the_application_and_suggests_app_name(
+    action_calls: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal names the unreadable application; scoping with app_name recovers."""
+    buried = _action_button()
+    for _ in range(accessibility._ACTION_SEARCH_MAX_DEPTH):
+        buried = _FakeNode("panel", children=[buried])
+    _DESKTOP.clear()
+    _DESKTOP.append(
+        _FakeNode(
+            "desktop",
+            children=[
+                _FakeNode("kcalc", children=[_action_button()]),
+                _FakeNode("deep", children=[buried]),
+            ],
+        )
+    )
+    engine = _engine_over_fake_worker(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="Incomplete discovery") as failure:
+        engine.invoke_ui_action(query="Seven", action_name="Press")
+    message = str(failure.value)
+    assert "'deep'" in message, message
+    assert "app_name" in message, message
+    assert action_calls == []
+
+    result = engine.invoke_ui_action(query="Seven", action_name="Press", app_name="kcalc")
+
+    assert result == 'Invoked AT-SPI action: Press on [push button] "Seven" in kcalc'
     assert action_calls == ["Seven"]

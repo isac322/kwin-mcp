@@ -724,8 +724,14 @@ def invoke_ui_action(
     """Invoke a native AT-SPI action without pointer coordinates.
 
     Exactly one element must match the query, app filter and action name.
-    Ambiguous matches fail closed. State-changing accessibility calls are not
-    automatically retried because repeating an action could trigger it twice.
+    Ambiguous matches fail closed. Discovery also fails closed: if any node in
+    the searched scope cannot be read, or a subtree is deeper than 64 levels,
+    nothing is invoked and the error names that application — set app_name to
+    search only the target application. No match, a refusal or a failed request
+    is a tool error. If the application does not confirm a dispatched action,
+    the result says so: the action may have run, so check the UI before
+    retrying. State-changing accessibility calls are not automatically retried
+    because repeating an action could trigger it twice.
     """
     return _engine.invoke_ui_action(
         query=query,
@@ -1026,8 +1032,10 @@ def wait_for_element(
     Polls repeatedly until a matching element is found or the timeout expires.
     Returns matching elements in the same format as find_ui_elements —
     bounding boxes are global screen coordinates, or "@ unavailable (reason)"
-    when the element's window cannot be identified — or a timeout error
-    message.
+    when the element's window cannot be identified — or a timeout message.
+    Matches unavailable because KWin's window list was changing are re-polled
+    for up to 1 s (within the timeout) so a window that is still opening can
+    be mapped. Progress never exceeds timeout_ms.
     """
     return _engine.wait_for_element(
         query=query,
@@ -1066,6 +1074,8 @@ def list_windows() -> Annotated[CallToolResult, ListWindowsResult]:
 
     Uses AT-SPI2 to enumerate top-level applications and their window count.
     Applications that do not support accessibility (AT-SPI2) may not appear.
+    Titles are raw AT-SPI names and may be empty ('(untitled)') or differ from
+    KWin captions; window_geometry reports KWin captions.
     Returns a formatted list of app names with window counts.
     """
     data = _engine.list_windows_data()

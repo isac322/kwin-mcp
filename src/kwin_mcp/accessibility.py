@@ -181,9 +181,31 @@ def find_elements(
 # depth limit exists for the same reason: no match may hide below it.
 _ACTION_SEARCH_MAX_DEPTH = 64
 
+# How long wait_for_elements re-polls matches whose window mapping failed
+# because KWin's window list changed during the walk.
+_WINDOWS_CHANGED_SETTLE_S = 1.0
+
 
 class _IncompleteDiscoveryError(Exception):
-    """A read needed to evaluate every element in scope failed."""
+    """A read needed to evaluate every element in scope failed.
+
+    ``application`` names the application whose subtree could not be read
+    completely; it is empty when the failure precedes any application.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.application = ""
+
+
+def _incomplete_discovery_message(exc: _IncompleteDiscoveryError, app_name: str) -> str:
+    """Refusal text naming the incompletely read application and how to scope around it."""
+    if not exc.application:
+        return f"Incomplete discovery: {exc}"
+    message = f"Incomplete discovery in application {exc.application!r}: {exc}"
+    if not app_name:
+        message += ". Set app_name to search only the target application."
+    return message
 
 
 def invoke_action(
@@ -201,8 +223,12 @@ def invoke_action(
     the searched scope is fully read, because a read failure could hide the
     real unique match — or a second match that must refuse the action. Any
     failed read, and any subtree deeper than ``_ACTION_SEARCH_MAX_DEPTH``,
-    raises :class:`_IncompleteDiscovery`; the request branch in
+    raises :class:`_IncompleteDiscoveryError`; the request branch in
     ``_handle_request`` converts it into an ``ok: False`` response.
+
+    If the dispatch itself raises after a unique match, the result carries
+    ``invoked: None`` and the exception text in ``error``: the request was
+    sent and the action may have run.
     """
     desktop = Atspi.get_desktop(0)
     query_lower = query.lower()
@@ -303,7 +329,11 @@ def invoke_action(
         if app_name and app_name.lower() not in application.lower():
             continue
 
-        visit(app, application, 0)
+        try:
+            visit(app, application, 0)
+        except _IncompleteDiscoveryError as exc:
+            exc.application = application
+            raise
 
     if len(candidates) != 1:
         return {
@@ -312,7 +342,20 @@ def invoke_action(
         }
 
     action_iface, index, application, role, name, actual_action = candidates[0]
-    invoked = bool(Atspi.Action.do_action(action_iface, index))
+    try:
+        invoked = bool(Atspi.Action.do_action(action_iface, index))
+    except Exception as exc:
+        # The request was sent but no reply arrived (e.g. a D-Bus timeout
+        # because the action opened a modal dialog): it may still have run.
+        return {
+            "matches": 1,
+            "invoked": None,
+            "error": str(exc),
+            "app": application,
+            "role": role,
+            "name": name,
+            "action": actual_action,
+        }
 
     return {
         "matches": 1,
@@ -371,6 +414,11 @@ def wait_for_elements(
 ) -> list[ElementInfo]:
     """Poll for elements matching a query and/or states until found or timeout.
 
+    Matches whose window mapping failed only because KWin's window list
+    changed during the walk are re-polled for up to
+    ``_WINDOWS_CHANGED_SETTLE_S`` (bounded by the timeout); after that the
+    latest matches are returned as they are.
+
     Args:
         query: Search string (case-insensitive). Empty string matches all elements.
         app_name: Filter to a specific application.
@@ -386,13 +434,25 @@ def wait_for_elements(
     """
     deadline = time.monotonic() + timeout_ms / 1000.0
     interval = poll_interval_ms / 1000.0
+    settle_deadline: float | None = None
 
     while True:
         elements = find_elements(query, app_name=app_name, states=states)
+        now = time.monotonic()
         if elements:
-            return elements
+            if not any(e.unavailable == "windows-changed" for e in elements):
+                return elements
+            # KWin's window list changed during the walk (typically a window
+            # still opening): re-poll briefly so the caller gets coordinates,
+            # then return what is there rather than waiting the full timeout.
+            if settle_deadline is None:
+                settle_deadline = min(deadline, now + _WINDOWS_CHANGED_SETTLE_S)
+            if now >= settle_deadline:
+                return elements
+            time.sleep(min(interval, settle_deadline - now))
+            continue
 
-        if time.monotonic() >= deadline:
+        if now >= deadline:
             criteria = f"query='{query}'"
             if states:
                 criteria += f", states={states}"
@@ -925,7 +985,10 @@ def _handle_request(request: dict) -> dict:
             # Incomplete discovery is a refused action, not a broken worker:
             # report it as a regular error so the caller surfaces a refusal
             # instead of discarding and retrying a worker that is still fine.
-            return {"ok": False, "error": f"Incomplete discovery: {exc}"}
+            return {
+                "ok": False,
+                "error": _incomplete_discovery_message(exc, request.get("app_name", "")),
+            }
         return {"ok": True, "result": result}
 
     if op == "list_windows":

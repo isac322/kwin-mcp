@@ -252,6 +252,7 @@ tests/e2e/
 ├── test_installed_package.py           # Wheel, dependencies, and entry points
 ├── test_environment_evidence.py        # Safe environment.json provenance
 ├── test_mcp_protocol.py                # All 35 tool schemas and protocol errors
+├── test_tool_registration.py           # Repeated tool registration replaces each tool with the latest flags (no KWin)
 ├── test_mcp_session_observation.py     # Installed stdio session and observation flow
 ├── test_mcp_pointer_keyboard.py        # Installed stdio pointer and keyboard flow
 ├── test_mcp_touch_clipboard.py         # Installed stdio touch and clipboard flow

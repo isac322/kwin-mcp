@@ -190,6 +190,24 @@ class EchoService:
         lines = self._record_path.read_text(encoding="utf-8").splitlines()
         return output, [json.loads(line) for line in lines]
 
+    def call_rejected(
+        self,
+        method: str,
+        args: list[str | dict] | None = None,
+        *,
+        service: str = SERVICE,
+    ) -> tuple[str, list]:
+        """Call ``method`` expecting an argument error; return its text and what was received.
+
+        Argument errors are tool errors (``ValueError``) starting with
+        ``D-Bus call failed:``.
+        """
+        self._record_path.write_text("", encoding="utf-8")
+        with pytest.raises(ValueError, match="^D-Bus call failed:") as exc_info:
+            self.engine.dbus_call(service, OBJECT_PATH, INTERFACE, method, args)
+        lines = self._record_path.read_text(encoding="utf-8").splitlines()
+        return str(exc_info.value), [json.loads(line) for line in lines]
+
 
 @pytest.fixture(scope="module")
 def echo(tmp_path_factory: pytest.TempPathFactory) -> Iterator[EchoService]:
@@ -223,8 +241,7 @@ def echo(tmp_path_factory: pytest.TempPathFactory) -> Iterator[EchoService]:
     ids=["trailing-garbage", "overflow", "not-a-number"],
 )
 def test_malformed_int32_is_rejected_before_sending(echo: EchoService, arg: str) -> None:
-    output, received = echo.call("OneInt", [arg])
-    assert output.startswith("D-Bus call failed:"), output
+    output, received = echo.call_rejected("OneInt", [arg])
     assert "int32" in output, output
     assert received == [], received
 
@@ -257,7 +274,6 @@ def test_dict_uses_dbus_send_comma_grammar(echo: EchoService) -> None:
     assert received == [
         ["StrDict", "a{ss}", [{"FOO": ["String", "bar"], "BAZ": ["String", "qux"]}]]
     ], (output, received)
-    assert not output.startswith(("D-Bus call failed:", "D-Bus error:")), output
 
 
 def test_dict_with_variant_values_sends_asv(echo: EchoService) -> None:
@@ -266,7 +282,6 @@ def test_dict_with_variant_values_sends_asv(echo: EchoService) -> None:
         output,
         received,
     )
-    assert not output.startswith(("D-Bus call failed:", "D-Bus error:")), output
 
 
 def test_typed_json_dict_with_variant_values_sends_asv(echo: EchoService) -> None:
@@ -297,12 +312,10 @@ def test_top_level_variant_arrives_as_variant(echo: EchoService, arg: str | dict
     for service in (SERVICE, SERVICE_NOINTRO):
         output, received = echo.call("OneVariant", [arg], service=service)
         assert received == [["OneVariant", "v", [["Int32", 3]]]], (service, output, received)
-        assert not output.startswith(("D-Bus call failed:", "D-Bus error:")), (service, output)
 
 
 def test_explicit_variant_arg_does_not_match_non_variant(echo: EchoService) -> None:
-    output, received = echo.call("OneInt", ["variant:int32:5"])
-    assert output.startswith("D-Bus call failed:"), output
+    _output, received = echo.call_rejected("OneInt", ["variant:int32:5"])
     assert received == [], received
 
 
@@ -322,8 +335,7 @@ def test_explicit_variant_arg_does_not_match_non_variant(echo: EchoService) -> N
 def test_type_mismatch_is_rejected_before_sending(
     echo: EchoService, method: str, arg: str, sig: str
 ) -> None:
-    output, received = echo.call(method, [arg])
-    assert output.startswith("D-Bus call failed:"), output
+    output, received = echo.call_rejected(method, [arg])
     assert sig in output, output
     assert received == [], received
 
@@ -349,21 +361,21 @@ def test_non_introspectable_service_gets_own_signatures(echo: EchoService) -> No
 def test_argument_count_mismatch_is_rejected(
     echo: EchoService, method: str, args: list[str | dict]
 ) -> None:
-    output, received = echo.call(method, args)
-    assert output.startswith("D-Bus call failed:"), output
+    _output, received = echo.call_rejected(method, args)
     assert received == [], received
 
 
 def test_overload_error_lists_every_candidate(echo: EchoService) -> None:
     """KWin's loadScript is exported twice (s and ss); a third arg fails clearly."""
-    output = echo.engine.dbus_call(
-        "org.kde.KWin",
-        "/Scripting",
-        "org.kde.kwin.Scripting",
-        "loadScript",
-        ["string:a", "string:b", "string:c"],
-    )
-    assert output.startswith("D-Bus call failed:"), output
+    with pytest.raises(ValueError, match="^D-Bus call failed:") as exc_info:
+        echo.engine.dbus_call(
+            "org.kde.KWin",
+            "/Scripting",
+            "org.kde.kwin.Scripting",
+            "loadScript",
+            ["string:a", "string:b", "string:c"],
+        )
+    output = str(exc_info.value)
     assert "'s'" in output and "'ss'" in output, output
 
 
@@ -381,7 +393,6 @@ def test_overloaded_kwin_load_script_accepts_both_arities(
         output = echo.engine.dbus_call(
             "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "loadScript", args
         )
-        assert not output.startswith(("D-Bus call failed:", "D-Bus error:")), output
         assert output.lstrip("-").isdigit(), output
 
 
@@ -409,11 +420,11 @@ def test_kwin_void_method_returns_empty_reply(echo: EchoService, arg: str | dict
     assert output == "", output
 
 
-def test_unknown_service_returns_dbus_error(echo: EchoService) -> None:
-    output = echo.engine.dbus_call(
-        "org.example.DefinitelyDoesNotExist", "/x", "org.example.X", "Foo"
-    )
-    assert output.startswith("D-Bus error: org.freedesktop.DBus.Error.ServiceUnknown"), output
+def test_unknown_service_raises_dbus_error(echo: EchoService) -> None:
+    with pytest.raises(
+        RuntimeError, match="^D-Bus error: org.freedesktop.DBus.Error.ServiceUnknown"
+    ):
+        echo.engine.dbus_call("org.example.DefinitelyDoesNotExist", "/x", "org.example.X", "Foo")
 
 
 if __name__ == "__main__":

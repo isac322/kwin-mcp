@@ -1540,11 +1540,12 @@ class AutomationEngine:
         expects a variant, so e.g. ``int32`` does not silently become
         ``int64``. Qt overloads and slots with default arguments declare
         several signatures; the first one that fits is used. Argument
-        errors are reported as ``D-Bus call failed: ...`` and nothing is
-        sent. When the object does not introspect, the call is sent with
+        errors raise ``ValueError("D-Bus call failed: ...")`` and nothing
+        is sent. When the object does not introspect, the call is sent with
         each argument's own signature (an explicit ``variant`` argument
-        stays a variant) and the remote side validates it. The reply is
-        rendered via :func:`_format_dbus_result` (single primitives
+        stays a variant) and the remote side validates it; a remote error
+        reply raises ``RuntimeError("D-Bus error: <name>: <message>")``. The
+        reply is rendered via :func:`_format_dbus_result` (single primitives
         become bare strings, containers and tuples become JSON).
         """
         import dbus
@@ -1554,14 +1555,19 @@ class AutomationEngine:
 
         info = self._get_session().info
         if info is None or not info.dbus_address:
-            return "D-Bus call failed: session has no D-Bus address"
+            msg = "D-Bus call failed: session has no D-Bus address"
+            raise RuntimeError(msg)
 
         try:
             parsed_args = [parse_arg(a) for a in (args or [])]
         except ValueError as exc:
-            return f"D-Bus call failed: {exc}"
+            msg = f"D-Bus call failed: {exc}"
+            raise ValueError(msg) from exc
 
         signature: str | None = None
+        # Raised after the try so the marshalling handler below does not wrap it.
+        mismatch = ""
+        result: object = None
         try:
             bus = dbus.bus.BusConnection(info.dbus_address)
             # Introspect here rather than inside the proxy so the selection and
@@ -1585,26 +1591,39 @@ class AutomationEngine:
                     if signature is None:
                         shown = "/".join(repr(c) for c in candidates)
                         sent = "".join(_arg_signature(a) for a in parsed_args)
-                        return (
+                        mismatch = (
                             f"D-Bus call failed: {interface}.{method} takes "
                             f"{shown}, got signature '{sent}'"
                         )
-            result = obj.get_dbus_method(method, interface)(
-                *parsed_args, signature=signature, timeout=_DBUS_CALL_TIMEOUT
-            )
+            if not mismatch:
+                result = obj.get_dbus_method(method, interface)(
+                    *parsed_args, signature=signature, timeout=_DBUS_CALL_TIMEOUT
+                )
         except dbus.DBusException as exc:
             name = exc.get_dbus_name() or type(exc).__name__
-            msg = exc.get_dbus_message() or str(exc)
-            return f"D-Bus error: {name}: {msg}"
+            detail = exc.get_dbus_message() or str(exc)
+            msg = f"D-Bus error: {name}: {detail}"
+            raise RuntimeError(msg) from exc
         except (TypeError, ValueError, OverflowError) as exc:
             # dbus-python raises these while validating names or marshalling
             # arguments that do not fit the signature; nothing was sent.
             expected_sig = f" (signature '{signature}')" if signature is not None else ""
-            return f"D-Bus call failed: {interface}.{method}{expected_sig}: {exc}"
+            msg = f"D-Bus call failed: {interface}.{method}{expected_sig}: {exc}"
+            raise ValueError(msg) from exc
+        if mismatch:
+            raise ValueError(mismatch)
         return _format_dbus_result(result)
 
     def read_app_log(self, pid: int, last_n_lines: int = 50) -> str:
-        """Read stdout/stderr output of a launched app."""
+        """Read stdout/stderr output of a launched app.
+
+        ``last_n_lines`` is the number of trailing lines to return; 0 returns
+        the whole log. Anything else raises ``ValueError`` before the session
+        is touched.
+        """
+        if isinstance(last_n_lines, bool) or not isinstance(last_n_lines, int) or last_n_lines < 0:
+            msg = f"last_n_lines must be 0 (all) or a positive integer, got {last_n_lines!r}"
+            raise ValueError(msg)
         session = self._get_session()
         return session.read_app_log(pid, last_n_lines=last_n_lines)
 
@@ -1618,10 +1637,11 @@ class AutomationEngine:
                 capture_output=True,
                 timeout=10,
             )
-        except FileNotFoundError:
-            return _INSTALL_HINTS["wayland-info"]
+        except FileNotFoundError as exc:
+            raise RuntimeError(_INSTALL_HINTS["wayland-info"]) from exc
         if result.returncode != 0:
-            return f"wayland-info failed: {result.stderr.decode(errors='replace')}"
+            msg = f"wayland-info failed: {result.stderr.decode(errors='replace')}"
+            raise RuntimeError(msg)
 
         output = result.stdout.decode(errors="replace")
         if filter_protocol:

@@ -29,7 +29,7 @@ Useful arguments:
 - `app_command="..."` — launch the target app inside the session.
 - `enable_clipboard=true` — required for `clipboard_get` / `clipboard_set` (not for `keyboard_type_unicode`). Off by default because `wl-copy` can hang on a freshly minted bus.
 - `keep_screenshots=true` — preserves PNGs in `/tmp/kwin-mcp-screenshots-*` after `session_stop` (delete the directory yourself when done).
-- `isolate_home=true` — temp HOME with isolated XDG dirs; keeps host configuration untouched.
+- `isolate_home=true` — temp HOME with isolated XDG dirs; apps use fresh settings but keep normal filesystem access.
 
 **Live — `session_connect`**
 Attaches to an already-running KWin: the user's real desktop, or a KWin running inside a container / kiosk / embedded device. Use when the user says "my", "current", "this window", "what I'm looking at", "container", "kiosk", or "live". Defaults to `$DBUS_SESSION_BUS_ADDRESS` and `$WAYLAND_DISPLAY`; clipboard is always enabled. `session_stop` only disconnects — it never kills the live KWin or its apps.

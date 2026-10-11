@@ -273,7 +273,8 @@ def session_start(
         bool,
         Field(
             description="Create a temporary HOME directory with isolated XDG directories "
-            "(config, data, cache, state). Prevents apps from reading/writing host user settings."
+            "(config, data, cache, state), so apps use fresh settings instead of the host user's. "
+            "Apps keep normal filesystem access; this is not a sandbox."
         ),
     ] = False,
     keep_home: Annotated[

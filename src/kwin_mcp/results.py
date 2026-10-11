@@ -189,7 +189,10 @@ def format_tree(r: AccessibilityTreeResult) -> str:
 class AccessibleWindow(BaseModel):
     """One AT-SPI top-level of an application."""
 
-    title: str = Field(description='AT-SPI name; "(untitled)" when empty.')
+    title: str = Field(
+        description="Raw AT-SPI name; may be empty ('(untitled)') or differ from the KWin "
+        "caption, which window_geometry reports."
+    )
     active: bool
     focused: bool
 

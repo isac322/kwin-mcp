@@ -379,10 +379,11 @@ class AutomationEngine:
         proc: subprocess.Popen[bytes],
         line: bytes,
         heartbeat: Callable[[], None] | None = None,
+        timeout_s: float = _ATSPI_TIMEOUT_S,
     ) -> dict:
         """Send one request line to the worker and read one response line.
 
-        Raises ``TimeoutError`` after ``_ATSPI_TIMEOUT_S`` and ``EOFError`` if the
+        Raises ``TimeoutError`` after ``timeout_s`` and ``EOFError`` if the
         worker exits or closes its pipes. ``heartbeat`` runs at least every
         ``_ATSPI_HEARTBEAT_S`` while waiting for the response.
         """
@@ -394,7 +395,7 @@ class AutomationEngine:
         except (BrokenPipeError, ConnectionResetError) as exc:
             raise EOFError("AT-SPI2 worker exited before the request was sent") from exc
 
-        deadline = time.monotonic() + _ATSPI_TIMEOUT_S
+        deadline = time.monotonic() + timeout_s
         fd = proc.stdout.fileno()
         with selectors.DefaultSelector() as selector:
             selector.register(fd, selectors.EVENT_READ)
@@ -419,6 +420,7 @@ class AutomationEngine:
         *,
         heartbeat: Callable[[], None] | None = None,
         retry: bool = True,
+        timeout_s: float = _ATSPI_TIMEOUT_S,
         **kwargs: object,
     ) -> dict:
         """Run an AT-SPI2 query in the long-lived worker bound to the session bus.
@@ -427,7 +429,8 @@ class AutomationEngine:
         per session bus and reused, so each call skips interpreter startup and the
         PyGObject/Atspi import. A timeout, worker exit or worker-side exception
         discards the worker and retries once on a fresh one. ``heartbeat`` is
-        called periodically while a response is awaited.
+        called periodically while a response is awaited. ``timeout_s`` bounds
+        each attempt; requests that wait inside the worker pass a longer one.
         """
         line = json.dumps({"op": op, **kwargs}).encode() + b"\n"
         last_error = ""
@@ -438,9 +441,9 @@ class AutomationEngine:
                     time.sleep(0.5)
                 proc = self._ensure_atspi_worker()
                 try:
-                    resp = self._atspi_exchange(proc, line, heartbeat)
+                    resp = self._atspi_exchange(proc, line, heartbeat, timeout_s)
                 except TimeoutError:
-                    last_error = f"AT-SPI2 query timed out after {_ATSPI_TIMEOUT_S:g}s (op={op})"
+                    last_error = f"AT-SPI2 query timed out after {timeout_s:g}s (op={op})"
                 except EOFError as exc:
                     last_error = f"AT-SPI2 query failed: {exc}"
                 except json.JSONDecodeError as exc:
@@ -815,39 +818,61 @@ class AutomationEngine:
         action_name: str,
         app_name: str = "",
     ) -> str:
-        """Invoke one AT-SPI action without pointer coordinates."""
+        """Invoke one AT-SPI action without pointer coordinates.
+
+        Missing targets, ambiguous matches, incomplete discovery and failed
+        requests raise. A matched action whose dispatch the application did not
+        confirm is reported as sent, since it may still have run.
+        """
+        if not query:
+            raise ValueError("invoke_ui_action needs a query.")
+        if not action_name:
+            raise ValueError("invoke_ui_action needs an action_name.")
+
         self._get_session()
 
-        if not query:
-            return "invoke_ui_action needs a query."
-        if not action_name:
-            return "invoke_ui_action needs an action_name."
-
-        resp = self._run_atspi(
-            "action",
-            retry=False,
-            query=query,
-            action_name=action_name,
-            app_name=app_name,
-        )
+        # The worker may finish the walk and invoke the action even after this
+        # request timed out or the worker was torn down.
+        try:
+            resp = self._run_atspi(
+                "action",
+                retry=False,
+                query=query,
+                action_name=action_name,
+                app_name=app_name,
+            )
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"{exc}. The action may still have run; check the UI before retrying."
+            ) from exc
 
         if not resp.get("ok"):
-            return f"AT-SPI action failed: {resp.get('error', 'unknown error')}"
+            raise RuntimeError(f"AT-SPI action failed: {resp.get('error', 'unknown error')}")
 
         result = resp["result"]
         matches = int(result.get("matches", 0))
 
         if matches == 0:
-            return f"No element matching {query!r} exposes AT-SPI action {action_name!r}."
+            raise RuntimeError(
+                f"No element matching {query!r} exposes AT-SPI action {action_name!r}."
+            )
 
         if matches > 1:
-            return (
+            raise RuntimeError(
                 f"Refused ambiguous AT-SPI action: {matches} elements matching "
                 f"{query!r} expose {action_name!r}."
             )
 
-        if not result.get("invoked"):
+        if result.get("error"):
             return (
+                f"Sent AT-SPI action {result['action']!r} to "
+                f'[{result["role"]}] "{result["name"]}" in {result["app"]}, '
+                f"but the application did not confirm ({result['error']}); "
+                "the action may have run — check the UI before retrying."
+            )
+
+        if not result.get("invoked"):
+            raise RuntimeError(
                 f"AT-SPI action {action_name!r} matched one element but "
                 "the application reported failure."
             )
@@ -1164,14 +1189,23 @@ class AutomationEngine:
         """Wait for a UI element to appear in the accessibility tree."""
         self._get_session()
         wait_start = time.monotonic()
+        last_reported = 0.0
 
         def heartbeat() -> None:
-            elapsed_ms = (time.monotonic() - wait_start) * 1000
+            # The worker answers only after its deadline, so heartbeats can run
+            # past timeout_ms. Clamp to the total and skip non-advancing values:
+            # progress.report() would treat an equal value as a new phase.
+            nonlocal last_reported
+            elapsed_ms = min((time.monotonic() - wait_start) * 1000, timeout_ms)
+            if elapsed_ms <= last_reported:
+                return
+            last_reported = elapsed_ms
             progress.report(elapsed_ms, timeout_ms, f"Waiting for {query}")
 
         resp = self._run_atspi(
             "wait",
             heartbeat=heartbeat,
+            timeout_s=timeout_ms / 1000 + _ATSPI_TIMEOUT_S,
             query=query,
             app_name=app_name,
             timeout_ms=timeout_ms,

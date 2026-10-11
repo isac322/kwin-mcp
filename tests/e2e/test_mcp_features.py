@@ -349,6 +349,9 @@ async def test_long_running_tools_report_increasing_progress_only_when_requested
             await wait_progress.settle()
             assert len(wait_progress.events) >= 3, wait_progress.events
             _assert_strictly_increasing(wait_progress.values)
+            assert all(t is not None and v <= t for v, t, _ in wait_progress.events), (
+                wait_progress.events
+            )
 
             # No progressToken: the same calls succeed with the same text.
             unreported = await client.call_result("wait_for_element", wait_arguments)

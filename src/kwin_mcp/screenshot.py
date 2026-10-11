@@ -1422,6 +1422,9 @@ def capture_frame_burst(
     sorted_delays = sorted(delays_ms)
     frame_count = len(sorted_delays)
     frames_saved = 0
+    # One timestamp per burst; _publish adds a suffix if a name is taken, so
+    # no frame path is ever reused and earlier frames keep their pixels.
+    stamp = time.strftime("%Y%m%d_%H%M%S")
 
     def on_frame(index: int, delay_ms: int) -> None:
         # One counter across backend fallbacks keeps reported progress increasing.
@@ -1442,6 +1445,7 @@ def capture_frame_burst(
                 dbus_address,
                 output_dir,
                 sorted_delays,
+                stamp=stamp,
                 include_cursor=include_cursor,
                 start_time=burst_start,
                 on_frame=on_frame,
@@ -1454,6 +1458,7 @@ def capture_frame_burst(
             dbus_address,
             output_dir,
             sorted_delays,
+            stamp=stamp,
             include_cursor=include_cursor,
             on_frame=on_frame,
         )
@@ -1464,6 +1469,7 @@ def capture_frame_burst(
                 wayland_socket,
                 output_dir,
                 sorted_delays,
+                stamp=stamp,
                 include_cursor=include_cursor,
                 on_frame=on_frame,
             )
@@ -1482,6 +1488,7 @@ def capture_frame_burst(
                         dbus_address,
                         output_dir,
                         sorted_delays,
+                        stamp=stamp,
                         include_cursor=include_cursor,
                         on_frame=on_frame,
                     )
@@ -1497,11 +1504,30 @@ def capture_frame_burst(
             raise RuntimeError(msg) from x11_error
 
 
+def _publish_frames(
+    frames: list[tuple[Path, FrameMapping]],
+    output_dir: Path,
+    stamp: str,
+    sorted_delays: list[int],
+) -> list[tuple[Path, FrameMapping]]:
+    """Publish a completed burst's private frames under names unique in ``output_dir``.
+
+    Frames are published only after every frame was captured, so a failed
+    burst leaves no public files, and an earlier burst's frames are never
+    overwritten.
+    """
+    return [
+        (_publish(path, output_dir, f"frame_{stamp}_{i:03d}_{delay_ms}ms"), mapping)
+        for i, ((path, mapping), delay_ms) in enumerate(zip(frames, sorted_delays, strict=True))
+    ]
+
+
 def _capture_frame_burst_dbus(
     dbus_address: str,
     output_dir: Path,
     sorted_delays: list[int],
     *,
+    stamp: str,
     include_cursor: bool = False,
     on_frame: Callable[[int, int], None] | None = None,
 ) -> list[tuple[Path, FrameMapping]]:
@@ -1516,30 +1542,31 @@ def _capture_frame_burst_dbus(
     iface = dbus.Interface(screenshot_obj, "org.kde.KWin.ScreenShot2")
     options = {"include-cursor": dbus.Boolean(include_cursor)}
 
-    frames: list[tuple[Path, FrameMapping]] = []
-    start = time.monotonic()
-    for i, delay_ms in enumerate(sorted_delays):
-        target_time = start + delay_ms / 1000.0
-        now = time.monotonic()
-        if now < target_time:
-            time.sleep(target_time - now)
+    with tempfile.TemporaryDirectory(prefix=".capture-", dir=output_dir) as private_dir:
+        frames: list[tuple[Path, FrameMapping]] = []
+        start = time.monotonic()
+        for i, delay_ms in enumerate(sorted_delays):
+            target_time = start + delay_ms / 1000.0
+            now = time.monotonic()
+            if now < target_time:
+                time.sleep(target_time - now)
 
-        frame_path = output_dir / f"frame_{i:03d}_{delay_ms}ms.png"
-        mapping, frame = _burst_frame(
-            lambda: query_topology(dbus_address),
-            lambda _: _capture_raw_frame(iface, options),
-            lambda topology, raw: (
-                _dbus_mapping(raw, topology)
-                or _unavailable("screenshot2", _dbus_mismatch(raw, topology))
-            ),
-            "screenshot2",
-            "output topology changed while this frame was captured",
-        )
-        _image_from_raw_frame(frame).save(frame_path, "PNG")
-        frames.append((frame_path, mapping))
-        if on_frame is not None:
-            on_frame(i, delay_ms)
-    return frames
+            frame_path = Path(private_dir) / f"frame_{i:03d}.png"
+            mapping, frame = _burst_frame(
+                lambda: query_topology(dbus_address),
+                lambda _: _capture_raw_frame(iface, options),
+                lambda topology, raw: (
+                    _dbus_mapping(raw, topology)
+                    or _unavailable("screenshot2", _dbus_mismatch(raw, topology))
+                ),
+                "screenshot2",
+                "output topology changed while this frame was captured",
+            )
+            _image_from_raw_frame(frame).save(frame_path, "PNG")
+            frames.append((frame_path, mapping))
+            if on_frame is not None:
+                on_frame(i, delay_ms)
+        return _publish_frames(frames, output_dir, stamp, sorted_delays)
 
 
 def _capture_frame_burst_spectacle(
@@ -1548,41 +1575,43 @@ def _capture_frame_burst_spectacle(
     output_dir: Path,
     sorted_delays: list[int],
     *,
+    stamp: str,
     include_cursor: bool = False,
     on_frame: Callable[[int, int], None] | None = None,
 ) -> list[tuple[Path, FrameMapping]]:
     """Capture frames using spectacle CLI (slower but always authorized)."""
-    frames: list[tuple[Path, FrameMapping]] = []
     spectacle_version = functools.cache(_spectacle_version)
-    start = time.monotonic()
-    for i, delay_ms in enumerate(sorted_delays):
-        target_time = start + delay_ms / 1000.0
-        now = time.monotonic()
-        if now < target_time:
-            time.sleep(target_time - now)
+    with tempfile.TemporaryDirectory(prefix=".capture-", dir=output_dir) as private_dir:
+        frames: list[tuple[Path, FrameMapping]] = []
+        start = time.monotonic()
+        for i, delay_ms in enumerate(sorted_delays):
+            target_time = start + delay_ms / 1000.0
+            now = time.monotonic()
+            if now < target_time:
+                time.sleep(target_time - now)
 
-        frame_path = output_dir / f"frame_{i:03d}_{delay_ms}ms.png"
-        mapping, _ = _burst_frame(
-            lambda: query_topology(dbus_address),
-            lambda before, path=frame_path: _capture_spectacle_checked(
-                before,
-                spectacle_version,
-                dbus_address,
-                wayland_socket,
-                path,
-                include_cursor=include_cursor,
-            ),
-            lambda topology, _, path=frame_path: (
-                _normalize_spectacle(path, topology)
-                or _unavailable("spectacle", _spectacle_mismatch(path, topology))
-            ),
-            "spectacle",
-            "output topology changed while this frame was captured",
-        )
-        frames.append((frame_path, mapping))
-        if on_frame is not None:
-            on_frame(i, delay_ms)
-    return frames
+            frame_path = Path(private_dir) / f"frame_{i:03d}.png"
+            mapping, _ = _burst_frame(
+                lambda: query_topology(dbus_address),
+                lambda before, path=frame_path: _capture_spectacle_checked(
+                    before,
+                    spectacle_version,
+                    dbus_address,
+                    wayland_socket,
+                    path,
+                    include_cursor=include_cursor,
+                ),
+                lambda topology, _, path=frame_path: (
+                    _normalize_spectacle(path, topology)
+                    or _unavailable("spectacle", _spectacle_mismatch(path, topology))
+                ),
+                "spectacle",
+                "output topology changed while this frame was captured",
+            )
+            frames.append((frame_path, mapping))
+            if on_frame is not None:
+                on_frame(i, delay_ms)
+        return _publish_frames(frames, output_dir, stamp, sorted_delays)
 
 
 def _capture_frame_burst_x11(
@@ -1590,34 +1619,37 @@ def _capture_frame_burst_x11(
     output_dir: Path,
     sorted_delays: list[int],
     *,
+    stamp: str,
     include_cursor: bool = False,
     start_time: float | None = None,
     on_frame: Callable[[int, int], None] | None = None,
 ) -> list[tuple[Path, FrameMapping]]:
     """Capture frames from the explicitly enabled X11 display."""
     display = os.environ.get("DISPLAY", "")
-    frames: list[tuple[Path, FrameMapping]] = []
-    start = time.monotonic() if start_time is None else start_time
-    for i, delay_ms in enumerate(sorted_delays):
-        target_time = start + delay_ms / 1000.0
-        now = time.monotonic()
-        if now < target_time:
-            time.sleep(target_time - now)
+    with tempfile.TemporaryDirectory(prefix=".capture-", dir=output_dir) as private_dir:
+        frames: list[tuple[Path, FrameMapping]] = []
+        start = time.monotonic() if start_time is None else start_time
+        for i, delay_ms in enumerate(sorted_delays):
+            target_time = start + delay_ms / 1000.0
+            now = time.monotonic()
+            if now < target_time:
+                time.sleep(target_time - now)
 
-        frame_path = output_dir / f"frame_{i:03d}_{delay_ms}ms.png"
-        mapping, _ = _burst_frame(
-            lambda: _x11_state(dbus_address, display),
-            lambda _, path=frame_path: _capture_via_scrot(path, include_cursor=include_cursor),
-            lambda state, _, path=frame_path: (
-                _normalize_x11(path, state) or _unavailable("x11-scrot", _x11_mismatch(path, state))
-            ),
-            "x11-scrot",
-            "output topology or windows changed while this frame was captured",
-        )
-        frames.append((frame_path, mapping))
-        if on_frame is not None:
-            on_frame(i, delay_ms)
-    return frames
+            frame_path = Path(private_dir) / f"frame_{i:03d}.png"
+            mapping, _ = _burst_frame(
+                lambda: _x11_state(dbus_address, display),
+                lambda _, path=frame_path: _capture_via_scrot(path, include_cursor=include_cursor),
+                lambda state, _, path=frame_path: (
+                    _normalize_x11(path, state)
+                    or _unavailable("x11-scrot", _x11_mismatch(path, state))
+                ),
+                "x11-scrot",
+                "output topology or windows changed while this frame was captured",
+            )
+            frames.append((frame_path, mapping))
+            if on_frame is not None:
+                on_frame(i, delay_ms)
+        return _publish_frames(frames, output_dir, stamp, sorted_delays)
 
 
 def _capture_via_scrot(output_path: Path, *, include_cursor: bool = False) -> None:

@@ -369,4 +369,5 @@ def test_wayland_info_reports_command_errors(
     command.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path))
 
-    assert kcalc_session.wayland_info() == ("wayland-info failed: synthetic wayland-info failure\n")
+    with pytest.raises(RuntimeError, match="^wayland-info failed: synthetic wayland-info failure"):
+        kcalc_session.wayland_info()

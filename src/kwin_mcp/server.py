@@ -1199,7 +1199,8 @@ def dbus_call(
     Each entry in ``args`` may use dbus-send notation (``"string:value"``,
     ``"int32:42"``, ``"dict:string:string:KEY,VALUE"``, ...) or the typed-JSON
     shape (``{"type":"string","value":"hello"}``). Both shapes can mix in one
-    call. Malformed or mismatched arguments fail without sending anything.
+    call. Malformed or mismatched arguments are tool errors and nothing is
+    sent; a D-Bus error reply from the remote side is a tool error too.
     """
     return _engine.dbus_call(
         service=service, path=path, interface=interface, method=method, args=args
@@ -1214,7 +1215,7 @@ def read_app_log(
     ],
     last_n_lines: Annotated[
         int,
-        Field(description="Number of trailing lines to return (0 = all output)."),
+        Field(ge=0, description="Number of trailing lines to return (0 = all output)."),
     ] = 50,
 ) -> str:
     """Read stdout/stderr output of a launched app.

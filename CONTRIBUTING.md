@@ -237,6 +237,9 @@ scripts/
 ├── check_docs_seo.py      # Documentation/SEO consistency checker
 └── sync_plugin_version.py # Syncs project version and SKILL.md into integrations
 
+tests/
+└── test_results.py                     # Byte-exact result formatter tests (no KWin; CI runs `pytest tests`)
+
 tests/e2e/
 ├── _asserts.py                         # Shared observable-result assertions
 ├── conftest.py                         # Engine fixtures and guaranteed teardown
@@ -261,6 +264,13 @@ tests/e2e/
 ├── test_exit_cleanup.py                # Server/CLI exit stops the session like session_stop (EOF, signals, drain)
 ├── test_cli_signal_deferral.py         # CLI shutdown signals deferred mid-teardown, raised once afterwards
 ├── test_cli_value_parsing.py           # CLI key=value conversion of Optional parameters
+├── test_cli_errors.py                  # CLI prints tool errors as one `Error:` line, keeps tracebacks for bugs (no KWin)
+├── test_session_input_validation.py    # Screen size and command validation, atomic session_start rollback (no KWin)
+├── test_input_progress.py              # keyboard_type progress always ends at N/N (no KWin)
+├── test_wait_progress.py               # wait_for_element progress never exceeds its total (no KWin)
+├── test_wait_for_element_settle.py     # Bounded re-poll of windows-changed matches (no KWin)
+├── test_frame_burst_names.py           # Frame bursts never reuse or overwrite earlier frames (no KWin)
+├── test_read_app_log_validation.py     # read_app_log last_n_lines validation before the session (no KWin)
 ├── test_terminal_unicode_paste.py      # Unicode paste chord and next-key integrity in Konsole
 ├── test_unicode_clipboard_lifecycle.py # Unicode paste clipboard snapshot, restore, and cleanup
 ├── test_clipboard_helper_protocol.py   # Private clipboard helper framing, timeouts, and restore
@@ -275,6 +285,7 @@ tests/e2e/
 ├── test_window_control.py              # Focus, scroll, drag, and touch behavior
 ├── test_window_match.py                # Chromium/Flatpak AT-SPI top-levels matched to KWin windows via buffer geometry and captions
 ├── test_window_set_geometry_validation.py # window_set_geometry input validation and request reporting (no KWin)
+├── test_window_tool_errors.py          # focus_window/window_close/window_set_geometry argument errors before any session lookup
 ├── test_pointer_reconnect.py           # Clicks reach a window mapped under a parked pointer
 ├── test_dbus_args.py                   # dbus_call argument parser (no session needed)
 ├── test_dbus_call.py                   # dbus_call arguments as received by a test D-Bus service

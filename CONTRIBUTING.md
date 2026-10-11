@@ -269,7 +269,8 @@ tests/e2e/
 ├── test_accessibility_switch.py        # org.a11y.Status.IsEnabled switch, live opt-in, bounded calls, restore
 ├── test_atspi_worker.py                # AT-SPI worker reuse across session changes and crashes
 ├── test_window_geometry.py             # Global window geometry and element coordinate space
-├── test_window_close.py                # Window ids, active window, and closing one window by id
+├── test_window_close.py                # Window ids, active window, focus and closing one window by id
+├── test_kwin_script_render.py          # Caller values reach KWin scripts only as JSON literals (no KWin)
 ├── test_window_control.py              # Focus, scroll, drag, and touch behavior
 ├── test_window_match.py                # Chromium/Flatpak AT-SPI top-levels matched to KWin windows via buffer geometry and captions
 ├── test_pointer_reconnect.py           # Clicks reach a window mapped under a parked pointer

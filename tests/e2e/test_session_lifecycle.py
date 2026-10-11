@@ -502,7 +502,7 @@ def test_session_start_runs_the_service_file_command_as_dbus_would(
     # The direct start splits Exec= like dbus-daemon: a quoted path with a
     # space and a quoted argument each stay one argument. The launcher here
     # records its arguments, drops the label, and runs the real launcher.
-    real_launcher = service_file_argv(_real_service_file("services/org.a11y.Bus.service"))
+    real_launcher = _real_launcher_argv()
     launcher_dir = tmp_path / "dir with space"
     launcher_dir.mkdir()
     launcher = launcher_dir / "a11y launcher"
@@ -555,9 +555,7 @@ def test_session_start_stops_the_direct_launcher_when_the_registry_fails(
     data_dir = _service_data_dir(
         tmp_path,
         monkeypatch,
-        launcher_exec=shlex.join(
-            service_file_argv(_real_service_file("services/org.a11y.Bus.service"))
-        ),
+        launcher_exec=shlex.join(_real_launcher_argv()),
     )
     (data_dir / "dbus-1/accessibility-services/org.a11y.atspi.Registry.service").write_text(
         "[D-BUS Service]\nName=org.a11y.atspi.Registry\nExec=/bin/false\n"
@@ -1089,6 +1087,13 @@ def _real_service_file(service: str) -> str:
         if path.is_file():
             return path.read_text()
     pytest.fail(f"no {service} file")
+
+
+def _real_launcher_argv() -> list[str]:
+    """The argv dbus-daemon runs to activate the distro's org.a11y.Bus."""
+    return service_file_argv(
+        _real_service_file("services/org.a11y.Bus.service").encode(), "org.a11y.Bus"
+    )
 
 
 def _service_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, launcher_exec: str) -> Path:

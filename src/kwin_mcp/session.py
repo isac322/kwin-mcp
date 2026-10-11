@@ -58,18 +58,17 @@ _KWIN_BUS_NAME_TIMEOUT = 30
 # registry directly from their service files' Exec= lines. They then run in the
 # server's own SELinux domain instead of the one activation would give them.
 ATSPI_DIRECT_START_ENV = "KWIN_MCP_ATSPI_DIRECT_START"
-_ATSPI_LAUNCHER_SERVICE = "services/org.a11y.Bus.service"
-_ATSPI_REGISTRY_SERVICE = "accessibility-services/org.a11y.atspi.Registry.service"
+_ATSPI_REGISTRY_BUS_NAME = "org.a11y.atspi.Registry"
 
 
-def _atspi_service_argv(service: str, env: dict[str, str]) -> list[str] | None:
-    """Return the argv of the first ``dbus-1/<service>`` file on XDG_DATA_DIRS."""
+def _atspi_service_argv(subdir: str, name: str, env: dict[str, str]) -> list[str] | None:
+    """Return the argv of the first ``dbus-1/<subdir>/<name>.service`` file on XDG_DATA_DIRS."""
     for data_dir in (env.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":"):
-        path = Path(data_dir) / "dbus-1" / service
+        path = Path(data_dir) / "dbus-1" / subdir / f"{name}.service"
         if not data_dir or not path.is_file():
             continue
         try:
-            return service_file_argv(path.read_text(errors="surrogateescape"))
+            return service_file_argv(path.read_bytes(), name)
         except (OSError, ServiceFileError):
             return None
     return None
@@ -78,13 +77,11 @@ def _atspi_service_argv(service: str, env: dict[str, str]) -> list[str] | None:
 def _atspi_direct_start_argvs(env: dict[str, str]) -> tuple[list[str], list[str]]:
     """Return the launcher and registry argvs for the opt-in direct start.
 
-    Both are empty when the opt-in is off or either service file is missing or
-    one dbus-daemon would reject.
+    Both are empty when either service file is missing or one dbus-daemon
+    would ignore.
     """
-    if os.environ.get(ATSPI_DIRECT_START_ENV) != "1":
-        return [], []
-    launcher = _atspi_service_argv(_ATSPI_LAUNCHER_SERVICE, env)
-    registry = _atspi_service_argv(_ATSPI_REGISTRY_SERVICE, env)
+    launcher = _atspi_service_argv("services", _A11Y_BUS_NAME, env)
+    registry = _atspi_service_argv("accessibility-services", _ATSPI_REGISTRY_BUS_NAME, env)
     if not launcher or not launcher[0] or not registry or not registry[0]:
         return [], []
     return launcher, registry
@@ -1149,11 +1146,13 @@ class Session:
 
     def _build_wrapper_script(self, config: SessionConfig, env: dict[str, str]) -> str:
         """Build the bash script that runs inside dbus-run-session."""
-        launcher, registry = _atspi_direct_start_argvs(env)
-        # On failure the warning names the opt-in, unless it is already set.
+        # The opt-in is read from the server's environment, never from a
+        # session's extra env. On failure the warning names it unless it is set.
+        direct_start = os.environ.get(ATSPI_DIRECT_START_ENV) == "1"
+        launcher, registry = _atspi_direct_start_argvs(env) if direct_start else ([], [])
         atspi_hint = (
             ""
-            if os.environ.get(ATSPI_DIRECT_START_ENV) == "1"
+            if direct_start
             else f"; set {ATSPI_DIRECT_START_ENV}=1 to start it directly from its service files"
         )
         return f"""\

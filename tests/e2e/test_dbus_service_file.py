@@ -10,9 +10,15 @@ import pytest
 
 from kwin_mcp.dbus_service_file import ServiceFileError, parse_exec, service_file_argv
 
+_NAME = "org.example.Test"
+
 
 def _service(exec_line: str) -> str:
-    return f"[D-BUS Service]\nName=org.example.Test\nExec={exec_line}\n"
+    return f"[D-BUS Service]\nName={_NAME}\nExec={exec_line}\n"
+
+
+def _argv(text: str, name: str = _NAME) -> list[str]:
+    return service_file_argv(text.encode(), name)
 
 
 @pytest.mark.parametrize(
@@ -46,7 +52,7 @@ def _service(exec_line: str) -> str:
     ],
 )
 def test_service_file_argv_matches_dbus_activation(exec_line: str, argv: list[str]) -> None:
-    assert service_file_argv(_service(exec_line)) == argv
+    assert _argv(_service(exec_line)) == argv
 
 
 @pytest.mark.parametrize(
@@ -63,7 +69,7 @@ def test_service_file_argv_matches_dbus_activation(exec_line: str, argv: list[st
 )
 def test_service_file_argv_rejects_what_dbus_rejects(exec_line: str) -> None:
     with pytest.raises(ServiceFileError):
-        service_file_argv(_service(exec_line))
+        _argv(_service(exec_line))
 
 
 def test_only_the_first_exec_of_the_first_service_group_counts() -> None:
@@ -74,13 +80,13 @@ def test_only_the_first_exec_of_the_first_service_group_counts() -> None:
         "Exec = /bin/first\nExec=/bin/second\n"
         "[D-BUS Service]\nExec=/bin/third\n"
     )
-    assert service_file_argv(text) == ["/bin/first"]
+    assert _argv(text) == ["/bin/first"]
 
 
 def test_the_first_service_group_without_exec_is_an_error() -> None:
     text = "[D-BUS Service]\nName=org.example.Test\n[D-BUS Service]\nExec=/bin/x\n"
     with pytest.raises(ServiceFileError):
-        service_file_argv(text)
+        _argv(text)
 
 
 @pytest.mark.parametrize(
@@ -92,15 +98,30 @@ def test_the_first_service_group_without_exec_is_an_error() -> None:
         "[]\n[D-BUS Service]\nExec=/bin/x\n",
         "[D-BUS Service]\nExec /bin/x\n",
         "[D-BUS Service]\nName=bad\\escape\nExec=/bin/x\n",
+        # dbus-daemon activates a service by Name: a file without it, or with
+        # another name, does not start the requested one.
+        "[D-BUS Service]\nExec=/bin/x\n",
+        "[D-BUS Service]\nName=org.example.Other\nExec=/bin/x\n",
+        "[D-BUS Service]\nExec=/bin/x\n[D-BUS Service]\nName=org.example.Test\n",
     ],
 )
 def test_malformed_service_files_are_rejected(text: str) -> None:
     with pytest.raises(ServiceFileError):
-        service_file_argv(text)
+        _argv(text)
+
+
+def test_files_dbus_ignores_are_rejected() -> None:
+    valid = _service("/bin/x").encode()
+    with pytest.raises(ServiceFileError):
+        service_file_argv(b"# \xff\n" + valid, _NAME)
+    padding = b"#" * (128 * 1024 - len(valid) - 1) + b"\n"
+    assert service_file_argv(padding + valid, _NAME) == ["/bin/x"]
+    with pytest.raises(ServiceFileError):
+        service_file_argv(b"#" + padding + valid, _NAME)
 
 
 def test_line_endings_follow_dbus() -> None:
-    assert service_file_argv("[D-BUS Service]\r\nExec=/bin/x a\rName=n\r\n") == ["/bin/x", "a"]
+    assert _argv("[D-BUS Service]\r\nExec=/bin/x a\rName=n\r\n", "n") == ["/bin/x", "a"]
 
 
 def test_parse_exec_does_not_expand() -> None:

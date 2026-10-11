@@ -11,7 +11,10 @@ service file receives the argv activation would have given it.
 from __future__ import annotations
 
 _SERVICE_SECTION = "D-BUS Service"
+_NAME_KEY = "Name"
 _EXEC_KEY = "Exec"
+# dbus-daemon ignores a service file larger than this.
+_MAX_SERVICE_FILE_BYTES = 128 * 1024
 _DESKTOP_ESCAPES = {"s": " ", "t": "\t", "n": "\n", "r": "\r", "\\": "\\"}
 # Characters dbus-daemon accepts in a key name; a "[" after them marks a
 # localized key, which it ignores.
@@ -41,16 +44,16 @@ def _unescape_value(value: str) -> str:
     return "".join(out)
 
 
-def service_file_exec(text: str) -> str:
-    """Return the unescaped ``Exec=`` value of a service file's ``[D-BUS Service]`` group.
+def _service_group(text: str) -> dict[str, str]:
+    """Return the unescaped keys of a service file's ``[D-BUS Service]`` group.
 
-    Like dbus-daemon, only the first such group is read, and its first ``Exec``
-    key wins.
+    Like dbus-daemon, only the first such group is read, and the first
+    occurrence of a key wins.
     """
     section: str | None = None
     in_first_service_section = False
     seen_service_section = False
-    found: str | None = None
+    group: dict[str, str] = {}
     # dbus-daemon ends a line at \n, \r\n or \r.
     for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
         if line.startswith("["):
@@ -79,11 +82,9 @@ def service_file_exec(text: str) -> str:
         if not rest.startswith("="):
             raise ServiceFileError(f"no '=' in {line!r}")
         value = _unescape_value(rest[1:].lstrip(" "))
-        if found is None and in_first_service_section and line[:key_end] == _EXEC_KEY:
-            found = value
-    if found is None:
-        raise ServiceFileError(f"no {_EXEC_KEY}= key in [{_SERVICE_SECTION}]")
-    return found
+        if in_first_service_section:
+            group.setdefault(line[:key_end], value)
+    return group
 
 
 def _tokenize(command: str) -> list[str]:
@@ -177,6 +178,21 @@ def parse_exec(command: str) -> list[str]:
     return [_unquote(token) for token in _tokenize(command)]
 
 
-def service_file_argv(text: str) -> list[str]:
-    """Return the argv dbus-daemon would execute to activate this service file."""
-    return parse_exec(service_file_exec(text))
+def service_file_argv(data: bytes, name: str) -> list[str]:
+    """Return the argv dbus-daemon would execute to activate bus name ``name`` from this file.
+
+    A file dbus-daemon would ignore, or one that does not provide ``name``,
+    raises ``ServiceFileError``.
+    """
+    if len(data) > _MAX_SERVICE_FILE_BYTES:
+        raise ServiceFileError(f"larger than {_MAX_SERVICE_FILE_BYTES} bytes")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ServiceFileError("not valid UTF-8") from exc
+    group = _service_group(text)
+    if group.get(_NAME_KEY) != name:
+        raise ServiceFileError(f"[{_SERVICE_SECTION}] does not have {_NAME_KEY}={name}")
+    if _EXEC_KEY not in group:
+        raise ServiceFileError(f"no {_EXEC_KEY}= key in [{_SERVICE_SECTION}]")
+    return parse_exec(group[_EXEC_KEY])

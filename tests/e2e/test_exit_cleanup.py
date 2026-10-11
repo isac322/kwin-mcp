@@ -85,6 +85,12 @@ SERVER_EXIT_TIMEOUT_IDLE_SECONDS = 15.0
 # below a tools/list response (tens of KB), so that one unread response blocks the
 # transport writer.
 _SMALL_PIPE_BYTES = 4096
+# How long an AT-SPI worker may take to die after the server exits. The registry
+# path signals it with the other owned groups, so it is gone within the TERM/KILL
+# graces; an unowned worker would only exit once its own query timed out.
+_ATSPI_WORKER_SETTLE_SECONDS = 5.0
+# The wait_for_element target that never appears, so the tool runs its full timeout.
+_MISSING_ELEMENT_QUERY = "no-such-element-xyz"
 
 
 # A distinctive app so its PID, parsed from the launch output, identifies it.
@@ -193,6 +199,18 @@ def _group_pids(pgid: int) -> set[int]:
             continue
         stat = _proc_stat(entry.name)
         if stat is not None and stat[1] == pgid:
+            result.add(int(entry.name))
+    return result
+
+
+def _atspi_workers() -> set[int]:
+    """Live AT-SPI worker pids (``python -m kwin_mcp.accessibility --serve``), any owner."""
+    result = set()
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit() or not _is_live(entry.name):
+            continue
+        argv = _cmdline(entry.name)
+        if "kwin_mcp.accessibility" in argv and "--serve" in argv:
             result.add(int(entry.name))
     return result
 
@@ -643,7 +661,33 @@ def test_eof_while_session_start_running_stops_the_session() -> None:
             server.wait()
 
 
-def test_eof_while_tool_running_exits_bounded_and_clean() -> None:
+def _wait_for_new_atspi_worker(before: set[int]) -> None:
+    """Wait until an AT-SPI worker that was not running before has started."""
+    assert _wait_until(lambda: _atspi_workers() - before, CLEANUP_SETTLE_SECONDS), (
+        "the in-flight wait_for_element did not start an AT-SPI worker"
+    )
+
+
+def _assert_atspi_workers_gone(before: set[int]) -> None:
+    """No AT-SPI worker started during the test survives the server's exit."""
+    assert _wait_until(lambda: not (_atspi_workers() - before), _ATSPI_WORKER_SETTLE_SECONDS), (
+        f"AT-SPI workers survived the server exit: {sorted(_atspi_workers() - before)}"
+    )
+
+
+def _wait_for_element_request(request_id: int, *, progress_token: bool) -> dict[str, object]:
+    """A ``wait_for_element`` call that runs its full 15 s timeout (the target never appears)."""
+    params: dict[str, object] = {
+        "name": "wait_for_element",
+        "arguments": {"query": _MISSING_ELEMENT_QUERY, "timeout_ms": 15000},
+    }
+    if progress_token:
+        params["_meta"] = {"progressToken": f"busy-exit-{request_id}"}
+    return {"jsonrpc": "2.0", "id": request_id, "method": "tools/call", "params": params}
+
+
+@pytest.mark.parametrize("progress_token", [False, True], ids=["no-token", "progress-token"])
+def test_eof_while_tool_running_exits_bounded_and_clean(progress_token: bool) -> None:
     """Closing stdin while a tool is running still exits bounded and leaves no survivors.
 
     Regression: on stdio EOF the SDK cancels in-flight handlers without stopping the
@@ -651,10 +695,17 @@ def test_eof_while_tool_running_exits_bounded_and_clean() -> None:
     with the tool body still running on the tool thread — the engine is not
     thread-safe, and the two could tear the session down in opposite orders (the stop
     racing the in-flight tool, or the tool's a11y worker being killed mid-exchange).
-    The final stop must run on the tool thread, serialized with the in-flight tool, so
-    the process always exits within the bound with the session fully torn down.
+    The final stop is queued on the tool thread behind the in-flight tool; the 15 s
+    wait outlives the exit drain, so the stop is cancelled and the registry path
+    terminates the owned groups, the AT-SPI worker included.
+
+    The tool's progress heartbeats keep firing after the request was cancelled. They
+    must not create progress coroutines the closing loop never awaits (a
+    ``RuntimeWarning: coroutine ... was never awaited`` on stderr), with or without a
+    progressToken, and no orphaned worker may print a BrokenPipeError traceback.
     """
-    server = _spawn([sys.executable, "-m", "kwin_mcp"])
+    workers_before = _atspi_workers()
+    server = _spawn_with_stderr([sys.executable, "-m", "kwin_mcp"])
     reader = _LineReader(_stdout(server))
     try:
         app_pid = _start_server_session(server, reader)
@@ -665,33 +716,85 @@ def test_eof_while_tool_running_exits_bounded_and_clean() -> None:
         # Occupy the tool thread with a long read-only wait on an element that never
         # appears; the response is not awaited, so the tool is still running when the
         # client disconnects.
-        request = {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/call",
-            "params": {
-                "name": "wait_for_element",
-                "arguments": {"query": "no-such-element-xyz", "timeout_ms": 15000},
-            },
-        }
         stdin = _stdin(server)
+        request = _wait_for_element_request(2, progress_token=progress_token)
         stdin.write(json.dumps(request) + "\n")
         stdin.flush()
-        # The tool is now running on the tool thread.
+        # The tool is now running on the tool thread, in the AT-SPI worker.
+        _wait_for_new_atspi_worker(workers_before)
         time.sleep(1.0)
         assert _group_pids(pgid), "session group died before the client disconnected"
 
         # Disconnect (EOF) while the tool is still running: the server must exit 0
         # within the bound (no hang on the in-flight tool) and tear the whole session
-        # down (compositor, wrapper, app).
+        # down (compositor, wrapper, app, AT-SPI worker).
         stdin.close()
         exit_code = server.wait(timeout=SERVER_EXIT_TIMEOUT_TOOL_INFLIGHT_SECONDS)
         assert exit_code == 0, f"server did not exit 0 on stdin EOF, got {exit_code}"
         _assert_session_gone(pgid, app_pid)
+        _assert_atspi_workers_gone(workers_before)
+        # Read only once every process that inherited the pipe is gone.
+        stderr = server.stderr.read() if server.stderr is not None else ""
+        assert "never awaited" not in stderr, stderr
+        assert "RuntimeWarning" not in stderr, stderr
+        assert "Traceback" not in stderr, stderr
     finally:
         if server.poll() is None:
             server.kill()
             server.wait()
+
+
+@pytest.mark.parametrize("exit_mode", ["eof", "sigterm"])
+def test_busy_exit_terminates_the_atspi_worker(exit_mode: str) -> None:
+    """A busy exit on a live session leaves no AT-SPI worker and no BrokenPipeError.
+
+    Regression: the worker was a plain ``Popen`` outside the owned-process registry.
+    When a busy tool makes the exit take the registry path, ``terminate_all`` only
+    reached registered groups, so the worker of the in-flight ``wait_for_element``
+    outlived the server and later printed a BrokenPipeError traceback on the
+    inherited stderr. Now the registry owns the worker and terminates it.
+    """
+    with live_kwin() as live:
+        workers_before = _atspi_workers()
+        server = _spawn_with_stderr([sys.executable, "-m", "kwin_mcp"])
+        reader = _LineReader(_stdout(server))
+        try:
+            _connect_live_session(server, reader, live)
+            request = {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "wait_for_element",
+                    "arguments": {"query": _MISSING_ELEMENT_QUERY, "timeout_ms": 20000},
+                },
+            }
+            stdin = _stdin(server)
+            stdin.write(json.dumps(request) + "\n")
+            stdin.flush()
+            _wait_for_new_atspi_worker(workers_before)
+            time.sleep(1.0)
+
+            if exit_mode == "eof":
+                stdin.close()
+                expected_code = 0
+            else:
+                os.kill(server.pid, signal.SIGTERM)
+                expected_code = 128 + signal.SIGTERM
+            exit_code = server.wait(timeout=SERVER_EXIT_TIMEOUT_TOOL_OVERRUN_SECONDS)
+            assert exit_code == expected_code, f"expected exit {expected_code}, got {exit_code}"
+            _assert_atspi_workers_gone(workers_before)
+            # Read only once every process that inherited the pipe is gone.
+            stderr = server.stderr.read() if server.stderr is not None else ""
+            assert "registry" in stderr, (
+                f"expected the stderr outcome line to name the registry path, got: {stderr!r}"
+            )
+            assert "BrokenPipeError" not in stderr, stderr
+            assert live.process.poll() is None, "the live KWin was signalled"
+        finally:
+            if server.poll() is None:
+                server.kill()
+                server.wait()
 
 
 def test_second_sigterm_during_cleanup_still_exits() -> None:

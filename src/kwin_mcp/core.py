@@ -343,22 +343,30 @@ class AutomationEngine:
         the worker is keyed to the bus identities it was started with. A
         different session bus, a restarted a11y bus, or a dead worker means the
         old process would answer from the wrong or a dead bus: replace it.
+
+        The worker is an owned process group in ``process_registry``: it runs in
+        its own session, so a terminal Ctrl-C aimed at kwin-mcp-cli does not reach
+        it, and the exit paths that terminate every owned group (a tool still busy
+        at server exit, the CLI's final sweep) terminate it too.
         """
         env = self._session_env()
         bus = env.get("DBUS_SESSION_BUS_ADDRESS", "")
         a11y = self._a11y_bus_address(env)
         proc = self._atspi_proc
         if proc is not None and (
-            proc.poll() is not None or bus != self._atspi_bus or a11y != self._atspi_a11y
+            process_registry.poll(proc) is not None
+            or bus != self._atspi_bus
+            or a11y != self._atspi_a11y
         ):
             self._teardown_atspi_worker()
             proc = None
         if proc is None:
-            proc = subprocess.Popen(
+            proc = process_registry.spawn(
                 [sys.executable, "-m", "kwin_mcp.accessibility", "--serve"],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 env=env,
+                start_new_session=True,
             )
             self._atspi_proc = proc
             self._atspi_bus = bus
@@ -453,7 +461,8 @@ class AutomationEngine:
         """Stop the AT-SPI worker with bounded latency.
 
         Closing stdin lets an idle worker exit on EOF; a busy, hung or stopped
-        worker is killed after a short grace period.
+        worker is killed after a short grace period. Every poll, wait, kill and
+        reap goes through ``process_registry``, which owns the worker's group.
         """
         proc = self._atspi_proc
         self._atspi_proc = None
@@ -466,10 +475,10 @@ class AutomationEngine:
             if proc.stdin is not None:
                 proc.stdin.close()
         try:
-            proc.wait(timeout=_ATSPI_EXIT_GRACE_S)
+            process_registry.wait(proc, timeout=_ATSPI_EXIT_GRACE_S)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+            process_registry.kill(proc)
+            process_registry.reap(proc)
         if proc.stdout is not None:
             proc.stdout.close()
 

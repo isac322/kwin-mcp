@@ -326,8 +326,12 @@ def session_start(
             "Leave empty to start session without an app."
         ),
     ] = "",
-    screen_width: Annotated[int, Field(description="Virtual screen width in pixels.")] = 1920,
-    screen_height: Annotated[int, Field(description="Virtual screen height in pixels.")] = 1080,
+    screen_width: Annotated[
+        int, Field(ge=1, description="Virtual screen width in pixels (positive).")
+    ] = 1920,
+    screen_height: Annotated[
+        int, Field(ge=1, description="Virtual screen height in pixels (positive).")
+    ] = 1080,
     enable_clipboard: Annotated[
         bool,
         Field(
@@ -338,7 +342,9 @@ def session_start(
     keep_screenshots: Annotated[
         bool,
         Field(
-            description="Keep screenshot files after session_stop instead of deleting them. "
+            description="Keep the screenshot directory (screenshots and app logs) after "
+            "session_stop instead of deleting it. It is a separate kwin-mcp-screenshots-* "
+            "temp directory, never inside the isolated home, so keep_home does not affect it. "
             "Useful for debugging. Files must be cleaned up manually when enabled."
         ),
     ] = False,
@@ -399,7 +405,10 @@ def session_connect(
     ] = "",
     keep_screenshots: Annotated[
         bool,
-        Field(description="Keep screenshot files after session_stop instead of deleting them."),
+        Field(
+            description="Keep the screenshot directory (screenshots and app logs) after "
+            "session_stop instead of deleting it."
+        ),
     ] = False,
     enable_accessibility: Annotated[
         bool,

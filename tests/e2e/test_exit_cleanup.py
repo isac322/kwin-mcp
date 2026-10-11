@@ -1278,16 +1278,13 @@ def test_live_session_busy_exit_restores_accessibility_keeps_kwin() -> None:
                 server.wait()
 
 
-def test_virtual_keep_home_busy_exit_removes_screenshots_keeps_home() -> None:
-    """Busy exit on a virtual keep_home session removes home/.screenshots; home kept (F7).
+def _busy_exit_virtual_isolated_home(arguments: dict[str, bool]) -> tuple[Path, Path]:
+    """Busy-exit a virtual isolated-home session; return (home dir, screenshot dir).
 
-    The registry must remove exactly what ``session_stop`` would remove. A virtual
-    session with ``keep_home=True`` and default ``keep_screenshots`` has its
-    ``home/.screenshots`` removed by ``session_stop`` (the home itself is kept); the
-    busy-exit registry path must do the same. Start the session with
-    ``isolate_home=True, keep_home=True``, take a screenshot (so ``home/.screenshots``
-    exists), then fire an overrun tool and close stdin: ``home/.screenshots`` must be
-    removed and the home kept.
+    Starts ``session_start`` with ``isolate_home=True`` plus ``arguments``, takes a
+    screenshot so the screenshot dir has content, then fires an overrun tool and
+    closes stdin so the registry path cleans up. The screenshot dir is located from
+    the screenshot's output path.
     """
     server = _spawn_with_stderr([sys.executable, "-m", "kwin_mcp"])
     reader = _LineReader(_stdout(server))
@@ -1307,16 +1304,12 @@ def test_virtual_keep_home_busy_exit_removes_screenshots_keeps_home() -> None:
         stdin = _stdin(server)
         stdin.write(initialized + "\n")
         stdin.flush()
-        # Start a virtual session with an isolated, kept home.
         response = _rpc(
             reader,
             server,
             2,
             "tools/call",
-            {
-                "name": "session_start",
-                "arguments": {"isolate_home": True, "keep_home": True},
-            },
+            {"name": "session_start", "arguments": {"isolate_home": True, **arguments}},
         )
         text = _response_text(response)
         match = re.search(r"Isolated home: (\S+)", text)
@@ -1324,10 +1317,15 @@ def test_virtual_keep_home_busy_exit_removes_screenshots_keeps_home() -> None:
         home_dir = Path(match.group(1))
         assert home_dir.is_dir(), f"isolated home does not exist: {home_dir}"
 
-        # Take a screenshot so home/.screenshots exists with content.
-        _rpc(reader, server, 3, "tools/call", {"name": "screenshot", "arguments": {}})
-        screenshots = home_dir / ".screenshots"
-        assert screenshots.is_dir(), f"home/.screenshots does not exist: {screenshots}"
+        response = _rpc(reader, server, 3, "tools/call", {"name": "screenshot", "arguments": {}})
+        text = _response_text(response)
+        match = re.search(r"Screenshot saved: (\S+)", text)
+        assert match, f"no screenshot path in response: {text[:200]}"
+        screenshot_dir = Path(match.group(1)).parent
+        assert screenshot_dir.is_dir(), f"screenshot dir does not exist: {screenshot_dir}"
+        assert not screenshot_dir.is_relative_to(home_dir), (
+            f"the screenshot dir is inside the isolated home: {screenshot_dir}"
+        )
 
         # Occupy the tool thread so the busy (registry) path runs.
         _fire_overrun_tool(server)
@@ -1340,13 +1338,44 @@ def test_virtual_keep_home_busy_exit_removes_screenshots_keeps_home() -> None:
         assert "registry" in stderr, (
             f"expected the stderr outcome line to name the registry path, got: {stderr!r}"
         )
-        # home/.screenshots must be removed; the home itself is kept.
-        assert not screenshots.exists(), f"home/.screenshots survived the busy exit: {screenshots}"
-        assert home_dir.is_dir(), f"the kept home was removed: {home_dir}"
+        return home_dir, screenshot_dir
     finally:
         if server.poll() is None:
             server.kill()
             server.wait()
+
+
+def test_virtual_keep_home_busy_exit_removes_screenshot_dir_keeps_home() -> None:
+    """Busy exit on a virtual keep_home session removes the screenshot dir; home kept (F7).
+
+    The registry must remove exactly what ``session_stop`` would remove, and the two
+    retention flags are independent: ``keep_home=True`` keeps the isolated home, the
+    default ``keep_screenshots=False`` removes the separate screenshot dir.
+    """
+    home_dir, screenshot_dir = _busy_exit_virtual_isolated_home({"keep_home": True})
+    try:
+        assert not screenshot_dir.exists(), (
+            f"the screenshot dir survived the busy exit: {screenshot_dir}"
+        )
+        assert home_dir.is_dir(), f"the kept home was removed: {home_dir}"
+    finally:
+        shutil.rmtree(home_dir, ignore_errors=True)
+
+
+def test_virtual_keep_screenshots_busy_exit_keeps_screenshot_dir_removes_home() -> None:
+    """Busy exit on a virtual keep_screenshots session keeps the screenshot dir only.
+
+    The mirror of the keep_home case: ``keep_screenshots=True`` keeps the separate
+    screenshot dir (screenshots and app logs), the default ``keep_home=False``
+    removes the isolated home.
+    """
+    home_dir, screenshot_dir = _busy_exit_virtual_isolated_home({"keep_screenshots": True})
+    try:
+        assert screenshot_dir.is_dir(), f"the kept screenshot dir was removed: {screenshot_dir}"
+        assert any(screenshot_dir.iterdir()), f"the kept screenshot dir is empty: {screenshot_dir}"
+        assert not home_dir.exists(), f"the isolated home survived the busy exit: {home_dir}"
+    finally:
+        shutil.rmtree(screenshot_dir, ignore_errors=True)
 
 
 # The app locks a subdirectory of its isolated home, so the busy-exit registry path

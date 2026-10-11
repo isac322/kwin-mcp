@@ -517,6 +517,23 @@ class AutomationEngine:
 
     # ── Session management ────────────────────────────────────────────────
 
+    @staticmethod
+    def _split_command(text: str, field: str) -> list[str]:
+        """Split a shell-style command line, rejecting empty and malformed ones.
+
+        ``field`` names the argument in the ValueError, so the caller sees
+        which input to fix.
+        """
+        try:
+            argv = shlex.split(text)
+        except ValueError as exc:
+            msg = f"Invalid {field}: {exc}"
+            raise ValueError(msg) from exc
+        if not argv:
+            msg = f"{field} must contain a command to launch"
+            raise ValueError(msg)
+        return argv
+
     def session_start(
         self,
         app_command: str = "",
@@ -528,50 +545,69 @@ class AutomationEngine:
         keep_home: bool = False,
         env: dict[str, str] | None = None,
     ) -> str:
-        """Start an isolated KWin Wayland session, optionally launching an app."""
+        """Start an isolated KWin Wayland session, optionally launching an app.
+
+        Startup is atomic: when any step after argument validation fails, the
+        partly started session is stopped (with the usual retention rules) and
+        the original exception propagates, so no session is left behind.
+        """
+        for name, value in (("screen_width", screen_width), ("screen_height", screen_height)):
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                msg = f"{name} must be a positive integer, got {value!r}"
+                raise ValueError(msg)
+        cmd = self._split_command(app_command, "app_command") if app_command else None
+
         if self._session is not None and self._session.is_running:
-            return "Session already running. Call session_stop first."
+            msg = "Session already running. Call session_stop first."
+            raise RuntimeError(msg)
 
         # Any worker left over from an earlier session (crashed or never stopped)
         # is bound to that session's bus.
         self._teardown_atspi_worker()
 
-        self._clipboard_enabled = enable_clipboard
-
-        self._session = Session()
-        config = SessionConfig(
-            screen_width=screen_width,
-            screen_height=screen_height,
-            enable_clipboard=enable_clipboard,
-            keep_screenshots=keep_screenshots,
-            isolate_home=isolate_home,
-            keep_home=keep_home,
-        )
-        total_steps = 5 if app_command else 4
-        info = self._session.start(config, progress_total=total_steps)
-
-        result = f"Session started. Wayland socket: {info.wayland_socket}"
-        if info.home_dir:
-            result += f"\nIsolated home: {info.home_dir}"
-        for warning in info.startup_warnings:
-            result += f"\nWarning: {warning}"
-
-        if app_command:
-            cmd = shlex.split(app_command)
-            app_info = self._session.launch_app(cmd, extra_env=env)
-            result += f"\nApp launched: {app_command} (PID={app_info.pid})"
-            progress.report(4, total_steps, "App launched")
-            result += f"\nApp log: {app_info.log_path}"
-
-        # Set up input backend via KWin's EIS D-Bus interface. start() returned
-        # only after KWin took org.kde.KWin, so the EIS object is reachable.
+        total_steps = 5 if cmd else 4
         try:
-            self._input = InputBackend(info.dbus_address)
-        except RuntimeError as exc:
-            self._input = None
-            result += f"\nNo input backend available ({exc})"
-        else:
-            result += "\nInput backend: KWin EIS"
+            self._session = Session()
+            self._clipboard_enabled = enable_clipboard
+            config = SessionConfig(
+                screen_width=screen_width,
+                screen_height=screen_height,
+                enable_clipboard=enable_clipboard,
+                keep_screenshots=keep_screenshots,
+                isolate_home=isolate_home,
+                keep_home=keep_home,
+            )
+            info = self._session.start(config, progress_total=total_steps)
+
+            result = f"Session started. Wayland socket: {info.wayland_socket}"
+            if info.home_dir:
+                result += f"\nIsolated home: {info.home_dir}"
+            for warning in info.startup_warnings:
+                result += f"\nWarning: {warning}"
+
+            if cmd:
+                app_info = self._session.launch_app(cmd, extra_env=env)
+                result += f"\nApp launched: {app_command} (PID={app_info.pid})"
+                progress.report(4, total_steps, "App launched")
+                result += f"\nApp log: {app_info.log_path}"
+
+            # Set up input backend via KWin's EIS D-Bus interface. start() returned
+            # only after KWin took org.kde.KWin, so the EIS object is reachable.
+            try:
+                self._input = InputBackend(info.dbus_address)
+            except RuntimeError as exc:
+                self._input = None
+                result += f"\nNo input backend available ({exc})"
+            else:
+                result += "\nInput backend: KWin EIS"
+        except Exception as exc:
+            # Roll back everything started so far. Exception, not BaseException:
+            # CLI interrupts are cleaned up by its own exit path.
+            try:
+                self.session_stop()
+            except Exception as teardown_exc:
+                exc.add_note(f"Rolling back the failed session_start also failed: {teardown_exc}")
+            raise
 
         progress.report(total_steps, total_steps, "Input backend ready")
         return result
@@ -589,7 +625,8 @@ class AutomationEngine:
         connection when it is off; ``session_stop`` switches it back off.
         """
         if self._session is not None and self._session.is_running:
-            return "Session already running. Call session_stop first."
+            msg = "Session already running. Call session_stop first."
+            raise RuntimeError(msg)
 
         # Any worker left over from an earlier session (crashed or never stopped)
         # is bound to that session's bus.
@@ -599,15 +636,17 @@ class AutomationEngine:
         wayland_disp = wayland_display or os.environ.get("WAYLAND_DISPLAY", "")
 
         if not dbus_addr:
-            return (
+            msg = (
                 "No D-Bus address available. Provide dbus_address parameter "
                 "or ensure $DBUS_SESSION_BUS_ADDRESS is set."
             )
+            raise RuntimeError(msg)
         if not wayland_disp:
-            return (
+            msg = (
                 "No Wayland display available. Provide wayland_display parameter "
                 "or ensure $WAYLAND_DISPLAY is set."
             )
+            raise RuntimeError(msg)
 
         # Validate KWin is reachable on the given D-Bus
         import dbus as dbus_module
@@ -617,32 +656,37 @@ class AutomationEngine:
             bus = dbus.bus.BusConnection(dbus_addr)
             bus.get_object("org.kde.KWin", "/org/kde/KWin")
         except dbus_module.DBusException as exc:
-            return f"Cannot reach KWin on D-Bus ({dbus_addr}): {exc}"
+            msg = f"Cannot reach KWin on D-Bus ({dbus_addr}): {exc}"
+            raise RuntimeError(msg) from exc
         progress.report(1, 3, "KWin reachable on D-Bus")
 
         display_path = Path(wayland_disp)
         if not display_path.is_absolute():
             runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
             if not runtime_dir:
-                return f"Cannot reach Wayland display ({wayland_disp}): XDG_RUNTIME_DIR is not set"
+                msg = f"Cannot reach Wayland display ({wayland_disp}): XDG_RUNTIME_DIR is not set"
+                raise RuntimeError(msg)
             display_path = Path(runtime_dir) / display_path
 
         try:
             display_mode = display_path.stat().st_mode
         except OSError as exc:
-            return f"Cannot reach Wayland display ({wayland_disp}): {exc}"
+            msg = f"Cannot reach Wayland display ({wayland_disp}): {exc}"
+            raise RuntimeError(msg) from exc
         if not stat.S_ISSOCK(display_mode):
-            return (
+            msg = (
                 f"Cannot reach Wayland display ({wayland_disp}): "
                 f"{display_path} is not a Unix socket"
             )
+            raise RuntimeError(msg)
 
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
                 probe.settimeout(0.5)
                 probe.connect(str(display_path))
         except OSError as exc:
-            return f"Cannot reach Wayland display ({wayland_disp}): {exc}"
+            msg = f"Cannot reach Wayland display ({wayland_disp}): {exc}"
+            raise RuntimeError(msg) from exc
         progress.report(2, 3, "Wayland display reachable")
 
         screenshot_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-screenshots-"))
@@ -1222,8 +1266,8 @@ class AutomationEngine:
 
     def launch_app(self, command: str, env: dict[str, str] | None = None) -> str:
         """Launch an application inside the running isolated session."""
+        cmd = self._split_command(command, "command")
         session = self._get_session()
-        cmd = shlex.split(command)
         app_info = session.launch_app(cmd, extra_env=env)
         return f"App launched: {command} (PID={app_info.pid})\nApp log: {app_info.log_path}"
 

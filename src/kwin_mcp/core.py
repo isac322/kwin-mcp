@@ -406,7 +406,12 @@ class AutomationEngine:
         return json.loads(response)
 
     def _run_atspi(
-        self, op: str, *, heartbeat: Callable[[], None] | None = None, **kwargs: object
+        self,
+        op: str,
+        *,
+        heartbeat: Callable[[], None] | None = None,
+        retry: bool = True,
+        **kwargs: object,
     ) -> dict:
         """Run an AT-SPI2 query in the long-lived worker bound to the session bus.
 
@@ -419,7 +424,8 @@ class AutomationEngine:
         line = json.dumps({"op": op, **kwargs}).encode() + b"\n"
         last_error = ""
         with self._atspi_lock:
-            for attempt in range(2):
+            attempts = 2 if retry else 1
+            for attempt in range(attempts):
                 if attempt > 0:
                     time.sleep(0.5)
                 proc = self._ensure_atspi_worker()
@@ -437,7 +443,10 @@ class AutomationEngine:
                     last_error = f"AT-SPI2 query failed: {resp['worker_error']}"
                 self._teardown_atspi_worker()
 
-        msg = f"{last_error}. Retried once but still failed — the AT-SPI2 bus may be unstable."
+        if retry:
+            msg = f"{last_error}. Retried once but still failed — the AT-SPI2 bus may be unstable."
+        else:
+            msg = last_error
         raise RuntimeError(msg)
 
     def _teardown_atspi_worker(self) -> None:
@@ -790,6 +799,55 @@ class AutomationEngine:
         return format_find(self.find_ui_elements_data(query, app_name, states))
 
     # ── Mouse tools ───────────────────────────────────────────────────────
+
+    def invoke_ui_action(
+        self,
+        query: str,
+        action_name: str,
+        app_name: str = "",
+    ) -> str:
+        """Invoke one AT-SPI action without pointer coordinates."""
+        self._get_session()
+
+        if not query:
+            return "invoke_ui_action needs a query."
+        if not action_name:
+            return "invoke_ui_action needs an action_name."
+
+        resp = self._run_atspi(
+            "action",
+            retry=False,
+            query=query,
+            action_name=action_name,
+            app_name=app_name,
+        )
+
+        if not resp.get("ok"):
+            return f"AT-SPI action failed: {resp.get('error', 'unknown error')}"
+
+        result = resp["result"]
+        matches = int(result.get("matches", 0))
+
+        if matches == 0:
+            return f"No element matching {query!r} exposes AT-SPI action {action_name!r}."
+
+        if matches > 1:
+            return (
+                f"Refused ambiguous AT-SPI action: {matches} elements matching "
+                f"{query!r} expose {action_name!r}."
+            )
+
+        if not result.get("invoked"):
+            return (
+                f"AT-SPI action {action_name!r} matched one element but "
+                "the application reported failure."
+            )
+
+        return (
+            f"Invoked AT-SPI action: {result['action']} on "
+            f'[{result["role"]}] "{result["name"]}" '
+            f"in {result['app']}"
+        )
 
     def mouse_click(
         self,
@@ -1156,19 +1214,30 @@ class AutomationEngine:
         except json.JSONDecodeError:
             return {"ok": False, "error": f"invalid JSON: {result.stdout[:200]}"}
 
-    def focus_window(self, app_name: str) -> str:
-        """Activate a window by application name.
+    def focus_window(self, app_name: str = "", window_id: str = "") -> str:
+        """Activate a window by exact KWin id or application name.
 
-        Activation goes through KWin: AT-SPI2's grab_focus neither raises nor
-        activates windows on Wayland, so it reported success while the previously
-        active window kept both focus and the foreground.
+        ``window_id`` takes precedence when supplied. Activation goes through
+        KWin because AT-SPI2's grab_focus neither raises nor activates windows
+        reliably on Wayland.
         """
         self._get_session()
-        resp = self._run_kwin_query({"op": "activate", "app_name": app_name})
+        if not app_name and not window_id:
+            return "focus_window needs app_name or window_id (see window_geometry)."
+
+        resp = self._run_kwin_query(
+            {"op": "activate", "app_name": app_name, "window_id": window_id}
+        )
         if not resp["ok"]:
-            return f"Failed to focus '{app_name}': {resp['error']}"
+            target = window_id or app_name
+            return f"Failed to focus {target!r}: {resp['error']}"
+
         activated = str(resp["result"]).strip()
-        return f"Focused: {activated}" if activated else f"No window matches '{app_name}'."
+        if activated:
+            return f"Focused: {activated}"
+        if window_id:
+            return f"No window with id {window_id!r}."
+        return f"No window matches '{app_name}'."
 
     def window_geometry_data(self, app_name: str = "", window_id: str = "") -> WindowGeometryResult:
         """Report window positions in global screen coordinates, as data.

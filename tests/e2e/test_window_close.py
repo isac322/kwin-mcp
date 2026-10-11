@@ -68,6 +68,23 @@ def _two_kcalc_windows(engine: AutomationEngine) -> list[str]:
     return _await_ids(engine, "kcalc", lambda ids: len(ids) == 2)
 
 
+def test_focus_window_targets_exact_window_id(
+    kcalc_session: AutomationEngine,
+) -> None:
+    first, second = _two_kcalc_windows(kcalc_session)
+
+    for expected in (first, second, first):
+        reply = kcalc_session.focus_window(window_id=expected)
+        assert reply.startswith("Focused:"), reply
+
+        deadline = time.monotonic() + STATE_TIMEOUT_SECONDS
+        while _active_id(kcalc_session) != expected:
+            assert time.monotonic() < deadline, kcalc_session.active_window()
+            time.sleep(POLL_INTERVAL_SECONDS)
+
+        assert kcalc_session.window_geometry(window_id=expected).count("[active]") == 1
+
+
 def test_window_close_closes_only_the_targeted_window(kcalc_session: AutomationEngine) -> None:
     target, survivor = _two_kcalc_windows(kcalc_session)
 

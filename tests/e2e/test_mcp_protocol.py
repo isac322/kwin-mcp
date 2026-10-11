@@ -40,7 +40,8 @@ EXPECTED_REQUIRED_FIELDS: dict[str, frozenset[str]] = {
     "clipboard_set": frozenset({"text"}),
     "dbus_call": frozenset({"service", "path", "interface", "method"}),
     "find_ui_elements": frozenset({"query"}),
-    "focus_window": frozenset({"app_name"}),
+    "focus_window": frozenset(),
+    "invoke_ui_action": frozenset({"query", "action_name"}),
     "keyboard_key": frozenset({"key"}),
     "keyboard_key_down": frozenset({"key"}),
     "keyboard_key_up": frozenset({"key"}),
@@ -91,7 +92,15 @@ EXPECTED_TOOL_PROPERTIES: dict[str, dict[str, tuple[object, object]]] = {
         "app_name": ("string", ""),
         "states": (NULLABLE_ARRAY_OF_STRINGS, None),
     },
-    "focus_window": {"app_name": ("string", NO_DEFAULT)},
+    "focus_window": {
+        "app_name": ("string", ""),
+        "window_id": ("string", ""),
+    },
+    "invoke_ui_action": {
+        "query": ("string", NO_DEFAULT),
+        "action_name": ("string", NO_DEFAULT),
+        "app_name": ("string", ""),
+    },
     "keyboard_key": {
         "key": ("string", NO_DEFAULT),
         "screenshot_after_ms": (NULLABLE_ARRAY_OF_INTEGERS, None),
@@ -287,7 +296,7 @@ def _result_text(result: CallToolResult) -> str:
 
 @pytest.mark.anyio
 async def test_installed_server_initializes_and_registers_exact_tool_schemas() -> None:
-    assert len(EXPECTED_TOOL_NAMES) == 34
+    assert len(EXPECTED_TOOL_NAMES) == 35
     assert frozenset(EXPECTED_REQUIRED_FIELDS) == EXPECTED_TOOL_NAMES
     assert frozenset(EXPECTED_TOOL_PROPERTIES) == EXPECTED_TOOL_NAMES
 
@@ -382,7 +391,7 @@ async def test_default_live_session_switches_session_tool_recommendations() -> N
         response = await client.session.list_tools()
 
     names = [tool.name for tool in response.tools]
-    assert len(names) == len(set(names)) == 34
+    assert len(names) == len(set(names)) == 35
     assert frozenset(names) == EXPECTED_TOOL_NAMES
     tools = {tool.name: tool for tool in response.tools}
 

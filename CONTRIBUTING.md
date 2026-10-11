@@ -147,7 +147,7 @@ The suite collects every test under `tests/e2e`. Together they prove:
 
 - engine-level behavior in isolated virtual KWin sessions;
 - the installed `kwin-mcp` entry point over real MCP stdio JSON-RPC, including the exact schemas
-  and wrappers for all 34 tools;
+  and wrappers for all 35 tools;
 - AT-SPI2 observation and KWin EIS keyboard, pointer, touch, clipboard, window, and D-Bus paths;
 - GUI pixels, cursor capture, repaint changes, and frame bursts in test-owned nested Xvfb/KWin
   sessions using the explicitly selected X11 `scrot` capture mode;
@@ -248,7 +248,7 @@ tests/e2e/
 ├── interaction_probe.py                # Input and screenshot probe application
 ├── test_installed_package.py           # Wheel, dependencies, and entry points
 ├── test_environment_evidence.py        # Safe environment.json provenance
-├── test_mcp_protocol.py                # All 34 tool schemas and protocol errors
+├── test_mcp_protocol.py                # All 35 tool schemas and protocol errors
 ├── test_mcp_session_observation.py     # Installed stdio session and observation flow
 ├── test_mcp_pointer_keyboard.py        # Installed stdio pointer and keyboard flow
 ├── test_mcp_touch_clipboard.py         # Installed stdio touch and clipboard flow
@@ -266,10 +266,12 @@ tests/e2e/
 ├── test_clipboard_helper_protocol.py   # Private clipboard helper framing, timeouts, and restore
 ├── test_virtual_session_smoke.py       # Minimum isolated KWin contract
 ├── test_observation_tools.py           # Accessibility, window, log, and Wayland tools
+├── test_accessibility_actions.py       # invoke_ui_action on a background window; ambiguity, app scoping, and incomplete discovery refused
 ├── test_accessibility_switch.py        # org.a11y.Status.IsEnabled switch, live opt-in, bounded calls, restore
 ├── test_atspi_worker.py                # AT-SPI worker reuse across session changes and crashes
 ├── test_window_geometry.py             # Global window geometry and element coordinate space
-├── test_window_close.py                # Window ids, active window, and closing one window by id
+├── test_window_close.py                # Window ids, active window, focus and closing one window by id
+├── test_kwin_script_render.py          # Caller values reach KWin scripts only as JSON literals (no KWin)
 ├── test_window_control.py              # Focus, scroll, drag, and touch behavior
 ├── test_window_match.py                # Chromium/Flatpak AT-SPI top-levels matched to KWin windows via buffer geometry and captions
 ├── test_window_set_geometry_validation.py # window_set_geometry input validation and request reporting (no KWin)

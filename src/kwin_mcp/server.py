@@ -680,6 +680,34 @@ def mouse_button_up(
 # ── Keyboard tools ───────────────────────────────────────────────────────
 
 
+@_tool(annotations=_DESTRUCTIVE)
+def invoke_ui_action(
+    query: Annotated[
+        str,
+        Field(description="Element name, role or description to match."),
+    ],
+    action_name: Annotated[
+        str,
+        Field(description='Exact AT-SPI action name, for example "Press".'),
+    ],
+    app_name: Annotated[
+        str,
+        Field(description="Optional application-name filter."),
+    ] = "",
+) -> str:
+    """Invoke a native AT-SPI action without pointer coordinates.
+
+    Exactly one element must match the query, app filter and action name.
+    Ambiguous matches fail closed. State-changing accessibility calls are not
+    automatically retried because repeating an action could trigger it twice.
+    """
+    return _engine.invoke_ui_action(
+        query=query,
+        action_name=action_name,
+        app_name=app_name,
+    )
+
+
 @_tool(annotations=_DESTRUCTIVE, images=True)
 def keyboard_type(
     text: Annotated[
@@ -1022,15 +1050,19 @@ def list_windows() -> Annotated[CallToolResult, ListWindowsResult]:
 def focus_window(
     app_name: Annotated[
         str,
-        Field(description="Application name to focus (case-insensitive substring match)."),
-    ],
+        Field(description="Application name/caption substring to focus."),
+    ] = "",
+    window_id: Annotated[
+        str,
+        Field(description="Exact KWin window id from window_geometry; takes precedence."),
+    ] = "",
 ) -> str:
-    """Attempt to focus a window by application name.
+    """Activate and raise one KWin window.
 
-    Searches for an application whose name contains the given string
-    (case-insensitive) and activates its first focusable window via AT-SPI2.
+    Prefer window_id when selecting one specific window among several from the
+    same application. Otherwise app_name matches application name or caption.
     """
-    return _engine.focus_window(app_name=app_name)
+    return _engine.focus_window(app_name=app_name, window_id=window_id)
 
 
 @_tool(annotations=_READ_ONLY)

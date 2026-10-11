@@ -26,16 +26,20 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
 import dbus
 import dbus.bus
 import dbus.service
 from dbus.mainloop.glib import DBusGMainLoop
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 SINK_NAME = "io.github.kwin_mcp.Geometry"
 SINK_PATH = "/geometry"
@@ -103,6 +107,7 @@ callDBus("{sink}", "{path}", "{sink}", "Report", JSON.stringify(out));
 # previously active window kept both focus and the foreground.
 _ACTIVATE_SCRIPT_TEMPLATE = """
 var needle = {needle};
+var target = {window_id};
 var activated = "";
 var windows = workspace.windowList();
 for (var i = 0; i < windows.length; i++) {
@@ -111,7 +116,9 @@ for (var i = 0; i < windows.length; i++) {
         continue;
     }
     var haystack = (w.resourceClass + " " + w.caption).toLowerCase();
-    if (haystack.indexOf(needle) !== -1) {
+    var matchesId = target && String(w.internalId) === target;
+    var matchesName = !target && needle && haystack.indexOf(needle) !== -1;
+    if (matchesId || matchesName) {
         workspace.activeWindow = w;
         activated = w.resourceClass + " " + w.caption;
         break;
@@ -163,9 +170,9 @@ for (var i = 0; i < windows.length; i++) {
 callDBus("{sink}", "{path}", "{sink}", "Report", JSON.stringify(result));
 """
 
-# The id reaches the script only as a JSON string literal ({window_id} is
-# replaced with json.dumps output), so a quote or any other character in a
-# caller-supplied id stays data and can never run as KWin script.
+# Caller-supplied values reach these scripts only as JSON string literals (see
+# _render_script), so a quote or any other character in an id or app name stays
+# data and can never run as KWin script.
 # closeWindow() asks the client to close, exactly like the titlebar button: the
 # app may still keep the window open (for example behind a "save changes?"
 # prompt), so the caller observes the result instead of trusting this reply.
@@ -219,6 +226,17 @@ callDBus("{sink}", "{path}", "{sink}", "Report", JSON.stringify({
     virtual: v ? [v.x, v.y, v.width, v.height] : null
 }));
 """
+
+
+def _render_script(template: str, values: Mapping[str, object]) -> str:
+    """Replace each ``{name}`` placeholder in ``template`` with ``json.dumps(values[name])``.
+
+    All placeholders are substituted in one pass, so text inserted for one value
+    is never re-scanned: a value that itself contains ``{other_name}`` stays a
+    literal inside its JSON string instead of being expanded into script source.
+    """
+    pattern = "|".join(re.escape("{" + name + "}") for name in values)
+    return re.sub(pattern, lambda match: json.dumps(values[match.group(0)[1:-1]]), template)
 
 
 def _parse_windows(payload: str) -> list[KWinWindow]:
@@ -367,9 +385,15 @@ def active(timeout: float = 5.0) -> dict[str, object] | None:
     return None
 
 
-def activate(app_name: str, timeout: float = 5.0) -> str:
-    """Activate the first window whose app name or caption matches."""
-    script = _ACTIVATE_SCRIPT_TEMPLATE.replace("{needle}", json.dumps(app_name.lower()))
+def activate(
+    app_name: str = "",
+    window_id: str = "",
+    timeout: float = 5.0,
+) -> str:
+    """Activate one window by exact id, or by app name/caption."""
+    script = _render_script(
+        _ACTIVATE_SCRIPT_TEMPLATE, {"needle": app_name.lower(), "window_id": window_id}
+    )
     return run_kwin_script(script, timeout)
 
 
@@ -388,9 +412,9 @@ def set_geometry(
         "width": width,
         "height": height,
     }
-    script = _SET_GEOMETRY_SCRIPT_TEMPLATE
-    script = script.replace("{window_id}", json.dumps(window_id))
-    script = script.replace("{requested}", json.dumps(requested))
+    script = _render_script(
+        _SET_GEOMETRY_SCRIPT_TEMPLATE, {"window_id": window_id, "requested": requested}
+    )
 
     payload = json.loads(run_kwin_script(script, timeout))
     if not isinstance(payload, dict) or "found" not in payload:
@@ -405,7 +429,7 @@ def close(window_id: str, timeout: float = 5.0) -> dict[str, object]:
     Returns ``{"found": False}`` when no window has the id, otherwise
     ``{"found": True, "closeable", "app", "caption"}``.
     """
-    script = _CLOSE_SCRIPT_TEMPLATE.replace("{window_id}", json.dumps(window_id))
+    script = _render_script(_CLOSE_SCRIPT_TEMPLATE, {"window_id": window_id})
     payload = json.loads(run_kwin_script(script, timeout))
     if not isinstance(payload, dict) or "found" not in payload:
         msg = f"KWin returned a malformed close result: {payload!r}"
@@ -441,7 +465,17 @@ def main() -> None:
     try:
         op = request.get("op")
         if op == "activate":
-            print(json.dumps({"ok": True, "result": activate(str(request.get("app_name", "")))}))
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "result": activate(
+                            app_name=str(request.get("app_name", "")),
+                            window_id=str(request.get("window_id", "")),
+                        ),
+                    }
+                )
+            )
             return
         if op == "outputs":
             print(json.dumps({"ok": True, "result": outputs()}))

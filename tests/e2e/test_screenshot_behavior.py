@@ -1216,3 +1216,55 @@ async def test_max_edge_flag_bounds_screenshots_frames_and_attached_images() -> 
         frame_lines = [line for line in moved_text.splitlines() if "Coordinate space" in line]
         assert len(frame_lines) == len(FRAME_DELAYS), moved_text
         assert all(_image_term(line)[0] == FLAG_SCALED_SIZE for line in frame_lines), moved_text
+
+
+@pytest.mark.anyio
+@pytest.mark.visual
+async def test_later_frame_burst_never_overwrites_earlier_frames() -> None:
+    """Each screenshot_after_ms burst publishes new paths; earlier frames keep their pixels."""
+    with nested_visual_kwin() as visual:
+        _preserve_backend_record(visual.artifact_dir)
+        async with running_mcp_server(
+            env={"DISPLAY": visual.x_display, "KWIN_MCP_X11_SCREENSHOT": "1"},
+        ) as client:
+            connected = False
+            try:
+                await _connect(
+                    client,
+                    visual.dbus_address,
+                    visual.wayland_display,
+                    keep_screenshots=False,
+                )
+                connected = True
+                screenshot_dir = _screenshot_source(await client.call_text("screenshot")).parent
+
+                first_output = await client.call_text(
+                    "mouse_move", {"x": 10, "y": 10, "screenshot_after_ms": [0]}
+                )
+                (first,) = _frame_sources(first_output, [0])
+                first_bytes = first.read_bytes()
+                first_mtime = first.stat().st_mtime_ns
+                _preserve_png(first, visual.artifact_dir, "burst-before-probe.png")
+
+                # Change the screen between the bursts: the probe window appears.
+                await _launch_probe(client)
+
+                second_output = await client.call_text(
+                    "mouse_move", {"x": 20, "y": 20, "screenshot_after_ms": [0]}
+                )
+                (second,) = _frame_sources(second_output, [0])
+                _preserve_png(second, visual.artifact_dir, "burst-after-probe.png")
+
+                assert second != first, (first, second)
+                assert first.parent == screenshot_dir, (first, screenshot_dir)
+                assert second.parent == screenshot_dir, (second, screenshot_dir)
+                assert first.read_bytes() == first_bytes
+                assert first.stat().st_mtime_ns == first_mtime
+                assert second.read_bytes() != first_bytes
+            finally:
+                (visual.artifact_dir / "mcp-server.stderr.log").write_text(
+                    client.stderr_text(), encoding="utf-8"
+                )
+                if connected:
+                    stop_output = await client.call_text("session_stop")
+                    assert stop_output == "Disconnected from live session.", stop_output

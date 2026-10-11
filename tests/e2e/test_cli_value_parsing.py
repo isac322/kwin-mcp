@@ -9,6 +9,8 @@ these tests would leave the value a raw string on Python 3.12-3.14 otherwise.
 
 from __future__ import annotations
 
+import pytest
+
 import kwin_mcp.cli as cli
 from kwin_mcp.core import AutomationEngine
 
@@ -50,3 +52,21 @@ def test_plain_int_annotation_still_converts() -> None:
 
     assert kwargs["max_depth"] == 3
     assert type(kwargs["max_depth"]) is int
+
+
+def test_quoted_json_list_arg_converts_to_list() -> None:
+    engine = AutomationEngine()
+    kwargs = cli._parse_args(engine.find_ui_elements, "query=x states='[\"focused\"]'")
+
+    assert kwargs["states"] == ["focused"]
+
+
+def test_unquoted_list_arg_is_rejected() -> None:
+    """``states=[focused]`` is not JSON: it fails loudly instead of being mis-parsed.
+
+    v0.10.0 silently turned it into a wrong value; the CLI prints the ValueError as a
+    one-line ``Error: ...`` (see test_cli_errors.py).
+    """
+    engine = AutomationEngine()
+    with pytest.raises(ValueError):
+        cli._parse_args(engine.find_ui_elements, "query=x states=[focused]")

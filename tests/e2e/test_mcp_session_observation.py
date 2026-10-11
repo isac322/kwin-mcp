@@ -59,11 +59,13 @@ async def test_installed_server_observes_virtual_session_and_apps(
     async with running_mcp_server() as client:
         session_running = False
         try:
-            connect_output = await client.call_text("session_connect")
-            assert connect_output == (
+            connect_result = await client.call_result("session_connect")
+            assert connect_result.is_error is True
+            connect_output = _result_text(connect_result)
+            assert (
                 "No D-Bus address available. Provide dbus_address parameter "
                 "or ensure $DBUS_SESSION_BUS_ADDRESS is set."
-            ), connect_output
+            ) in connect_output, connect_output
             assert await client.session.send_ping() is not None
 
             start_output = await client.call_text(

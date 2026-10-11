@@ -12,12 +12,14 @@ longer side is at most N pixels.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import base64
 import contextlib
 import functools
 import importlib.metadata
 import os
+import re
 import signal
 import sys
 import threading
@@ -50,44 +52,67 @@ if TYPE_CHECKING:
     from concurrent.futures import Future
     from types import FunctionType
 
-_MAX_EDGE_FLAG = "--screenshot-max-edge"
+
+def _max_edge_value(text: str) -> int:
+    """Parse a ``--screenshot-max-edge`` value: an ASCII pixel count, 0 meaning no limit."""
+    # Only ASCII digits: str.isdigit() and int() also accept "²" or "٣", which are not counts.
+    if re.fullmatch(r"[0-9]+", text) is None:
+        msg = f"needs a pixel count (0 = no limit), got {text!r}"
+        raise argparse.ArgumentTypeError(msg)
+    return int(text)
 
 
-def _max_edge_flag_spans(argv: list[str]) -> list[tuple[int, int, str]]:
-    """Locate every ``--screenshot-max-edge N`` or ``--screenshot-max-edge=N`` in ``argv``.
+def _parse_argv(argv: list[str]) -> argparse.Namespace:
+    """Parse the server flags in ``argv`` (``sys.argv[1:]``); ``-h``/``--help`` is not one.
 
-    Returns each argument slice ``(start, stop)`` and its value text, in order.
+    ``main`` answers help before this runs. An unknown option, an abbreviation, a
+    positional argument, an invalid or repeated ``--screenshot-max-edge`` is a usage
+    error: argparse prints the usage and the error to stderr and exits 2. The result
+    has ``default_live_session``, ``screenshot_images`` and ``screenshot_max_edge``
+    (an int, 0 when the flag is absent).
     """
-    spans: list[tuple[int, int, str]] = []
-    for index, arg in enumerate(argv):
-        if arg == _MAX_EDGE_FLAG:
-            value = argv[index + 1] if index + 1 < len(argv) else ""
-            spans.append((index, index + 2, value))
-        elif arg.startswith(f"{_MAX_EDGE_FLAG}="):
-            spans.append((index, index + 1, arg.split("=", 1)[1]))
-    return spans
-
-
-def _screenshot_max_edge(argv: list[str]) -> int:
-    spans = _max_edge_flag_spans(argv)
-    if not spans:
-        return 0
-    if len(spans) > 1:
-        msg = f"kwin-mcp: {_MAX_EDGE_FLAG} may only be specified once"
-        raise SystemExit(msg)
-    value = spans[0][2]
-    if not value.isdigit():
-        msg = f"kwin-mcp: {_MAX_EDGE_FLAG} needs a pixel count (0 = no limit), got {value!r}"
-        raise SystemExit(msg)
-    return int(value)
+    parser = argparse.ArgumentParser(prog="kwin-mcp", add_help=False, allow_abbrev=False)
+    parser.add_argument("--default-live-session", action="store_true")
+    parser.add_argument("--screenshot-images", action="store_true")
+    parser.add_argument("--screenshot-max-edge", type=_max_edge_value, action="append", metavar="N")
+    args = parser.parse_args(argv)
+    edges: list[int] = args.screenshot_max_edge or []
+    if len(edges) > 1:
+        parser.error("--screenshot-max-edge may only be specified once")
+    args.screenshot_max_edge = edges[0] if edges else 0
+    return args
 
 
 mcp = MCPServer("kwin-mcp", version=importlib.metadata.version("kwin-mcp"))
 
-# Detect custom flags early (before MCP framework consumes args)
-_live_session_mode = "--default-live-session" in sys.argv
-_screenshot_images = "--screenshot-images" in sys.argv
-_engine = AutomationEngine(screenshot_max_edge=_screenshot_max_edge(sys.argv))
+# Built by main() from the parsed flags, so importing this module never reads sys.argv.
+# Tool bodies and _exit_cleanup read it at call time, after main() has assigned it.
+_engine: AutomationEngine
+
+# Printed by ``-h``/``--help``. Help exits before the MCP server starts, so a person who
+# runs ``kwin-mcp --help`` gets an answer instead of a silent stdio server.
+_USAGE = """\
+usage: kwin-mcp [-h] [--default-live-session] [--screenshot-images] [--screenshot-max-edge N]
+
+kwin-mcp: MCP server for GUI automation on KDE Plasma 6 Wayland.
+
+It speaks the Model Context Protocol (MCP) over stdio and is meant to be launched by
+an MCP client (e.g. Claude Code), not run interactively. For an interactive REPL,
+run kwin-mcp-cli.
+
+options:
+  -h, --help              show this help message and exit
+  --default-live-session  make session_connect (the live desktop) the default session
+                          tool instead of session_start (an isolated virtual session)
+  --screenshot-images     attach captured screenshot PNGs to tool results as MCP image
+                          content
+  --screenshot-max-edge N
+                          downscale every screenshot and frame so its longer side is at
+                          most N pixels (0 = no limit, the default); may be given once;
+                          --screenshot-max-edge=N is also accepted
+
+Documentation: https://github.com/isac322/kwin-mcp#readme
+"""
 
 # Tool descriptions that replace the docstrings when --default-live-session is active.
 _LIVE_SESSION_DESCRIPTIONS: dict[str, str] = {
@@ -155,90 +180,144 @@ _DBUS_CALL = ToolAnnotations(
 )
 
 
+# Tool bodies recorded by ``@_tool`` at import time, with their annotations and image
+# flag. ``main()`` registers them after parsing argv, because the live-session
+# descriptions and image attachment depend on the flags.
+_tool_bodies: list[tuple[FunctionType, ToolAnnotations, bool]] = []
+
+
 def _tool[F: FunctionType](
     *, annotations: ToolAnnotations, images: bool = False
 ) -> Callable[[F], F]:
-    """Register a sync body as an MCP tool that runs on the dedicated tool thread.
+    """Record a sync body as an MCP tool; ``main()`` registers it after parsing argv.
 
     ``annotations`` are published in tools/list. ``images`` marks tools that may capture
     screenshot PNGs; with ``--screenshot-images`` the PNGs a call recorded through
     ``progress.record_image`` are appended as ImageContent after the unchanged text.
-    The body runs inside a ``progress.call_scope`` that forwards ``progress.report``
-    calls to the client as progress notifications (no-op without a progressToken).
+    See ``_register_tool`` for how the registered tool runs. Returns ``fn``.
+    """
+
+    def record(fn: F) -> F:
+        _tool_bodies.append((fn, annotations, images))
+        return fn
+
+    return record
+
+
+def _register_tools(*, live_session_mode: bool, screenshot_images: bool) -> None:
+    """Register every recorded tool body with the parsed server flags applied.
+
+    Idempotent: a tool registered by an earlier call is replaced, so calling ``main()``
+    again registers each tool once, with the flags of the latest call.
+    """
+    for fn, tool_annotations, images in _tool_bodies:
+        with contextlib.suppress(ToolError):
+            mcp.remove_tool(fn.__name__)
+        description = _LIVE_SESSION_DESCRIPTIONS.get(fn.__name__) if live_session_mode else None
+        _register_tool(
+            fn,
+            annotations=tool_annotations,
+            attach_images=images and screenshot_images,
+            description=description,
+        )
+
+
+def _register_tool(
+    fn: FunctionType,
+    *,
+    annotations: ToolAnnotations,
+    attach_images: bool,
+    description: str | None,
+) -> None:
+    """Register a sync body as an MCP tool that runs on the dedicated tool thread.
+
+    ``description`` replaces the docstring when given. With ``attach_images`` the PNGs a
+    call recorded through ``progress.record_image`` are appended as ImageContent. The
+    body runs inside a ``progress.call_scope`` that forwards ``progress.report`` calls
+    to the client as progress notifications (no-op without a progressToken).
 
     Any exception is re-raised as ``ToolError`` so the client sees
     ``Error executing tool <name>: <message>``. Input and output schemas are derived
-    from ``fn`` unchanged, and the body never receives the Context. Returns ``fn``.
+    from ``fn`` unchanged, and the body never receives the Context.
     """
 
-    def register(fn: F) -> F:
-        attach_images = images and _screenshot_images
+    def run_body(
+        report_fn: progress.ReportFn, kwargs: dict[str, object]
+    ) -> tuple[str | None, list[str], str | None]:
+        # The server is exiting: do not start new resources (a queued tool must not
+        # run after shutdown began). A tool already running still finishes, then the
+        # final session_stop runs on this same thread.
+        if _shutdown.is_set():
+            return None, [], "Server is shutting down; tool not executed."
+        # Reduce a failure to its message here, on the tool thread: the exception's
+        # traceback keeps the failed call's D-Bus connections and fds alive, and they
+        # must be released before the response goes out, as they were when tools ran
+        # inline on the event loop. PNGs are read and encoded here too, off the loop.
+        try:
+            with progress.call_scope(report_fn, collect_images=attach_images) as scope:
+                text = fn(**kwargs)
+                encoded = [
+                    base64.b64encode(path.read_bytes()).decode("ascii") for path in scope.images
+                ]
+            return text, encoded, None
+        except Exception as exc:
+            return None, [], str(exc)
 
-        def run_body(
-            report_fn: progress.ReportFn, kwargs: dict[str, object]
-        ) -> tuple[str | None, list[str], str | None]:
-            # The server is exiting: do not start new resources (a queued tool must not
-            # run after shutdown began). A tool already running still finishes, then the
-            # final session_stop runs on this same thread.
-            if _shutdown.is_set():
-                return None, [], "Server is shutting down; tool not executed."
-            # Reduce a failure to its message here, on the tool thread: the exception's
-            # traceback keeps the failed call's D-Bus connections and fds alive, and they
-            # must be released before the response goes out, as they were when tools ran
-            # inline on the event loop. PNGs are read and encoded here too, off the loop.
-            try:
-                with progress.call_scope(report_fn, collect_images=attach_images) as scope:
-                    text = fn(**kwargs)
-                    encoded = [
-                        base64.b64encode(path.read_bytes()).decode("ascii") for path in scope.images
-                    ]
-                return text, encoded, None
-            except Exception as exc:
-                return None, [], str(exc)
+    @functools.wraps(fn)
+    async def wrapper(*, ctx: Context, **kwargs: object) -> str | CallToolResult:
+        loop = asyncio.get_running_loop()
+        sent: list[Future[None]] = []
+        # Progress gate: sends are scheduled only while this call still awaits its body.
+        # The await ends when the body returns or when the request task is cancelled
+        # (stdin EOF or a signal while the tool runs); a body still running on the tool
+        # thread after that must create no coroutine, since the loop may close before
+        # running it and leave it never awaited.
+        gate = threading.Lock()
+        reporting = True
 
-        @functools.wraps(fn)
-        async def wrapper(*, ctx: Context, **kwargs: object) -> str | CallToolResult:
-            loop = asyncio.get_running_loop()
-            sent: list[Future[None]] = []
-
-            def report_fn(value: float, total: float | None, message: str | None) -> None:
-                # Called on the tool thread. Do not wait for the send: blocking on the loop
-                # would slow every step. report_progress never raises on a closed channel.
+        def report_fn(value: float, total: float | None, message: str | None) -> None:
+            # Called on the tool thread. Do not wait for the send: blocking on the loop
+            # would slow every step. The coroutine is created and scheduled under the
+            # gate, so it exists only while the loop is still running this call:
+            # run_coroutine_threadsafe raises on a closed loop and would orphan it.
+            with gate:
+                if not reporting:
+                    return
                 coro = ctx.report_progress(value, total, message)
                 sent.append(asyncio.run_coroutine_threadsafe(coro, loop))
 
+        try:
             text, encoded, error = await asyncio.wrap_future(
                 _tool_executor.submit(run_body, report_fn, kwargs)
             )
-            # Flush progress sends before the response; the SDK drops notifications for a
-            # request once its response is written. The body is done, so no appends race.
-            await asyncio.gather(*map(asyncio.wrap_future, sent), return_exceptions=True)
-            if error is not None:
-                raise ToolError(error)
-            assert text is not None
-            if not encoded:
-                return text
-            return CallToolResult(
-                content=[
-                    TextContent(text=text),
-                    *(ImageContent(data=data, mime_type="image/png") for data in encoded),
-                ],
-                structured_content={"result": text},
-            )
+        finally:
+            with gate:
+                reporting = False
+        # Flush progress sends before the response; the SDK drops notifications for a
+        # request once its response is written. The gate is closed, so no appends race.
+        await asyncio.gather(*map(asyncio.wrap_future, sent), return_exceptions=True)
+        if error is not None:
+            raise ToolError(error)
+        assert text is not None
+        if not encoded:
+            return text
+        return CallToolResult(
+            content=[
+                TextContent(text=text),
+                *(ImageContent(data=data, mime_type="image/png") for data in encoded),
+            ],
+            structured_content={"result": text},
+        )
 
-        # Context injection: the SDK finds the Context parameter via get_type_hints(wrapper),
-        # while the argument model and schemas follow __wrapped__ to fn. Use a new dict so
-        # fn.__annotations__ (introspected by the CLI) is not mutated.
-        wrapper.__annotations__ = {**fn.__annotations__, "ctx": Context}
+    # Context injection: the SDK finds the Context parameter via get_type_hints(wrapper),
+    # while the argument model and schemas follow __wrapped__ to fn. Use a new dict so
+    # fn.__annotations__ (introspected by the CLI) is not mutated.
+    wrapper.__annotations__ = {**fn.__annotations__, "ctx": Context}
 
-        description = _LIVE_SESSION_DESCRIPTIONS.get(fn.__name__) if _live_session_mode else None
-        # The SDK silently skips Context injection when type hints fail to resolve; check it
-        # with the same lookup the SDK uses before registering.
-        assert find_context_parameter(wrapper) == "ctx", fn.__name__
-        mcp.tool(description=description, annotations=annotations)(wrapper)
-        return fn
-
-    return register
+    # The SDK silently skips Context injection when type hints fail to resolve; check it
+    # with the same lookup the SDK uses before registering.
+    assert find_context_parameter(wrapper) == "ctx", fn.__name__
+    mcp.tool(description=description, annotations=annotations)(wrapper)
 
 
 # ── Session management ──────────────────────────────────────────────────
@@ -253,8 +332,12 @@ def session_start(
             "Leave empty to start session without an app."
         ),
     ] = "",
-    screen_width: Annotated[int, Field(description="Virtual screen width in pixels.")] = 1920,
-    screen_height: Annotated[int, Field(description="Virtual screen height in pixels.")] = 1080,
+    screen_width: Annotated[
+        int, Field(ge=1, description="Virtual screen width in pixels (positive).")
+    ] = 1920,
+    screen_height: Annotated[
+        int, Field(ge=1, description="Virtual screen height in pixels (positive).")
+    ] = 1080,
     enable_clipboard: Annotated[
         bool,
         Field(
@@ -265,7 +348,9 @@ def session_start(
     keep_screenshots: Annotated[
         bool,
         Field(
-            description="Keep screenshot files after session_stop instead of deleting them. "
+            description="Keep the screenshot directory (screenshots and app logs) after "
+            "session_stop instead of deleting it. It is a separate kwin-mcp-screenshots-* "
+            "temp directory, never inside the isolated home, so keep_home does not affect it. "
             "Useful for debugging. Files must be cleaned up manually when enabled."
         ),
     ] = False,
@@ -273,7 +358,8 @@ def session_start(
         bool,
         Field(
             description="Create a temporary HOME directory with isolated XDG directories "
-            "(config, data, cache, state). Prevents apps from reading/writing host user settings."
+            "(config, data, cache, state), so apps use fresh settings instead of the host user's. "
+            "Apps keep normal filesystem access; this is not a sandbox."
         ),
     ] = False,
     keep_home: Annotated[
@@ -325,7 +411,10 @@ def session_connect(
     ] = "",
     keep_screenshots: Annotated[
         bool,
-        Field(description="Keep screenshot files after session_stop instead of deleting them."),
+        Field(
+            description="Keep the screenshot directory (screenshots and app logs) after "
+            "session_stop instead of deleting it."
+        ),
     ] = False,
     enable_accessibility: Annotated[
         bool,
@@ -680,13 +769,48 @@ def mouse_button_up(
 # ── Keyboard tools ───────────────────────────────────────────────────────
 
 
+@_tool(annotations=_DESTRUCTIVE)
+def invoke_ui_action(
+    query: Annotated[
+        str,
+        Field(description="Element name, role or description to match."),
+    ],
+    action_name: Annotated[
+        str,
+        Field(description='Exact AT-SPI action name, for example "Press".'),
+    ],
+    app_name: Annotated[
+        str,
+        Field(description="Optional application-name filter."),
+    ] = "",
+) -> str:
+    """Invoke a native AT-SPI action without pointer coordinates.
+
+    Exactly one element must match the query, app filter and action name.
+    Ambiguous matches fail closed. Discovery also fails closed: if any node in
+    the searched scope cannot be read, or a subtree is deeper than 64 levels,
+    nothing is invoked and the error names that application — set app_name to
+    search only the target application. No match, a refusal or a failed request
+    is a tool error. If the application does not confirm a dispatched action,
+    the result says so: the action may have run, so check the UI before
+    retrying. State-changing accessibility calls are not automatically retried
+    because repeating an action could trigger it twice.
+    """
+    return _engine.invoke_ui_action(
+        query=query,
+        action_name=action_name,
+        app_name=app_name,
+    )
+
+
 @_tool(annotations=_DESTRUCTIVE, images=True)
 def keyboard_type(
     text: Annotated[
         str,
         Field(
-            description="ASCII text to type. For non-ASCII (Korean, CJK, emoji), "
-            "use keyboard_type_unicode instead."
+            description="Text to type on a US QWERTY layout (letters, digits, punctuation, "
+            "space, tab, newline). Any other character (Korean, CJK, emoji, accented "
+            "characters, \\r) is rejected; use keyboard_type_unicode for it."
         ),
     ],
     screenshot_after_ms: Annotated[
@@ -697,11 +821,12 @@ def keyboard_type(
         ),
     ] = None,
 ) -> str:
-    """Type ASCII text into the currently focused element.
+    """Type text into the currently focused element with individual key presses.
 
-    Simulates individual key presses for each character. Only supports ASCII
-    characters. For non-ASCII text (Korean, CJK, emoji, accented characters),
-    use keyboard_type_unicode instead.
+    Simulates individual key presses for each character of the US QWERTY
+    layout. Text containing any other character is rejected as a tool error
+    before anything is typed; use keyboard_type_unicode for non-ASCII text
+    (Korean, CJK, emoji, accented characters).
     """
     return _engine.keyboard_type(text=text, screenshot_after_ms=screenshot_after_ms)
 
@@ -724,10 +849,11 @@ def keyboard_type_unicode(
     paste on it (Konsole, GNOME Terminal, kitty, foot, st, ...), Ctrl+V
     elsewhere. The previous clipboard content (all its formats) is restored
     after the paste, and the text is marked as secret so KDE's clipboard
-    history skips it. Returns a failure when the clipboard could not be
+    history skips it. Fails as a tool error when the clipboard could not be
     taken or nothing requested the text, and without pressing any key when
     the focused window is a recognized terminal with no clipboard paste
-    chord (xterm, urxvt) or cannot be identified.
+    chord (xterm, urxvt) or cannot be identified. Text containing NUL
+    characters is rejected.
     Use this instead of keyboard_type when the text contains non-ASCII
     characters (e.g. Korean, CJK, emoji, accented characters).
     """
@@ -890,7 +1016,14 @@ def touch_multi_swipe(
     ],
     to_x: Annotated[int, Field(description="Ending X coordinate in pixels.")],
     to_y: Annotated[int, Field(description="Ending Y coordinate in pixels.")],
-    fingers: Annotated[int, Field(description="Number of fingers (2-5).")] = 3,
+    fingers: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Number of fingers (default 3). KWin consumes swipes with 3 or more "
+            "fingers as global gestures.",
+        ),
+    ] = 3,
     duration_ms: Annotated[int, Field(description="Duration of the swipe in milliseconds.")] = 300,
     screenshot_after_ms: Annotated[
         list[int] | None,
@@ -921,21 +1054,24 @@ def clipboard_get() -> str:
     """Read the current clipboard content in the isolated session.
 
     Requires enable_clipboard=true in session_start and wl-clipboard
-    installed. Returns the clipboard text or an error message if clipboard
-    is not enabled or empty.
+    installed. Returns the clipboard text. Fails as a tool error when the
+    clipboard is not enabled, wl-paste is missing, or the clipboard is
+    empty or unreadable.
     """
     return _engine.clipboard_get()
 
 
-@_tool(annotations=_NON_DESTRUCTIVE_IDEMPOTENT)
+@_tool(annotations=_DESTRUCTIVE_IDEMPOTENT)
 def clipboard_set(
     text: Annotated[str, Field(description="Text to copy to clipboard.")],
 ) -> str:
     """Set the clipboard content in the isolated session.
 
     Requires enable_clipboard=true in session_start and wl-clipboard
-    installed. The content remains available until replaced by another
-    clipboard_set call or the session ends.
+    installed. Replaces the current selection with text of any size. The
+    content remains available until replaced by another clipboard_set call
+    or the session ends. The confirmation echoes text of up to 200
+    characters; longer text is reported as its length.
     """
     return _engine.clipboard_set(text=text)
 
@@ -972,8 +1108,10 @@ def wait_for_element(
     Polls repeatedly until a matching element is found or the timeout expires.
     Returns matching elements in the same format as find_ui_elements —
     bounding boxes are global screen coordinates, or "@ unavailable (reason)"
-    when the element's window cannot be identified — or a timeout error
-    message.
+    when the element's window cannot be identified — or a timeout message.
+    Matches unavailable because KWin's window list was changing are re-polled
+    for up to 1 s (within the timeout) so a window that is still opening can
+    be mapped. Progress never exceeds timeout_ms.
     """
     return _engine.wait_for_element(
         query=query,
@@ -1012,6 +1150,8 @@ def list_windows() -> Annotated[CallToolResult, ListWindowsResult]:
 
     Uses AT-SPI2 to enumerate top-level applications and their window count.
     Applications that do not support accessibility (AT-SPI2) may not appear.
+    Titles are raw AT-SPI names and may be empty ('(untitled)') or differ from
+    KWin captions; window_geometry reports KWin captions.
     Returns a formatted list of app names with window counts.
     """
     data = _engine.list_windows_data()
@@ -1022,15 +1162,25 @@ def list_windows() -> Annotated[CallToolResult, ListWindowsResult]:
 def focus_window(
     app_name: Annotated[
         str,
-        Field(description="Application name to focus (case-insensitive substring match)."),
-    ],
+        Field(
+            description="Application name/caption substring to focus. "
+            "Required unless window_id is given."
+        ),
+    ] = "",
+    window_id: Annotated[
+        str,
+        Field(
+            description="Exact KWin window id from window_geometry; takes precedence. "
+            "Required unless app_name is given."
+        ),
+    ] = "",
 ) -> str:
-    """Attempt to focus a window by application name.
+    """Activate and raise one KWin window.
 
-    Searches for an application whose name contains the given string
-    (case-insensitive) and activates its first focusable window via AT-SPI2.
+    Prefer window_id when selecting one specific window among several from the
+    same application. Otherwise app_name matches application name or caption.
     """
-    return _engine.focus_window(app_name=app_name)
+    return _engine.focus_window(app_name=app_name, window_id=window_id)
 
 
 @_tool(annotations=_READ_ONLY)
@@ -1050,7 +1200,8 @@ def window_geometry(
     already translated to this same coordinate space; this tool remains
     useful for locating whole windows and diagnosing placement. Each window
     lists its KWin id (stable while the window exists) and an [active] marker
-    on the active window. Pass the id to window_close.
+    on the active window. Pass the id to focus_window(window_id=),
+    window_set_geometry or window_close.
     """
     data = _engine.window_geometry_data(app_name=app_name, window_id=window_id)
     return _structured(format_window_geometry(data, app_name, window_id), data)
@@ -1064,6 +1215,53 @@ def active_window() -> str:
     one window that has focus, e.g. after focus_window.
     """
     return _engine.active_window()
+
+
+@_tool(annotations=_DESTRUCTIVE_IDEMPOTENT)
+def window_set_geometry(
+    window_id: Annotated[
+        str,
+        Field(description="Exact KWin window id from window_geometry."),
+    ],
+    x: Annotated[
+        int | None,
+        Field(description="New frame x coordinate (signed 32-bit).", ge=-(2**31), le=2**31 - 1),
+    ] = None,
+    y: Annotated[
+        int | None,
+        Field(description="New frame y coordinate (signed 32-bit).", ge=-(2**31), le=2**31 - 1),
+    ] = None,
+    width: Annotated[
+        int | None,
+        Field(
+            description="New frame width: positive and at most the KWin workspace width "
+            "(start the session with a larger screen for bigger windows).",
+            gt=0,
+            le=2**31 - 1,
+        ),
+    ] = None,
+    height: Annotated[
+        int | None,
+        Field(
+            description="New frame height: positive and at most the KWin workspace height "
+            "(start the session with a larger screen for bigger windows).",
+            gt=0,
+            le=2**31 - 1,
+        ),
+    ] = None,
+) -> str:
+    """Move and/or resize one KWin window by exact id.
+
+    Only supplied geometry fields are changed. This bypasses user keyboard
+    shortcut mappings and addresses the compositor window directly.
+    """
+    return _engine.window_set_geometry(
+        window_id=window_id,
+        x=x,
+        y=y,
+        width=width,
+        height=height,
+    )
 
 
 @_tool(annotations=_DESTRUCTIVE_IDEMPOTENT)
@@ -1116,7 +1314,8 @@ def dbus_call(
     Each entry in ``args`` may use dbus-send notation (``"string:value"``,
     ``"int32:42"``, ``"dict:string:string:KEY,VALUE"``, ...) or the typed-JSON
     shape (``{"type":"string","value":"hello"}``). Both shapes can mix in one
-    call. Malformed or mismatched arguments fail without sending anything.
+    call. Malformed or mismatched arguments are tool errors and nothing is
+    sent; a D-Bus error reply from the remote side is a tool error too.
     """
     return _engine.dbus_call(
         service=service, path=path, interface=interface, method=method, args=args
@@ -1131,7 +1330,7 @@ def read_app_log(
     ],
     last_n_lines: Annotated[
         int,
-        Field(description="Number of trailing lines to return (0 = all output)."),
+        Field(ge=0, description="Number of trailing lines to return (0 = all output)."),
     ] = 50,
 ) -> str:
     """Read stdout/stderr output of a launched app.
@@ -1290,12 +1489,18 @@ def _finish(exit_code: int, failure: str = "") -> NoReturn:
 
 
 def main() -> None:
-    """Run the MCP server.
+    """Run the MCP server, or print usage and exit 0 for ``-h``/``--help``.
+
+    ``-h``/``--help`` anywhere in argv is handled first: it prints ``_USAGE`` to stdout
+    and exits 0 without parsing the other arguments, starting the server, reading
+    stdin, or installing signal handlers.
 
     Supports ``--default-live-session`` flag to make session_connect the default
     session tool instead of session_start, ``--screenshot-images`` flag to attach
     captured screenshot PNGs to tool results as image content, and
-    ``--screenshot-max-edge N`` to bound every screenshot's longer side.
+    ``--screenshot-max-edge N`` to bound every screenshot's longer side. Any other
+    argument is a usage error (exit 2) before the server starts. The engine is built
+    and the tools are registered from the parsed flags.
 
     All exit paths share the once-only cleanup in ``_finish``: ``mcp.run()``
     returning (stdin EOF) exits 0, an SDK/transport exception exits 1 after a
@@ -1303,14 +1508,19 @@ def main() -> None:
     via the watcher thread — the signal handler only records the signum and never
     raises, so a signal mid-request cannot stall the cleanup on the loop.
     """
-    # Remove our custom flags before MCP framework parses args
-    for flag in ("--default-live-session", "--screenshot-images"):
-        if flag in sys.argv:
-            sys.argv.remove(flag)
-    # Later slices first so earlier indexes stay valid. A second occurrence already
-    # exited in _screenshot_max_edge above; this drops whichever remains.
-    for span in reversed(_max_edge_flag_spans(sys.argv)):
-        del sys.argv[span[0] : span[1]]
+    global _engine
+    # Help must not start the stdio server: it would block on stdin (or exit
+    # silently on EOF) instead of answering the person who asked for usage.
+    if "-h" in sys.argv[1:] or "--help" in sys.argv[1:]:
+        sys.stdout.write(_USAGE)
+        sys.stdout.flush()
+        raise SystemExit(0)
+    args = _parse_argv(sys.argv[1:])
+    _engine = AutomationEngine(screenshot_max_edge=args.screenshot_max_edge)
+    _register_tools(
+        live_session_mode=args.default_live_session,
+        screenshot_images=args.screenshot_images,
+    )
     # SIGTERM/SIGHUP have no default handler and would kill the process without
     # cleanup; SIGINT is included because installing our own handler keeps
     # asyncio.Runner from installing its KeyboardInterrupt-raising default (it

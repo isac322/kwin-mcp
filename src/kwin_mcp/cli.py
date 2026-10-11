@@ -221,6 +221,11 @@ class KwinMcpShell(cmd.Cmd):
             else:
                 result = method(**kwargs)
             print(result)
+        except (ValueError, RuntimeError, OSError, TypeError) as exc:
+            # Tool errors (invalid input, refusals, failed operations, argument typos):
+            # one line, like the MCP isError text. Anything else is a programming error
+            # and keeps its traceback.
+            print(f"Error: {exc}", file=sys.stderr)
         except Exception:
             traceback.print_exc()
 

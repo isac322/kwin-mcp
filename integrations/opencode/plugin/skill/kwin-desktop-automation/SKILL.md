@@ -5,7 +5,7 @@ description: Use when the user asks to launch, click, type, screenshot, or other
 
 # kwin-desktop-automation
 
-Drive Linux KDE Plasma 6 Wayland desktops through the `kwin-mcp` MCP server. The MCP server provides 33 capabilities; this skill provides the operational discipline to use them efficiently, in the right order, and without falling into platform-specific traps.
+Drive Linux KDE Plasma 6 Wayland desktops through the `kwin-mcp` MCP server. The MCP server provides 35 capabilities; this skill provides the operational discipline to use them efficiently, in the right order, and without falling into platform-specific traps.
 
 ## When to apply
 
@@ -28,8 +28,8 @@ Opens an isolated `dbus-run-session + kwin_wayland --virtual` compositor. Nothin
 Useful arguments:
 - `app_command="..."` — launch the target app inside the session.
 - `enable_clipboard=true` — required for `clipboard_get` / `clipboard_set` (not for `keyboard_type_unicode`). Off by default because `wl-copy` can hang on a freshly minted bus.
-- `keep_screenshots=true` — preserves PNGs in `/tmp/kwin-mcp-screenshots-*` after `session_stop` (delete the directory yourself when done).
-- `isolate_home=true` — temp HOME with isolated XDG dirs; keeps host configuration untouched.
+- `keep_screenshots=true` — preserves the `/tmp/kwin-mcp-screenshots-*` directory (screenshots and launched apps' logs) after `session_stop`, also with `isolate_home=true` (delete the directory yourself when done).
+- `isolate_home=true` — temp HOME with isolated XDG dirs; apps use fresh settings but keep normal filesystem access.
 
 **Live — `session_connect`**
 Attaches to an already-running KWin: the user's real desktop, or a KWin running inside a container / kiosk / embedded device. Use when the user says "my", "current", "this window", "what I'm looking at", "container", "kiosk", or "live". Defaults to `$DBUS_SESSION_BUS_ADDRESS` and `$WAYLAND_DISPLAY`; clipboard is always enabled. `session_stop` only disconnects — it never kills the live KWin or its apps.
@@ -57,12 +57,13 @@ Pick the cheapest tool that answers the question. Do not start with `screenshot`
 **Action tools:**
 
 - Rectangles from `find_ui_elements` / `accessibility_tree` are already global screen coordinates (`@ screen (x, y, wxh)`) — the same space `mouse_click` and `touch_tap` take. Click the centre directly: `(x + width / 2, y + height / 2)`. An element reported as `@ unavailable (reason)` has no trustworthy position; do not click it.
-- `window_geometry` lists every window with a KWin `id`. Ids stay stable while the window exists, so use them to tell apart several windows of the same app: `window_geometry(window_id=...)` re-reads one window, and `window_close(window_id=...)` closes exactly that one. `window_close` only asks the app to close; confirm with `window_geometry` because a "save changes?" prompt can keep it open. It is refused in live sessions.
+- Prefer `invoke_ui_action` when the target exposes the intended AT-SPI action (for example `Press`). It operates semantically without pointer coordinates, so it still works when the control is obscured or another window is foreground. Scope with `app_name` whenever practical. The call runs only when exactly one matching element exposes the requested action; ambiguous matches fail closed. Discovery fails closed too: when part of the tree cannot be read, nothing is invoked and the error names the application — retry with `app_name` set to the target app. A result saying the application did not confirm means the action may have run; check the UI before retrying. Because actions can change application state, kwin-mcp does not automatically retry them. Verify the resulting state before considering the action complete.
+- `window_geometry` lists every window with a KWin `id`. Ids stay stable while the window exists, so use them to tell apart several windows of the same app: `window_geometry(window_id=...)` re-reads one window, `focus_window(window_id=...)` activates exactly that one, `window_set_geometry(window_id=..., x=..., y=..., width=..., height=...)` moves and/or resizes exactly that window through KWin (supply only the fields that need changing, then verify the observed frame with `window_geometry`), and `window_close(window_id=...)` closes exactly that one. `window_set_geometry` width/height must be at most the KWin workspace size (start the session with a larger `screen_width`/`screen_height` for bigger windows), every field must fit a signed 32-bit integer, fields the client has not applied yet are listed as `not yet applied`, and `observed: window no longer exists` means the window closed before the readback. `window_close` only asks the app to close; confirm with `window_geometry` because a "save changes?" prompt can keep it open. It is refused in live sessions.
 - `window_geometry`, `find_ui_elements`, `list_windows`, and `accessibility_tree` also return structured data when your client exposes `structuredContent`: window `id`, `active`, and `frame`/`client` rects; element `role`, `name`, `states`, and `rect` (`{x, y, width, height}`, global screen coordinates, `null` with a reason in `unavailable` when there is no trustworthy position). Read coordinates and ids from these fields directly instead of parsing the text.
 - Screenshot pixels are logical too, but offset by the image origin. Read the `Coordinate space: logical; origin (ox, oy); ...` line in the `screenshot` result and click image pixel `(px, py)` at `(ox + px, oy + py)`. The origin can be negative on multi-monitor layouts. Never rescale by the display scale factor — kwin-mcp already did. If the line goes on with `image WxH downscaled: pixel (px, py) shows (...)`, the image was shrunk: apply that formula instead.
 - On a large desktop, small text is unreadable in a downscaled screenshot. Take the overview, then call `screenshot` with `region=[x, y, width, height]` (logical coordinates) and `max_edge=0` to read that area at full resolution; the crop's line reports its own origin.
-- `keyboard_type` is **ASCII / US-QWERTY only**. It maps characters to evdev keycodes; non-ASCII silently breaks.
-- `keyboard_type_unicode` for Korean / CJK / emoji / any non-ASCII. It tries `wtype` first; when `wtype` is unavailable or unsupported by the session, it pastes through a built-in temporary clipboard owner and then restores the previous clipboard in every format. The paste chord follows the focused window: Ctrl+Shift+V in terminals known to paste on it (Konsole, GNOME Terminal, kitty, foot, st, and others), Ctrl+V elsewhere. A failure result means the clipboard could not be taken, nothing read the text after the paste chord, or the restore failed: verify the target field before retrying. Recognized terminals without a clipboard paste chord (xterm, urxvt) and windows KWin cannot identify fail without any key being pressed; an unrecognized terminal still gets Ctrl+V; type ASCII with `keyboard_type` there. Text over 1 MiB of UTF-8 is rejected.
+- `keyboard_type` is **US-QWERTY only**: letters, digits, ASCII punctuation, space, tab, and newline. Text containing any other character (non-ASCII, `\r`, other control characters) is rejected before anything is typed, with an error naming the characters.
+- `keyboard_type_unicode` for Korean / CJK / emoji / any non-ASCII. It tries `wtype` first; when `wtype` is unavailable or unsupported by the session, it pastes through a built-in temporary clipboard owner and then restores the previous clipboard in every format. The paste chord follows the focused window: Ctrl+Shift+V in terminals known to paste on it (Konsole, GNOME Terminal, kitty, foot, st, and others), Ctrl+V elsewhere. A tool error means the clipboard could not be taken, nothing read the text after the paste chord, or the restore failed: verify the target field before retrying. Recognized terminals without a clipboard paste chord (xterm, urxvt) and windows KWin cannot identify fail without any key being pressed; an unrecognized terminal still gets Ctrl+V; type ASCII with `keyboard_type` there. Text over 1 MiB of UTF-8 or containing NUL is rejected.
 
 Branch typing by string content — never assume the input is ASCII.
 
@@ -78,7 +79,8 @@ For animation-heavy or transient UI, pass `screenshot_after_ms=[0, 100, 300]` to
 
 These are properties of the Wayland / AT-SPI2 / EIS stack, not bugs. Know them or get burned.
 
-- **`keyboard_type` is US QWERTY only.** Non-ASCII text must go through `keyboard_type_unicode`. Always check the input.
+- **Failures come back as tool errors.** Invalid arguments, refusals (session already running, clipboard disabled, `window_close` in a live session), missing or ambiguous targets, and failed operations are reported with `isError: true` (`Error executing tool <name>: ...`). Check for it before continuing; an empty query answer, a `wait_for_element` timeout, and an unconfirmed action (`not yet applied`, `Close requested`, "did not confirm") are normal results that say so in their text.
+- **`keyboard_type` is US QWERTY only.** Non-ASCII text must go through `keyboard_type_unicode`; `keyboard_type` rejects it as an error without typing anything. Always check the input.
 - **Clipboard tools are opt-in on virtual sessions.** Pass `enable_clipboard=true` to `session_start` AND ensure `wl-clipboard` is installed before calling `clipboard_get` / `clipboard_set`. Live sessions always have clipboard.
 - **`keyboard_type_unicode` briefly exposes the text on the clipboard.** Klipper keeps it out of history, but clipboard managers that ignore KDE's secret hint can record it, and Wayland cannot tell which client read it. Restoring the previous clipboard is best-effort: a copy made at the same moment can be overwritten. `clipboard_set` is different — its text intentionally stays on the clipboard.
 - **Element coordinates are screen-global, or unavailable.** Rectangles returned by `find_ui_elements` and `accessibility_tree` are already in the screen space `mouse_click` and `touch_tap` take. When the element's window cannot be matched to exactly one KWin window, the element reports `@ unavailable (reason)` with no coordinates — never click a guessed position.
@@ -93,7 +95,7 @@ These are properties of the Wayland / AT-SPI2 / EIS stack, not bugs. Know them o
 ## 4. Cleanup
 
 - Always call `session_stop` once the task is complete, even if a step errored.
-- If `keep_screenshots=true` was used, `/tmp/kwin-mcp-screenshots-*` survives `session_stop`. Delete it explicitly when no longer needed.
+- If `keep_screenshots=true` was used, `/tmp/kwin-mcp-screenshots-*` (screenshots and app logs) survives `session_stop`. Delete it explicitly when no longer needed.
 - If `isolate_home=true` + `keep_home=true` were both used, the temp HOME under `/tmp/` also survives — delete it manually.
 
 ## Quick recipes
@@ -112,7 +114,7 @@ These are properties of the Wayland / AT-SPI2 / EIS stack, not bugs. Know them o
 
 **"Type 안녕하세요 into the active text field"**:
 1. (Session already open.)
-2. `keyboard_type_unicode(text="안녕하세요")` — never `keyboard_type`; it would silently drop the characters.
+2. `keyboard_type_unicode(text="안녕하세요")` — never `keyboard_type`; it rejects non-ASCII text.
 
 **"Find what currently has focus"**:
 1. `find_ui_elements(query="", states=["focused"])` — empty query is allowed when filtering by state.

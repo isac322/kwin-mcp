@@ -40,7 +40,8 @@ EXPECTED_REQUIRED_FIELDS: dict[str, frozenset[str]] = {
     "clipboard_set": frozenset({"text"}),
     "dbus_call": frozenset({"service", "path", "interface", "method"}),
     "find_ui_elements": frozenset({"query"}),
-    "focus_window": frozenset({"app_name"}),
+    "focus_window": frozenset(),
+    "invoke_ui_action": frozenset({"query", "action_name"}),
     "keyboard_key": frozenset({"key"}),
     "keyboard_key_down": frozenset({"key"}),
     "keyboard_key_up": frozenset({"key"}),
@@ -67,6 +68,7 @@ EXPECTED_REQUIRED_FIELDS: dict[str, frozenset[str]] = {
     "wayland_info": frozenset(),
     "window_close": frozenset({"window_id"}),
     "window_geometry": frozenset(),
+    "window_set_geometry": frozenset({"window_id"}),
 }
 
 EXPECTED_TOOL_PROPERTIES: dict[str, dict[str, tuple[object, object]]] = {
@@ -90,7 +92,15 @@ EXPECTED_TOOL_PROPERTIES: dict[str, dict[str, tuple[object, object]]] = {
         "app_name": ("string", ""),
         "states": (NULLABLE_ARRAY_OF_STRINGS, None),
     },
-    "focus_window": {"app_name": ("string", NO_DEFAULT)},
+    "focus_window": {
+        "app_name": ("string", ""),
+        "window_id": ("string", ""),
+    },
+    "invoke_ui_action": {
+        "query": ("string", NO_DEFAULT),
+        "action_name": ("string", NO_DEFAULT),
+        "app_name": ("string", ""),
+    },
     "keyboard_key": {
         "key": ("string", NO_DEFAULT),
         "screenshot_after_ms": (NULLABLE_ARRAY_OF_INTEGERS, None),
@@ -220,6 +230,13 @@ EXPECTED_TOOL_PROPERTIES: dict[str, dict[str, tuple[object, object]]] = {
     "wayland_info": {"filter_protocol": ("string", "")},
     "window_close": {"window_id": ("string", NO_DEFAULT)},
     "window_geometry": {"app_name": ("string", ""), "window_id": ("string", "")},
+    "window_set_geometry": {
+        "window_id": ("string", NO_DEFAULT),
+        "x": (NULLABLE_INTEGER, None),
+        "y": (NULLABLE_INTEGER, None),
+        "width": (NULLABLE_INTEGER, None),
+        "height": (NULLABLE_INTEGER, None),
+    },
 }
 
 
@@ -279,7 +296,7 @@ def _result_text(result: CallToolResult) -> str:
 
 @pytest.mark.anyio
 async def test_installed_server_initializes_and_registers_exact_tool_schemas() -> None:
-    assert len(EXPECTED_TOOL_NAMES) == 33
+    assert len(EXPECTED_TOOL_NAMES) == 35
     assert frozenset(EXPECTED_REQUIRED_FIELDS) == EXPECTED_TOOL_NAMES
     assert frozenset(EXPECTED_TOOL_PROPERTIES) == EXPECTED_TOOL_NAMES
 
@@ -374,7 +391,7 @@ async def test_default_live_session_switches_session_tool_recommendations() -> N
         response = await client.session.list_tools()
 
     names = [tool.name for tool in response.tools]
-    assert len(names) == len(set(names)) == 33
+    assert len(names) == len(set(names)) == 35
     assert frozenset(names) == EXPECTED_TOOL_NAMES
     tools = {tool.name: tool for tool in response.tools}
 
@@ -415,7 +432,8 @@ async def test_engine_exception_is_a_tool_error_and_server_survives() -> None:
 
         assert cleanup_result is not None
         assert cleanup_result.is_error is False
-        assert _result_text(cleanup_result) == "Session stopped."
+        # The failed start rolled back, so no session is left to stop.
+        assert _result_text(cleanup_result) == "No session running."
         assert await client.call_text("session_stop") == "No session running."
 
 

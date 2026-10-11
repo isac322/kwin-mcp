@@ -96,7 +96,7 @@ jobs:
               --name "$E2E_CONTAINER_NAME" \
               --volume "$PWD/$E2E_ARTIFACT_DIR:/artifacts" \
               kwin-mcp-e2e \
-              /opt/kwin-mcp-venv/bin/python -m pytest tests/e2e -v \
+              /opt/kwin-mcp-venv/bin/python -m pytest tests -v \
                 --junitxml=/artifacts/junit.xml \
             2>&1 | tee "$E2E_ARTIFACT_DIR/pytest.log"
 

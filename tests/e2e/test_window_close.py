@@ -68,6 +68,23 @@ def _two_kcalc_windows(engine: AutomationEngine) -> list[str]:
     return _await_ids(engine, "kcalc", lambda ids: len(ids) == 2)
 
 
+def test_focus_window_targets_exact_window_id(
+    kcalc_session: AutomationEngine,
+) -> None:
+    first, second = _two_kcalc_windows(kcalc_session)
+
+    for expected in (first, second, first):
+        reply = kcalc_session.focus_window(window_id=expected)
+        assert reply.startswith("Focused:"), reply
+
+        deadline = time.monotonic() + STATE_TIMEOUT_SECONDS
+        while _active_id(kcalc_session) != expected:
+            assert time.monotonic() < deadline, kcalc_session.active_window()
+            time.sleep(POLL_INTERVAL_SECONDS)
+
+        assert kcalc_session.window_geometry(window_id=expected).count("[active]") == 1
+
+
 def test_window_close_closes_only_the_targeted_window(kcalc_session: AutomationEngine) -> None:
     target, survivor = _two_kcalc_windows(kcalc_session)
 
@@ -84,9 +101,8 @@ def test_window_close_closes_only_the_targeted_window(kcalc_session: AutomationE
 
 def test_window_close_reports_an_unknown_id(kcalc_session: AutomationEngine) -> None:
     before = _ids(kcalc_session, "kcalc")
-    assert kcalc_session.window_close(window_id="{no-such-window}") == (
-        "No window with id '{no-such-window}'."
-    )
+    with pytest.raises(RuntimeError, match=re.escape("No window with id '{no-such-window}'.")):
+        kcalc_session.window_close(window_id="{no-such-window}")
     time.sleep(1)
     assert _ids(kcalc_session, "kcalc") == before
 
@@ -102,13 +118,18 @@ def test_window_id_with_a_quote_is_data_not_script(
     active = _await_active_app(kcalc_session, "kcalc")
     assert active in ids
 
-    call = getattr(kcalc_session, tool)
-    reply = call(window_id=INJECTED_ID)
+    # window_geometry is a query, so an unknown id is an empty answer; for
+    # window_close it is a failed operation and therefore a tool error.
+    missing = f"No window with id {INJECTED_ID!r}."
+    if tool == "window_close":
+        with pytest.raises(RuntimeError, match=re.escape(missing)):
+            kcalc_session.window_close(window_id=INJECTED_ID)
+    else:
+        assert kcalc_session.window_geometry(window_id=INJECTED_ID) == missing
 
     time.sleep(2)
-    assert sorted(_ids(kcalc_session, "kcalc")) == sorted(ids), reply
-    assert _active_id(kcalc_session) == active, reply
-    assert reply == f"No window with id {INJECTED_ID!r}."
+    assert sorted(_ids(kcalc_session, "kcalc")) == sorted(ids)
+    assert _active_id(kcalc_session) == active
 
 
 def test_active_window_follows_focus_window(
@@ -139,8 +160,8 @@ def test_window_close_is_refused_in_live_sessions(
             engine.launch_app("kcalc")
             [window_id] = _await_ids(engine, "kcalc", lambda ids: len(ids) == 1)
 
-            refused = engine.window_close(window_id=window_id)
-            assert refused.startswith("window_close is disabled in live sessions"), refused
+            with pytest.raises(RuntimeError, match="disabled in live sessions"):
+                engine.window_close(window_id=window_id)
 
             # Observation and activation stay available, as with focus_window.
             assert engine.focus_window(app_name="kcalc").startswith("Focused:")

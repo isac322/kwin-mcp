@@ -268,8 +268,8 @@ class OwnedProcessRegistry:
     records, at spawn time, the process groups kwin-mcp owns — the virtual
     session's ``dbus-run-session`` wrapper group and every launched app group,
     virtual or live — plus the temp dirs a virtual session creates that
-    ``session_stop`` would remove (isolated home, per-session config dir,
-    screenshot dir, and a keep-home session's ``.screenshots`` subdirectory).
+    ``session_stop`` would remove (an isolated home unless ``keep_home``, the
+    per-session config dir, and the screenshot dir unless ``keep_screenshots``).
     KWin of a live session and any pre-existing process are never recorded, so
     they are never signalled.
 
@@ -706,19 +706,14 @@ class Session:
                 Path(".local") / "share",
                 Path(".local") / "state",
                 ".cache",
-                ".screenshots",
             ):
                 (self._home_dir / subdir).mkdir(parents=True, exist_ok=True)
-            # Record the removable path(s) session_stop would remove, so the exit
-            # path (when it cannot run session_stop) mirrors session_stop's
-            # retention semantics: keep_home=False removes the whole home;
-            # keep_home=True with keep_screenshots=False removes only
-            # home/.screenshots. A keep_home + keep_screenshots home is the
-            # caller's to retain, so nothing is recorded.
+            # Record the home when session_stop would remove it, so the exit path
+            # (when it cannot run session_stop) mirrors session_stop's retention
+            # semantics: keep_home alone decides whether the home survives. The
+            # screenshot dir lives outside the home and follows keep_screenshots.
             if not config.keep_home:
                 process_registry.register_temp_dir(self._home_dir)
-            elif not config.keep_screenshots:
-                process_registry.register_temp_dir(self._home_dir / ".screenshots")
 
         # Clean up any stale socket files
         runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
@@ -827,14 +822,13 @@ class Session:
             raise RuntimeError(msg)
 
         progress.report(3, progress_total, "Wayland socket ready")
-        if self._home_dir is not None:
-            screenshot_dir = self._home_dir / ".screenshots"
-        else:
-            screenshot_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-screenshots-"))
-            # A keep_screenshots session is the caller's to retain, so it is not
-            # recorded for the exit path.
-            if not config.keep_screenshots:
-                process_registry.register_temp_dir(screenshot_dir)
+        # The screenshot dir (screenshots and app logs) always lives outside the
+        # isolated home, so keep_screenshots alone decides whether it survives.
+        # A keep_screenshots session is the caller's to retain, so it is not
+        # recorded for the exit path.
+        screenshot_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-screenshots-"))
+        if not config.keep_screenshots:
+            process_registry.register_temp_dir(screenshot_dir)
 
         self._info = SessionInfo(
             dbus_address=dbus_address,
@@ -878,7 +872,7 @@ class Session:
             env["DBUS_SESSION_BUS_ADDRESS"] = self._info.dbus_address
 
         # Create log file for stdout/stderr capture
-        app_name = Path(command[0]).stem if command else "unknown"
+        app_name = Path(command[0]).stem
         self._app_counter += 1
         log_path = self._info.screenshot_dir / f"app_{app_name}_{self._app_counter}.log"
         # stdin=DEVNULL: an inherited stdin would be the MCP server's JSON-RPC
@@ -985,22 +979,15 @@ class Session:
             self._stderr_file.close()
             self._stderr_file = None
 
-        # Clean up home directory and/or screenshot directory
-        if self._home_dir is not None:
-            keep_home = self._config is not None and self._config.keep_home
-            keep_screenshots = self._config is not None and self._config.keep_screenshots
-            if not keep_home:
-                _remove_tree(self._home_dir)
-            elif not keep_screenshots:
-                # Keep home but remove screenshots subdirectory
-                screenshots = self._home_dir / ".screenshots"
-                if screenshots.exists():
-                    shutil.rmtree(screenshots, ignore_errors=True)
-        else:
-            # No isolated home — use original screenshot cleanup logic
-            keep = self._config is not None and self._config.keep_screenshots
-            if not keep and self._info and self._info.screenshot_dir.exists():
-                shutil.rmtree(self._info.screenshot_dir, ignore_errors=True)
+        # Two independent retention rules: keep_home alone decides whether the
+        # isolated home survives, keep_screenshots alone whether the screenshot
+        # dir (screenshots and app logs, always outside the home) survives.
+        keep_home = self._config is not None and self._config.keep_home
+        keep_screenshots = self._config is not None and self._config.keep_screenshots
+        if self._home_dir is not None and not keep_home:
+            _remove_tree(self._home_dir)
+        if not keep_screenshots and self._info is not None:
+            shutil.rmtree(self._info.screenshot_dir, ignore_errors=True)
 
         # Clean up socket files
         runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
@@ -1019,21 +1006,10 @@ class Session:
         # re-removes a dir the caller asked to keep. The owned process groups
         # (the wrapper and the launched apps) are unregistered as they are
         # reaped above, so they need no explicit drop here.
-        config = self._config
-        keep_home = config is not None and config.keep_home
-        keep_screenshots = config is not None and config.keep_screenshots
-        if (
-            self._info is not None
-            and not keep_screenshots
-            and self._home_dir is None
-            and self._info.screenshot_dir is not None
-        ):
+        if self._info is not None and not keep_screenshots:
             process_registry.unregister_temp_dir(self._info.screenshot_dir)
-        if self._home_dir is not None:
-            if not keep_home:
-                process_registry.unregister_temp_dir(self._home_dir)
-            elif not keep_screenshots:
-                process_registry.unregister_temp_dir(self._home_dir / ".screenshots")
+        if self._home_dir is not None and not keep_home:
+            process_registry.unregister_temp_dir(self._home_dir)
 
         self._process = None
         self._info = None
@@ -1043,7 +1019,8 @@ class Session:
         """Release the directories created by start() when no session exists.
 
         Only used on the Popen-failure path, where _process is None and stop()
-        cannot run; keep_home/keep_screenshots semantics mirror stop().
+        cannot run; the home follows keep_home as in stop(). The screenshot dir
+        is created only after KWin starts, so it does not exist yet here.
         """
         if self._session_config_dir is not None:
             shutil.rmtree(self._session_config_dir, ignore_errors=True)
@@ -1051,15 +1028,10 @@ class Session:
             self._session_config_dir = None
         if self._home_dir is None:
             return
-        keep_home = self._config is not None and self._config.keep_home
-        keep_screenshots = self._config is not None and self._config.keep_screenshots
-        with contextlib.suppress(OSError):
-            if not keep_home:
+        if self._config is None or not self._config.keep_home:
+            with contextlib.suppress(OSError):
                 _remove_tree(self._home_dir)
                 process_registry.unregister_temp_dir(self._home_dir)
-            elif not keep_screenshots:
-                shutil.rmtree(self._home_dir / ".screenshots", ignore_errors=True)
-                process_registry.unregister_temp_dir(self._home_dir / ".screenshots")
         self._home_dir = None
 
     def _signal_process_group(self, sig: int) -> None:
@@ -1597,7 +1569,7 @@ class LiveSession:
         if extra_env:
             env.update(extra_env)
 
-        app_name = Path(command[0]).stem if command else "unknown"
+        app_name = Path(command[0]).stem
         self._app_counter += 1
         log_path = self._info.screenshot_dir / f"app_{app_name}_{self._app_counter}.log"
         # stdin=DEVNULL: see Session.launch_app. start_new_session=True gives

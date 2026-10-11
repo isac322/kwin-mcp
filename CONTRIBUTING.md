@@ -147,7 +147,7 @@ The suite collects every test under `tests/e2e`. Together they prove:
 
 - engine-level behavior in isolated virtual KWin sessions;
 - the installed `kwin-mcp` entry point over real MCP stdio JSON-RPC, including the exact schemas
-  and wrappers for all 33 tools;
+  and wrappers for all 35 tools;
 - AT-SPI2 observation and KWin EIS keyboard, pointer, touch, clipboard, window, and D-Bus paths;
 - GUI pixels, cursor capture, repaint changes, and frame bursts in test-owned nested Xvfb/KWin
   sessions using the explicitly selected X11 `scrot` capture mode;
@@ -238,6 +238,9 @@ scripts/
 ├── check_docs_seo.py      # Documentation/SEO consistency checker
 └── sync_plugin_version.py # Syncs project version and SKILL.md into integrations
 
+tests/
+└── test_results.py                     # Byte-exact result formatter tests (no KWin; CI runs `pytest tests`)
+
 tests/e2e/
 ├── _asserts.py                         # Shared observable-result assertions
 ├── conftest.py                         # Engine fixtures and guaranteed teardown
@@ -249,7 +252,8 @@ tests/e2e/
 ├── interaction_probe.py                # Input and screenshot probe application
 ├── test_installed_package.py           # Wheel, dependencies, and entry points
 ├── test_environment_evidence.py        # Safe environment.json provenance
-├── test_mcp_protocol.py                # All 33 tool schemas and protocol errors
+├── test_mcp_protocol.py                # All 35 tool schemas and protocol errors
+├── test_tool_registration.py           # Repeated tool registration replaces each tool with the latest flags (no KWin)
 ├── test_mcp_session_observation.py     # Installed stdio session and observation flow
 ├── test_mcp_pointer_keyboard.py        # Installed stdio pointer and keyboard flow
 ├── test_mcp_touch_clipboard.py         # Installed stdio touch and clipboard flow
@@ -262,17 +266,29 @@ tests/e2e/
 ├── test_exit_cleanup.py                # Server/CLI exit stops the session like session_stop (EOF, signals, drain)
 ├── test_cli_signal_deferral.py         # CLI shutdown signals deferred mid-teardown, raised once afterwards
 ├── test_cli_value_parsing.py           # CLI key=value conversion of Optional parameters
+├── test_cli_errors.py                  # CLI prints tool errors as one `Error:` line, keeps tracebacks for bugs (no KWin)
+├── test_session_input_validation.py    # Screen size and command validation, atomic session_start rollback (no KWin)
+├── test_input_progress.py              # keyboard_type progress always ends at N/N (no KWin)
+├── test_wait_progress.py               # wait_for_element progress never exceeds its total (no KWin)
+├── test_wait_for_element_settle.py     # Bounded re-poll of windows-changed matches (no KWin)
+├── test_frame_burst_names.py           # Frame bursts never reuse or overwrite earlier frames (no KWin)
+├── test_read_app_log_validation.py     # read_app_log last_n_lines validation before the session (no KWin)
 ├── test_terminal_unicode_paste.py      # Unicode paste chord and next-key integrity in Konsole
+├── test_text_echo_bounds.py            # Bounded text echo (<= 200 chars or <N characters>) and session-less keyboard_type validation (no KWin)
 ├── test_unicode_clipboard_lifecycle.py # Unicode paste clipboard snapshot, restore, and cleanup
 ├── test_clipboard_helper_protocol.py   # Private clipboard helper framing, timeouts, and restore
 ├── test_virtual_session_smoke.py       # Minimum isolated KWin contract
 ├── test_observation_tools.py           # Accessibility, window, log, and Wayland tools
+├── test_accessibility_actions.py       # invoke_ui_action on a background window; ambiguity, app scoping, and incomplete discovery refused
 ├── test_accessibility_switch.py        # org.a11y.Status.IsEnabled switch, live opt-in, bounded calls, restore
 ├── test_atspi_worker.py                # AT-SPI worker reuse across session changes and crashes
 ├── test_window_geometry.py             # Global window geometry and element coordinate space
-├── test_window_close.py                # Window ids, active window, and closing one window by id
+├── test_window_close.py                # Window ids, active window, focus and closing one window by id
+├── test_kwin_script_render.py          # Caller values reach KWin scripts only as JSON literals (no KWin)
 ├── test_window_control.py              # Focus, scroll, drag, and touch behavior
 ├── test_window_match.py                # Chromium/Flatpak AT-SPI top-levels matched to KWin windows via buffer geometry and captions
+├── test_window_set_geometry_validation.py # window_set_geometry input validation and request reporting (no KWin)
+├── test_window_tool_errors.py          # focus_window/window_close/window_set_geometry argument errors before any session lookup
 ├── test_pointer_reconnect.py           # Clicks reach a window mapped under a parked pointer
 ├── test_dbus_args.py                   # dbus_call argument parser (no session needed)
 ├── test_dbus_service_file.py           # Service file Exec= argv as dbus-daemon gives it (no session needed)

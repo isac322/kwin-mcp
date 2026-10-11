@@ -33,7 +33,10 @@ class WindowGeometry(BaseModel):
     """One KWin window as reported by window_geometry."""
 
     id: str = Field(
-        description="KWin internalId; pass to window_geometry(window_id=) or window_close."
+        description=(
+            "KWin internalId; pass to window_geometry(window_id=), focus_window(window_id=), "
+            "window_set_geometry or window_close."
+        )
     )
     app: str = Field(description="KWin resource class (Wayland app_id).")
     caption: str
@@ -46,7 +49,6 @@ class WindowGeometryResult(BaseModel):
     """Result of window_geometry."""
 
     windows: list[WindowGeometry] = Field(default_factory=list)
-    error: str | None = Field(default=None, description="Set when KWin could not be queried.")
 
 
 def format_window(w: WindowGeometry) -> str:
@@ -63,8 +65,6 @@ def format_window(w: WindowGeometry) -> str:
 
 def format_window_geometry(r: WindowGeometryResult, app_name: str = "", window_id: str = "") -> str:
     """Render a window_geometry result for the given filters."""
-    if r.error is not None:
-        return f"Window geometry unavailable: {r.error}"
     if not r.windows:
         if window_id:
             return f"No window with id {window_id!r}."
@@ -189,7 +189,10 @@ def format_tree(r: AccessibilityTreeResult) -> str:
 class AccessibleWindow(BaseModel):
     """One AT-SPI top-level of an application."""
 
-    title: str = Field(description='AT-SPI name; "(untitled)" when empty.')
+    title: str = Field(
+        description="Raw AT-SPI name; may be empty ('(untitled)') or differ from the KWin "
+        "caption, which window_geometry reports."
+    )
     active: bool
     focused: bool
 

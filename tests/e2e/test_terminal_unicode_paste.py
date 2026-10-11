@@ -16,6 +16,8 @@ import signal
 import time
 from typing import TYPE_CHECKING
 
+import pytest
+
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
@@ -105,10 +107,10 @@ def test_failed_type_into_stalled_konsole_leaves_next_key_unaltered(
 
     os.kill(pid, signal.SIGSTOP)
     try:
-        output = engine.keyboard_type_unicode(TEXT)
+        with pytest.raises(RuntimeError, match="Failed to type unicode"):
+            engine.keyboard_type_unicode(TEXT)
     finally:
         os.kill(pid, signal.SIGCONT)
-    assert output == f"Failed to type unicode: {TEXT!r}"
     _type_next_line(engine)
 
     data = _wait_for_bytes(received, b"ok\n")

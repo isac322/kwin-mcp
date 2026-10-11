@@ -285,3 +285,16 @@ def test_session_stop_leaves_no_atspi_helper_processes(
     new_children = _child_pids() - before
     leftovers = {pid for pid in new_children if not _wait_until_gone(pid, zombie_ok=True)}
     assert not leftovers, {pid: _cmdline(pid) for pid in leftovers}
+
+
+def test_atspi_worker_runs_in_its_own_session(kcalc_session: AutomationEngine) -> None:
+    """The worker leads its own session, outside the caller's process group.
+
+    Regression: the worker shared the caller's process group, so a terminal Ctrl-C
+    aimed at kwin-mcp-cli (SIGINT to the foreground group) also killed it.
+    """
+    assert any("kcalc" in name for name in _tree_apps(kcalc_session))
+    pid = _worker_pid(kcalc_session)
+    assert pid is not None, "no AT-SPI worker after an accessibility call"
+    assert os.getpgid(pid) != os.getpgrp()
+    assert os.getsid(pid) == pid

@@ -266,28 +266,47 @@ def test_unproven_mapping_refuses_a_region_but_still_downscales(tmp_path: Path) 
 @pytest.mark.parametrize(
     ("argv", "expected"),
     [
-        (["kwin-mcp"], 0),
-        (["kwin-mcp", "--screenshot-max-edge", "1568"], 1568),
-        (["kwin-mcp", "--screenshot-images", "--screenshot-max-edge=2576"], 2576),
-        (["kwin-mcp", "--screenshot-max-edge=0"], 0),
+        ([], 0),
+        (["--screenshot-max-edge", "1568"], 1568),
+        (["--screenshot-images", "--screenshot-max-edge=2576"], 2576),
+        (["--screenshot-max-edge=0"], 0),
     ],
 )
 def test_max_edge_flag_is_parsed(argv: list[str], expected: int) -> None:
-    assert server._screenshot_max_edge(argv) == expected
+    assert server._parse_argv(argv).screenshot_max_edge == expected
+
+
+def _assert_usage_error(argv: list[str], message: str, capsys: pytest.CaptureFixture[str]) -> None:
+    """``_parse_argv`` exits 2 with argparse's usage line and ``message`` on stderr."""
+    with pytest.raises(SystemExit) as exc_info:
+        server._parse_argv(argv)
+    assert exc_info.value.code == 2
+    stderr = capsys.readouterr().err
+    assert stderr.startswith("usage: kwin-mcp "), stderr
+    assert "kwin-mcp: error: " in stderr, stderr
+    assert message in stderr, stderr
+    assert "Traceback" not in stderr, stderr
 
 
 @pytest.mark.parametrize(
-    "argv",
+    ("argv", "message"),
     [
-        ["kwin-mcp", "--screenshot-max-edge"],
-        ["kwin-mcp", "--screenshot-max-edge", "--screenshot-images"],
-        ["kwin-mcp", "--screenshot-max-edge=-1"],
-        ["kwin-mcp", "--screenshot-max-edge=wide"],
+        (["--screenshot-max-edge"], "expected one argument"),
+        (["--screenshot-max-edge", "--screenshot-images"], "expected one argument"),
+        (["--screenshot-max-edge", "1568", "--screenshot-max-edge"], "expected one argument"),
+        (["--screenshot-max-edge=-1"], "needs a pixel count"),
+        (["--screenshot-max-edge=wide"], "needs a pixel count"),
+        (["--screenshot-max-edge", "1568", "--screenshot-max-edge=wide"], "needs a pixel count"),
+        # Non-ASCII digits, superscript two and Arabic-Indic three: str.isdigit() accepts
+        # both, and int() reads the second as 3.
+        (["--screenshot-max-edge", "\u00b2"], "needs a pixel count (0 = no limit), got '\u00b2'"),
+        (["--screenshot-max-edge", "\u0663"], "needs a pixel count (0 = no limit), got '\u0663'"),
     ],
 )
-def test_invalid_max_edge_flag_stops_the_server(argv: list[str]) -> None:
-    with pytest.raises(SystemExit, match="--screenshot-max-edge needs a pixel count"):
-        server._screenshot_max_edge(argv)
+def test_invalid_max_edge_flag_stops_the_server(
+    argv: list[str], message: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _assert_usage_error(argv, message, capsys)
 
 
 @pytest.mark.parametrize(
@@ -401,13 +420,12 @@ def test_a_name_taken_during_the_capture_is_never_overwritten_or_deleted(
 @pytest.mark.parametrize(
     "argv",
     [
-        ["kwin-mcp", "--screenshot-max-edge", "1568", "--screenshot-max-edge", "2576"],
-        ["kwin-mcp", "--screenshot-max-edge=1568", "--screenshot-max-edge=2576"],
-        ["kwin-mcp", "--screenshot-max-edge", "1568", "--screenshot-max-edge=2576"],
-        ["kwin-mcp", "--screenshot-max-edge", "1568", "--screenshot-max-edge=wide"],
-        ["kwin-mcp", "--screenshot-max-edge", "1568", "--screenshot-max-edge"],
+        ["--screenshot-max-edge", "1568", "--screenshot-max-edge", "2576"],
+        ["--screenshot-max-edge=1568", "--screenshot-max-edge=2576"],
+        ["--screenshot-max-edge", "1568", "--screenshot-max-edge=2576"],
     ],
 )
-def test_repeated_max_edge_flag_stops_the_server(argv: list[str]) -> None:
-    with pytest.raises(SystemExit, match="--screenshot-max-edge may only be specified once"):
-        server._screenshot_max_edge(argv)
+def test_repeated_max_edge_flag_stops_the_server(
+    argv: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    _assert_usage_error(argv, "--screenshot-max-edge may only be specified once", capsys)

@@ -337,9 +337,9 @@ def test_user_copy_during_transient_ownership_is_never_overwritten(
             # The transient owner ends once it observes its source cancelled;
             # after that nothing spawned by the call remains to restore.
             _wait_until(lambda: owner not in _spawned(display, token), "observed cancellation")
-        output = call.result(timeout=CALL_TIMEOUT_SECONDS)
+        with pytest.raises(RuntimeError, match="Failed to type unicode"):
+            call.result(timeout=CALL_TIMEOUT_SECONDS)
 
-    assert output == f"Failed to type unicode: {SECRET!r}"
     assert not _spawned(display, token)
     assert _wl_paste(env, "--no-newline").stdout == USER_COPY.encode()
     assert SECRET not in _focused_text(engine)
@@ -369,13 +369,13 @@ def test_stalled_prior_owner_fails_before_paste_without_leaving_an_owner(
         token = _mark_engine_calls(monkeypatch)
         owner.send_signal(signal.SIGSTOP)
         try:
-            output = engine.keyboard_type_unicode(SECRET)
+            with pytest.raises(RuntimeError, match="Failed to type unicode"):
+                engine.keyboard_type_unicode(SECRET)
             # The compositor announces types without asking the frozen owner.
             assert _offered_types(env) == prior_types
         finally:
             owner.send_signal(signal.SIGCONT)
 
-        assert output == f"Failed to type unicode: {SECRET!r}"
         assert _focused_text(engine) == ""
         _wait_until(lambda: not _spawned(display, token), "failed helper to exit")
     finally:

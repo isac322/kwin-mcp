@@ -28,6 +28,7 @@ EXPECTED_TOOL_NAMES: frozenset[str] = frozenset(
         "dbus_call",
         "find_ui_elements",
         "focus_window",
+        "invoke_ui_action",
         "keyboard_key",
         "keyboard_key_down",
         "keyboard_key_up",
@@ -54,6 +55,7 @@ EXPECTED_TOOL_NAMES: frozenset[str] = frozenset(
         "wayland_info",
         "window_close",
         "window_geometry",
+        "window_set_geometry",
     }
 )
 

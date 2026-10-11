@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 from xml.etree import ElementTree
 
 from kwin_mcp import progress
-from kwin_mcp.input import InputBackend, MouseButton
+from kwin_mcp.input import InputBackend, MouseButton, check_typeable
 from kwin_mcp.results import (
     AccessibilityTreeResult,
     FindUIElementsResult,
@@ -66,6 +66,20 @@ _ATSPI_HEARTBEAT_S = 0.25
 # exit on stdin EOF before it is killed.
 _ATSPI_TIMEOUT_S = 30.0
 _ATSPI_EXIT_GRACE_S = 2.0
+
+
+class AtspiRequestNotSentError(RuntimeError):
+    """An AT-SPI2 request failed before any attempt reached the worker.
+
+    The worker could not be started (e.g. the process registry refused the
+    spawn) or exited before the request line was written, so the request
+    cannot have run.
+    """
+
+
+class _RequestNotSentError(EOFError):
+    """The worker's stdin was gone before the request line was written."""
+
 
 # Install hints for external binaries
 _INSTALL_HINTS: dict[str, str] = {
@@ -343,22 +357,30 @@ class AutomationEngine:
         the worker is keyed to the bus identities it was started with. A
         different session bus, a restarted a11y bus, or a dead worker means the
         old process would answer from the wrong or a dead bus: replace it.
+
+        The worker is an owned process group in ``process_registry``: it runs in
+        its own session, so a terminal Ctrl-C aimed at kwin-mcp-cli does not reach
+        it, and the exit paths that terminate every owned group (a tool still busy
+        at server exit, the CLI's final sweep) terminate it too.
         """
         env = self._session_env()
         bus = env.get("DBUS_SESSION_BUS_ADDRESS", "")
         a11y = self._a11y_bus_address(env)
         proc = self._atspi_proc
         if proc is not None and (
-            proc.poll() is not None or bus != self._atspi_bus or a11y != self._atspi_a11y
+            process_registry.poll(proc) is not None
+            or bus != self._atspi_bus
+            or a11y != self._atspi_a11y
         ):
             self._teardown_atspi_worker()
             proc = None
         if proc is None:
-            proc = subprocess.Popen(
+            proc = process_registry.spawn(
                 [sys.executable, "-m", "kwin_mcp.accessibility", "--serve"],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 env=env,
+                start_new_session=True,
             )
             self._atspi_proc = proc
             self._atspi_bus = bus
@@ -371,10 +393,11 @@ class AutomationEngine:
         proc: subprocess.Popen[bytes],
         line: bytes,
         heartbeat: Callable[[], None] | None = None,
+        timeout_s: float = _ATSPI_TIMEOUT_S,
     ) -> dict:
         """Send one request line to the worker and read one response line.
 
-        Raises ``TimeoutError`` after ``_ATSPI_TIMEOUT_S`` and ``EOFError`` if the
+        Raises ``TimeoutError`` after ``timeout_s`` and ``EOFError`` if the
         worker exits or closes its pipes. ``heartbeat`` runs at least every
         ``_ATSPI_HEARTBEAT_S`` while waiting for the response.
         """
@@ -384,9 +407,9 @@ class AutomationEngine:
             proc.stdin.write(line)
             proc.stdin.flush()
         except (BrokenPipeError, ConnectionResetError) as exc:
-            raise EOFError("AT-SPI2 worker exited before the request was sent") from exc
+            raise _RequestNotSentError("AT-SPI2 worker exited before the request was sent") from exc
 
-        deadline = time.monotonic() + _ATSPI_TIMEOUT_S
+        deadline = time.monotonic() + timeout_s
         fd = proc.stdout.fileno()
         with selectors.DefaultSelector() as selector:
             selector.register(fd, selectors.EVENT_READ)
@@ -406,7 +429,13 @@ class AutomationEngine:
         return json.loads(response)
 
     def _run_atspi(
-        self, op: str, *, heartbeat: Callable[[], None] | None = None, **kwargs: object
+        self,
+        op: str,
+        *,
+        heartbeat: Callable[[], None] | None = None,
+        retry: bool = True,
+        timeout_s: float = _ATSPI_TIMEOUT_S,
+        **kwargs: object,
     ) -> dict:
         """Run an AT-SPI2 query in the long-lived worker bound to the session bus.
 
@@ -414,37 +443,58 @@ class AutomationEngine:
         per session bus and reused, so each call skips interpreter startup and the
         PyGObject/Atspi import. A timeout, worker exit or worker-side exception
         discards the worker and retries once on a fresh one. ``heartbeat`` is
-        called periodically while a response is awaited.
+        called periodically while a response is awaited. ``timeout_s`` bounds
+        each attempt; requests that wait inside the worker pass a longer one.
+
+        Raises :class:`AtspiRequestNotSentError` when no attempt wrote the
+        request to a worker (so it cannot have run), ``RuntimeError`` otherwise.
         """
         line = json.dumps({"op": op, **kwargs}).encode() + b"\n"
         last_error = ""
+        sent = False
         with self._atspi_lock:
-            for attempt in range(2):
+            attempts = 2 if retry else 1
+            for attempt in range(attempts):
                 if attempt > 0:
                     time.sleep(0.5)
-                proc = self._ensure_atspi_worker()
                 try:
-                    resp = self._atspi_exchange(proc, line, heartbeat)
+                    proc = self._ensure_atspi_worker()
+                except RuntimeError as exc:
+                    if sent:
+                        raise
+                    raise AtspiRequestNotSentError(str(exc)) from exc
+                try:
+                    resp = self._atspi_exchange(proc, line, heartbeat, timeout_s)
+                except _RequestNotSentError as exc:
+                    last_error = f"AT-SPI2 query failed: {exc}"
                 except TimeoutError:
-                    last_error = f"AT-SPI2 query timed out after {_ATSPI_TIMEOUT_S:g}s (op={op})"
+                    sent = True
+                    last_error = f"AT-SPI2 query timed out after {timeout_s:g}s (op={op})"
                 except EOFError as exc:
+                    sent = True
                     last_error = f"AT-SPI2 query failed: {exc}"
                 except json.JSONDecodeError as exc:
+                    sent = True
                     last_error = f"AT-SPI2 query returned invalid JSON: {exc}"
                 else:
+                    sent = True
                     if "worker_error" not in resp:
                         return resp
                     last_error = f"AT-SPI2 query failed: {resp['worker_error']}"
                 self._teardown_atspi_worker()
 
-        msg = f"{last_error}. Retried once but still failed — the AT-SPI2 bus may be unstable."
-        raise RuntimeError(msg)
+        if retry:
+            msg = f"{last_error}. Retried once but still failed — the AT-SPI2 bus may be unstable."
+        else:
+            msg = last_error
+        raise (RuntimeError if sent else AtspiRequestNotSentError)(msg)
 
     def _teardown_atspi_worker(self) -> None:
         """Stop the AT-SPI worker with bounded latency.
 
         Closing stdin lets an idle worker exit on EOF; a busy, hung or stopped
-        worker is killed after a short grace period.
+        worker is killed after a short grace period. Every poll, wait, kill and
+        reap goes through ``process_registry``, which owns the worker's group.
         """
         proc = self._atspi_proc
         self._atspi_proc = None
@@ -457,10 +507,10 @@ class AutomationEngine:
             if proc.stdin is not None:
                 proc.stdin.close()
         try:
-            proc.wait(timeout=_ATSPI_EXIT_GRACE_S)
+            process_registry.wait(proc, timeout=_ATSPI_EXIT_GRACE_S)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+            process_registry.kill(proc)
+            process_registry.reap(proc)
         if proc.stdout is not None:
             proc.stdout.close()
 
@@ -496,6 +546,23 @@ class AutomationEngine:
 
     # ── Session management ────────────────────────────────────────────────
 
+    @staticmethod
+    def _split_command(text: str, field: str) -> list[str]:
+        """Split a shell-style command line, rejecting empty and malformed ones.
+
+        ``field`` names the argument in the ValueError, so the caller sees
+        which input to fix.
+        """
+        try:
+            argv = shlex.split(text)
+        except ValueError as exc:
+            msg = f"Invalid {field}: {exc}"
+            raise ValueError(msg) from exc
+        if not argv:
+            msg = f"{field} must contain a command to launch"
+            raise ValueError(msg)
+        return argv
+
     def session_start(
         self,
         app_command: str = "",
@@ -507,50 +574,69 @@ class AutomationEngine:
         keep_home: bool = False,
         env: dict[str, str] | None = None,
     ) -> str:
-        """Start an isolated KWin Wayland session, optionally launching an app."""
+        """Start an isolated KWin Wayland session, optionally launching an app.
+
+        Startup is atomic: when any step after argument validation fails, the
+        partly started session is stopped (with the usual retention rules) and
+        the original exception propagates, so no session is left behind.
+        """
+        for name, value in (("screen_width", screen_width), ("screen_height", screen_height)):
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                msg = f"{name} must be a positive integer, got {value!r}"
+                raise ValueError(msg)
+        cmd = self._split_command(app_command, "app_command") if app_command else None
+
         if self._session is not None and self._session.is_running:
-            return "Session already running. Call session_stop first."
+            msg = "Session already running. Call session_stop first."
+            raise RuntimeError(msg)
 
         # Any worker left over from an earlier session (crashed or never stopped)
         # is bound to that session's bus.
         self._teardown_atspi_worker()
 
-        self._clipboard_enabled = enable_clipboard
-
-        self._session = Session()
-        config = SessionConfig(
-            screen_width=screen_width,
-            screen_height=screen_height,
-            enable_clipboard=enable_clipboard,
-            keep_screenshots=keep_screenshots,
-            isolate_home=isolate_home,
-            keep_home=keep_home,
-        )
-        total_steps = 5 if app_command else 4
-        info = self._session.start(config, progress_total=total_steps)
-
-        result = f"Session started. Wayland socket: {info.wayland_socket}"
-        if info.home_dir:
-            result += f"\nIsolated home: {info.home_dir}"
-        for warning in info.startup_warnings:
-            result += f"\nWarning: {warning}"
-
-        if app_command:
-            cmd = shlex.split(app_command)
-            app_info = self._session.launch_app(cmd, extra_env=env)
-            result += f"\nApp launched: {app_command} (PID={app_info.pid})"
-            progress.report(4, total_steps, "App launched")
-            result += f"\nApp log: {app_info.log_path}"
-
-        # Set up input backend via KWin's EIS D-Bus interface. start() returned
-        # only after KWin took org.kde.KWin, so the EIS object is reachable.
+        total_steps = 5 if cmd else 4
         try:
-            self._input = InputBackend(info.dbus_address)
-        except RuntimeError as exc:
-            self._input = None
-            result += f"\nNo input backend available ({exc})"
-        else:
-            result += "\nInput backend: KWin EIS"
+            self._session = Session()
+            self._clipboard_enabled = enable_clipboard
+            config = SessionConfig(
+                screen_width=screen_width,
+                screen_height=screen_height,
+                enable_clipboard=enable_clipboard,
+                keep_screenshots=keep_screenshots,
+                isolate_home=isolate_home,
+                keep_home=keep_home,
+            )
+            info = self._session.start(config, progress_total=total_steps)
+
+            result = f"Session started. Wayland socket: {info.wayland_socket}"
+            if info.home_dir:
+                result += f"\nIsolated home: {info.home_dir}"
+            for warning in info.startup_warnings:
+                result += f"\nWarning: {warning}"
+
+            if cmd:
+                app_info = self._session.launch_app(cmd, extra_env=env)
+                result += f"\nApp launched: {app_command} (PID={app_info.pid})"
+                progress.report(4, total_steps, "App launched")
+                result += f"\nApp log: {app_info.log_path}"
+
+            # Set up input backend via KWin's EIS D-Bus interface. start() returned
+            # only after KWin took org.kde.KWin, so the EIS object is reachable.
+            try:
+                self._input = InputBackend(info.dbus_address)
+            except RuntimeError as exc:
+                self._input = None
+                result += f"\nNo input backend available ({exc})"
+            else:
+                result += "\nInput backend: KWin EIS"
+        except Exception as exc:
+            # Roll back everything started so far. Exception, not BaseException:
+            # CLI interrupts are cleaned up by its own exit path.
+            try:
+                self.session_stop()
+            except Exception as teardown_exc:
+                exc.add_note(f"Rolling back the failed session_start also failed: {teardown_exc}")
+            raise
 
         progress.report(total_steps, total_steps, "Input backend ready")
         return result
@@ -568,7 +654,8 @@ class AutomationEngine:
         connection when it is off; ``session_stop`` switches it back off.
         """
         if self._session is not None and self._session.is_running:
-            return "Session already running. Call session_stop first."
+            msg = "Session already running. Call session_stop first."
+            raise RuntimeError(msg)
 
         # Any worker left over from an earlier session (crashed or never stopped)
         # is bound to that session's bus.
@@ -578,15 +665,17 @@ class AutomationEngine:
         wayland_disp = wayland_display or os.environ.get("WAYLAND_DISPLAY", "")
 
         if not dbus_addr:
-            return (
+            msg = (
                 "No D-Bus address available. Provide dbus_address parameter "
                 "or ensure $DBUS_SESSION_BUS_ADDRESS is set."
             )
+            raise RuntimeError(msg)
         if not wayland_disp:
-            return (
+            msg = (
                 "No Wayland display available. Provide wayland_display parameter "
                 "or ensure $WAYLAND_DISPLAY is set."
             )
+            raise RuntimeError(msg)
 
         # Validate KWin is reachable on the given D-Bus
         import dbus as dbus_module
@@ -596,32 +685,37 @@ class AutomationEngine:
             bus = dbus.bus.BusConnection(dbus_addr)
             bus.get_object("org.kde.KWin", "/org/kde/KWin")
         except dbus_module.DBusException as exc:
-            return f"Cannot reach KWin on D-Bus ({dbus_addr}): {exc}"
+            msg = f"Cannot reach KWin on D-Bus ({dbus_addr}): {exc}"
+            raise RuntimeError(msg) from exc
         progress.report(1, 3, "KWin reachable on D-Bus")
 
         display_path = Path(wayland_disp)
         if not display_path.is_absolute():
             runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
             if not runtime_dir:
-                return f"Cannot reach Wayland display ({wayland_disp}): XDG_RUNTIME_DIR is not set"
+                msg = f"Cannot reach Wayland display ({wayland_disp}): XDG_RUNTIME_DIR is not set"
+                raise RuntimeError(msg)
             display_path = Path(runtime_dir) / display_path
 
         try:
             display_mode = display_path.stat().st_mode
         except OSError as exc:
-            return f"Cannot reach Wayland display ({wayland_disp}): {exc}"
+            msg = f"Cannot reach Wayland display ({wayland_disp}): {exc}"
+            raise RuntimeError(msg) from exc
         if not stat.S_ISSOCK(display_mode):
-            return (
+            msg = (
                 f"Cannot reach Wayland display ({wayland_disp}): "
                 f"{display_path} is not a Unix socket"
             )
+            raise RuntimeError(msg)
 
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
                 probe.settimeout(0.5)
                 probe.connect(str(display_path))
         except OSError as exc:
-            return f"Cannot reach Wayland display ({wayland_disp}): {exc}"
+            msg = f"Cannot reach Wayland display ({wayland_disp}): {exc}"
+            raise RuntimeError(msg) from exc
         progress.report(2, 3, "Wayland display reachable")
 
         screenshot_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-screenshots-"))
@@ -791,6 +885,80 @@ class AutomationEngine:
 
     # ── Mouse tools ───────────────────────────────────────────────────────
 
+    def invoke_ui_action(
+        self,
+        query: str,
+        action_name: str,
+        app_name: str = "",
+    ) -> str:
+        """Invoke one AT-SPI action without pointer coordinates.
+
+        Missing targets, ambiguous matches, incomplete discovery and failed
+        requests raise. A matched action whose dispatch the application did not
+        confirm is reported as sent, since it may still have run.
+        """
+        if not query:
+            raise ValueError("invoke_ui_action needs a query.")
+        if not action_name:
+            raise ValueError("invoke_ui_action needs an action_name.")
+
+        self._get_session()
+
+        # Once the request reached the worker, the worker may finish the walk and
+        # invoke the action even after this request timed out or the worker was
+        # torn down. A request that never reached a worker cannot have run.
+        try:
+            resp = self._run_atspi(
+                "action",
+                retry=False,
+                query=query,
+                action_name=action_name,
+                app_name=app_name,
+            )
+        except AtspiRequestNotSentError:
+            raise
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"{exc}. The action may still have run; check the UI before retrying."
+            ) from exc
+
+        if not resp.get("ok"):
+            raise RuntimeError(f"AT-SPI action failed: {resp.get('error', 'unknown error')}")
+
+        result = resp["result"]
+        matches = int(result.get("matches", 0))
+
+        if matches == 0:
+            raise RuntimeError(
+                f"No element matching {query!r} exposes AT-SPI action {action_name!r}."
+            )
+
+        if matches > 1:
+            raise RuntimeError(
+                f"Refused ambiguous AT-SPI action: {matches} elements matching "
+                f"{query!r} expose {action_name!r}."
+            )
+
+        if result.get("error"):
+            return (
+                f"Sent AT-SPI action {result['action']!r} to "
+                f'[{result["role"]}] "{result["name"]}" in {result["app"]}, '
+                f"but the application did not confirm ({result['error']}); "
+                "the action may have run — check the UI before retrying."
+            )
+
+        if not result.get("invoked"):
+            raise RuntimeError(
+                f"AT-SPI action {action_name!r} matched one element but "
+                "the application reported failure."
+            )
+
+        return (
+            f"Invoked AT-SPI action: {result['action']} on "
+            f'[{result["role"]}] "{result["name"]}" '
+            f"in {result['app']}"
+        )
+
     def mouse_click(
         self,
         x: int,
@@ -863,11 +1031,17 @@ class AutomationEngine:
         screenshot_after_ms: list[int] | None = None,
     ) -> str:
         """Drag from one point to another in the isolated session."""
-        inp = self._get_input()
-        btn = MouseButton(button)
         wp: list[tuple[int, int, int]] | None = None
         if waypoints:
-            wp = [(w[0], w[1], w[2]) for w in waypoints]
+            wp = []
+            for index, waypoint in enumerate(waypoints):
+                if len(waypoint) != 3:
+                    msg = f"waypoints[{index}] must be [x, y, dwell_ms], got {waypoint}"
+                    raise ValueError(msg)
+                wx, wy, dwell_ms = waypoint
+                wp.append((wx, wy, dwell_ms))
+        inp = self._get_input()
+        btn = MouseButton(button)
         inp.mouse_drag(from_x, from_y, to_x, to_y, button=btn, modifiers=modifiers, waypoints=wp)
 
         desc = f"Dragged from ({from_x}, {from_y}) to ({to_x}, {to_y})"
@@ -901,15 +1075,26 @@ class AutomationEngine:
 
     # ── Keyboard tools ────────────────────────────────────────────────────
 
+    # Caller text longer than this is echoed as its length only, so a large
+    # payload does not come back into the client's context.
+    _ECHO_MAX_CHARS = 200
+
+    def _echo(self, text: str) -> str:
+        """Render caller text for a result: its repr, or ``<N characters>`` when long."""
+        if len(text) <= self._ECHO_MAX_CHARS:
+            return repr(text)
+        return f"<{len(text)} characters>"
+
     def keyboard_type(
         self,
         text: str,
         screenshot_after_ms: list[int] | None = None,
     ) -> str:
-        """Type ASCII text into the currently focused element."""
+        """Type text the US QWERTY key map can produce into the focused element."""
+        check_typeable(text)
         inp = self._get_input()
         inp.keyboard_type(text)
-        result = f"Typed: {text!r}"
+        result = f"Typed: {self._echo(text)}"
         return self._with_frame_capture(result, screenshot_after_ms)
 
     def keyboard_type_unicode(
@@ -918,6 +1103,10 @@ class AutomationEngine:
         screenshot_after_ms: list[int] | None = None,
     ) -> str:
         """Type arbitrary Unicode text including non-ASCII characters."""
+        # NUL can neither travel in wtype's argv nor be typed meaningfully.
+        if "\0" in text:
+            msg = "text must not contain NUL characters"
+            raise ValueError(msg)
         inp = self._get_input()
 
         # Both routes are Wayland clients: without the session's WAYLAND_DISPLAY
@@ -931,7 +1120,10 @@ class AutomationEngine:
             return str(focus["result"]) if focus["ok"] else None
 
         ok = inp.keyboard_type_unicode(text, env=self._session_env(), focused_class=focused_class)
-        result = f"Typed unicode: {text!r}" if ok else f"Failed to type unicode: {text!r}"
+        if not ok:
+            msg = f"Failed to type unicode: {self._echo(text)}"
+            raise RuntimeError(msg)
+        result = f"Typed unicode: {self._echo(text)}"
         return self._with_frame_capture(result, screenshot_after_ms)
 
     def keyboard_key(
@@ -1016,6 +1208,9 @@ class AutomationEngine:
         screenshot_after_ms: list[int] | None = None,
     ) -> str:
         """Perform a multi-finger swipe gesture."""
+        if fingers < 1:
+            msg = f"touch_multi_swipe fingers must be at least 1, got {fingers}"
+            raise ValueError(msg)
         inp = self._get_input()
         inp.touch_multi_swipe(from_x, from_y, to_x, to_y, fingers=fingers, duration_ms=duration_ms)
         desc = (
@@ -1029,10 +1224,11 @@ class AutomationEngine:
     def clipboard_get(self) -> str:
         """Read the current clipboard content in the isolated session."""
         if not self._clipboard_enabled:
-            return (
+            msg = (
                 "Clipboard not enabled. Pass enable_clipboard=True to session_start, "
                 "or use session_connect (clipboard is always enabled for live sessions)."
             )
+            raise RuntimeError(msg)
 
         env = self._session_env()
         try:
@@ -1042,47 +1238,53 @@ class AutomationEngine:
                 capture_output=True,
                 timeout=5,
             )
-        except FileNotFoundError:
-            return _INSTALL_HINTS["wl-paste"]
+        except FileNotFoundError as exc:
+            raise RuntimeError(_INSTALL_HINTS["wl-paste"]) from exc
         if result.returncode != 0:
-            return f"Failed to read clipboard: {result.stderr.decode(errors='replace')}"
+            msg = f"Failed to read clipboard: {result.stderr.decode(errors='replace')}"
+            raise RuntimeError(msg)
         return result.stdout.decode(errors="replace")
 
     def clipboard_set(self, text: str) -> str:
         """Set the clipboard content in the isolated session."""
         if not self._clipboard_enabled:
-            return (
+            msg = (
                 "Clipboard not enabled. Pass enable_clipboard=True to session_start, "
                 "or use session_connect (clipboard is always enabled for live sessions)."
             )
+            raise RuntimeError(msg)
 
         env = self._session_env()
+        # The text goes through stdin: argv is size-limited (E2BIG) and cannot
+        # carry NUL. Output stays on DEVNULL because the forked owner inherits it.
         try:
             proc = subprocess.Popen(
-                ["wl-copy", "--", text],
+                ["wl-copy", "--type", "text/plain;charset=utf-8"],
                 env=env,
-                stdin=subprocess.DEVNULL,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
-        except FileNotFoundError:
-            return _INSTALL_HINTS["wl-copy"]
+        except FileNotFoundError as exc:
+            raise RuntimeError(_INSTALL_HINTS["wl-copy"]) from exc
         # The exit is the readiness signal; the forked owner intentionally
         # outlives this call and serves the text until something replaces it.
         try:
-            returncode = proc.wait(timeout=_CLIPBOARD_SET_TIMEOUT)
+            proc.communicate(text.encode(), timeout=_CLIPBOARD_SET_TIMEOUT)
         except subprocess.TimeoutExpired:
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(proc.pid, signal.SIGKILL)
-            proc.wait()
-            return (
+            proc.communicate()
+            msg = (
                 "Failed to set clipboard: wl-copy did not confirm the selection "
                 f"within {_CLIPBOARD_SET_TIMEOUT:g}s"
             )
-        if returncode != 0:
-            return f"Failed to set clipboard: wl-copy exited with status {returncode}"
-        return f"Clipboard set: {text!r}"
+            raise RuntimeError(msg) from None
+        if proc.returncode != 0:
+            msg = f"Failed to set clipboard: wl-copy exited with status {proc.returncode}"
+            raise RuntimeError(msg)
+        return f"Clipboard set: {self._echo(text)}"
 
     # ── Wait-for-UI tools ─────────────────────────────────────────────────
 
@@ -1097,14 +1299,23 @@ class AutomationEngine:
         """Wait for a UI element to appear in the accessibility tree."""
         self._get_session()
         wait_start = time.monotonic()
+        last_reported = 0.0
 
         def heartbeat() -> None:
-            elapsed_ms = (time.monotonic() - wait_start) * 1000
+            # The worker answers only after its deadline, so heartbeats can run
+            # past timeout_ms. Clamp to the total and skip non-advancing values:
+            # progress.report() would treat an equal value as a new phase.
+            nonlocal last_reported
+            elapsed_ms = min((time.monotonic() - wait_start) * 1000, timeout_ms)
+            if elapsed_ms <= last_reported:
+                return
+            last_reported = elapsed_ms
             progress.report(elapsed_ms, timeout_ms, f"Waiting for {query}")
 
         resp = self._run_atspi(
             "wait",
             heartbeat=heartbeat,
+            timeout_s=timeout_ms / 1000 + _ATSPI_TIMEOUT_S,
             query=query,
             app_name=app_name,
             timeout_ms=timeout_ms,
@@ -1121,8 +1332,8 @@ class AutomationEngine:
 
     def launch_app(self, command: str, env: dict[str, str] | None = None) -> str:
         """Launch an application inside the running isolated session."""
+        cmd = self._split_command(command, "command")
         session = self._get_session()
-        cmd = shlex.split(command)
         app_info = session.launch_app(cmd, extra_env=env)
         return f"App launched: {command} (PID={app_info.pid})\nApp log: {app_info.log_path}"
 
@@ -1156,30 +1367,46 @@ class AutomationEngine:
         except json.JSONDecodeError:
             return {"ok": False, "error": f"invalid JSON: {result.stdout[:200]}"}
 
-    def focus_window(self, app_name: str) -> str:
-        """Activate a window by application name.
+    def focus_window(self, app_name: str = "", window_id: str = "") -> str:
+        """Activate a window by exact KWin id or application name.
 
-        Activation goes through KWin: AT-SPI2's grab_focus neither raises nor
-        activates windows on Wayland, so it reported success while the previously
-        active window kept both focus and the foreground.
+        ``window_id`` takes precedence when supplied. Activation goes through
+        KWin because AT-SPI2's grab_focus neither raises nor activates windows
+        reliably on Wayland.
         """
+        if not app_name and not window_id:
+            msg = "focus_window needs app_name or window_id (see window_geometry)."
+            raise ValueError(msg)
         self._get_session()
-        resp = self._run_kwin_query({"op": "activate", "app_name": app_name})
+
+        resp = self._run_kwin_query(
+            {"op": "activate", "app_name": app_name, "window_id": window_id}
+        )
         if not resp["ok"]:
-            return f"Failed to focus '{app_name}': {resp['error']}"
+            target = window_id or app_name
+            msg = f"Failed to focus {target!r}: {resp['error']}"
+            raise RuntimeError(msg)
+
         activated = str(resp["result"]).strip()
-        return f"Focused: {activated}" if activated else f"No window matches '{app_name}'."
+        if activated:
+            return f"Focused: {activated}"
+        if window_id:
+            msg = f"No window with id {window_id!r}."
+        else:
+            msg = f"No window matches '{app_name}'."
+        raise RuntimeError(msg)
 
     def window_geometry_data(self, app_name: str = "", window_id: str = "") -> WindowGeometryResult:
         """Report window positions in global screen coordinates, as data.
 
-        A failed KWin query is reported in ``error`` rather than raised, so the
-        tool stays a soft (non-error) outcome as before.
+        Raises RuntimeError when KWin cannot be queried; an empty ``windows``
+        list means the query succeeded and nothing matched.
         """
         self._get_session()
         resp = self._run_kwin_query({"app_name": app_name, "window_id": window_id})
         if not resp["ok"]:
-            return WindowGeometryResult(error=str(resp["error"]))
+            msg = f"Window geometry unavailable: {resp['error']}"
+            raise RuntimeError(msg)
         return WindowGeometryResult.model_validate({"windows": resp["result"]})
 
     def window_geometry(self, app_name: str = "", window_id: str = "") -> str:
@@ -1188,7 +1415,8 @@ class AutomationEngine:
         Element rectangles from find_ui_elements and accessibility_tree are
         already translated to this same coordinate space; this tool remains
         useful for locating whole windows and diagnosing placement. Each window
-        carries its KWin id, which window_id filters on and window_close takes.
+        carries its KWin id, which window_id filters on and which
+        focus_window(window_id=), window_set_geometry and window_close take.
         """
         return format_window_geometry(
             self.window_geometry_data(app_name, window_id), app_name, window_id
@@ -1199,11 +1427,130 @@ class AutomationEngine:
         self._get_session()
         resp = self._run_kwin_query({"op": "active"})
         if not resp["ok"]:
-            return f"Active window unavailable: {resp['error']}"
+            msg = f"Active window unavailable: {resp['error']}"
+            raise RuntimeError(msg)
         window = resp["result"]
         if window is None:
             return "No active window."
         return f"Active window:\n{format_window(WindowGeometry.model_validate(window))}"
+
+    def window_set_geometry(
+        self,
+        window_id: str,
+        x: int | None = None,
+        y: int | None = None,
+        width: int | None = None,
+        height: int | None = None,
+    ) -> str:
+        """Move and/or resize one window by exact KWin id."""
+        if not window_id:
+            msg = "window_set_geometry needs a window_id (see window_geometry)."
+            raise ValueError(msg)
+
+        if all(value is None for value in (x, y, width, height)):
+            msg = "window_set_geometry needs at least one of x, y, width or height."
+            raise ValueError(msg)
+
+        supplied = (("x", x), ("y", y), ("width", width), ("height", height))
+
+        # The CLI forwards raw JSON without MCP schema validation, so a field
+        # can arrive as a bool, float or string; KWin only understands real
+        # ints. Reject anything else before touching the compositor.
+        for field, value in supplied:
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+                msg = f"window_set_geometry {field} must be an integer, got {value!r}."
+                raise ValueError(msg)
+
+        if width is not None and width <= 0:
+            msg = "window_set_geometry width must be greater than zero."
+            raise ValueError(msg)
+        if height is not None and height <= 0:
+            msg = "window_set_geometry height must be greater than zero."
+            raise ValueError(msg)
+
+        # KWin geometry is a QRectF; bounding every field to the signed 32-bit
+        # range keeps the value exact on its way through JSON and the script's
+        # JS numbers.
+        for field, value in supplied:
+            if value is not None and not -(2**31) <= value <= 2**31 - 1:
+                msg = (
+                    f"window_set_geometry {field} must be within the signed 32-bit "
+                    f"range, got {value}."
+                )
+                raise ValueError(msg)
+
+        self._get_session()
+        resp = self._run_kwin_query(
+            {
+                "op": "set_geometry",
+                "window_id": window_id,
+                "x": x,
+                "y": y,
+                "width": width,
+                "height": height,
+            }
+        )
+        if not resp["ok"]:
+            msg = f"Failed to set geometry for {window_id!r}: {resp['error']}"
+            raise RuntimeError(msg)
+
+        result = resp["result"]
+        if not result["found"]:
+            msg = f"No window with id {window_id!r}."
+            raise RuntimeError(msg)
+
+        # The script refuses sizes beyond the live workspace without assigning
+        # anything, so there is no post-action state to observe.
+        rejected = result.get("rejected")
+        if rejected is not None:
+            oversized = width if rejected == "width" else height
+            msg = (
+                f"window_set_geometry {rejected} must be at most {result['limit']} "
+                f"(the KWin workspace {rejected}; start the session with a larger screen "
+                f"for bigger windows), got {oversized}."
+            )
+            raise ValueError(msg)
+
+        # frameGeometry changes are committed asynchronously by KWin.  Reading
+        # the property again inside the same script can therefore return the
+        # old rectangle.  Use a separate compositor query for authoritative
+        # post-action state.
+        observed_resp = self._run_kwin_query({"window_id": window_id})
+
+        before = result["before"]
+        requested = f"x={x!r}, y={y!r}, width={width!r}, height={height!r}"
+        name = f'{result["app"]} "{result["caption"]}"'
+
+        # frameGeometry changes are committed asynchronously: the observed
+        # rectangle is post-action compositor state, not proof that every
+        # requested field was applied.
+        lines = [
+            f"Geometry update requested: {name} ({window_id})",
+            f"before:    ({before[0]}, {before[1]}, {before[2]}x{before[3]})",
+            f"requested: {requested}",
+        ]
+
+        if not observed_resp["ok"]:
+            lines.append(f"observation failed: {observed_resp['error']}")
+        elif not observed_resp["result"]:
+            # The request was dispatched; the window went away before the readback.
+            lines.append("observed: window no longer exists (it closed or its client exited)")
+        else:
+            frame = observed_resp["result"][0]["frame"]
+            lines.append(
+                f"observed:  ({frame['x']}, {frame['y']}, {frame['width']}x{frame['height']})"
+            )
+            pending = [
+                field for field, value in supplied if value is not None and frame[field] != value
+            ]
+            if pending:
+                lines.append(
+                    f"not yet applied: {', '.join(pending)} "
+                    "(the client may still be applying the change; verify with window_geometry)"
+                )
+
+        lines.append(f"moveable: {result['moveable']}, resizeable: {result['resizeable']}")
+        return "\n".join(lines)
 
     def window_close(self, window_id: str) -> str:
         """Ask KWin to close one window, addressed by the id window_geometry reports.
@@ -1212,23 +1559,28 @@ class AutomationEngine:
         own applications, and unlike input actions it cannot be watched and
         interrupted step by step.
         """
+        if not window_id:
+            msg = "window_close needs a window_id (see window_geometry)."
+            raise ValueError(msg)
         session = self._get_session()
         if isinstance(session, LiveSession):
-            return (
+            msg = (
                 "window_close is disabled in live sessions: it could discard unsaved work "
                 "on the real desktop. Close the window through the app's own UI instead."
             )
-        if not window_id:
-            return "window_close needs a window_id (see window_geometry)."
+            raise RuntimeError(msg)
         resp = self._run_kwin_query({"op": "close", "window_id": window_id})
         if not resp["ok"]:
-            return f"Failed to close window {window_id!r}: {resp['error']}"
+            msg = f"Failed to close window {window_id!r}: {resp['error']}"
+            raise RuntimeError(msg)
         result = resp["result"]
         if not result["found"]:
-            return f"No window with id {window_id!r}."
+            msg = f"No window with id {window_id!r}."
+            raise RuntimeError(msg)
         name = f'{result["app"]} "{result["caption"]}"'
         if not result["closeable"]:
-            return f"Window {name} ({window_id}) cannot be closed."
+            msg = f"Window {name} ({window_id}) cannot be closed."
+            raise RuntimeError(msg)
         return (
             f"Close requested: {name} ({window_id}). The app may keep the window open, "
             "for example to ask about unsaved changes; check window_geometry."
@@ -1254,11 +1606,12 @@ class AutomationEngine:
         expects a variant, so e.g. ``int32`` does not silently become
         ``int64``. Qt overloads and slots with default arguments declare
         several signatures; the first one that fits is used. Argument
-        errors are reported as ``D-Bus call failed: ...`` and nothing is
-        sent. When the object does not introspect, the call is sent with
+        errors raise ``ValueError("D-Bus call failed: ...")`` and nothing
+        is sent. When the object does not introspect, the call is sent with
         each argument's own signature (an explicit ``variant`` argument
-        stays a variant) and the remote side validates it. The reply is
-        rendered via :func:`_format_dbus_result` (single primitives
+        stays a variant) and the remote side validates it; a remote error
+        reply raises ``RuntimeError("D-Bus error: <name>: <message>")``. The
+        reply is rendered via :func:`_format_dbus_result` (single primitives
         become bare strings, containers and tuples become JSON).
         """
         import dbus
@@ -1268,14 +1621,19 @@ class AutomationEngine:
 
         info = self._get_session().info
         if info is None or not info.dbus_address:
-            return "D-Bus call failed: session has no D-Bus address"
+            msg = "D-Bus call failed: session has no D-Bus address"
+            raise RuntimeError(msg)
 
         try:
             parsed_args = [parse_arg(a) for a in (args or [])]
         except ValueError as exc:
-            return f"D-Bus call failed: {exc}"
+            msg = f"D-Bus call failed: {exc}"
+            raise ValueError(msg) from exc
 
         signature: str | None = None
+        # Raised after the try so the marshalling handler below does not wrap it.
+        mismatch = ""
+        result: object = None
         try:
             bus = dbus.bus.BusConnection(info.dbus_address)
             # Introspect here rather than inside the proxy so the selection and
@@ -1299,26 +1657,39 @@ class AutomationEngine:
                     if signature is None:
                         shown = "/".join(repr(c) for c in candidates)
                         sent = "".join(_arg_signature(a) for a in parsed_args)
-                        return (
+                        mismatch = (
                             f"D-Bus call failed: {interface}.{method} takes "
                             f"{shown}, got signature '{sent}'"
                         )
-            result = obj.get_dbus_method(method, interface)(
-                *parsed_args, signature=signature, timeout=_DBUS_CALL_TIMEOUT
-            )
+            if not mismatch:
+                result = obj.get_dbus_method(method, interface)(
+                    *parsed_args, signature=signature, timeout=_DBUS_CALL_TIMEOUT
+                )
         except dbus.DBusException as exc:
             name = exc.get_dbus_name() or type(exc).__name__
-            msg = exc.get_dbus_message() or str(exc)
-            return f"D-Bus error: {name}: {msg}"
+            detail = exc.get_dbus_message() or str(exc)
+            msg = f"D-Bus error: {name}: {detail}"
+            raise RuntimeError(msg) from exc
         except (TypeError, ValueError, OverflowError) as exc:
             # dbus-python raises these while validating names or marshalling
             # arguments that do not fit the signature; nothing was sent.
             expected_sig = f" (signature '{signature}')" if signature is not None else ""
-            return f"D-Bus call failed: {interface}.{method}{expected_sig}: {exc}"
+            msg = f"D-Bus call failed: {interface}.{method}{expected_sig}: {exc}"
+            raise ValueError(msg) from exc
+        if mismatch:
+            raise ValueError(mismatch)
         return _format_dbus_result(result)
 
     def read_app_log(self, pid: int, last_n_lines: int = 50) -> str:
-        """Read stdout/stderr output of a launched app."""
+        """Read stdout/stderr output of a launched app.
+
+        ``last_n_lines`` is the number of trailing lines to return; 0 returns
+        the whole log. Anything else raises ``ValueError`` before the session
+        is touched.
+        """
+        if isinstance(last_n_lines, bool) or not isinstance(last_n_lines, int) or last_n_lines < 0:
+            msg = f"last_n_lines must be 0 (all) or a positive integer, got {last_n_lines!r}"
+            raise ValueError(msg)
         session = self._get_session()
         return session.read_app_log(pid, last_n_lines=last_n_lines)
 
@@ -1332,10 +1703,11 @@ class AutomationEngine:
                 capture_output=True,
                 timeout=10,
             )
-        except FileNotFoundError:
-            return _INSTALL_HINTS["wayland-info"]
+        except FileNotFoundError as exc:
+            raise RuntimeError(_INSTALL_HINTS["wayland-info"]) from exc
         if result.returncode != 0:
-            return f"wayland-info failed: {result.stderr.decode(errors='replace')}"
+            msg = f"wayland-info failed: {result.stderr.decode(errors='replace')}"
+            raise RuntimeError(msg)
 
         output = result.stdout.decode(errors="replace")
         if filter_protocol:

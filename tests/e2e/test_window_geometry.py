@@ -10,14 +10,17 @@ from __future__ import annotations
 
 import re
 import subprocess
+import time
 from typing import TYPE_CHECKING
+
+import pytest
 
 import kwin_mcp.core as core
 
 if TYPE_CHECKING:
-    import pytest
-
     from kwin_mcp.core import AutomationEngine
+    from kwin_mcp.results import WindowGeometry
+
 
 _RECT = r"\((\d+), (\d+), (\d+)x(\d+)\)"
 KCALC_SIZE = (640, 480)
@@ -90,6 +93,85 @@ def test_accessibility_rectangles_are_global_screen_coordinates(
     assert (screen_w, screen_h) == (client_w, client_h), elements[:500]
 
 
+def _kcalc_window(engine: AutomationEngine) -> WindowGeometry:
+    windows = engine.window_geometry_data(app_name="kcalc").windows
+    assert len(windows) == 1, windows
+    return windows[0]
+
+
+_SETTLE_INTERVAL_SECONDS = 0.2
+_SETTLE_TIMEOUT_SECONDS = 5.0
+
+
+def _settled_kcalc_window(engine: AutomationEngine) -> WindowGeometry:
+    """The kcalc window once two reads ``_SETTLE_INTERVAL_SECONDS`` apart agree.
+
+    KWin may still be placing or resizing a freshly mapped window; acting on a
+    frame that is about to change would make "before"/"unchanged" checks race.
+    """
+    deadline = time.monotonic() + _SETTLE_TIMEOUT_SECONDS
+    previous = _kcalc_window(engine)
+    while True:
+        time.sleep(_SETTLE_INTERVAL_SECONDS)
+        current = _kcalc_window(engine)
+        if current == previous:
+            return current
+        assert time.monotonic() < deadline, f"kcalc window kept changing: {previous} -> {current}"
+        previous = current
+
+
+def test_set_geometry_before_line_is_pre_call_frame(kcalc_session: AutomationEngine) -> None:
+    window = _settled_kcalc_window(kcalc_session)
+    frame = window.frame
+    target = (frame.x + 37, frame.y + 23)
+
+    output = kcalc_session.window_set_geometry(window_id=window.id, x=target[0], y=target[1])
+
+    # The before line must be the frame read just before the request, not the
+    # requested position echoed back from the live geometry wrapper.
+    assert _rect(output, "before") == (frame.x, frame.y, frame.width, frame.height), output
+    assert _rect(output, "before")[:2] != target, output
+
+
+def test_set_geometry_beyond_the_workspace_is_rejected(
+    kcalc_session: AutomationEngine, screen_size: tuple[int, int]
+) -> None:
+    window = _settled_kcalc_window(kcalc_session)
+    screen_width, _ = screen_size
+
+    with pytest.raises(
+        ValueError, match=rf"width must be at most {screen_width} .*got {screen_width + 1}\."
+    ):
+        kcalc_session.window_set_geometry(window_id=window.id, width=screen_width + 1)
+
+    # Nothing was assigned: the frame is unchanged and kcalc keeps its window.
+    time.sleep(1)
+    after = _kcalc_window(kcalc_session)
+    assert after.id == window.id, after
+    assert after.frame == window.frame, after
+
+
+def test_window_set_geometry_moves_and_resizes_exact_window(
+    kcalc_session: AutomationEngine,
+) -> None:
+    before = kcalc_session.window_geometry(app_name="kcalc")
+
+    match = re.search(r"^\s+id:\s+(.+)$", before, re.MULTILINE)
+    assert match is not None, before[:500]
+    window_id = match.group(1).strip()
+
+    kcalc_session.window_set_geometry(
+        window_id=window_id,
+        x=80,
+        y=90,
+        width=700,
+        height=520,
+    )
+
+    after = kcalc_session.window_geometry(window_id=window_id)
+    assert _rect(after, "frame") == (80, 90, 700, 520), after[:500]
+
+
 def test_unknown_app_name_reports_no_windows(kcalc_session: AutomationEngine) -> None:
     output = kcalc_session.window_geometry(app_name="no-such-application")
     assert output == "No windows found for 'no-such-application'.", output[:500]
@@ -98,15 +180,16 @@ def test_unknown_app_name_reports_no_windows(kcalc_session: AutomationEngine) ->
 def test_focus_window_reports_kwin_query_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = _engine_with_timed_out_kwin_query(monkeypatch)
 
-    assert engine.focus_window(app_name="kcalc") == (
-        "Failed to focus 'kcalc': KWin query timed out after 30s"
-    )
+    with pytest.raises(
+        RuntimeError, match=re.escape("Failed to focus 'kcalc': KWin query timed out after 30s")
+    ):
+        engine.focus_window(app_name="kcalc")
 
 
 def test_window_geometry_reports_kwin_query_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = _engine_with_timed_out_kwin_query(monkeypatch)
 
-    assert (
+    with pytest.raises(
+        RuntimeError, match=re.escape("Window geometry unavailable: KWin query timed out after 30s")
+    ):
         engine.window_geometry(app_name="kcalc")
-        == "Window geometry unavailable: KWin query timed out after 30s"
-    )

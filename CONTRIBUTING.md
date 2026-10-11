@@ -219,6 +219,7 @@ src/kwin_mcp/
 ├── geometry.py        # Window geometry, activation, and output topology via KWin scripting
 ├── clipboard.py       # Private Wayland data-control helper for keyboard_type_unicode paste
 ├── dbus_args.py       # dbus_call argument parser (dbus-send strings and typed JSON)
+├── dbus_service_file.py # D-Bus service file Exec= parsed into the argv dbus-daemon activation runs
 ├── progress.py        # Per-call progress and screenshot-image scope (MCP-free; no-op in the CLI)
 ├── results.py         # Typed results (outputSchema/structuredContent) and text of observation tools
 └── input.py           # Input injection via KWin EIS D-Bus + libei
@@ -274,6 +275,7 @@ tests/e2e/
 ├── test_window_match.py                # Chromium/Flatpak AT-SPI top-levels matched to KWin windows via buffer geometry and captions
 ├── test_pointer_reconnect.py           # Clicks reach a window mapped under a parked pointer
 ├── test_dbus_args.py                   # dbus_call argument parser (no session needed)
+├── test_dbus_service_file.py           # Service file Exec= argv as dbus-daemon gives it (no session needed)
 ├── test_dbus_call.py                   # dbus_call arguments as received by a test D-Bus service
 ├── test_lazy_libei.py                  # Import without libei and the missing-libei input backend path
 ├── test_eis_device_replacement.py      # Input after KWin replaces or drops its EIS devices

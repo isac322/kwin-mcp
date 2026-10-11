@@ -272,6 +272,7 @@ tests/e2e/
 ├── test_frame_burst_names.py           # Frame bursts never reuse or overwrite earlier frames (no KWin)
 ├── test_read_app_log_validation.py     # read_app_log last_n_lines validation before the session (no KWin)
 ├── test_terminal_unicode_paste.py      # Unicode paste chord and next-key integrity in Konsole
+├── test_text_echo_bounds.py            # Bounded text echo (<= 200 chars or <N characters>) and session-less keyboard_type validation (no KWin)
 ├── test_unicode_clipboard_lifecycle.py # Unicode paste clipboard snapshot, restore, and cleanup
 ├── test_clipboard_helper_protocol.py   # Private clipboard helper framing, timeouts, and restore
 ├── test_virtual_session_smoke.py       # Minimum isolated KWin contract

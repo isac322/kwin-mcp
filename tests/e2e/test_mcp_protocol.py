@@ -69,6 +69,8 @@ EXPECTED_REQUIRED_FIELDS: dict[str, frozenset[str]] = {
     "window_close": frozenset({"window_id"}),
     "window_geometry": frozenset(),
     "window_set_geometry": frozenset({"window_id"}),
+    "virtual_desktops": frozenset(),
+    "window_set_desktop": frozenset({"window_id", "desktop_id"}),
 }
 
 EXPECTED_TOOL_PROPERTIES: dict[str, dict[str, tuple[object, object]]] = {
@@ -237,6 +239,11 @@ EXPECTED_TOOL_PROPERTIES: dict[str, dict[str, tuple[object, object]]] = {
         "width": (NULLABLE_INTEGER, None),
         "height": (NULLABLE_INTEGER, None),
     },
+    "virtual_desktops": {},
+    "window_set_desktop": {
+        "window_id": ("string", NO_DEFAULT),
+        "desktop_id": ("string", NO_DEFAULT),
+    },
 }
 
 
@@ -296,7 +303,7 @@ def _result_text(result: CallToolResult) -> str:
 
 @pytest.mark.anyio
 async def test_installed_server_initializes_and_registers_exact_tool_schemas() -> None:
-    assert len(EXPECTED_TOOL_NAMES) == 35
+    assert len(EXPECTED_TOOL_NAMES) == 37
     assert frozenset(EXPECTED_REQUIRED_FIELDS) == EXPECTED_TOOL_NAMES
     assert frozenset(EXPECTED_TOOL_PROPERTIES) == EXPECTED_TOOL_NAMES
 
@@ -391,7 +398,7 @@ async def test_default_live_session_switches_session_tool_recommendations() -> N
         response = await client.session.list_tools()
 
     names = [tool.name for tool in response.tools]
-    assert len(names) == len(set(names)) == 35
+    assert len(names) == len(set(names)) == 37
     assert frozenset(names) == EXPECTED_TOOL_NAMES
     tools = {tool.name: tool for tool in response.tools}
 

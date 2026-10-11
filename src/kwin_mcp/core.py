@@ -31,14 +31,18 @@ from kwin_mcp.results import (
     FindUIElementsResult,
     ListWindowsResult,
     UIElement,
+    VirtualDesktopsResult,
     WindowGeometry,
     WindowGeometryResult,
+    WindowSetDesktopResult,
     format_find,
     format_found,
     format_list_windows,
     format_tree,
+    format_virtual_desktops,
     format_window,
     format_window_geometry,
+    format_window_set_desktop,
     search_description,
 )
 from kwin_mcp.screenshot import (
@@ -1378,6 +1382,84 @@ class AutomationEngine:
 
         lines.append(f"moveable: {result['moveable']}, resizeable: {result['resizeable']}")
         return "\n".join(lines)
+
+    def virtual_desktops_data(self) -> VirtualDesktopsResult:
+        """Report KWin's virtual desktops, with stable ids and the current one, as data.
+
+        A failed KWin query is reported in ``error`` rather than raised, as in
+        ``window_geometry_data``.
+        """
+        self._get_session()
+        resp = self._run_kwin_query({"op": "desktops"})
+        if not resp["ok"]:
+            return VirtualDesktopsResult(error=str(resp["error"]))
+        return VirtualDesktopsResult.model_validate({"desktops": resp["result"]["desktops"]})
+
+    def virtual_desktops(self) -> str:
+        """Report KWin's virtual desktops, with stable ids and the current one."""
+        return format_virtual_desktops(self.virtual_desktops_data())
+
+    def window_set_desktop_data(self, window_id: str, desktop_id: str) -> WindowSetDesktopResult:
+        """Put one window, by exact KWin id, on exactly one virtual desktop, by exact id.
+
+        The operation neither requests nor changes ``workspace.currentDesktop``,
+        and it does not activate the window; the current desktop before and
+        after is observed independently. The window's desktops are read back
+        with a separate KWin query, as in
+        ``window_set_geometry``: ``applied`` is True only when that readback is
+        exactly ``[desktop_id]``. The current desktop before and after is
+        reported alongside, not folded into ``applied``.
+        """
+        self._get_session()
+        result = WindowSetDesktopResult(window_id=str(window_id), desktop_id=str(desktop_id))
+
+        # The CLI forwards raw values without MCP schema validation.
+        for field, value, source in (
+            ("window_id", window_id, "window_geometry"),
+            ("desktop_id", desktop_id, "virtual_desktops"),
+        ):
+            if not isinstance(value, str) or not value:
+                result.error = f"window_set_desktop needs a {field} (see {source})."
+                return result
+
+        resp = self._run_kwin_query(
+            {"op": "set_desktop", "window_id": window_id, "desktop_id": desktop_id}
+        )
+        if not resp["ok"]:
+            result.error = f"Failed to set the desktop of {window_id!r}: {resp['error']}"
+            return result
+        assigned = resp["result"]
+        result.current_desktop_id_before = assigned["current"]
+        if not assigned["windowFound"]:
+            result.error = f"No window with id {window_id!r}."
+            return result
+        result.before = list(assigned["before"])
+        result.before_on_all_desktops = bool(assigned["beforeOnAllDesktops"])
+        if not assigned["desktopFound"]:
+            result.error = f"No virtual desktop with id {desktop_id!r}."
+            return result
+
+        observed_resp = self._run_kwin_query({"op": "desktops", "window_id": window_id})
+        if not observed_resp["ok"]:
+            result.error = f"Readback failed: {observed_resp['error']}"
+            return result
+        readback = observed_resp["result"]
+        result.current_desktop_id_after = readback["current"]
+        if readback["window"] is None:
+            result.error = f"Window {window_id!r} was not found on readback."
+            return result
+        result.observed = list(readback["window"]["desktops"])
+        result.applied = result.observed == [desktop_id]
+        if not result.applied:
+            result.error = (
+                f"KWin did not put the window on exactly [{desktop_id!r}]; "
+                f"observed {result.observed}."
+            )
+        return result
+
+    def window_set_desktop(self, window_id: str, desktop_id: str) -> str:
+        """Put one window, by exact KWin id, on exactly one virtual desktop, by exact id."""
+        return format_window_set_desktop(self.window_set_desktop_data(window_id, desktop_id))
 
     def window_close(self, window_id: str) -> str:
         """Ask KWin to close one window, addressed by the id window_geometry reports.

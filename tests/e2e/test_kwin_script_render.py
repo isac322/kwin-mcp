@@ -6,9 +6,9 @@ first one inserted: ``app_name="{window_id}"`` pulled the id into the script
 outside any string literal, and an id such as
 ``;workspace.activeWindow.closeWindow();//`` then ran as KWin script and closed
 a real window in a live session. Each test captures the script that
-``activate``/``close`` hands to KWin and checks that every placeholder line
-holds exactly one JSON string literal decoding to the caller's value, while the
-rest of the template is untouched.
+``activate``/``close``/``set_desktop``/``desktops`` hands to KWin and checks
+that every placeholder line holds exactly one JSON string literal decoding to
+the caller's value, while the rest of the template is untouched.
 """
 
 from __future__ import annotations
@@ -22,15 +22,15 @@ from kwin_mcp import geometry
 
 CLOSE_ACTIVE = ";workspace.activeWindow.closeWindow();//"
 BREAK_OUT = '"; workspace.activeWindow.closeWindow(); var _x="'
-PLACEHOLDER = re.compile(r"\{(needle|window_id)\}")
+PLACEHOLDER = re.compile(r"\{(needle|window_id|desktop_id)\}")
 
 
-def _capture(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+def _capture(monkeypatch: pytest.MonkeyPatch, reply: dict[str, object] | None = None) -> list[str]:
     scripts: list[str] = []
 
     def _record(js_source: str, timeout: float = 5.0) -> str:
         scripts.append(js_source)
-        return json.dumps({"found": False})
+        return json.dumps(reply if reply is not None else {"found": False})
 
     monkeypatch.setattr(geometry, "run_kwin_script", _record)
     return scripts
@@ -90,3 +90,38 @@ def test_close_keeps_the_id_inside_its_string_literal(
 
     assert len(scripts) == 1
     _assert_literals(geometry._CLOSE_SCRIPT_TEMPLATE, scripts[0], {"window_id": window_id})
+
+
+@pytest.mark.parametrize(
+    ("window_id", "desktop_id"),
+    [
+        ("{desktop_id}", CLOSE_ACTIVE),
+        (CLOSE_ACTIVE, "{window_id}"),
+        (BREAK_OUT, BREAK_OUT),
+    ],
+)
+def test_set_desktop_keeps_each_id_inside_its_string_literal(
+    monkeypatch: pytest.MonkeyPatch, window_id: str, desktop_id: str
+) -> None:
+    scripts = _capture(monkeypatch, {"windowFound": False, "desktopFound": False, "current": None})
+
+    geometry.set_desktop(window_id, desktop_id)
+
+    assert len(scripts) == 1
+    _assert_literals(
+        geometry._SET_DESKTOP_SCRIPT_TEMPLATE,
+        scripts[0],
+        {"window_id": window_id, "desktop_id": desktop_id},
+    )
+
+
+@pytest.mark.parametrize("window_id", ["", "{window_id}", CLOSE_ACTIVE, BREAK_OUT])
+def test_desktops_keeps_the_id_inside_its_string_literal(
+    monkeypatch: pytest.MonkeyPatch, window_id: str
+) -> None:
+    scripts = _capture(monkeypatch, {"desktops": [], "current": None, "window": None})
+
+    geometry.desktops(window_id)
+
+    assert len(scripts) == 1
+    _assert_literals(geometry._DESKTOPS_SCRIPT_TEMPLATE, scripts[0], {"window_id": window_id})

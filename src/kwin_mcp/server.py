@@ -37,11 +37,15 @@ from kwin_mcp.results import (
     AccessibilityTreeResult,
     FindUIElementsResult,
     ListWindowsResult,
+    VirtualDesktopsResult,
     WindowGeometryResult,
+    WindowSetDesktopResult,
     format_find,
     format_list_windows,
     format_tree,
+    format_virtual_desktops,
     format_window_geometry,
+    format_window_set_desktop,
 )
 from kwin_mcp.session import process_registry
 
@@ -1147,6 +1151,40 @@ def window_set_geometry(
         width=width,
         height=height,
     )
+
+
+@_tool(annotations=_READ_ONLY)
+def virtual_desktops() -> Annotated[CallToolResult, VirtualDesktopsResult]:
+    """List KWin virtual desktops in order, with stable ids and the current one.
+
+    Pass a desktop id to window_set_desktop. Ids stay valid while the desktop
+    exists, unlike positions, which change when desktops are added or reordered.
+    """
+    data = _engine.virtual_desktops_data()
+    return _structured(format_virtual_desktops(data), data)
+
+
+@_tool(annotations=_DESTRUCTIVE_IDEMPOTENT)
+def window_set_desktop(
+    window_id: Annotated[
+        str,
+        Field(description="Exact KWin window id from window_geometry."),
+    ],
+    desktop_id: Annotated[
+        str,
+        Field(description="Exact virtual desktop id from virtual_desktops."),
+    ],
+) -> Annotated[CallToolResult, WindowSetDesktopResult]:
+    """Put one window, by exact id, on exactly one virtual desktop, by exact id.
+
+    The operation neither requests nor changes the current desktop and does not
+    activate the window. A window that was on all desktops ends up on only this
+    one. applied is true when a separate KWin query observes the window on
+    exactly that desktop; the current desktop before and after is observed and
+    reported alongside.
+    """
+    data = _engine.window_set_desktop_data(window_id=window_id, desktop_id=desktop_id)
+    return _structured(format_window_set_desktop(data), data)
 
 
 @_tool(annotations=_DESTRUCTIVE_IDEMPOTENT)

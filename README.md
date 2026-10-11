@@ -8,7 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/isac322/kwin-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/isac322/kwin-mcp/actions/workflows/ci.yml)
 
-A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that enables AI agents (Claude Code, Cursor, and other MCP clients) to launch, interact with, and observe any Wayland application in an isolated virtual KWin session -- without affecting the user's desktop display or input. It also supports **live desktop automation** by connecting to an existing KWin session (real desktop or container) for collaborative workflows. With 35 MCP tools covering mouse, keyboard, touch, clipboard, accessibility tree inspection, screenshot capture, and window management, kwin-mcp provides everything needed for end-to-end GUI testing and desktop automation on Linux.
+A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that enables AI agents (Claude Code, Cursor, and other MCP clients) to launch, interact with, and observe any Wayland application in an isolated virtual KWin session -- without affecting the user's desktop display or input. It also supports **live desktop automation** by connecting to an existing KWin session (real desktop or container) for collaborative workflows. With 37 MCP tools covering mouse, keyboard, touch, clipboard, accessibility tree inspection, screenshot capture, and window management, kwin-mcp provides everything needed for end-to-end GUI testing and desktop automation on Linux.
 
 ## Table of Contents
 
@@ -42,7 +42,7 @@ Run end-to-end GUI tests for KDE/Qt/GTK applications in headless isolated sessio
 
 ### AI-Driven Desktop Automation
 
-Let AI agents like Claude Code autonomously operate desktop applications. The agent reads the accessibility tree to understand the UI, performs actions through 35 MCP tools, and observes the results via screenshots -- creating a complete feedback loop for any Wayland application.
+Let AI agents like Claude Code autonomously operate desktop applications. The agent reads the accessibility tree to understand the UI, performs actions through 37 MCP tools, and observes the results via screenshots -- creating a complete feedback loop for any Wayland application.
 
 ### Live Desktop Collaboration
 
@@ -294,7 +294,7 @@ When an image was downscaled, its `Coordinate space` line keeps the logical orig
 | `clipboard_get` | _(none)_ | Read the current clipboard text content. Requires `enable_clipboard=true` in `session_start` and `wl-clipboard` installed. |
 | `clipboard_set` | `text` `str` | Set the clipboard text content. Same requirements as `clipboard_get`. |
 
-### Window Management (7 tools)
+### Window Management (9 tools)
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
@@ -303,6 +303,8 @@ When an image was downscaled, its `Coordinate space` line keeps the logical orig
 | `focus_window` | `app_name?` `str`, `window_id?` `str` | Activate and raise a window via KWin scripting. Use `window_id` for an exact window from `window_geometry`; otherwise `app_name` uses a case-insensitive application/title match. |
 | `window_geometry` | `app_name?` `str`, `window_id?` `str` | Report each window's KWin id, an `[active]` marker, and frame and client rectangles in **global screen coordinates** via KWin scripting — the same space `find_ui_elements` / `accessibility_tree` report and `mouse_click` / `touch_tap` take. `window_id` filters to one window by exact id. |
 | `window_set_geometry` | `window_id` `str`, `x?` `int`, `y?` `int`, `width?` `int`, `height?` `int` | Move and/or resize exactly one window by its KWin id. Any subset of x/y/width/height may be supplied; at least one field is required and width/height must be positive. The resulting frame geometry is observed again through KWin before it is reported. |
+| `virtual_desktops` | _(none)_ | List KWin virtual desktops in order, each with its stable id, name and a current marker. Ids stay valid while the desktop exists, unlike positions. |
+| `window_set_desktop` | `window_id` `str`, `desktop_id` `str` | Put exactly one window, by its KWin id, on exactly one virtual desktop, by its id from `virtual_desktops`, without switching the current desktop or activating the window. Reports the previous desktops (to restore them), the desktops observed again through KWin, and the current desktop before and after. |
 | `active_window` | _(none)_ | Report the window KWin currently treats as active (id, frame, client), e.g. to confirm `focus_window` |
 | `window_close` | `window_id` `str` | Ask exactly one window, addressed by the id from `window_geometry`, to close (like its titlebar button). Disabled in live sessions to protect unsaved work. |
 
@@ -331,7 +333,7 @@ Claude Code / AI Agent
   |
   |  MCP (stdio)
   v
-kwin-mcp server  (35 tools)       kwin-mcp-cli (interactive REPL)
+kwin-mcp server  (37 tools)       kwin-mcp-cli (interactive REPL)
   |                                  |
   +--- both delegate to AutomationEngine (core.py) ---+
   |
@@ -618,7 +620,7 @@ Coverage includes:
 - a KWin bus-name readiness regression whose `kwin_wayland` stub creates the Wayland socket before starting the real compositor: `session_start` must wait until `org.kde.KWin` has an owner before it sets up EIS input, and must fail with a clear error when KWin exits first or never takes the name;
 - an accessibility-bus check that `org.a11y.Bus` has an owner as soon as `session_start` returns, before any app or AT-SPI2 query could activate it, and that a failed activation (a `dbus-send` stub on `PATH`) is reported as a `Warning:` line in the `session_start` output;
 - the `org.a11y.Status.IsEnabled` switch: on in virtual sessions, and in live sessions reported, left off by default, switched on by `enable_accessibility=true`, and restored by `session_stop` and by a server exit while a tool is still running;
-- exact input-schema checks for all 35 registered tools, plus installed-server stdio calls through every MCP wrapper;
+- exact input-schema checks for all 37 registered tools, plus installed-server stdio calls through every MCP wrapper;
 - nested visual tests that start Xvfb and a test-owned KWin compositor inside the container, connect the installed MCP server to it, and verify pixels as well as accessibility state;
 - KCalc before/after pixel transitions and a deterministic GUI probe for mouse hover, cursor inclusion, animation frame bursts, and CJK text (`GUI 검증 42`) rendered differently from a tofu control (`□□`);
 - screenshot coordinate mapping at output scales 1.0 and 1.45 (the fractional scale is set through `kscreen-doctor`): a probe button found by pixel color in the screenshot is clicked at origin plus pixel and must activate, and single screenshots and frame bursts report the logical workspace as their coordinate space;

@@ -56,6 +56,8 @@ EXPECTED_TOOL_NAMES: frozenset[str] = frozenset(
         "window_close",
         "window_geometry",
         "window_set_geometry",
+        "virtual_desktops",
+        "window_set_desktop",
     }
 )
 

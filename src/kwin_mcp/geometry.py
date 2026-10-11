@@ -6,10 +6,12 @@ hand the numbers back over D-Bus.
 
 Two entry points share one script round-trip:
 
-- ``query()`` / ``active()`` / ``activate()`` / ``close()`` / ``outputs()``
-  / ``active_class()`` run in a subprocess (`python -m kwin_mcp.geometry`)
-  for the public ``window_geometry`` / ``active_window`` / ``focus_window``
-  / ``window_close`` tools, for screenshot coordinate mapping, and for the
+- ``query()`` / ``active()`` / ``activate()`` / ``close()`` / ``desktops()``
+  / ``set_desktop()`` / ``outputs()`` / ``active_class()`` run in a subprocess
+  (`python -m kwin_mcp.geometry`) for the public ``window_geometry`` /
+  ``active_window`` / ``focus_window`` / ``window_close`` /
+  ``virtual_desktops`` / ``window_set_desktop`` tools, for screenshot
+  coordinate mapping, and for the
   paste chord ``keyboard_type_unicode`` chooses.
 - ``collect_windows()`` runs in-process inside the AT-SPI2 query subprocess so
   `accessibility.py` can translate element rectangles into screen coordinates.
@@ -203,6 +205,84 @@ callDBus("{sink}", "{path}", "{sink}", "Report", JSON.stringify(result));
 _ACTIVE_CLASS_SCRIPT = """
 var w = workspace.activeWindow;
 callDBus("{sink}", "{path}", "{sink}", "Report", w ? String(w.resourceClass) : "");
+"""
+
+# Virtual desktops in KWin's order, with the current one, addressed by their
+# stable id (a UUID string), never by position. When {window_id} is not empty the
+# report also carries that window's desktop ids, read in this separate script so
+# window_set_desktop observes the state KWin committed after its own script ran.
+# The window population is the one window_geometry reports (normal windows).
+# In KWin 6 a window on all desktops has an empty desktops list.
+_DESKTOPS_SCRIPT_TEMPLATE = """
+var target = {window_id};
+var current = workspace.currentDesktop;
+var currentId = current ? String(current.id) : null;
+var desktops = [];
+var list = workspace.desktops;
+for (var i = 0; i < list.length; i++) {
+    var d = list[i];
+    desktops.push({id: String(d.id), name: String(d.name), current: String(d.id) === currentId});
+}
+var found = null;
+if (target) {
+    var windows = workspace.windowList();
+    for (var j = 0; j < windows.length; j++) {
+        var w = windows[j];
+        if (!w.normalWindow || String(w.internalId) !== target) {
+            continue;
+        }
+        var ids = [];
+        for (var k = 0; k < w.desktops.length; k++) {
+            ids.push(String(w.desktops[k].id));
+        }
+        found = {desktops: ids, onAllDesktops: w.onAllDesktops};
+        break;
+    }
+}
+callDBus("{sink}", "{path}", "{sink}", "Report", JSON.stringify({
+    desktops: desktops, current: currentId, window: found
+}));
+"""
+
+# Assign exactly one window, by exact internalId, to exactly one virtual desktop,
+# by exact id. Nothing is assigned unless both are found. currentDesktop is only
+# read, never written, and the window is not activated or raised.
+_SET_DESKTOP_SCRIPT_TEMPLATE = """
+var target = {window_id};
+var wanted = {desktop_id};
+var current = workspace.currentDesktop;
+var result = {
+    windowFound: false, desktopFound: false,
+    current: current ? String(current.id) : null
+};
+var desktop = null;
+var list = workspace.desktops;
+for (var i = 0; i < list.length; i++) {
+    if (String(list[i].id) === wanted) {
+        desktop = list[i];
+        break;
+    }
+}
+result.desktopFound = desktop !== null;
+var windows = workspace.windowList();
+for (var j = 0; j < windows.length; j++) {
+    var w = windows[j];
+    if (!w.normalWindow || String(w.internalId) !== target) {
+        continue;
+    }
+    var before = [];
+    for (var k = 0; k < w.desktops.length; k++) {
+        before.push(String(w.desktops[k].id));
+    }
+    result.windowFound = true;
+    result.before = before;
+    result.beforeOnAllDesktops = w.onAllDesktops;
+    if (desktop !== null) {
+        w.desktops = [desktop];
+    }
+    break;
+}
+callDBus("{sink}", "{path}", "{sink}", "Report", JSON.stringify(result));
 """
 
 # Output topology for screenshot coordinate mapping. Geometry is logical (the
@@ -437,6 +517,84 @@ def close(window_id: str, timeout: float = 5.0) -> dict[str, object]:
     return payload
 
 
+def _is_id_list(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def _valid_desktops(payload: object) -> bool:
+    """Whether a desktops() payload has every field and type the engine reads."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("desktops"), list):
+        return False
+    for desktop in payload["desktops"]:
+        if not (
+            isinstance(desktop, dict)
+            and isinstance(desktop.get("id"), str)
+            and isinstance(desktop.get("name"), str)
+            and isinstance(desktop.get("current"), bool)
+        ):
+            return False
+    if "current" not in payload or not isinstance(payload["current"], str | None):
+        return False
+    if "window" not in payload:
+        return False
+    window = payload["window"]
+    return window is None or (
+        isinstance(window, dict)
+        and _is_id_list(window.get("desktops"))
+        and isinstance(window.get("onAllDesktops"), bool)
+    )
+
+
+def _valid_set_desktop(payload: object) -> bool:
+    """Whether a set_desktop() payload has every field and type the engine reads."""
+    if not (
+        isinstance(payload, dict)
+        and isinstance(payload.get("windowFound"), bool)
+        and isinstance(payload.get("desktopFound"), bool)
+        and "current" in payload
+        and isinstance(payload["current"], str | None)
+    ):
+        return False
+    if not payload["windowFound"]:
+        return True
+    return _is_id_list(payload.get("before")) and isinstance(
+        payload.get("beforeOnAllDesktops"), bool
+    )
+
+
+def desktops(window_id: str = "", timeout: float = 5.0) -> dict[str, object]:
+    """Ask KWin for its virtual desktops and, optionally, one window's desktops.
+
+    Returns ``{"desktops": [{"id", "name", "current"}], "current": id | None,
+    "window": {"desktops": [id], "onAllDesktops": bool} | None}``; ``window`` is
+    None when ``window_id`` is empty or no window has exactly that id.
+    """
+    script = _render_script(_DESKTOPS_SCRIPT_TEMPLATE, {"window_id": window_id})
+    payload = json.loads(run_kwin_script(script, timeout))
+    if not _valid_desktops(payload):
+        msg = f"KWin returned a malformed desktop list: {payload!r}"
+        raise RuntimeError(msg)
+    return payload
+
+
+def set_desktop(window_id: str, desktop_id: str, timeout: float = 5.0) -> dict[str, object]:
+    """Assign the window with exactly this id to exactly the desktop with this id.
+
+    Returns ``{"windowFound", "desktopFound", "current"}`` and, when the window
+    was found, its ``before`` desktop ids and ``beforeOnAllDesktops``. The
+    assignment happens only when both were found; read it back with
+    ``desktops(window_id)``.
+    """
+    script = _render_script(
+        _SET_DESKTOP_SCRIPT_TEMPLATE, {"window_id": window_id, "desktop_id": desktop_id}
+    )
+    payload = json.loads(run_kwin_script(script, timeout))
+    if not _valid_set_desktop(payload):
+        msg = f"KWin returned a malformed desktop assignment result: {payload!r}"
+        raise RuntimeError(msg)
+    return payload
+
+
 def active_class(timeout: float = 5.0) -> str:
     """Return the active window's resource class, or "" when none is active."""
     return run_kwin_script(_ACTIVE_CLASS_SCRIPT, timeout)
@@ -497,6 +655,26 @@ def main() -> None:
                             y=request.get("y"),
                             width=request.get("width"),
                             height=request.get("height"),
+                        ),
+                    }
+                )
+            )
+            return
+        if op == "desktops":
+            print(
+                json.dumps(
+                    {"ok": True, "result": desktops(window_id=str(request.get("window_id", "")))}
+                )
+            )
+            return
+        if op == "set_desktop":
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "result": set_desktop(
+                            window_id=str(request.get("window_id", "")),
+                            desktop_id=str(request.get("desktop_id", "")),
                         ),
                     }
                 )

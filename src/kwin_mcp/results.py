@@ -72,6 +72,96 @@ def format_window_geometry(r: WindowGeometryResult, app_name: str = "", window_i
     return "\n".join([f"Windows ({len(r.windows)}):", *(format_window(w) for w in r.windows)])
 
 
+# ── virtual_desktops / window_set_desktop ────────────────────────────────
+
+
+class VirtualDesktop(BaseModel):
+    """One KWin virtual desktop."""
+
+    id: str = Field(
+        description="KWin desktop id, stable while the desktop exists; "
+        "pass to window_set_desktop(desktop_id=)."
+    )
+    name: str
+    current: bool = Field(description="True for the desktop the user is currently on.")
+
+
+class VirtualDesktopsResult(BaseModel):
+    """Result of virtual_desktops."""
+
+    desktops: list[VirtualDesktop] = Field(
+        default_factory=list, description="In KWin's desktop order."
+    )
+    error: str | None = Field(default=None, description="Set when KWin could not be queried.")
+
+
+def format_virtual_desktops(r: VirtualDesktopsResult) -> str:
+    """Render a virtual_desktops result."""
+    if r.error is not None:
+        return f"Virtual desktops unavailable: {r.error}"
+    if not r.desktops:
+        return "No virtual desktops found."
+    lines = [f"Virtual desktops ({len(r.desktops)}):"]
+    for d in r.desktops:
+        marker = " [current]" if d.current else ""
+        lines.append(f'- "{d.name}"{marker}\n    id: {d.id}')
+    return "\n".join(lines)
+
+
+class WindowSetDesktopResult(BaseModel):
+    """Result of window_set_desktop.
+
+    ``applied`` reports only the assignment. Whether the user's current desktop
+    stayed the same is reported separately, by the two ``current_desktop_id_*``
+    fields, so a caller can check it and an unexpected change stays visible.
+    """
+
+    window_id: str
+    desktop_id: str
+    applied: bool = Field(
+        default=False,
+        description="True when the window and desktop were found and a separate KWin "
+        "query observed the window on exactly [desktop_id].",
+    )
+    before: list[str] | None = Field(
+        default=None,
+        description="The window's desktop ids before the change ([] = on all desktops); "
+        "null when the window was not found.",
+    )
+    before_on_all_desktops: bool | None = Field(
+        default=None, description="Whether the window was on all desktops before the change."
+    )
+    observed: list[str] | None = Field(
+        default=None,
+        description="The window's desktop ids read back after the change; null when unavailable.",
+    )
+    current_desktop_id_before: str | None = Field(
+        default=None, description="Current desktop id when the change was made."
+    )
+    current_desktop_id_after: str | None = Field(
+        default=None, description="Current desktop id read back after the change."
+    )
+    error: str | None = Field(
+        default=None, description="Why the window was not observed on exactly [desktop_id]."
+    )
+
+
+def format_window_set_desktop(r: WindowSetDesktopResult) -> str:
+    """Render a window_set_desktop result."""
+    if r.before is None:
+        return f"Window desktop unchanged: {r.error}"
+    lines = [
+        f"Window desktop {'set' if r.applied else 'not confirmed'}: "
+        f"{r.window_id} -> {r.desktop_id}",
+        f"before:   {r.before}{' (all desktops)' if r.before_on_all_desktops else ''}",
+        f"observed: {r.observed if r.observed is not None else 'unavailable'}",
+        f"current desktop: {r.current_desktop_id_before} -> {r.current_desktop_id_after}",
+    ]
+    if r.error is not None:
+        lines.append(f"error: {r.error}")
+    return "\n".join(lines)
+
+
 # ── find_ui_elements / accessibility_tree ────────────────────────────────
 
 

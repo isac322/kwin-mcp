@@ -1,7 +1,8 @@
-"""Typed structured output of the observation tools over the installed MCP stdio server.
+"""Typed structured output over the installed MCP stdio server.
 
-``window_geometry``, ``find_ui_elements``, ``accessibility_tree``, and
-``list_windows`` advertise a typed ``outputSchema`` and return matching
+``window_geometry``, ``find_ui_elements``, ``accessibility_tree``,
+``list_windows``, ``virtual_desktops``, and ``window_set_desktop`` advertise a
+typed ``outputSchema`` and return matching
 ``structuredContent``, while their TextContent stays the human-readable text the
 engine formatters produce (and ``kwin-mcp-cli`` prints).
 """
@@ -46,6 +47,26 @@ STRUCTURED_TOOL_PROPERTIES: dict[str, frozenset[str]] = {
     "find_ui_elements": frozenset({"query", "states", "elements"}),
     "list_windows": frozenset({"applications"}),
     "window_geometry": frozenset({"windows", "error"}),
+    "virtual_desktops": frozenset({"desktops", "error"}),
+    "window_set_desktop": frozenset(
+        {
+            "window_id",
+            "desktop_id",
+            "applied",
+            "before",
+            "before_on_all_desktops",
+            "observed",
+            "current_desktop_id_before",
+            "current_desktop_id_after",
+            "error",
+        }
+    ),
+}
+
+# Required arguments for calling each typed tool without a session.
+_MINIMAL_ARGUMENTS: dict[str, dict[str, str]] = {
+    "find_ui_elements": {"query": ""},
+    "window_set_desktop": {"window_id": "{id}", "desktop_id": "id"},
 }
 
 
@@ -115,7 +136,7 @@ async def test_typed_tools_advertise_object_output_schemas() -> None:
 async def test_typed_tools_without_session_are_errors_without_structured_content(
     name: str,
 ) -> None:
-    arguments = {"query": ""} if name == "find_ui_elements" else {}
+    arguments = _MINIMAL_ARGUMENTS.get(name, {})
     async with running_mcp_server() as client:
         result = await client.call_result(name, arguments)
 

@@ -147,7 +147,7 @@ The suite collects every test under `tests/e2e`. Together they prove:
 
 - engine-level behavior in isolated virtual KWin sessions;
 - the installed `kwin-mcp` entry point over real MCP stdio JSON-RPC, including the exact schemas
-  and wrappers for all 35 tools;
+  and wrappers for all 37 tools;
 - AT-SPI2 observation and KWin EIS keyboard, pointer, touch, clipboard, window, and D-Bus paths;
 - GUI pixels, cursor capture, repaint changes, and frame bursts in test-owned nested Xvfb/KWin
   sessions using the explicitly selected X11 `scrot` capture mode;
@@ -248,7 +248,7 @@ tests/e2e/
 ├── interaction_probe.py                # Input and screenshot probe application
 ├── test_installed_package.py           # Wheel, dependencies, and entry points
 ├── test_environment_evidence.py        # Safe environment.json provenance
-├── test_mcp_protocol.py                # All 35 tool schemas and protocol errors
+├── test_mcp_protocol.py                # All 37 tool schemas and protocol errors
 ├── test_mcp_session_observation.py     # Installed stdio session and observation flow
 ├── test_mcp_pointer_keyboard.py        # Installed stdio pointer and keyboard flow
 ├── test_mcp_touch_clipboard.py         # Installed stdio touch and clipboard flow
@@ -272,9 +272,11 @@ tests/e2e/
 ├── test_window_geometry.py             # Global window geometry and element coordinate space
 ├── test_window_close.py                # Window ids, active window, focus and closing one window by id
 ├── test_kwin_script_render.py          # Caller values reach KWin scripts only as JSON literals (no KWin)
+├── test_virtual_desktops.py            # Desktop ids, and one exact window moved to one exact desktop without switching
 ├── test_window_control.py              # Focus, scroll, drag, and touch behavior
 ├── test_window_match.py                # Chromium/Flatpak AT-SPI top-levels matched to KWin windows via buffer geometry and captions
 ├── test_window_set_geometry_validation.py # window_set_geometry input validation and request reporting (no KWin)
+├── test_window_set_desktop_validation.py # virtual_desktops and window_set_desktop requests, readback and reporting (no KWin)
 ├── test_pointer_reconnect.py           # Clicks reach a window mapped under a parked pointer
 ├── test_dbus_args.py                   # dbus_call argument parser (no session needed)
 ├── test_dbus_call.py                   # dbus_call arguments as received by a test D-Bus service

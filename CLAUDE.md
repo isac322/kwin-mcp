@@ -79,6 +79,15 @@ See ROADMAP.md. Key modules:
 
 **Manual invocation**: Use `/check-docs-seo` skill or the `@docs-seo` agent directly.
 
+## Release Gate
+
+Before tagging a release:
+
+1. On the release commit, verify every kwin-mcp tool end to end with the Docker E2E suite (`scripts/run-e2e-docker.sh`, once per `--distro` variant).
+2. Read everything merged since the latest release tag to choose the next version, and compare behavior against that release.
+3. If you find a regression or a new bug, do not release. Report each problem to the user and wait for instructions.
+4. A behavior change since the last release that fixes a bug, is more intuitive, or follows a standard is an improvement, not a regression. Keep it; do not revert it.
+
 ## System Dependencies (Arch/Manjaro)
 
 - `at-spi2-core`: AT-SPI2 accessibility framework (installed)

@@ -61,7 +61,7 @@ Automate kiosk interfaces and embedded Linux desktops running KDE Plasma or a ba
 > Requires KDE Plasma 6 on Wayland. See [System Requirements](#system-requirements) for details.
 
 > [!NOTE]
-> **0.7.0 only:** the published kwin-mcp 0.7.0 package on PyPI did not cap its `mcp` dependency, so a fresh install could resolve `mcp` 2.x and the server failed at startup with `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`. Releases 0.8.0–0.9.x cap `mcp<2`, and the next release targets `mcp>=2.2.0,<3`. If you are still on 0.7.0, upgrade kwin-mcp before following the steps below.
+> **0.7.0 only:** the published kwin-mcp 0.7.0 package on PyPI did not cap its `mcp` dependency, so a fresh install could resolve `mcp` 2.x and the server failed at startup with `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`. Releases 0.8.0–0.9.x cap `mcp<2`, and 0.10.0 and later require `mcp>=2.2.0,<3`. If you are still on 0.7.0, upgrade kwin-mcp before following the steps below.
 
 **1. Install system and build dependencies**
 
@@ -71,7 +71,7 @@ Automate kiosk interfaces and embedded Linux desktops running KDE Plasma or a ba
 sudo apt-get install -y --no-install-recommends build-essential pkg-config python3-dev libcairo2-dev libgirepository-2.0-dev libdbus-1-dev
 ```
 
-**2. Install**
+**2. Install** (uv itself: see the [uv installation guide](https://docs.astral.sh/uv/getting-started/installation/))
 
 ```bash
 # Using uv (recommended)
@@ -484,10 +484,10 @@ For other distributions, follow the "Installing from PyPI with pip" build depend
 <details>
 <summary><strong>Debian 13 (Trixie)</strong></summary>
 
-Debian packages Spectacle as `kde-spectacle`; there is no `spectacle` package. `gir1.2-atspi-2.0` provides the AT-SPI2 GObject Introspection typelib that PyGObject loads at runtime. `libei1` provides the EIS client library used for input injection; `kwin-wayland` does not depend on it, so it must be installed explicitly.
+Debian packages Spectacle as `kde-spectacle`; there is no `spectacle` package. `gir1.2-atspi-2.0` provides the AT-SPI2 GObject Introspection typelib that PyGObject loads at runtime. `libei1` provides the EIS client library used for input injection; `kwin-wayland` does not depend on it, so it must be installed explicitly. `kwin-common` ships KWin's EIS plugin (without it `session_start` reports `No input backend available`), and `qt6-wayland` lets Qt apps such as KCalc open windows on Wayland. `kwin-wayland` pulls in neither; a full Plasma desktop already has both, but a minimal system or container needs them listed.
 
 ```bash
-sudo apt-get install -y --no-install-recommends kwin-wayland kde-spectacle libei1 at-spi2-core gir1.2-atspi-2.0
+sudo apt-get install -y --no-install-recommends kwin-wayland kwin-common qt6-wayland kde-spectacle libei1 at-spi2-core gir1.2-atspi-2.0
 
 # Optional: for clipboard and Unicode input
 sudo apt-get install -y --no-install-recommends wl-clipboard wtype wayland-utils
@@ -537,7 +537,7 @@ sudo zypper install wl-clipboard wtype wayland-utils
 Use a release that ships KDE Plasma 6 and Python 3.12 or later; older Kubuntu releases with Plasma 5 are not supported. Install the Debian build prerequisites above as well. Ubuntu packages Spectacle as `kde-spectacle`.
 
 ```bash
-sudo apt install kwin-wayland kde-spectacle libei1 at-spi2-core python3-gi gir1.2-atspi-2.0 python3-dbus
+sudo apt install kwin-wayland kwin-common qt6-wayland kde-spectacle libei1 at-spi2-core python3-gi gir1.2-atspi-2.0 python3-dbus
 
 # Optional: for clipboard and Unicode input
 sudo apt install wl-clipboard wtype wayland-utils
@@ -550,7 +550,7 @@ sudo apt install wl-clipboard wtype wayland-utils
 Install the [system and build dependencies](#installing-system-dependencies) before using any method below. The uv installs, pip installs into a virtual environment, and the from-source install build PyGObject, pycairo, and dbus-python from source and fail without them.
 
 > [!NOTE]
-> kwin-mcp 0.7.0 on PyPI did not cap its `mcp` dependency, so a fresh install could resolve `mcp` 2.x and the server failed at startup with `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`. Releases 0.8.0–0.9.x cap `mcp<2`, and the next release targets `mcp>=2.2.0,<3`; upgrading kwin-mcp fixes the error.
+> kwin-mcp 0.7.0 on PyPI did not cap its `mcp` dependency, so a fresh install could resolve `mcp` 2.x and the server failed at startup with `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`. Releases 0.8.0–0.9.x cap `mcp<2`, and 0.10.0 and later require `mcp>=2.2.0,<3`; upgrading kwin-mcp fixes the error.
 
 ### Using uv (recommended)
 

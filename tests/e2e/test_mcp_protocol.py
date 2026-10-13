@@ -100,6 +100,8 @@ EXPECTED_TOOL_PROPERTIES: dict[str, dict[str, tuple[object, object]]] = {
         "query": ("string", NO_DEFAULT),
         "action_name": ("string", NO_DEFAULT),
         "app_name": ("string", ""),
+        "exact_name": ("boolean", False),
+        "fallback_action_names": (NULLABLE_ARRAY_OF_STRINGS, None),
     },
     "keyboard_key": {
         "key": ("string", NO_DEFAULT),

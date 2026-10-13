@@ -54,6 +54,18 @@ def test_plain_int_annotation_still_converts() -> None:
     assert type(kwargs["max_depth"]) is int
 
 
+def test_invoke_ui_action_exact_options_convert_to_bool_and_list() -> None:
+    engine = AutomationEngine()
+    kwargs = cli._parse_args(
+        engine.invoke_ui_action,
+        "query=save action_name=Press exact_name=true fallback_action_names='[\"click\"]'",
+    )
+
+    assert kwargs["exact_name"] is True
+    assert kwargs["fallback_action_names"] == ["click"]
+    assert type(kwargs["fallback_action_names"]) is list
+
+
 def test_quoted_json_list_arg_converts_to_list() -> None:
     engine = AutomationEngine()
     kwargs = cli._parse_args(engine.find_ui_elements, "query=x states='[\"focused\"]'")

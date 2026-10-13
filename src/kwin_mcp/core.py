@@ -21,7 +21,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from xml.etree import ElementTree
 
 from kwin_mcp import progress
@@ -890,8 +890,18 @@ class AutomationEngine:
         query: str,
         action_name: str,
         app_name: str = "",
+        exact_name: bool = False,
+        fallback_action_names: list[str] | None = None,
     ) -> str:
         """Invoke one AT-SPI action without pointer coordinates.
+
+        ``exact_name`` matches the query against element names only, after
+        case-folding and collapsing whitespace, instead of as a substring of
+        name, role or description. ``fallback_action_names`` lists further
+        actions an element may expose instead of ``action_name``, which is
+        preferred first, then the fallbacks in order. With either option each
+        element counts once; without them the original per-action-index
+        matching applies unchanged.
 
         Missing targets, ambiguous matches, incomplete discovery and failed
         requests raise. A matched action whose dispatch the application did not
@@ -901,8 +911,25 @@ class AutomationEngine:
             raise ValueError("invoke_ui_action needs a query.")
         if not action_name:
             raise ValueError("invoke_ui_action needs an action_name.")
+        # The CLI forwards raw values without MCP schema validation.
+        if not isinstance(exact_name, bool):
+            raise ValueError("invoke_ui_action exact_name must be true or false.")
+        fallbacks = [] if fallback_action_names is None else fallback_action_names
+        if not isinstance(fallbacks, list) or not all(
+            isinstance(name, str) and name for name in fallbacks
+        ):
+            raise ValueError(
+                "invoke_ui_action fallback_action_names must be a list of non-empty action names."
+            )
 
         self._get_session()
+
+        # The new options travel only when used, so default requests are unchanged.
+        options: dict[str, Any] = {}
+        if exact_name:
+            options["exact_name"] = True
+        if fallbacks:
+            options["fallback_action_names"] = fallbacks
 
         # Once the request reached the worker, the worker may finish the walk and
         # invoke the action even after this request timed out or the worker was
@@ -914,6 +941,7 @@ class AutomationEngine:
                 query=query,
                 action_name=action_name,
                 app_name=app_name,
+                **options,
             )
         except AtspiRequestNotSentError:
             raise
@@ -927,16 +955,16 @@ class AutomationEngine:
 
         result = resp["result"]
         matches = int(result.get("matches", 0))
+        # Without the new options these texts are exactly the original ones.
+        target = f"named {query!r}" if exact_name else f"matching {query!r}"
+        actions = " or ".join(repr(name) for name in [action_name, *fallbacks])
 
         if matches == 0:
-            raise RuntimeError(
-                f"No element matching {query!r} exposes AT-SPI action {action_name!r}."
-            )
+            raise RuntimeError(f"No element {target} exposes AT-SPI action {actions}.")
 
         if matches > 1:
             raise RuntimeError(
-                f"Refused ambiguous AT-SPI action: {matches} elements matching "
-                f"{query!r} expose {action_name!r}."
+                f"Refused ambiguous AT-SPI action: {matches} elements {target} expose {actions}."
             )
 
         if result.get("error"):
@@ -948,8 +976,10 @@ class AutomationEngine:
             )
 
         if not result.get("invoked"):
+            # With fallbacks, name the action actually chosen for the element.
+            chosen = result.get("action", action_name) if fallbacks else action_name
             raise RuntimeError(
-                f"AT-SPI action {action_name!r} matched one element but "
+                f"AT-SPI action {chosen!r} matched one element but "
                 "the application reported failure."
             )
 

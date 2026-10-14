@@ -1292,16 +1292,19 @@ def window_set_desktop(
 ) -> Annotated[CallToolResult, WindowSetDesktopResult]:
     """Put one window, by exact id, on exactly one virtual desktop, by exact id.
 
-    The operation neither requests nor changes the current desktop and does not
-    activate the window. A window that was on all desktops ends up on only this
-    one. Missing ids, an unknown window or desktop, and a request whose result
-    did not come back are tool errors, and so is a request KWin would carry over
-    to related windows (its transients, or the main window of a modal dialog)
-    unless they are already on that desktop: it is refused before anything
-    moves. applied is true when a separate KWin
-    query observes the window on exactly that desktop; when that readback fails
-    the window may already have moved. The current desktop before and after is
-    observed and reported alongside.
+    The operation does not explicitly select the current desktop or activate the
+    window. A window on all desktops ends up on only the requested one. Missing
+    ids, an unknown window or desktop, and a request whose result did not come
+    back are tool errors. Requests that would move related windows (transients
+    or modal main windows) enumerated by KWin scripting at request time are
+    refused before assignment, as are requests while an X11 group transient
+    exists. Linked but unpainted or unlisted children may follow their parent,
+    and KWin may switch the current desktop when they first appear.
+
+    applied verifies only that a separate readback observed the selected window
+    on exactly the requested desktop; when readback fails, it may already have
+    moved. The current desktop before and after is reported independently as
+    point-in-time observations, not future desktop or focus guarantees.
     """
     data = _engine.window_set_desktop_data(window_id=window_id, desktop_id=desktop_id)
     return _structured(format_window_set_desktop(data), data)

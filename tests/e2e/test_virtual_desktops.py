@@ -12,6 +12,7 @@ before relying on them, so they cannot pass without the relationship in place.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import time
@@ -42,7 +43,7 @@ for (var i = 0; i < windows.length; i++) {
     out.push({
         id: String(w.internalId), app: String(w.resourceClass), caption: w.caption,
         transientFor: w.transientFor ? String(w.transientFor.internalId) : null,
-        modal: w.modal, desktops: desktops
+        modal: w.modal, desktops: desktops, active: w === workspace.activeWindow
     });
 }
 callDBus("{sink}", "{path}", "{sink}", "Report", JSON.stringify(out));
@@ -95,6 +96,17 @@ def _relations(engine: AutomationEngine) -> dict[str, dict[str, Any]]:
         check=True,
     ).stdout
     return {window["id"]: window for window in json.loads(output)}
+
+
+def _await_active(engine: AutomationEngine, window_id: str) -> dict[str, dict[str, Any]]:
+    """Wait for KWin itself to report the intended active sentinel."""
+    deadline = time.monotonic() + _WAIT_SECONDS
+    while True:
+        windows = _relations(engine)
+        if [w["id"] for w in windows.values() if w["active"]] == [window_id]:
+            return windows
+        assert time.monotonic() < deadline, windows
+        time.sleep(0.25)
 
 
 def _wait_for_transient(
@@ -152,6 +164,11 @@ def test_window_set_desktop_moves_exactly_one_window_without_switching(
     # Two windows of the same app with the same caption: only the id may select one.
     kcalc_session.launch_app(command="kcalc")
     moved_id, other_id = _kcalc_ids(kcalc_session, 2)[:2]
+    assert kcalc_session.focus_window(window_id=other_id).startswith("Focused:")
+    before = _await_active(kcalc_session, other_id)
+    assert before[moved_id]["active"] is False, before[moved_id]
+    assert before[moved_id]["desktops"] == [current.id], before[moved_id]
+    assert before[other_id]["desktops"] == [current.id], before[other_id]
 
     data = kcalc_session.window_set_desktop_data(window_id=moved_id, desktop_id=target.id)
 
@@ -167,11 +184,12 @@ def test_window_set_desktop_moves_exactly_one_window_without_switching(
         d.current for d in desktops
     ]
 
-    # The other kcalc window did not move: putting it on the current desktop
-    # (where it already is) reports it there before and after.
-    stay = kcalc_session.window_set_desktop_data(window_id=other_id, desktop_id=current.id)
-    assert stay.before == [current.id], stay
-    assert stay.applied is True, stay
+    # KWin independently reports both memberships and the untouched active sentinel.
+    after = _relations(kcalc_session)
+    assert set(after) == set(before), (before, after)
+    assert after[moved_id]["desktops"] == [target.id], after[moved_id]
+    assert after[other_id]["desktops"] == [current.id], after[other_id]
+    assert [w["id"] for w in after.values() if w["active"]] == [other_id], after
 
     # Moving back restores the original assignment.
     back = kcalc_session.window_set_desktop_data(window_id=moved_id, desktop_id=current.id)
@@ -180,25 +198,83 @@ def test_window_set_desktop_moves_exactly_one_window_without_switching(
     assert back.observed == [current.id], back
 
 
-def test_unknown_window_or_desktop_changes_nothing(kcalc_session: AutomationEngine) -> None:
+@pytest.mark.parametrize(
+    "case",
+    [
+        "unknown-window",
+        "unknown-desktop",
+        "unbraced-window",
+        "prefix-window",
+        "braced-desktop",
+        "desktop-name",
+        "injected-window",
+        "injected-desktop",
+    ],
+)
+def test_unknown_window_or_desktop_changes_nothing(
+    kcalc_session: AutomationEngine, case: str
+) -> None:
     desktops = _add_two_desktops(kcalc_session)
     current = next(d for d in desktops if d.current)
     target = next(d for d in desktops if not d.current)
-    (window_id,) = _kcalc_ids(kcalc_session, 1)[:1]
+    kcalc_session.launch_app(command="kcalc")
+    window_id, sentinel_id = _kcalc_ids(kcalc_session, 2)[:2]
+    assert kcalc_session.focus_window(window_id=sentinel_id).startswith("Focused:")
+    before = _await_active(kcalc_session, sentinel_id)
+    memberships = {i: w["desktops"] for i, w in before.items()}
+    assert memberships[window_id] == [current.id], before[window_id]
+    assert memberships[sentinel_id] == [current.id], before[sentinel_id]
+    current_dbus = _current_from_dbus(kcalc_session)
+    assert current.id in current_dbus, current_dbus
 
-    with pytest.raises(RuntimeError, match="No window with id"):
+    # Both breakouts are valid JavaScript if naively wrapped in double quotes.
+    # The first would close the active sentinel; the second would switch desktops.
+    close_active = '"; workspace.activeWindow.closeWindow(); var _x="'
+    switch_desktop = '"; workspace.currentDesktop = workspace.desktops[1]; var _x="'
+    cases = {
+        "unknown-window": (window_id + "-missing", target.id, "No window with id"),
+        "unknown-desktop": (window_id, target.id + "-missing", "No virtual desktop with id"),
+        "unbraced-window": (
+            window_id.removeprefix("{").removesuffix("}"),
+            target.id,
+            "No window with id",
+        ),
+        "prefix-window": (window_id[:9], target.id, "No window with id"),
+        "braced-desktop": (window_id, "{" + target.id + "}", "No virtual desktop with id"),
+        "desktop-name": (window_id, target.name, "No virtual desktop with id"),
+        "injected-window": (close_active, target.id, "No window with id"),
+        "injected-desktop": (window_id, switch_desktop, "No virtual desktop with id"),
+    }
+    supplied_window, supplied_desktop, category = cases[case]
+    bad_id = supplied_window if category == "No window with id" else supplied_desktop
+    if category == "No window with id":
+        assert supplied_window not in before, (case, supplied_window, before)
+    else:
+        # A real selected window ensures desktop rejection cannot pass by failing
+        # the window lookup first. Every near miss differs from every real id.
+        assert supplied_window in before
+        assert supplied_desktop not in [d.id for d in desktops], (case, desktops)
+
+    error: RuntimeError | None = None
+    try:
         kcalc_session.window_set_desktop_data(
-            window_id="{00000000-0000-0000-0000-000000000000}", desktop_id=target.id
+            window_id=supplied_window, desktop_id=supplied_desktop
         )
+    except RuntimeError as exc:
+        error = exc
 
-    with pytest.raises(RuntimeError, match="No virtual desktop with id"):
-        kcalc_session.window_set_desktop_data(
-            window_id=window_id, desktop_id="00000000-0000-0000-0000-000000000000"
-        )
-
-    # Neither call moved the window.
-    check = kcalc_session.window_set_desktop_data(window_id=window_id, desktop_id=current.id)
-    assert check.before == [current.id], check
+    if case.startswith("injected-"):
+        # Existing window-close tests allow 2 s for asynchronous close to settle.
+        time.sleep(2)
+    # Check independent state even if a faulty matcher returns success or another
+    # error. A mutation must fail on its observed effects, not a query timeout.
+    after = _relations(kcalc_session)
+    assert set(after) == set(before), (case, before, after)
+    assert {i: w["desktops"] for i, w in after.items()} == memberships, (case, after)
+    assert _current_from_dbus(kcalc_session) == current_dbus, case
+    assert [w["id"] for w in after.values() if w["active"]] == [sentinel_id], (case, after)
+    assert error is not None, f"{case}: accepted {bad_id!r}"
+    assert re.search(re.escape(f"{category} {bad_id!r}."), str(error)), (case, error)
 
 
 def test_window_on_all_desktops_ends_on_exactly_the_target(

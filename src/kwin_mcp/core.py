@@ -1576,15 +1576,17 @@ class AutomationEngine:
         """Put one window, by exact KWin id, on exactly one virtual desktop, by exact id.
 
         Missing ids, unknown windows or desktops, and a request whose result did
-        not come back raise. So does a request KWin would carry over to other
-        windows (transients of the window, or the main window of a modal one),
-        or whose effect cannot be known while an X11 group transient exists: the
-        script refuses it before assigning anything. The operation neither requests nor changes
-        ``workspace.currentDesktop`` and does not activate the window. After the
-        request, a separate KWin query reads the window back, as in
-        ``window_set_geometry``: ``applied`` is true only when it observes exactly
-        ``[desktop_id]``, and the current desktop before and after is reported
-        alongside rather than folded into ``applied``.
+        not come back raise. The script also refuses before assignment if a
+        related window (transients or modal main windows) enumerated by KWin
+        scripting at request time would move, or if an X11 group transient exists.
+        Linked but unpainted or unlisted children may follow their parent, and
+        KWin may switch the current desktop when they first appear.
+
+        The operation does not write ``workspace.currentDesktop`` or activate the
+        window. A separate KWin readback verifies only the selected window:
+        ``applied`` is true when it observes exactly ``[desktop_id]``. The current
+        desktop before and after is reported independently as point-in-time
+        observations, not future desktop or focus guarantees.
         """
         # The CLI forwards raw values without MCP schema validation.
         for field, value, source in (
@@ -1614,8 +1616,8 @@ class AutomationEngine:
         if not assigned["desktopFound"]:
             msg = f"No virtual desktop with id {desktop_id!r}."
             raise RuntimeError(msg)
-        # KWin would also move transient or modal-related windows, or cannot tell
-        # which; the script refused before assigning anything.
+        # KWin scripting detected enumerated related windows that would move,
+        # or an unresolvable group transient; refused before assignment.
         if assigned.get("refused") == "unsupported":
             msg = (
                 "Refused: a window with an unresolvable transient relationship "

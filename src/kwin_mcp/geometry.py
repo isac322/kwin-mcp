@@ -259,19 +259,22 @@ callDBus("{sink}", "{path}", "{sink}", "Report", JSON.stringify({
 }));
 """
 
-# Assign exactly one window, by exact internalId, to exactly one virtual desktop,
-# by exact id. Nothing is assigned unless both are found. currentDesktop is only
-# read, never written, and the window is not activated or raised.
+# Assign the requested window, by exact internalId, to exactly one virtual desktop,
+# by exact id. Nothing is assigned unless both are found. The script does not
+# write currentDesktop or activate or raise the window.
 #
 # KWin's Window::setDesktops (checked at v6.3.6 and unchanged through 6.7) also
 # sets the desktops of every transient of the window, recursively, and, when the
-# window is modal, of its main windows. To move only the requested window, the
-# script follows those relationships first and refuses, without assigning
-# anything, when a related window is not already on exactly the requested
-# desktop. Scripts see transientFor and modal but not transients() or
-# mainWindows(); an X11 group transient (transient, no transientFor) belongs to
-# main windows a script cannot see, so while one exists the outcome cannot be
-# known and the request is refused too. Nothing is ever moved back afterwards.
+# window is modal, of its main windows. The script checks those relationships
+# across workspace.windowList() at request time and refuses before assignment
+# if an enumerated related window is not already on the requested desktop.
+#
+# Preflight refusal covers only relationships KWin scripting can enumerate.
+# Linked but unpainted or unlisted children may follow their parent; when they
+# first appear, KWin may switch the current desktop. Scripts see transientFor
+# and modal but not transients() or mainWindows(); an X11 group transient
+# (transient, no transientFor) links to main windows scripts cannot see, so while
+# one exists the request is refused too. Nothing is moved back afterwards.
 _SET_DESKTOP_SCRIPT_TEMPLATE = """
 var target = {window_id};
 var wanted = {desktop_id};
@@ -683,10 +686,14 @@ def set_desktop(window_id: str, desktop_id: str, timeout: float = 5.0) -> dict[s
 
     Returns ``{"windowFound", "desktopFound", "current"}`` and, when the window
     was found, its ``before`` desktop ids and ``beforeOnAllDesktops``. The
-    assignment happens only when both were found and KWin would move no other
-    window; otherwise ``refused`` is ``"related"`` (with the ``related`` windows
+    assignment happens only when both were found and no enumerated related window
+    would move; otherwise ``refused`` is ``"related"`` (with the ``related`` windows
     that would also move) or ``"unsupported"`` (an X11 group transient exists)
-    and nothing is assigned. Read an assignment back with ``desktops(window_id)``.
+    and nothing is assigned. Preflight refusal covers only relationships KWin
+    scripting can enumerate at request time. Linked but unpainted or unlisted
+    children may follow their parent, and KWin may switch the current desktop
+    when they first appear. Read the selected window's membership back with
+    ``desktops(window_id)``; the reported current desktop is a point-in-time observation.
     """
     script = _render_script(
         _SET_DESKTOP_SCRIPT_TEMPLATE, {"window_id": window_id, "desktop_id": desktop_id}

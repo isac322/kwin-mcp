@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING, Protocol
 import gi
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from kwin_mcp.geometry import KWinWindow
 
 gi.require_version("Atspi", "2.0")
@@ -208,16 +210,37 @@ def _incomplete_discovery_message(exc: _IncompleteDiscoveryError, app_name: str)
     return message
 
 
+def _normalize_name(text: str) -> str:
+    """Case-fold and collapse whitespace runs; punctuation stays significant."""
+    return " ".join(text.split()).casefold()
+
+
 def invoke_action(
     query: str,
     action_name: str,
     app_name: str = "",
+    exact_name: bool = False,
+    fallback_action_names: Sequence[str] = (),
 ) -> dict[str, object]:
     """Invoke exactly one matching AT-SPI action.
 
-    Matching is case-insensitive. The element query searches name, role and
-    description. The action name must match exactly. Ambiguous matches fail
-    closed and no action is performed.
+    Matching is case-insensitive. By default the element query is a substring
+    of the element's name, role or description, every action index named
+    ``action_name`` is a candidate, and these original semantics are kept
+    exactly while neither option below is used. Action names match exactly
+    apart from case.
+
+    With ``exact_name`` the query must equal the element's name after both are
+    case-folded and their whitespace runs collapsed (punctuation stays
+    significant); role and description are not matched.
+
+    With either ``exact_name`` or ``fallback_action_names`` the candidate is
+    the element: it qualifies when it exposes ``action_name`` or one of
+    ``fallback_action_names``, and the action invoked is ``action_name`` if it
+    exposes it, otherwise the first of ``fallback_action_names`` it exposes, at
+    the first index carrying that name. The element counts once however many
+    of these actions it exposes, while two distinct elements always count as
+    two. Ambiguous matches fail closed and no action is performed.
 
     Discovery must be complete before anything is invoked: every element in
     the searched scope is fully read, because a read failure could hide the
@@ -232,7 +255,11 @@ def invoke_action(
     """
     desktop = Atspi.get_desktop(0)
     query_lower = query.lower()
-    wanted_action = action_name.lower()
+    query_name = _normalize_name(query)
+    # action_name first, then fallback_action_names in order.
+    wanted_actions = [name.lower() for name in (action_name, *fallback_action_names)]
+    # Without either new option the original matching and counting apply unchanged.
+    legacy = not exact_name and not fallback_action_names
 
     candidates: list[tuple[object, int, str, str, str, str]] = []
 
@@ -257,11 +284,14 @@ def invoke_action(
         except Exception as exc:
             raise _IncompleteDiscoveryError(f"could not read element description: {exc}") from exc
 
-        query_match = (
-            query_lower in name.lower()
-            or query_lower in role.lower()
-            or query_lower in description.lower()
-        )
+        if exact_name:
+            query_match = bool(query_name) and _normalize_name(name) == query_name
+        else:
+            query_match = (
+                query_lower in name.lower()
+                or query_lower in role.lower()
+                or query_lower in description.lower()
+            )
 
         if query_match:
             # An element without an Action interface is not a candidate;
@@ -275,24 +305,36 @@ def invoke_action(
                     action_count = action_iface.get_n_actions()
                 except Exception as exc:
                     raise _IncompleteDiscoveryError(f"could not read action count: {exc}") from exc
+                # Read every action name before choosing, so a read fault still
+                # refuses the request even when an earlier action already fits.
+                exposed: list[tuple[int, str]] = []
                 for index in range(action_count):
                     try:
-                        available = action_iface.get_action_name(index) or ""
+                        exposed.append((index, action_iface.get_action_name(index) or ""))
                     except Exception as exc:
                         raise _IncompleteDiscoveryError(
                             f"could not read action name: {exc}"
                         ) from exc
-                    if available.lower() == wanted_action:
-                        candidates.append(
-                            (
-                                action_iface,
-                                index,
-                                application,
-                                role,
-                                name,
-                                available,
-                            )
-                        )
+                if legacy:
+                    # Original semantics: every matching action index is a candidate.
+                    candidates.extend(
+                        (action_iface, index, application, role, name, available)
+                        for index, available in exposed
+                        if available.lower() == wanted_actions[0]
+                    )
+                else:
+                    # The element is the candidate: at most one entry per element.
+                    selected: tuple[int, str] | None = None
+                    for wanted in wanted_actions:
+                        for index, available in exposed:
+                            if available.lower() == wanted:
+                                selected = (index, available)
+                                break
+                        if selected is not None:
+                            break
+                    if selected is not None:
+                        index, available = selected
+                        candidates.append((action_iface, index, application, role, name, available))
 
         try:
             child_count = element.get_child_count()
@@ -975,11 +1017,22 @@ def _handle_request(request: dict) -> dict:
         return {"ok": True, "result": [asdict(e) for e in elements]}
 
     if op == "action":
+        exact_name = request.get("exact_name", False)
+        raw_query = request.get("query", "")
+        if exact_name and (not isinstance(raw_query, str) or not _normalize_name(raw_query)):
+            return {
+                "ok": False,
+                "error": "Refused exact_name request: the query has no name left after "
+                "collapsing whitespace.",
+            }
         try:
             result = invoke_action(
                 query=request.get("query", ""),
                 action_name=request.get("action_name", ""),
                 app_name=request.get("app_name", ""),
+                # Validated by the engine; passed through unchanged.
+                exact_name=exact_name,
+                fallback_action_names=request.get("fallback_action_names", ()),
             )
         except _IncompleteDiscoveryError as exc:
             # Incomplete discovery is a refused action, not a broken worker:

@@ -39,11 +39,15 @@ from kwin_mcp.results import (
     AccessibilityTreeResult,
     FindUIElementsResult,
     ListWindowsResult,
+    VirtualDesktopsResult,
     WindowGeometryResult,
+    WindowSetDesktopResult,
     format_find,
     format_list_windows,
     format_tree,
+    format_virtual_desktops,
     format_window_geometry,
+    format_window_set_desktop,
 )
 from kwin_mcp.session import process_registry
 
@@ -783,23 +787,43 @@ def invoke_ui_action(
         str,
         Field(description="Optional application-name filter."),
     ] = "",
+    exact_name: Annotated[
+        bool,
+        Field(
+            description="Match the query against element names only, equal after "
+            "case-folding and collapsing whitespace (punctuation counts), instead of "
+            "as a substring of name, role or description."
+        ),
+    ] = False,
+    fallback_action_names: Annotated[
+        list[str] | None,
+        Field(
+            description="Further action names an element may expose instead of "
+            'action_name, for example ["click"]. action_name is preferred first, then '
+            "these in order. With this or exact_name, each element counts once however "
+            "many of these actions it exposes."
+        ),
+    ] = None,
 ) -> str:
     """Invoke a native AT-SPI action without pointer coordinates.
 
-    Exactly one element must match the query, app filter and action name.
-    Ambiguous matches fail closed. Discovery also fails closed: if any node in
-    the searched scope cannot be read, or a subtree is deeper than 64 levels,
-    nothing is invoked and the error names that application — set app_name to
-    search only the target application. No match, a refusal or a failed request
-    is a tool error. If the application does not confirm a dispatched action,
-    the result says so: the action may have run, so check the UI before
-    retrying. State-changing accessibility calls are not automatically retried
-    because repeating an action could trigger it twice.
+    Exactly one element must match the query, app filter and action name (or a
+    fallback action name). Ambiguous matches fail closed. Discovery also fails
+    closed: if any node in the searched scope cannot be read, or a subtree is
+    deeper than 64 levels, nothing is invoked and the error names that
+    application — set app_name to search only the target application. No
+    match, a refusal or a failed request is a tool error. If the application
+    does not confirm a dispatched action, the result says so: the action may
+    have run, so check the UI before retrying. State-changing accessibility
+    calls are not automatically retried because repeating an action could
+    trigger it twice.
     """
     return _engine.invoke_ui_action(
         query=query,
         action_name=action_name,
         app_name=app_name,
+        exact_name=exact_name,
+        fallback_action_names=fallback_action_names,
     )
 
 
@@ -1262,6 +1286,48 @@ def window_set_geometry(
         width=width,
         height=height,
     )
+
+
+@_tool(annotations=_READ_ONLY)
+def virtual_desktops() -> Annotated[CallToolResult, VirtualDesktopsResult]:
+    """List KWin virtual desktops in order, with stable ids and the current one.
+
+    Pass a desktop id to window_set_desktop. Ids stay valid while the desktop
+    exists, unlike positions, which change when desktops are added or reordered.
+    """
+    data = _engine.virtual_desktops_data()
+    return _structured(format_virtual_desktops(data), data)
+
+
+@_tool(annotations=_DESTRUCTIVE_IDEMPOTENT)
+def window_set_desktop(
+    window_id: Annotated[
+        str,
+        Field(description="Exact KWin window id from window_geometry."),
+    ],
+    desktop_id: Annotated[
+        str,
+        Field(description="Exact virtual desktop id from virtual_desktops."),
+    ],
+) -> Annotated[CallToolResult, WindowSetDesktopResult]:
+    """Put one window, by exact id, on exactly one virtual desktop, by exact id.
+
+    The operation does not explicitly select the current desktop or activate the
+    window. A window on all desktops ends up on only the requested one. Missing
+    ids, an unknown window or desktop, and a request whose result did not come
+    back are tool errors. Requests that would move related windows (transients
+    or modal main windows) enumerated by KWin scripting at request time are
+    refused before assignment, as are requests while an X11 group transient
+    exists. Linked but unpainted or unlisted children may follow their parent,
+    and KWin may switch the current desktop when they first appear.
+
+    applied verifies only that a separate readback observed the selected window
+    on exactly the requested desktop; when readback fails, it may already have
+    moved. The current desktop before and after is reported independently as
+    point-in-time observations, not future desktop or focus guarantees.
+    """
+    data = _engine.window_set_desktop_data(window_id=window_id, desktop_id=desktop_id)
+    return _structured(format_window_set_desktop(data), data)
 
 
 @_tool(annotations=_DESTRUCTIVE_IDEMPOTENT)

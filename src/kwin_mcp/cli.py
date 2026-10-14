@@ -40,6 +40,11 @@ from kwin_mcp.session import process_registry
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
 
+# Boolean literals, matched case-insensitively. Anything else is an error rather
+# than False: a mistyped flag such as exact_name must not silently turn it off.
+_TRUE_LITERALS = frozenset({"true", "1", "yes"})
+_FALSE_LITERALS = frozenset({"false", "0", "no"})
+
 
 def _parse_value(value_str: str, annotation: type | None) -> object:
     """Convert a string value to the appropriate Python type based on annotation."""
@@ -57,7 +62,13 @@ def _parse_value(value_str: str, annotation: type | None) -> object:
             origin = typing.get_origin(annotation)
 
     if annotation is bool:
-        return value_str.lower() in ("true", "1", "yes")
+        literal = value_str.lower()
+        if literal in _TRUE_LITERALS:
+            return True
+        if literal in _FALSE_LITERALS:
+            return False
+        msg = f"Invalid boolean value: {value_str!r} (expected true/false, yes/no, or 1/0)"
+        raise ValueError(msg)
     if annotation is int:
         return int(value_str)
     if annotation is float:

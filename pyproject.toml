@@ -122,6 +122,7 @@ include = [
     "tests/e2e/interaction_probe.py",
     "tests/e2e/test_dbus_call.py",
     "tests/e2e/test_eis_device_replacement.py",
+    "tests/e2e/transient_probe.py",
 ]
 [tool.ty.overrides.rules]
 unresolved-import = "ignore"

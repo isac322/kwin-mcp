@@ -21,7 +21,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from xml.etree import ElementTree
 
 from kwin_mcp import progress
@@ -31,14 +31,18 @@ from kwin_mcp.results import (
     FindUIElementsResult,
     ListWindowsResult,
     UIElement,
+    VirtualDesktopsResult,
     WindowGeometry,
     WindowGeometryResult,
+    WindowSetDesktopResult,
     format_find,
     format_found,
     format_list_windows,
     format_tree,
+    format_virtual_desktops,
     format_window,
     format_window_geometry,
+    format_window_set_desktop,
     search_description,
 )
 from kwin_mcp.screenshot import (
@@ -890,19 +894,48 @@ class AutomationEngine:
         query: str,
         action_name: str,
         app_name: str = "",
+        exact_name: bool = False,
+        fallback_action_names: list[str] | None = None,
     ) -> str:
         """Invoke one AT-SPI action without pointer coordinates.
+
+        ``exact_name`` matches the query against element names only, after
+        case-folding and collapsing whitespace, instead of as a substring of
+        name, role or description. ``fallback_action_names`` lists further
+        actions an element may expose instead of ``action_name``, which is
+        preferred first, then the fallbacks in order. With either option each
+        element counts once; without them the original per-action-index
+        matching applies unchanged.
 
         Missing targets, ambiguous matches, incomplete discovery and failed
         requests raise. A matched action whose dispatch the application did not
         confirm is reported as sent, since it may still have run.
         """
-        if not query:
+        # The CLI forwards raw JSON values without MCP schema validation.
+        if not isinstance(query, str) or not query.strip():
             raise ValueError("invoke_ui_action needs a query.")
-        if not action_name:
+        if not isinstance(action_name, str) or not action_name.strip():
             raise ValueError("invoke_ui_action needs an action_name.")
+        if not isinstance(app_name, str):
+            raise ValueError("invoke_ui_action app_name must be a string.")
+        if not isinstance(exact_name, bool):
+            raise ValueError("invoke_ui_action exact_name must be true or false.")
+        fallbacks = [] if fallback_action_names is None else fallback_action_names
+        if not isinstance(fallbacks, list) or not all(
+            isinstance(name, str) and name.strip() for name in fallbacks
+        ):
+            raise ValueError(
+                "invoke_ui_action fallback_action_names must be a list of non-empty action names."
+            )
 
         self._get_session()
+
+        # The new options travel only when used, so default requests are unchanged.
+        options: dict[str, Any] = {}
+        if exact_name:
+            options["exact_name"] = True
+        if fallbacks:
+            options["fallback_action_names"] = fallbacks
 
         # Once the request reached the worker, the worker may finish the walk and
         # invoke the action even after this request timed out or the worker was
@@ -914,6 +947,7 @@ class AutomationEngine:
                 query=query,
                 action_name=action_name,
                 app_name=app_name,
+                **options,
             )
         except AtspiRequestNotSentError:
             raise
@@ -927,16 +961,16 @@ class AutomationEngine:
 
         result = resp["result"]
         matches = int(result.get("matches", 0))
+        # Without the new options these texts are exactly the original ones.
+        target = f"named {query!r}" if exact_name else f"matching {query!r}"
+        actions = " or ".join(repr(name) for name in [action_name, *fallbacks])
 
         if matches == 0:
-            raise RuntimeError(
-                f"No element matching {query!r} exposes AT-SPI action {action_name!r}."
-            )
+            raise RuntimeError(f"No element {target} exposes AT-SPI action {actions}.")
 
         if matches > 1:
             raise RuntimeError(
-                f"Refused ambiguous AT-SPI action: {matches} elements matching "
-                f"{query!r} expose {action_name!r}."
+                f"Refused ambiguous AT-SPI action: {matches} elements {target} expose {actions}."
             )
 
         if result.get("error"):
@@ -948,8 +982,10 @@ class AutomationEngine:
             )
 
         if not result.get("invoked"):
+            # With fallbacks, name the action actually chosen for the element.
+            chosen = result.get("action", action_name) if fallbacks else action_name
             raise RuntimeError(
-                f"AT-SPI action {action_name!r} matched one element but "
+                f"AT-SPI action {chosen!r} matched one element but "
                 "the application reported failure."
             )
 
@@ -1551,6 +1587,118 @@ class AutomationEngine:
 
         lines.append(f"moveable: {result['moveable']}, resizeable: {result['resizeable']}")
         return "\n".join(lines)
+
+    def virtual_desktops_data(self) -> VirtualDesktopsResult:
+        """Report KWin's virtual desktops, with stable ids and the current one, as data.
+
+        Raises RuntimeError when KWin cannot be queried, as window_geometry_data does.
+        """
+        self._get_session()
+        resp = self._run_kwin_query({"op": "desktops"})
+        if not resp["ok"]:
+            msg = f"Virtual desktops unavailable: {resp['error']}"
+            raise RuntimeError(msg)
+        return VirtualDesktopsResult.model_validate({"desktops": resp["result"]["desktops"]})
+
+    def virtual_desktops(self) -> str:
+        """Report KWin's virtual desktops, with stable ids and the current one."""
+        return format_virtual_desktops(self.virtual_desktops_data())
+
+    def window_set_desktop_data(self, window_id: str, desktop_id: str) -> WindowSetDesktopResult:
+        """Put one window, by exact KWin id, on exactly one virtual desktop, by exact id.
+
+        Missing ids, unknown windows or desktops, and a request whose result did
+        not come back raise. The script also refuses before assignment if a
+        related window (transients or modal main windows) enumerated by KWin
+        scripting at request time would move, or if an X11 group transient exists.
+        Linked but unpainted or unlisted children may follow their parent, and
+        KWin may switch the current desktop when they first appear.
+
+        The operation does not write ``workspace.currentDesktop`` or activate the
+        window. A separate KWin readback verifies only the selected window:
+        ``applied`` is true when it observes exactly ``[desktop_id]``. The current
+        desktop before and after is reported independently as point-in-time
+        observations, not future desktop or focus guarantees.
+        """
+        # The CLI forwards raw values without MCP schema validation.
+        for field, value, source in (
+            ("window_id", window_id, "window_geometry"),
+            ("desktop_id", desktop_id, "virtual_desktops"),
+        ):
+            if not isinstance(value, str) or not value:
+                msg = f"window_set_desktop needs a {field} (see {source})."
+                raise ValueError(msg)
+
+        self._get_session()
+        resp = self._run_kwin_query(
+            {"op": "set_desktop", "window_id": window_id, "desktop_id": desktop_id}
+        )
+        if not resp["ok"]:
+            # The script may have assigned the window before its reply was lost.
+            msg = (
+                f"Failed to confirm the desktop of {window_id!r}: {resp['error']}. "
+                "The window may already have moved."
+            )
+            raise RuntimeError(msg)
+        assigned = resp["result"]
+        # The script assigns nothing unless both the window and the desktop exist.
+        if not assigned["windowFound"]:
+            msg = f"No window with id {window_id!r}."
+            raise RuntimeError(msg)
+        if not assigned["desktopFound"]:
+            msg = f"No virtual desktop with id {desktop_id!r}."
+            raise RuntimeError(msg)
+        # KWin scripting detected enumerated related windows that would move,
+        # or an unresolvable group transient; refused before assignment.
+        if assigned.get("refused") == "unsupported":
+            msg = (
+                "Refused: a window with an unresolvable transient relationship "
+                f"(X11 group transient) exists, so KWin could move windows besides {window_id!r}; "
+                "nothing was changed."
+            )
+            raise RuntimeError(msg)
+        if assigned.get("refused") == "related":
+            related = "; ".join(
+                f'{window["id"]} {window["app"]} "{window["caption"]}"'
+                for window in assigned["related"]
+            )
+            msg = (
+                f"Refused: KWin would also move {len(assigned['related'])} related window(s) of "
+                f"{window_id!r} (transient or modal relationships): {related}; "
+                "nothing was changed."
+            )
+            raise RuntimeError(msg)
+
+        observed: list[str] | None = None
+        current_after: str | None = None
+        observation_error: str | None = None
+        observed_resp = self._run_kwin_query({"op": "desktops", "window_id": window_id})
+        if not observed_resp["ok"]:
+            observation_error = str(observed_resp["error"])
+        else:
+            readback = observed_resp["result"]
+            current_after = readback["current"]
+            if readback["window"] is None:
+                # The request was dispatched; the window went away before the readback.
+                observation_error = "window no longer exists (it closed or its client exited)"
+            else:
+                observed = list(readback["window"]["desktops"])
+
+        return WindowSetDesktopResult(
+            window_id=window_id,
+            desktop_id=desktop_id,
+            applied=observed == [desktop_id],
+            before=list(assigned["before"]),
+            before_on_all_desktops=assigned["beforeOnAllDesktops"],
+            observed=observed,
+            current_desktop_id_before=assigned["current"],
+            current_desktop_id_after=current_after,
+            observation_error=observation_error,
+        )
+
+    def window_set_desktop(self, window_id: str, desktop_id: str) -> str:
+        """Put one window, by exact KWin id, on exactly one virtual desktop, by exact id."""
+        return format_window_set_desktop(self.window_set_desktop_data(window_id, desktop_id))
 
     def window_close(self, window_id: str) -> str:
         """Ask KWin to close one window, addressed by the id window_geometry reports.

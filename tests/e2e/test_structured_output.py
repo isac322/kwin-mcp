@@ -1,7 +1,8 @@
-"""Typed structured output of the observation tools over the installed MCP stdio server.
+"""Typed structured output over the installed MCP stdio server.
 
-``window_geometry``, ``find_ui_elements``, ``accessibility_tree``, and
-``list_windows`` advertise a typed ``outputSchema`` and return matching
+``window_geometry``, ``find_ui_elements``, ``accessibility_tree``,
+``list_windows``, ``virtual_desktops``, and ``window_set_desktop`` advertise a
+typed ``outputSchema`` and return matching
 ``structuredContent``, while their TextContent stays the human-readable text the
 engine formatters produce (and ``kwin-mcp-cli`` prints).
 """
@@ -20,11 +21,15 @@ from kwin_mcp.results import (
     AccessibilityTreeResult,
     FindUIElementsResult,
     ListWindowsResult,
+    VirtualDesktopsResult,
     WindowGeometryResult,
+    WindowSetDesktopResult,
     format_find,
     format_list_windows,
     format_tree,
+    format_virtual_desktops,
     format_window_geometry,
+    format_window_set_desktop,
 )
 
 if TYPE_CHECKING:
@@ -46,6 +51,26 @@ STRUCTURED_TOOL_PROPERTIES: dict[str, frozenset[str]] = {
     "find_ui_elements": frozenset({"query", "states", "elements"}),
     "list_windows": frozenset({"applications"}),
     "window_geometry": frozenset({"windows"}),
+    "virtual_desktops": frozenset({"desktops"}),
+    "window_set_desktop": frozenset(
+        {
+            "window_id",
+            "desktop_id",
+            "applied",
+            "before",
+            "before_on_all_desktops",
+            "observed",
+            "current_desktop_id_before",
+            "current_desktop_id_after",
+            "observation_error",
+        }
+    ),
+}
+
+# Required arguments for calling each typed tool without a session.
+_MINIMAL_ARGUMENTS: dict[str, dict[str, str]] = {
+    "find_ui_elements": {"query": ""},
+    "window_set_desktop": {"window_id": "{id}", "desktop_id": "id"},
 }
 
 
@@ -115,7 +140,7 @@ async def test_typed_tools_advertise_object_output_schemas() -> None:
 async def test_typed_tools_without_session_are_errors_without_structured_content(
     name: str,
 ) -> None:
-    arguments = {"query": ""} if name == "find_ui_elements" else {}
+    arguments = _MINIMAL_ARGUMENTS.get(name, {})
     async with running_mcp_server() as client:
         result = await client.call_result(name, arguments)
 
@@ -214,6 +239,48 @@ async def test_typed_tools_return_schema_valid_structured_content_matching_text(
             assert focus_output.startswith("Focused:"), focus_output
             geometry_text, geometry = await _wait_for_single_active_window(client, schemas)
             _assert_window_geometry(geometry_text, geometry)
+
+            desktops_text, desktops = await _call_structured(client, schemas, "virtual_desktops")
+            assert desktops_text == format_virtual_desktops(
+                VirtualDesktopsResult.model_validate(desktops)
+            )
+            assert [d["current"] for d in desktops["desktops"]].count(True) == 1, desktops
+            current_id = next(d["id"] for d in desktops["desktops"] if d["current"])
+            window_id = geometry["windows"][0]["id"]
+            # Already on the current desktop: an idempotent, observable no-op.
+            set_text, placed = await _call_structured(
+                client,
+                schemas,
+                "window_set_desktop",
+                {"window_id": window_id, "desktop_id": current_id},
+            )
+            assert set_text == format_window_set_desktop(
+                WindowSetDesktopResult.model_validate(placed)
+            )
+            assert placed["applied"] is True, placed
+            assert placed["before"] == placed["observed"] == [current_id], placed
+            assert placed["current_desktop_id_before"] == current_id, placed
+            assert placed["current_desktop_id_after"] == current_id, placed
+            assert placed["observation_error"] is None, placed
+
+            # An unknown window or desktop is a tool error without structured content.
+            for arguments, message in (
+                (
+                    {
+                        "window_id": "{00000000-0000-0000-0000-000000000000}",
+                        "desktop_id": current_id,
+                    },
+                    "No window with id",
+                ),
+                (
+                    {"window_id": window_id, "desktop_id": "no-such-desktop"},
+                    "No virtual desktop with id",
+                ),
+            ):
+                refused = await client.call_result("window_set_desktop", arguments)
+                assert refused.is_error is True, _text(refused)
+                assert refused.structured_content is None, refused.structured_content
+                assert message in _text(refused), _text(refused)
 
             missing_id = "{00000000-0000-0000-0000-000000000000}"
             missing_text, missing_geometry = await _call_structured(

@@ -166,14 +166,21 @@ The suite collects every test under `tests/e2e`. Together they prove:
   signal arriving mid-teardown must not interrupt the launched-app kill loop;
 - accessibility-bus startup: `org.a11y.Bus` must have an owner as soon as `session_start`
   returns, and a failed activation (a `dbus-send` stub on `PATH`) must reach the caller as a
-  `Warning:` line.
-- direct AT-SPI service-file and launch security coverage: acquisition reads at most 128 KiB per
-  candidate without blocking on nonregular files; missing, nonregular, and existing invalid-path/link
-  cases remain skippable, while malformed, unreadable, or oversized regular candidates and
-  inaccessible metadata, paths, or roots stop direct-start lookup without aborting `session_start`;
-  normal D-Bus activation is unchanged. Implicit `PATH` lookup, shell builtins/function evaluation,
-  and `ENOEXEC` fallback are rejected, while explicit interpreter commands and valid `#!` scripts
-  remain supported;
+  `Warning:` line. Only the exact server-environment opt-in value `1` permits direct startup;
+  an application's `env` cannot enable it;
+- direct AT-SPI startup: neither the server nor healthy activation reads the service-file roots.
+  After activation fails, an owned child validates both service commands before executing the
+  launcher, and the registry child revalidates its file at startup. Invalid files trigger rollback.
+  Lookup retains the 128 KiB content limit, file-descriptor guards, and fail-closed acquisition
+  rules; `os.execv` rejects implicit `PATH` lookup, shell builtins/function evaluation, and
+  `ENOEXEC` fallback while supporting explicit interpreter commands and valid `#!` scripts;
+- direct-start lifecycle regressions in real virtual KWin sessions: launcher or registry failures,
+  TERM-ignoring children, controlled lookup stalls and spoofed helper output, asymmetric invalid
+  service pairs, registry invalidation after preflight, session-environment data-root selection,
+  and service-file descriptors closed before execution. Rollback targets owned Bash jobs with
+  shared 3-second TERM and 2-second KILL graces, preserving neighboring processes and allowing
+  KWin/EIS and application launches to continue. The tests do not reproduce live NFS/FUSE
+  uninterruptible I/O or verify SELinux-enforcing Fedora behavior.
 
 The image needs no `--privileged`, GPU, `/dev/dri`, or other device flags. Engine tests use
 KWin's exact virtual backend with llvmpipe. Visual tests start Xvfb and a nested KWin compositor
@@ -226,7 +233,7 @@ src/kwin_mcp/
 ├── geometry.py        # Window geometry, activation, and output topology via KWin scripting
 ├── clipboard.py       # Private Wayland data-control helper for keyboard_type_unicode paste
 ├── dbus_args.py       # dbus_call argument parser (dbus-send strings and typed JSON)
-├── dbus_service_file.py # D-Bus service file Exec= parsed into the argv dbus-daemon activation runs
+├── dbus_service_file.py # D-Bus Exec= parser, guarded lookup, and private stdlib lookup/exec script
 ├── progress.py        # Per-call progress and screenshot-image scope (MCP-free; no-op in the CLI)
 ├── results.py         # Typed results (outputSchema/structuredContent) and text of observation tools
 └── input.py           # Input injection via KWin EIS D-Bus + libei
@@ -298,9 +305,9 @@ tests/e2e/
 ├── test_window_tool_errors.py          # focus_window/window_close/window_set_geometry argument errors before any session lookup
 ├── test_pointer_reconnect.py           # Clicks reach a window mapped under a parked pointer
 ├── test_dbus_args.py                   # dbus_call argument parser (no session needed)
-├── test_atspi_service_acquisition.py   # Bounded service-file lookup and real-session activation after inaccessible metadata
-├── test_atspi_exec_security.py        # Direct AT-SPI Exec= execution security against implicit shell/interpreter fallback
-├── test_dbus_service_file.py           # Service file Exec= argv as dbus-daemon gives it (no session needed)
+├── test_atspi_service_acquisition.py   # Child lookup guards and real-session activation with inaccessible roots
+├── test_atspi_exec_security.py         # Real-session direct Exec= security, explicit interpreters, and #! scripts
+├── test_dbus_service_file.py           # Exec= parser compared with real dbus-daemon argv (no KWin)
 ├── test_dbus_call.py                   # dbus_call arguments as received by a test D-Bus service
 ├── test_lazy_libei.py                  # Import without libei and the missing-libei input backend path
 ├── test_eis_device_replacement.py      # Input after KWin replaces or drops its EIS devices
@@ -323,6 +330,17 @@ integrations/
 ```
 
 The exit path is part of `session.py`'s `OwnedProcessRegistry` contract and is worth reading before changing session teardown: the serialized `session_stop` on the tool thread is the primary cleanup when the server exits, and the registry's direct process-group termination and temp-dir removal is the fallback when an in-flight tool still holds the thread after the 2 s drain. The registry signals a group only while its leader is still an unreaped child of the process, so a live-session KWin and pre-existing apps are never reached; `kwin-mcp-cli` reuses the same registry to sweep owned groups that were never attached to a session on exit.
+
+Direct AT-SPI startup is another ownership boundary in `session.py`: only a failed activation
+and `KWIN_MCP_ATSPI_DIRECT_START=1` in the server environment reach it. The wrapper starts the
+installed `dbus_service_file.py` using the server interpreter with `-I -S`; its private
+launcher/registry roles are not user-facing CLI commands or new MCP tools. Lookup and `execv`
+run in an owned child, retaining the private bus, user, process group, environment, and inherited
+server working directory. Child-only lookup bounds the caller's response to stalled filesystem
+I/O without promising immediate reaping of a kernel task in uninterruptible sleep. Launcher
+descendants can remain in the owned session group until `session_stop`, and an executable that
+escapes the group is not sandboxed by this mechanism. Normal D-Bus activation, runtime-directory
+setup, and the 60-second startup watchdog stay unchanged.
 
 ## Pull Request Process
 

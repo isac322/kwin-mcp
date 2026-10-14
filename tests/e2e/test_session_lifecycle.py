@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
+import builtins
 import contextlib
 import errno
+import io
 import os
 import re
 import shlex
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
 import pytest
@@ -524,18 +528,357 @@ def test_process_identity_recording_handles_spaces_and_parentheses(
 
 
 def _recording_launcher_script(
-    script: Path, recorded: Path, identity: Path, real_launcher: list[str]
+    script: Path,
+    recorded: Path,
+    identity: Path,
+    real_launcher: list[str],
+    *,
+    fd_log: Path | None = None,
 ) -> str:
     """Create a launcher that records literal argv and then execs dbus-daemon."""
+    record_fds = (
+        "for _fd in /proc/$$/fd/*; do\n"
+        f'    readlink "$_fd" >> {shlex.quote(str(fd_log))} || :\n'
+        "done\n"
+        if fd_log is not None
+        else ""
+    )
     script.write_text(
         "#!/bin/bash\n"
         f"{_record_identity(identity)}"
+        f"{record_fds}"
         f"printf '%s\\0' \"$@\" > {shlex.quote(str(recorded))}\n"
         "shift\n"
         'exec "$@"\n'
     )
     script.chmod(0o755)
     return f"{shlex.quote(str(script))} --record {shlex.join(real_launcher)}"
+
+
+def _real_registry_argv() -> list[str]:
+    return service_file_argv(
+        _real_service_file("accessibility-services/org.a11y.atspi.Registry.service").encode(),
+        "org.a11y.atspi.Registry",
+    )
+
+
+def _assert_real_session_state(engine: AutomationEngine) -> None:
+    """Exercise the real private bus, compositor, EIS connection, and app environment."""
+    session = engine._session
+    assert isinstance(session, Session) and session.info is not None
+    info = session.info
+    assert info.dbus_address != "unix:path=/definitely-not-the-session-bus"
+    assert not any("injected-" in warning for warning in info.startup_warnings)
+    assert (Path(os.environ["XDG_RUNTIME_DIR"]) / info.wayland_socket).is_socket()
+    kwin_pid = _bus_name_owner_pid(info.dbus_address, "org.kde.KWin")
+    kwin_identity = _process_identity(kwin_pid)
+    assert kwin_identity is not None and kwin_identity[0] == info.kwin_pid
+    assert _bus_name_has_owner(info.dbus_address, "org.freedesktop.DBus")
+    engine.mouse_move(13, 17)
+    pid = _launched_pid(
+        engine.launch_app(
+            'sh -c \'printf "bus:%s\\nwayland:%s\\n" '
+            '"$DBUS_SESSION_BUS_ADDRESS" "$WAYLAND_DISPLAY"; exec sleep 60\''
+        )
+    )
+    assert _process_identity(pid) is not None
+    output = _wait_for_app_log(engine, pid, "wayland:")
+    assert output == f"bus:{info.dbus_address}\nwayland:{info.wayland_socket}\n"
+
+
+def _install_interpreter_shim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    stall_role: Literal["none", "launcher", "registry"],
+    spoof_stdout: bool,
+    spoof_source_marker: Path | None = None,
+) -> Path:
+    """Record role/PID/group/start-time lines and role-specific NUL-delimited argv."""
+    real_interpreter = sys.executable
+    assert real_interpreter
+    log = tmp_path / "interpreter-log"
+    shim = tmp_path / "interpreter-shim"
+    injected_warning = f"injected-{uuid4().hex}"
+    spoof = (
+        f'printf "READY\\nFAILED\\nWARN: {injected_warning}\\n'
+        f"Warning: {injected_warning}\\n"
+        'DBUS_SESSION_BUS_ADDRESS=unix:path=/definitely-not-the-session-bus\\n"\n'
+        if spoof_stdout
+        else ""
+    )
+    if spoof_source_marker is not None:
+        command = f"touch {shlex.quote(str(spoof_source_marker))}"
+        source = f"{command}\nATSPI_LAUNCHER=(/bin/sh -c {shlex.quote(command)})\n"
+        spoof += f"printf '%s' {shlex.quote(source)}\n"
+    shim.write_text(
+        "#!/bin/bash\n"
+        "_role=none\n"
+        'for _arg in "$@"; do\n'
+        '    case "$_arg" in launcher|registry) _role=$_arg;; esac\n'
+        "done\n"
+        "read -r _stat < /proc/$$/stat\n"
+        "_stat=${_stat##*)}\n"
+        'read -r -a _fields <<< "$_stat"\n'
+        f'printf "%s %s %s %s\\n" "$_role" "$$" "${{_fields[2]}}" "${{_fields[19]}}"'
+        f" >> {shlex.quote(str(log))}\n"
+        f'printf "%s\\0" "$@" > {shlex.quote(str(log))}.argv."$_role"\n'
+        f"{spoof}"
+        f'if [ "$_role" = {shlex.quote(stall_role)} ] && [ "$_role" != none ]; then\n'
+        "    trap '' TERM\n"
+        "    exec /bin/sleep infinity\n"
+        "fi\n"
+        f'exec {shlex.quote(real_interpreter)} "$@"\n'
+    )
+    shim.chmod(0o755)
+    monkeypatch.setattr(session_module.sys, "executable", str(shim))
+    return log
+
+
+def _record_parent_data_root_io(
+    monkeypatch: pytest.MonkeyPatch, data_root: Path
+) -> list[tuple[str, str]]:
+    """Observe filesystem APIs without changing their results or service lookup logic."""
+    accesses: list[tuple[str, str]] = []
+    prefix = str(data_root)
+
+    def instrument[**P, R](label: str, original: Callable[P, R]) -> Callable[P, R]:
+        @wraps(original)
+        def recorded(*args: P.args, **kwargs: P.kwargs) -> R:
+            target = args[0] if args else kwargs.get("path", kwargs.get("file"))
+            if isinstance(target, (str, bytes, os.PathLike)):
+                path = os.fsdecode(target)
+                if path == prefix or path.startswith(prefix + os.sep):
+                    accesses.append((label, path))
+            return original(*args, **kwargs)
+
+        return recorded
+
+    for name in ("stat", "lstat", "open", "scandir", "listdir", "access"):
+        monkeypatch.setattr(os, name, instrument(f"os.{name}", getattr(os, name)))
+    monkeypatch.setattr(builtins, "open", instrument("builtins.open", builtins.open))
+    monkeypatch.setattr(io, "open", instrument("io.open", io.open))
+    return accesses
+
+
+@pytest.mark.parametrize("activation", ["healthy", "denied"])
+def test_atspi_service_lookup_never_reads_data_roots_in_the_parent(
+    activation: str,
+    engine: AutomationEngine,
+    start_session: Callable[..., str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the activation daemon or owned lookup child may touch the data roots."""
+    data_dir = _service_data_dir(
+        tmp_path, monkeypatch, launcher_exec=shlex.join(_real_launcher_argv())
+    )
+    for service in (
+        "services/org.a11y.Bus.service",
+        "accessibility-services/org.a11y.atspi.Registry.service",
+    ):
+        (data_dir / "dbus-1" / service).write_text(_real_service_file(service))
+    # Keep the system data roots installed by _service_data_dir: the native
+    # launcher also needs GLib's compiled GSettings schemas from those roots.
+    monkeypatch.setenv(ATSPI_DIRECT_START_ENV, "1")
+    if activation == "denied":
+        _deny_first_a11y_activation(tmp_path, monkeypatch)
+    log = _install_interpreter_shim(tmp_path, monkeypatch, stall_role="none", spoof_stdout=False)
+    accesses = _record_parent_data_root_io(monkeypatch, data_dir)
+    output = start_session()
+    assert not accesses, f"server performed service-file I/O: {accesses}"
+    assert ("Warning:" in output) == (activation == "denied"), output
+    _assert_real_session_state(engine)
+    session = engine._session
+    assert isinstance(session, Session) and session.info is not None
+    assert _bus_name_has_owner(session.info.dbus_address, A11Y_BUS_NAME)
+    if activation == "healthy":
+        assert not log.exists(), "healthy activation unnecessarily ran a lookup child"
+    else:
+        assert {line.split()[0] for line in log.read_text().splitlines()} == {
+            "launcher",
+            "registry",
+        }
+        registry_bus = _a11y_registry_address(session.info.dbus_address)
+        assert _bus_name_has_owner(registry_bus, "org.a11y.atspi.Registry")
+
+
+@pytest.mark.parametrize("stall_role", ["launcher", "registry"])
+@pytest.mark.parametrize("spoof_stdout", [False, True], ids=["silent", "spoofed-handshake"])
+def test_direct_atspi_lookup_helper_cannot_stall_or_spoof_startup(
+    stall_role: Literal["launcher", "registry"],
+    spoof_stdout: bool,
+    engine: AutomationEngine,
+    start_session: Callable[..., str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    background_start: Callable[..., _BackgroundStart],
+) -> None:
+    """A TERM-resistant lookup child is rolled back before real KWin readiness."""
+    data_dir = _service_data_dir(
+        tmp_path, monkeypatch, launcher_exec=shlex.join(_real_launcher_argv())
+    )
+    (data_dir / "dbus-1/accessibility-services/org.a11y.atspi.Registry.service").write_text(
+        _real_service_file("accessibility-services/org.a11y.atspi.Registry.service")
+    )
+    monkeypatch.setenv(ATSPI_DIRECT_START_ENV, "1")
+    _deny_first_a11y_activation(tmp_path, monkeypatch)
+    log = _install_interpreter_shim(
+        tmp_path, monkeypatch, stall_role=stall_role, spoof_stdout=spoof_stdout
+    )
+    daemons_before = _accessibility_daemons()
+    neighbor = _spawn_neighbor(f"kwin-mcp-lookup-neighbor-{uuid4().hex}")
+    neighbor_identity = _process_identity(neighbor.pid)
+    assert neighbor_identity is not None
+    placeholder = Session()
+    run: _BackgroundStart | None = None
+    try:
+        run = background_start(placeholder, SessionConfig(), start_call=start_session)
+        assert run.finished_within(STUB_START_BUDGET_SECONDS), "session_start hung"
+        assert run.error is None, run.error
+        output = run.output
+        assert isinstance(output, str) and "Warning:" in output, output
+        records = [line.split() for line in log.read_text().splitlines()]
+        assert any(record[0] == stall_role for record in records), records
+        session = engine._session
+        assert isinstance(session, Session) and session.info is not None
+        for _, pid, pgid, start_time in records:
+            identity = (int(pid), int(pgid), int(start_time))
+            assert identity[1] == session.info.kwin_pid
+            assert _process_identity(identity[0]) != identity[1:], identity
+        assert _accessibility_daemons() == daemons_before
+        assert not _bus_name_has_owner(session.info.dbus_address, A11Y_BUS_NAME)
+        assert "Input backend: KWin EIS" in output, output
+        _assert_real_session_state(engine)
+        assert _process_identity(neighbor.pid) == neighbor_identity
+        pgid = session.info.kwin_pid
+        assert engine.session_stop() == "Session stopped."
+        assert not _group_pids(pgid)
+        assert _process_identity(neighbor.pid) == neighbor_identity
+    finally:
+        active = engine._session
+        session = active if isinstance(active, Session) else placeholder
+        _recover(
+            session,
+            run,
+            session._process.pid if session._process is not None else None,
+            f"atspi-lookup-recovery-{uuid4().hex}",
+        )
+        engine.session_stop()
+        _reap(neighbor)
+
+
+def test_direct_atspi_registry_is_revalidated_after_launcher_preflight(
+    engine: AutomationEngine,
+    start_session: Callable[..., str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Replacing the registry descriptor before its lookup must fail closed."""
+    launcher_identity_path = tmp_path / "launcher-identity"
+    registry_marker = tmp_path / "registry-executed"
+    launcher = tmp_path / "invalidating-launcher"
+    registry = tmp_path / "recording-registry"
+    registry.write_text(
+        "#!/bin/sh\n"
+        f": > {shlex.quote(str(registry_marker))}\n"
+        f"exec {shlex.join(_real_registry_argv())}\n"
+    )
+    registry.chmod(0o755)
+    data_dir = _service_data_dir(tmp_path, monkeypatch, launcher_exec=str(launcher))
+    registry_file = data_dir / "dbus-1/accessibility-services/org.a11y.atspi.Registry.service"
+    registry_file.write_text(f"[D-BUS Service]\nName=org.a11y.atspi.Registry\nExec={registry}\n")
+    invalid = "[D-BUS Service]\nName=org.a11y.atspi.Registry\nExec=/bin/x unclosed'\n"
+    launcher.write_text(
+        "#!/bin/bash\n"
+        f"{_record_identity(launcher_identity_path)}"
+        f"printf '%s' {shlex.quote(invalid)} > {shlex.quote(str(registry_file))}\n"
+        f"exec {shlex.join(_real_launcher_argv())}\n"
+    )
+    launcher.chmod(0o755)
+    monkeypatch.setenv(ATSPI_DIRECT_START_ENV, "1")
+    _deny_first_a11y_activation(tmp_path, monkeypatch)
+    daemons_before = _accessibility_daemons()
+    output = start_session()
+    assert "Warning:" in output, output
+    assert not registry_marker.exists()
+    identity = _read_process_identity(launcher_identity_path)
+    assert _process_identity(identity[0]) != identity[1:], identity
+    assert _accessibility_daemons() == daemons_before
+    assert _a11y_bus_has_owner(engine).split()[-1:] == ["false"]
+    _assert_real_session_state(engine)
+
+
+def test_direct_atspi_lookup_uses_session_data_roots_and_closes_service_fds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SessionConfig roots, not app-only env, select argv without inherited service FDs."""
+    launcher = tmp_path / "recording-launcher"
+    launcher_identity_path = tmp_path / "launcher-identity"
+    fd_log = tmp_path / "launcher-fds"
+    launcher_exec = _recording_launcher_script(
+        launcher,
+        tmp_path / "launcher-argv",
+        launcher_identity_path,
+        _real_launcher_argv(),
+        fd_log=fd_log,
+    )
+    system_data_dirs = os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share")
+    data_dir = _service_data_dir(tmp_path, monkeypatch, launcher_exec=launcher_exec)
+    (data_dir / "dbus-1/accessibility-services/org.a11y.atspi.Registry.service").write_text(
+        _real_service_file("accessibility-services/org.a11y.atspi.Registry.service")
+    )
+    session_data_dirs = os.environ["XDG_DATA_DIRS"]
+    server_data_dir = tmp_path / "server-share"
+    server_data_dir.mkdir()
+    server_data_dirs = f"{server_data_dir}:{system_data_dirs}"
+    monkeypatch.setenv("XDG_DATA_DIRS", server_data_dirs)
+    monkeypatch.setenv(ATSPI_DIRECT_START_ENV, "1")
+    _deny_first_a11y_activation(tmp_path, monkeypatch)
+    session = Session()
+    neighbor = _spawn_neighbor(f"kwin-mcp-data-roots-neighbor-{uuid4().hex}")
+    neighbor_identity = _process_identity(neighbor.pid)
+    identity: tuple[int, int, int] | None = None
+    screenshot_dir: Path | None = None
+    try:
+        assert neighbor_identity is not None
+        # AutomationEngine.session_start(env=...) applies only to its initial app.
+        # This contract belongs to the real session environment used for service lookup.
+        info = session.start(SessionConfig(extra_env={"XDG_DATA_DIRS": session_data_dirs}))
+        screenshot_dir = info.screenshot_dir
+        assert info.startup_warnings
+        assert os.environ["XDG_DATA_DIRS"] == server_data_dirs
+        identity = _assert_process_identity(launcher_identity_path)
+        assert identity[1] == info.kwin_pid
+        assert _bus_name_owner_pid(info.dbus_address, A11Y_BUS_NAME) == identity[0]
+        launcher_env = (Path("/proc") / str(identity[0]) / "environ").read_bytes().split(b"\0")
+        assert f"XDG_DATA_DIRS={session_data_dirs}".encode() in launcher_env
+        assert f"{ATSPI_DIRECT_START_ENV}=1".encode() in launcher_env
+        registry_bus = _a11y_registry_address(info.dbus_address)
+        assert _bus_name_has_owner(registry_bus, "org.a11y.atspi.Registry")
+        targets = fd_log.read_text().splitlines()
+        assert targets, "launcher did not record its file descriptors"
+        assert not any(
+            target == str(data_dir) or target.startswith(str(data_dir) + os.sep)
+            for target in targets
+        ), targets
+        assert info.dbus_address != os.environ.get("DBUS_SESSION_BUS_ADDRESS")
+        assert (Path(os.environ["XDG_RUNTIME_DIR"]) / info.wayland_socket).is_socket()
+        kwin_identity = _process_identity(_bus_name_owner_pid(info.dbus_address, "org.kde.KWin"))
+        assert kwin_identity is not None and kwin_identity[0] == info.kwin_pid
+        assert _bus_name_has_owner(info.dbus_address, "org.freedesktop.DBus")
+        assert _process_identity(neighbor.pid) == neighbor_identity
+        session.stop()
+        _assert_process_identity_exited(identity)
+        assert not _group_pids(info.kwin_pid)
+        assert not screenshot_dir.exists()
+        assert _process_identity(neighbor.pid) == neighbor_identity
+    finally:
+        try:
+            session.stop()
+        finally:
+            _reap(neighbor)
 
 
 def test_accessibility_bus_is_owned_when_session_start_returns(
@@ -675,6 +1018,7 @@ def test_session_start_does_not_start_the_accessibility_bus_directly_without_opt
     # opt-in, which the warning names.
     monkeypatch.delenv(ATSPI_DIRECT_START_ENV, raising=False)
     _deny_first_a11y_activation(tmp_path, monkeypatch)
+    log = _install_interpreter_shim(tmp_path, monkeypatch, stall_role="none", spoof_stdout=False)
     daemons_before = _accessibility_daemons()
 
     output = start_session()
@@ -685,6 +1029,7 @@ def test_session_start_does_not_start_the_accessibility_bus_directly_without_opt
     monkeypatch.undo()
     assert _a11y_bus_has_owner(engine).split()[-1:] == ["false"]
     assert _accessibility_daemons() == daemons_before
+    assert not log.exists(), "default-off startup unexpectedly ran a lookup child"
 
 
 @pytest.mark.parametrize(
@@ -770,49 +1115,54 @@ def test_atspi_direct_start_uses_only_the_exact_server_opt_in(
             _assert_process_identity_exited(identity)
 
 
-@pytest.mark.parametrize(
-    "service_kind",
-    ["missing", "invalid"],
-    ids=["missing-service-files", "invalid-service-files"],
-)
+@pytest.mark.parametrize("broken_role", ["launcher", "registry"])
+@pytest.mark.parametrize("service_kind", ["missing", "invalid"])
 def test_atspi_direct_start_fails_closed_for_missing_or_invalid_services(
+    broken_role: str,
     service_kind: str,
+    engine: AutomationEngine,
+    start_session: Callable[..., str],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A valid counterpart must never execute when either descriptor is unusable."""
     monkeypatch.setenv(ATSPI_DIRECT_START_ENV, "1")
-    launcher_identity_path = tmp_path / "launcher-identity"
+    launcher_marker = tmp_path / "launcher-executed"
+    registry_marker = tmp_path / "registry-executed"
     launcher = tmp_path / "recording-launcher"
     launcher_exec = _recording_launcher_script(
-        launcher,
-        tmp_path / "launcher-argv",
-        launcher_identity_path,
-        _real_launcher_argv(),
+        launcher, tmp_path / "launcher-argv", launcher_marker, _real_launcher_argv()
+    )
+    registry = tmp_path / "recording-registry"
+    registry.write_text(
+        "#!/bin/sh\n"
+        f": > {shlex.quote(str(registry_marker))}\n"
+        f"exec {shlex.join(_real_registry_argv())}\n"
+    )
+    registry.chmod(0o755)
+    data_dir = _service_data_dir(tmp_path, monkeypatch, launcher_exec=launcher_exec)
+    registry_file = data_dir / "dbus-1/accessibility-services/org.a11y.atspi.Registry.service"
+    registry_file.write_text(f"[D-BUS Service]\nName=org.a11y.atspi.Registry\nExec={registry}\n")
+    broken_file = (
+        data_dir / "dbus-1/services/org.a11y.Bus.service"
+        if broken_role == "launcher"
+        else registry_file
     )
     if service_kind == "missing":
-        data_dir = tmp_path / "empty-share"
-        data_dir.mkdir()
+        broken_file.unlink()
     else:
-        data_dir = _service_data_dir(tmp_path, monkeypatch, launcher_exec=launcher_exec)
-        (data_dir / "dbus-1/services/org.a11y.Bus.service").write_text(
-            "[D-BUS Service]\nName=org.a11y.Bus\nExec=/bin/x unclosed'\n"
-        )
-        (data_dir / "dbus-1/accessibility-services/org.a11y.atspi.Registry.service").write_text(
-            "[D-BUS Service]\nName=org.a11y.atspi.Registry\nExec=/bin/x unclosed'\n"
-        )
-    # An empty value selects the default system roots, not an empty search path.
+        name = A11Y_BUS_NAME if broken_role == "launcher" else "org.a11y.atspi.Registry"
+        broken_file.write_text(f"[D-BUS Service]\nName={name}\nExec=/bin/x unclosed'\n")
     monkeypatch.setenv("XDG_DATA_DIRS", str(data_dir))
     _deny_first_a11y_activation(tmp_path, monkeypatch)
-    session = Session()
-    try:
-        info = session.start(SessionConfig())
-        assert not _bus_name_has_owner(info.dbus_address, A11Y_BUS_NAME)
-        assert not launcher_identity_path.exists()
-        assert any(
-            "accessibility tools may be unavailable" in warning for warning in info.startup_warnings
-        )
-    finally:
-        session.stop()
+    daemons_before = _accessibility_daemons()
+    output = start_session()
+    assert "Warning:" in output, output
+    assert not launcher_marker.exists()
+    assert not registry_marker.exists()
+    assert _accessibility_daemons() == daemons_before
+    _assert_real_session_state(engine)
+    assert _a11y_bus_has_owner(engine).split()[-1:] == ["false"]
 
 
 def test_healthy_activation_does_not_fall_back_to_the_direct_launcher(
@@ -936,14 +1286,17 @@ def _accessibility_daemons() -> int:
     return count
 
 
+@pytest.mark.parametrize("registry_mode", ["exits", "ignores-term"])
 def test_session_start_stops_the_direct_launcher_when_the_registry_fails(
     engine: AutomationEngine,
     start_session: Callable[..., str],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    background_start: Callable[..., _BackgroundStart],
+    registry_mode: str,
 ) -> None:
-    # Activation is denied; the direct launcher starts, but the registry
-    # exits immediately. Every owned process must be gone before start returns.
+    # Both an immediate exit and a TERM-resistant registry must leave no
+    # owned accessibility children before the usable session is published.
     launcher_identity_path = tmp_path / "launcher-identity"
     launcher = tmp_path / "recording-launcher"
     launcher_exec = _recording_launcher_script(
@@ -955,7 +1308,10 @@ def test_session_start_stops_the_direct_launcher_when_the_registry_fails(
     data_dir = _service_data_dir(tmp_path, monkeypatch, launcher_exec=launcher_exec)
     registry = tmp_path / "failing-registry"
     registry_identity_path = tmp_path / "registry-identity"
-    registry.write_text(f"#!/bin/bash\n{_record_identity(registry_identity_path)}exit 1\n")
+    registry_body = (
+        "exit 1\n" if registry_mode == "exits" else "trap '' TERM\nexec /bin/sleep infinity\n"
+    )
+    registry.write_text(f"#!/bin/bash\n{_record_identity(registry_identity_path)}{registry_body}")
     registry.chmod(0o755)
     (data_dir / "dbus-1/accessibility-services/org.a11y.atspi.Registry.service").write_text(
         f"[D-BUS Service]\nName=org.a11y.atspi.Registry\nExec={registry}\n"
@@ -966,13 +1322,19 @@ def test_session_start_stops_the_direct_launcher_when_the_registry_fails(
     neighbor_identity = _process_identity(neighbor.pid)
     assert neighbor_identity is not None
 
+    placeholder = Session()
+    run: _BackgroundStart | None = None
+    daemons_before = _accessibility_daemons()
     try:
-        output = start_session()
+        run = background_start(placeholder, SessionConfig(), start_call=start_session)
+        assert run.finished_within(STUB_START_BUDGET_SECONDS), "session_start hung"
+        assert run.error is None, run.error
+        output = run.output
+        assert isinstance(output, str), output
 
         assert "Session started. Wayland socket: " in output, output
         warnings = [line for line in output.splitlines() if line.startswith("Warning: ")]
         assert any("accessibility tools may be unavailable" in line for line in warnings), output
-        assert _wait_until(registry_identity_path.exists, PROCESS_EXIT_TIMEOUT_SECONDS)
         assert launcher_identity_path.is_file()
         assert registry_identity_path.is_file()
         launcher_identity = _read_process_identity(launcher_identity_path)
@@ -980,27 +1342,50 @@ def test_session_start_stops_the_direct_launcher_when_the_registry_fails(
         session = engine._session
         assert isinstance(session, Session) and session.info is not None
         assert launcher_identity[1] == registry_identity[1] == session.info.kwin_pid
-        _assert_process_identity_exited(launcher_identity)
-        _assert_process_identity_exited(registry_identity)
+        assert _process_identity(launcher_identity[0]) != launcher_identity[1:]
+        assert _process_identity(registry_identity[0]) != registry_identity[1:]
+        assert _accessibility_daemons() == daemons_before
+        assert "Input backend: KWin EIS" in output, output
+        _assert_real_session_state(engine)
 
         monkeypatch.undo()
         assert _a11y_bus_has_owner(engine).split()[-1:] == ["false"]
         assert _process_identity(neighbor.pid) == neighbor_identity
+        pgid = session.info.kwin_pid
+        assert engine.session_stop() == "Session stopped."
+        assert not _group_pids(pgid)
+        assert _process_identity(neighbor.pid) == neighbor_identity
     finally:
+        active = engine._session
+        session = active if isinstance(active, Session) else placeholder
+        _recover(
+            session,
+            run,
+            session._process.pid if session._process is not None else None,
+            f"atspi-recovery-{uuid4().hex}",
+        )
         engine.session_stop()
         _reap(neighbor)
 
 
+@pytest.mark.parametrize("ignore_term", [False, True], ids=["honors-term", "ignores-term"])
+@pytest.mark.parametrize("spoof_stdout", [False, True], ids=["silent", "spoofed-handshake"])
 def test_session_start_cleans_up_a_direct_launcher_that_never_claims_its_bus_name(
     engine: AutomationEngine,
     start_session: Callable[..., str],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    background_start: Callable[..., _BackgroundStart],
+    ignore_term: bool,
+    spoof_stdout: bool,
 ) -> None:
     launcher_identity_path = tmp_path / "stalled-launcher-identity"
     launcher = tmp_path / "stalled-launcher"
     launcher.write_text(
-        f"#!/bin/bash\n{_record_identity(launcher_identity_path)}exec /bin/sleep 60\n"
+        "#!/bin/bash\n"
+        f"{_record_identity(launcher_identity_path)}"
+        + ("trap '' TERM\n" if ignore_term else "")
+        + "exec /bin/sleep infinity\n"
     )
     launcher.chmod(0o755)
     data_dir = _service_data_dir(tmp_path, monkeypatch, launcher_exec=str(launcher))
@@ -1009,12 +1394,19 @@ def test_session_start_cleans_up_a_direct_launcher_that_never_claims_its_bus_nam
     )
     monkeypatch.setenv(ATSPI_DIRECT_START_ENV, "1")
     _deny_first_a11y_activation(tmp_path, monkeypatch)
+    _install_interpreter_shim(tmp_path, monkeypatch, stall_role="none", spoof_stdout=spoof_stdout)
     neighbor = _spawn_neighbor(f"kwin-mcp-stalled-neighbor-{uuid4().hex}")
     neighbor_identity = _process_identity(neighbor.pid)
     assert neighbor_identity is not None
+    placeholder = Session()
+    run: _BackgroundStart | None = None
 
     try:
-        output = start_session()
+        run = background_start(placeholder, SessionConfig(), start_call=start_session)
+        assert run.finished_within(STUB_START_BUDGET_SECONDS), "session_start hung"
+        assert run.error is None, run.error
+        output = run.output
+        assert isinstance(output, str), output
 
         assert "Session started. Wayland socket: " in output, output
         warnings = [line for line in output.splitlines() if line.startswith("Warning: ")]
@@ -1024,11 +1416,25 @@ def test_session_start_cleans_up_a_direct_launcher_that_never_claims_its_bus_nam
         session = engine._session
         assert isinstance(session, Session) and session.info is not None
         assert stalled_identity[1] == session.info.kwin_pid
-        _assert_process_identity_exited(stalled_identity)
+        assert _process_identity(stalled_identity[0]) != stalled_identity[1:]
+        assert "Input backend: KWin EIS" in output, output
+        _assert_real_session_state(engine)
         monkeypatch.undo()
         assert _a11y_bus_has_owner(engine).split()[-1:] == ["false"]
         assert _process_identity(neighbor.pid) == neighbor_identity
+        pgid = session.info.kwin_pid
+        assert engine.session_stop() == "Session stopped."
+        assert not _group_pids(pgid)
+        assert _process_identity(neighbor.pid) == neighbor_identity
     finally:
+        active = engine._session
+        session = active if isinstance(active, Session) else placeholder
+        _recover(
+            session,
+            run,
+            session._process.pid if session._process is not None else None,
+            f"atspi-recovery-{uuid4().hex}",
+        )
         engine.session_stop()
         _reap(neighbor)
 
@@ -1593,10 +1999,18 @@ def _reap(process: subprocess.Popen[bytes]) -> None:
 class _BackgroundStart:
     """Session.start() on a daemon thread, so an unbounded hang stays observable."""
 
-    def __init__(self, session: Session, config: SessionConfig) -> None:
+    def __init__(
+        self,
+        session: Session,
+        config: SessionConfig,
+        *,
+        start_call: Callable[[], object] | None = None,
+    ) -> None:
         self.session = session
         self.error: BaseException | None = None
         self.elapsed: float | None = None
+        self.output: object = None
+        self._start_call = start_call
         self._config = config
         self._started = time.monotonic()
         self.thread = threading.Thread(
@@ -1606,7 +2020,9 @@ class _BackgroundStart:
 
     def _run(self) -> None:
         try:
-            self.session.start(self._config)
+            self.output = (
+                self.session.start(self._config) if self._start_call is None else self._start_call()
+            )
         except BaseException as exc:
             self.error = exc
         finally:
@@ -1619,12 +2035,17 @@ class _BackgroundStart:
 
 
 @pytest.fixture
-def background_start() -> Iterator[Callable[[Session, SessionConfig], _BackgroundStart]]:
+def background_start() -> Iterator[Callable[..., _BackgroundStart]]:
     """Run starts in the background and require every worker joined after recovery."""
     runs: list[_BackgroundStart] = []
 
-    def _start(session: Session, config: SessionConfig) -> _BackgroundStart:
-        run = _BackgroundStart(session, config)
+    def _start(
+        session: Session,
+        config: SessionConfig,
+        *,
+        start_call: Callable[[], object] | None = None,
+    ) -> _BackgroundStart:
+        run = _BackgroundStart(session, config, start_call=start_call)
         runs.append(run)
         return run
 

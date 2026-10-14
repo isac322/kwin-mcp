@@ -9,12 +9,15 @@ expansion of any kind. This module preserves those parsing rules.
 
 from __future__ import annotations
 
+import errno
 import os
 import stat
+import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from collections.abc import Mapping
 
 _SERVICE_SECTION = "D-BUS Service"
 _NAME_KEY = "Name"
@@ -26,6 +29,8 @@ _DESKTOP_ESCAPES = {"s": " ", "t": "\t", "n": "\n", "r": "\r", "\\": "\\"}
 # localized key, which it ignores.
 _KEY_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-")
 _DOUBLE_QUOTE_ESCAPES = frozenset('"\\`$\n')
+_A11Y_BUS_NAME = "org.a11y.Bus"
+_ATSPI_REGISTRY_BUS_NAME = "org.a11y.atspi.Registry"
 
 
 class ServiceFileError(ValueError):
@@ -33,7 +38,7 @@ class ServiceFileError(ValueError):
 
 
 def _read_service_file(path: Path) -> bytes | None:
-    """Read one regular service file without unbounded allocation or blocking."""
+    """Bound bytes read and reject nonregular descriptors; filesystem I/O may still stall."""
     fd = -1
     try:
         fd = os.open(
@@ -225,3 +230,61 @@ def service_file_argv(data: bytes, name: str) -> list[str]:
     if _EXEC_KEY not in group:
         raise ServiceFileError(f"no {_EXEC_KEY}= key in [{_SERVICE_SECTION}]")
     return parse_exec(group[_EXEC_KEY])
+
+
+def _service_argv(subdir: str, name: str, env: Mapping[str, str]) -> list[str] | None:
+    """Return the first matching service file found under the XDG data roots."""
+    for data_dir in (env.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":"):
+        if not data_dir:
+            continue
+        path = Path(data_dir) / "dbus-1" / subdir / f"{name}.service"
+        try:
+            if not stat.S_ISREG(path.stat().st_mode):
+                continue
+        except ValueError:
+            continue
+        except OSError as exc:
+            # Preserve is_file()'s missing/invalid-path skips; other failures close direct start.
+            if exc.errno in (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP):
+                continue
+            return None
+        try:
+            data = _read_service_file(path)
+        except FileNotFoundError:
+            continue
+        except (OSError, ServiceFileError):
+            return None
+        if data is None:
+            continue
+        try:
+            return service_file_argv(data, name)
+        except ServiceFileError:
+            return None
+    return None
+
+
+def _main(args: list[str]) -> int:
+    """Resolve and exec the wrapper's fixed launcher or registry role."""
+    if len(args) != 1 or args[0] not in ("launcher", "registry"):
+        return 2
+    if args[0] == "launcher":
+        launcher = _service_argv("services", _A11Y_BUS_NAME, os.environ)
+        registry = _service_argv("accessibility-services", _ATSPI_REGISTRY_BUS_NAME, os.environ)
+        if not launcher or not launcher[0] or not registry or not registry[0]:
+            return 1
+        argv = launcher
+    else:
+        registry = _service_argv("accessibility-services", _ATSPI_REGISTRY_BUS_NAME, os.environ)
+        if not registry or not registry[0]:
+            return 1
+        argv = registry
+    try:
+        os.execv(argv[0], argv)
+    except OSError as exc:
+        message = str(exc).replace("\n", "\\n").replace("\r", "\\r")
+        print(f"AT-SPI direct start failed: {message}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(_main(sys.argv[1:]))

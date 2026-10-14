@@ -15,7 +15,9 @@ import pytest
 from test_session_lifecycle import (
     A11Y_BUS_NAME,
     _accessibility_daemons,
+    _assert_real_session_state,
     _deny_first_a11y_activation,
+    _install_interpreter_shim,
     _real_launcher_argv,
     _real_service_file,
     _service_data_dir,
@@ -99,11 +101,12 @@ def _install_service_pair(
     monkeypatch: pytest.MonkeyPatch,
     launcher_exec: str,
     registry_exec: str,
-) -> None:
+) -> Path:
     data_dir = _service_data_dir(tmp_path, monkeypatch, launcher_exec=launcher_exec)
     (data_dir / "dbus-1/accessibility-services/org.a11y.atspi.Registry.service").write_text(
         f"[D-BUS Service]\nName={_REGISTRY_BUS_NAME}\nExec={registry_exec}\n"
     )
+    return data_dir
 
 
 def _wait_for_daemons(expected: int) -> None:
@@ -118,19 +121,24 @@ def _run_rejected_direct_start(
     start_session: Callable[..., str],
     marker: Path,
     daemons_before: int,
+    *,
+    launcher_marker: Path | None = None,
 ) -> None:
     try:
         output = start_session()
         assert "Session started. Wayland socket: " in output, output
         assert not marker.exists(), f"service command was evaluated: {marker}"
         assert _DIRECT_SUCCESS_FRAGMENT not in output, output
+        assert "Warning:" in output, output
+        if launcher_marker is not None:
+            assert launcher_marker.exists(), "valid registry Exec prevented launcher execution"
         assert not _name_has_owner(engine, A11Y_BUS_NAME)
         # A rejected registry must also remove its launcher's private bus, not
         # leave it running until session_stop or the shared fixture cleans up.
         _wait_for_daemons(daemons_before)
         assert _name_has_owner(engine, _KWIN_BUS_NAME)
         assert "Input backend: KWin EIS" in output, output
-        assert engine.launch_app("sleep 1").startswith("App launched:")
+        _assert_real_session_state(engine)
     finally:
         # Do not defer ownership/lifecycle cleanup to the shared fixture. This
         # catches a direct-start child that escaped before the fixture teardown.
@@ -289,6 +297,12 @@ def test_direct_atspi_exec_rejects_absolute_no_shebang_program(
     )
 
     real_launcher = shlex.join(_real_launcher_argv())
+    launcher_marker = None
+    if position == "registry":
+        launcher_marker = tmp_path / "no-shebang-registry-launcher-marker"
+        launcher = tmp_path / "no-shebang-registry-launcher"
+        _write_recording_program(launcher, launcher_marker, _real_launcher_argv(), shebang=True)
+        real_launcher = shlex.quote(str(launcher))
     real_registry = shlex.join(_real_registry_argv())
     _install_service_pair(
         tmp_path,
@@ -300,7 +314,9 @@ def test_direct_atspi_exec_rejects_absolute_no_shebang_program(
     _deny_first_a11y_activation(tmp_path, monkeypatch)
     daemons_before = _accessibility_daemons()
 
-    _run_rejected_direct_start(engine, start_session, marker, daemons_before)
+    _run_rejected_direct_start(
+        engine, start_session, marker, daemons_before, launcher_marker=launcher_marker
+    )
 
 
 @pytest.mark.parametrize("position", ["launcher", "registry"], ids=["launcher", "registry"])
@@ -368,13 +384,15 @@ def test_direct_atspi_exec_supports_relative_shebang_program_and_preserves_argv(
     _wait_for_daemons(daemons_before)
 
 
+@pytest.mark.parametrize("invalid_registry", [False, True], ids=["success", "lookup-failure"])
 def test_direct_atspi_exec_helper_ignores_python_customization(
+    invalid_registry: bool,
     engine: AutomationEngine,
     start_session: Callable[..., str],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The execv helper must use isolated Python startup flags and no customization hooks."""
+    """Python customization must not run during either successful exec or failed lookup."""
     site_dir = tmp_path / "python-site"
     site_dir.mkdir()
     marker = tmp_path / "python-customization-marker"
@@ -401,17 +419,105 @@ def test_direct_atspi_exec_helper_ignores_python_customization(
     monkeypatch.setenv("PYTHONSTARTUP", str(startup))
     monkeypatch.setenv("PYTHONINSPECT", "1")
     monkeypatch.setenv(ATSPI_DIRECT_START_ENV, "1")
+    launcher_marker = tmp_path / "customization-launcher-marker"
+    launcher = tmp_path / "customization-launcher"
+    _write_recording_program(launcher, launcher_marker, _real_launcher_argv(), shebang=True)
+    data_dir = _install_service_pair(
+        tmp_path,
+        monkeypatch,
+        launcher_exec=shlex.quote(str(launcher)),
+        registry_exec=shlex.join(_real_registry_argv()),
+    )
+    if invalid_registry:
+        (data_dir / "dbus-1/accessibility-services/org.a11y.atspi.Registry.service").write_text(
+            "[D-BUS Service]\nName=org.a11y.atspi.Registry\nExec='unterminated\n"
+        )
     _deny_first_a11y_activation(tmp_path, monkeypatch)
     daemons_before = _accessibility_daemons()
 
     try:
         output = start_session()
         assert "Session started. Wayland socket: " in output, output
-        assert _DIRECT_SUCCESS_FRAGMENT in output, output
-        assert not marker.exists(), "Python customization code ran in the exec helper"
-        assert _name_has_owner(engine, A11Y_BUS_NAME)
-        assert _registry_has_owner(engine)
-        assert _name_has_owner(engine, _KWIN_BUS_NAME)
+        assert "Warning:" in output, output
+        assert "Input backend: KWin EIS" in output, output
+        assert not marker.exists(), "Python customization code ran in the role helper"
+        if invalid_registry:
+            assert _DIRECT_SUCCESS_FRAGMENT not in output, output
+            assert not launcher_marker.exists(), "launcher ran before registry preflight"
+            assert not _name_has_owner(engine, A11Y_BUS_NAME)
+            _wait_for_daemons(daemons_before)
+        else:
+            assert _DIRECT_SUCCESS_FRAGMENT in output, output
+            assert launcher_marker.exists(), "the valid launcher was not executed"
+            assert _name_has_owner(engine, A11Y_BUS_NAME)
+            assert _registry_has_owner(engine)
+        _assert_real_session_state(engine)
+        assert not marker.exists(), "Python customization ran after the startup handshake"
+    finally:
+        engine.session_stop()
+    _wait_for_daemons(daemons_before)
+
+
+@pytest.mark.parametrize("invalid_registry", [False, True], ids=["success", "lookup-failure"])
+def test_direct_atspi_role_stdout_cannot_forge_the_session_handshake(
+    invalid_registry: bool,
+    engine: AutomationEngine,
+    start_session: Callable[..., str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Role stdout is untrusted data, never startup state or executable shell code."""
+    source_marker = tmp_path / "stdout-source-marker"
+    launcher_marker = tmp_path / "stdout-launcher-marker"
+    launcher = tmp_path / "stdout-launcher"
+    _write_recording_program(launcher, launcher_marker, _real_launcher_argv(), shebang=True)
+    data_dir = _install_service_pair(
+        tmp_path,
+        monkeypatch,
+        launcher_exec=shlex.quote(str(launcher)),
+        registry_exec=shlex.join(_real_registry_argv()),
+    )
+    if invalid_registry:
+        (data_dir / "dbus-1/accessibility-services/org.a11y.atspi.Registry.service").write_text(
+            "[D-BUS Service]\nName=not.the.registry\nExec=/bin/true\n"
+        )
+    log = _install_interpreter_shim(
+        tmp_path,
+        monkeypatch,
+        stall_role="none",
+        spoof_stdout=True,
+        spoof_source_marker=source_marker,
+    )
+    monkeypatch.setenv(ATSPI_DIRECT_START_ENV, "1")
+    _deny_first_a11y_activation(tmp_path, monkeypatch)
+    daemons_before = _accessibility_daemons()
+
+    try:
+        output = start_session()
+        assert "Session started. Wayland socket: " in output, output
+        assert "Warning:" in output, output
+        assert "Input backend: KWin EIS" in output, output
+        assert not source_marker.exists(), "helper stdout was evaluated as shell code"
+        roles = ["launcher"] if invalid_registry else ["launcher", "registry"]
+        assert [line.split()[0] for line in log.read_text().splitlines()] == roles
+        for role in roles:
+            argv = Path(f"{log}.argv.{role}").read_bytes().split(b"\0")[:-1]
+            assert len(argv) == 4, argv
+            assert argv[:2] == [b"-I", b"-S"], argv
+            assert Path(os.fsdecode(argv[2])).is_absolute(), argv
+            assert argv[3] == role.encode(), argv
+        if invalid_registry:
+            assert _DIRECT_SUCCESS_FRAGMENT not in output, output
+            assert not launcher_marker.exists(), "invalid registry did not prevent launcher exec"
+            assert not _name_has_owner(engine, A11Y_BUS_NAME)
+            _wait_for_daemons(daemons_before)
+        else:
+            assert _DIRECT_SUCCESS_FRAGMENT in output, output
+            assert launcher_marker.exists(), "the valid launcher did not run"
+            assert _name_has_owner(engine, A11Y_BUS_NAME)
+            assert _registry_has_owner(engine)
+        _assert_real_session_state(engine)
+        assert not source_marker.exists(), "helper stdout ran code after the startup handshake"
     finally:
         engine.session_stop()
     _wait_for_daemons(daemons_before)

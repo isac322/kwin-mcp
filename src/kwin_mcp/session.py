@@ -8,13 +8,11 @@ Manages the lifecycle of KWin Wayland sessions:
 from __future__ import annotations
 
 import contextlib
-import errno
 import os
 import select
 import shlex
 import shutil
 import signal
-import stat
 import subprocess
 import sys
 import tempfile
@@ -25,19 +23,18 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from kwin_mcp import progress
-from kwin_mcp.dbus_service_file import ServiceFileError, _read_service_file, service_file_argv
+from kwin_mcp import dbus_service_file, progress
 
 if TYPE_CHECKING:
     from typing import IO
 
-# Upper bound for the startup handshake. Each wrapper step is bounded on its
-# own: D-Bus calls by --reply-timeout, the direct AT-SPI start, the socket wait
-# and the KWin bus-name wait by the clock. Their worst cases can add up past
-# this bound, so it does not guarantee the wrapper reports first; it is the
-# parent's deadline, after which the session group is torn down. It also covers
-# cases the wrapper cannot report: a leader killed while descendants keep
-# stdout open, or a partial line that never terminates.
+# Upper bound for the startup handshake. Owned AT-SPI children perform service
+# lookup and exec inside the readiness deadline, with bounded TERM/KILL rollback;
+# neither service-file I/O nor an unbounded child wait can hold the parent here.
+# The wrapper's other waits are bounded individually, but their worst cases can
+# add up past this deadline and D-Bus reply timeouts do not bound connection/auth.
+# The parent tears down the session group when this deadline expires. It also
+# covers a leader killed while descendants keep stdout open, or a partial line.
 _STARTUP_READ_TIMEOUT = 60.0
 
 # KWin creates its Wayland socket early in startup but owns org.kde.KWin on the
@@ -61,52 +58,6 @@ _KWIN_BUS_NAME_TIMEOUT = 30
 # registry directly from their service files' Exec= lines. Direct helpers run
 # in the server's SELinux domain by specific operator opt-in.
 ATSPI_DIRECT_START_ENV = "KWIN_MCP_ATSPI_DIRECT_START"
-_ATSPI_REGISTRY_BUS_NAME = "org.a11y.atspi.Registry"
-_ATSPI_EXEC_HELPER_CODE = "import os,sys;os.execv(sys.argv[1],sys.argv[1:])"
-
-
-def _atspi_service_argv(subdir: str, name: str, env: dict[str, str]) -> list[str] | None:
-    """Return the first matching service file found under the XDG data roots."""
-    for data_dir in (env.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":"):
-        if not data_dir:
-            continue
-        path = Path(data_dir) / "dbus-1" / subdir / f"{name}.service"
-        try:
-            if not stat.S_ISREG(path.stat().st_mode):
-                continue
-        except ValueError:
-            continue
-        except OSError as exc:
-            # Preserve is_file()'s missing/invalid-path skips; other failures close direct start.
-            if exc.errno in (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP):
-                continue
-            return None
-        try:
-            data = _read_service_file(path)
-        except FileNotFoundError:
-            continue
-        except (OSError, ServiceFileError):
-            return None
-        if data is None:
-            continue
-        try:
-            return service_file_argv(data, name)
-        except ServiceFileError:
-            return None
-    return None
-
-
-def _atspi_direct_start_argvs(env: dict[str, str]) -> tuple[list[str], list[str]]:
-    """Return the launcher and registry argvs for the opt-in direct start.
-
-    Both are empty when either service file is missing or one dbus-daemon
-    would ignore.
-    """
-    launcher = _atspi_service_argv("services", _A11Y_BUS_NAME, env)
-    registry = _atspi_service_argv("accessibility-services", _ATSPI_REGISTRY_BUS_NAME, env)
-    if not launcher or not launcher[0] or not registry or not registry[0]:
-        return [], []
-    return launcher, registry
 
 
 class SessionType(Enum):
@@ -758,7 +709,7 @@ class Session:
 
         # Build the wrapper script that runs inside dbus-run-session
         env = self._build_env(config)
-        wrapper_script = self._build_wrapper_script(config, env)
+        wrapper_script = self._build_wrapper_script(config)
 
         # Start the isolated session in its own process group. stderr goes to a
         # file, not a pipe: a pipe would let a descendant block forever once
@@ -1166,18 +1117,17 @@ class Session:
             parts.append(f"stdout: {stdout_tail}")
         return f" {'; '.join(parts)}" if parts else ""
 
-    def _build_wrapper_script(self, config: SessionConfig, env: dict[str, str]) -> str:
+    def _build_wrapper_script(self, config: SessionConfig) -> str:
         """Build the bash script that runs inside dbus-run-session."""
         # The opt-in is read from the server's environment, never from a
         # session's extra env. On failure the warning names it unless it is set.
         direct_start = os.environ.get(ATSPI_DIRECT_START_ENV) == "1"
         python_executable = sys.executable
         helper = (
-            [python_executable, "-I", "-S", "-c", _ATSPI_EXEC_HELPER_CODE]
-            if python_executable
+            [python_executable, "-I", "-S", os.path.abspath(dbus_service_file.__file__)]
+            if direct_start and python_executable
             else []
         )
-        launcher, registry = _atspi_direct_start_argvs(env) if direct_start and helper else ([], [])
         atspi_hint = (
             ""
             if direct_start
@@ -1214,16 +1164,55 @@ trap cleanup EXIT TERM INT HUP
 # apps first touch the a11y bus, so no manual bootstrap is needed. Activation
 # failure is reported to the caller instead of being hidden.
 #
-# When activation fails and KWIN_MCP_ATSPI_DIRECT_START=1, the launcher and the
-# registry are started directly. Some SELinux policies deny activation from a
-# private dbus-run-session bus; direct helpers instead run in the server's
-# domain by specific operator opt-in. Their argv is read from the Exec= lines
-# of the same service files and split the way dbus-daemon splits them
-# (kwin_mcp.dbus_service_file); empty when the direct start is off or a service
-# file is missing or invalid.
+# When activation fails and KWIN_MCP_ATSPI_DIRECT_START=1, owned helper children
+# read the service files and exec the launcher and registry directly. Some
+# SELinux policies deny activation from a private dbus-run-session bus; direct
+# helpers instead run in the server's domain by specific operator opt-in.
+# The launcher validates both services before exec; the registry reads its own
+# service again at spawn. Lookup and exec share each child's readiness deadline.
 ATSPI_HELPER=({shlex.join(helper)})
-ATSPI_LAUNCHER=({shlex.join(launcher)})
-ATSPI_REGISTRY=({shlex.join(registry)})
+ATSPI_LAUNCHER_SERVICE=(launcher)
+ATSPI_REGISTRY_SERVICE=(registry)
+# Pair arguments are a unique job-command marker followed by a numeric PID.
+# Numeric probes only decide how long to poll; signals use Bash's owned jobs.
+# Keep this non-interactive shell's job control off and install no SIGCHLD trap:
+# native kill resolves and signals its live job while protecting the job table.
+atspi_alive() {{
+    while [ "$#" -ge 2 ]; do
+        builtin kill -0 "$2" 2>/dev/null && return 0
+        shift 2
+    done
+    return 1
+}}
+atspi_signal() {{
+    local sig=$1
+    shift
+    while [ "$#" -ge 2 ]; do
+        if builtin kill -0 "$2" 2>/dev/null; then
+            builtin kill -s "$sig" "%?$1" 2>/dev/null || :
+        fi
+        shift 2
+    done
+}}
+atspi_stop() {{
+    local deadline
+    # Signal every owned job first, then share one grace period across them.
+    atspi_signal TERM "$@"
+    deadline=$((SECONDS + {int(_APP_TERM_GRACE_SECONDS)}))
+    while atspi_alive "$@" && [ "$SECONDS" -lt "$deadline" ]; do
+        sleep 0.1
+    done
+    if atspi_alive "$@"; then
+        atspi_signal KILL "$@"
+        deadline=$((SECONDS + {int(_APP_KILL_GRACE_SECONDS)}))
+        while atspi_alive "$@" && [ "$SECONDS" -lt "$deadline" ]; do
+            sleep 0.1
+        done
+    fi
+    # Never wait: an uninterruptible child may survive the grace period, but
+    # remains in the private session group for the parent's bounded teardown.
+    return 0
+}}
 # Wait up to 5 s (by the clock, not by attempts) for name $2 to get an owner
 # on bus $1, giving up as soon as process $3 exits.
 atspi_wait_for_name() {{
@@ -1234,7 +1223,7 @@ atspi_wait_for_name() {{
             org.freedesktop.DBus.NameHasOwner "string:$name" 2>/dev/null | grep -q true; then
             return 0
         fi
-        kill -0 "$pid" 2>/dev/null || return 1
+        builtin kill -0 "$pid" 2>/dev/null || return 1
         sleep 0.1
     done
     return 1
@@ -1242,24 +1231,23 @@ atspi_wait_for_name() {{
 atspi_start_directly() {{
     local address launcher_pid registry_pid
     [ "${{#ATSPI_HELPER[@]}}" -gt 0 ] || return 1
-    [ "${{#ATSPI_LAUNCHER[@]}}" -gt 0 ] || return 1
-    [ "${{#ATSPI_REGISTRY[@]}}" -gt 0 ] || return 1
-    "${{ATSPI_HELPER[@]}}" "${{ATSPI_LAUNCHER[@]}}" >/dev/null &
+    "${{ATSPI_HELPER[@]}}" "${{ATSPI_LAUNCHER_SERVICE[@]}}" >/dev/null &
     launcher_pid=$!
     if atspi_wait_for_name --session org.a11y.Bus "$launcher_pid" \\
         && address=$(dbus-send --session --print-reply=literal --reply-timeout=5000 \\
             --dest=org.a11y.Bus /org/a11y/bus org.a11y.Bus.GetAddress 2>/dev/null); then
         address=$(echo $address)
-        "${{ATSPI_HELPER[@]}}" "${{ATSPI_REGISTRY[@]}}" >/dev/null &
+        "${{ATSPI_HELPER[@]}}" "${{ATSPI_REGISTRY_SERVICE[@]}}" >/dev/null &
         registry_pid=$!
         if atspi_wait_for_name "--bus=$address" org.a11y.atspi.Registry "$registry_pid"; then
             return 0
         fi
-        kill "$registry_pid" 2>/dev/null
+        atspi_stop ATSPI_LAUNCHER_SERVICE "$launcher_pid" \\
+            ATSPI_REGISTRY_SERVICE "$registry_pid"
+        return 1
     fi
     # Leave no half-started accessibility bus behind.
-    kill "$launcher_pid" 2>/dev/null
-    wait "$launcher_pid" 2>/dev/null
+    atspi_stop ATSPI_LAUNCHER_SERVICE "$launcher_pid"
     return 1
 }}
 ATSPI_UP=1

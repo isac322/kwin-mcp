@@ -367,7 +367,8 @@ kwin-mcp server  (37 tools)       kwin-mcp-cli (interactive REPL)
   |                                |-- subprocess spawn
   |                                +-- AT-SPI2 (via PyGObject)
   |
-  |-- focus_window / window_geometry / active_window / window_set_geometry / window_close
+  |-- focus_window / window_geometry / active_window / window_set_geometry
+  |    |-- virtual_desktops / window_set_desktop / window_close
   |                                +-- KWin scripting (loadScript + D-Bus reply)
   |
   |-- dbus_call -----------------> dbus-python (in-process, introspected signature)

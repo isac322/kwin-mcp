@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING, Protocol
 
 import gi
 
+from kwin_mcp.spoken_name import normalize_spoken_name, spoken_name_matches
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
@@ -221,26 +223,40 @@ def invoke_action(
     app_name: str = "",
     exact_name: bool = False,
     fallback_action_names: Sequence[str] = (),
+    spoken_name: bool = False,
 ) -> dict[str, object]:
     """Invoke exactly one matching AT-SPI action.
 
     Matching is case-insensitive. By default the element query is a substring
     of the element's name, role or description, every action index named
     ``action_name`` is a candidate, and these original semantics are kept
-    exactly while neither option below is used. Action names match exactly
-    apart from case.
+    exactly while none of the options below is used. Action names match
+    exactly apart from case.
 
     With ``exact_name`` the query must equal the element's name after both are
     case-folded and their whitespace runs collapsed (punctuation stays
     significant); role and description are not matched.
 
-    With either ``exact_name`` or ``fallback_action_names`` the candidate is
-    the element: it qualifies when it exposes ``action_name`` or one of
-    ``fallback_action_names``, and the action invoked is ``action_name`` if it
-    exposes it, otherwise the first of ``fallback_action_names`` it exposes, at
-    the first index carrying that name. The element counts once however many
-    of these actions it exposes, while two distinct elements always count as
-    two. Ambiguous matches fail closed and no action is performed.
+    With ``spoken_name`` the query is matched only against the element name
+    using deterministic spoken-label normalisation
+    (:func:`kwin_mcp.spoken_name.normalize_spoken_name`): Unicode NFC and case
+    folding, normalised word whitespace, and removal of an explicit trailing
+    sentence-punctuation run. Internal punctuation remains significant. Equal
+    normalised word sequences match. A multi-word query may also match the
+    same characters joined into a single-word label (for example ``"save as"``
+    -> ``"SaveAs"``), but a single-word query is never split to match a
+    multi-word label. Role and description are not matched. Every actionable
+    element satisfying those rules is a candidate; multiple candidates are
+    refused as ambiguous, with no spelling or punctuation tie-breaker.
+
+    With any of ``exact_name``, ``spoken_name`` or ``fallback_action_names``
+    the candidate is the element: it qualifies when it exposes ``action_name``
+    or one of ``fallback_action_names``, and the action invoked is
+    ``action_name`` if it exposes it, otherwise the first of
+    ``fallback_action_names`` it exposes, at the first index carrying that
+    name. The element counts once however many of these actions it exposes,
+    while two distinct elements always count as two. Ambiguous matches fail
+    closed and no action is performed.
 
     Discovery must be complete before anything is invoked: every element in
     the searched scope is fully read, because a read failure could hide the
@@ -253,13 +269,17 @@ def invoke_action(
     ``invoked: None`` and the exception text in ``error``: the request was
     sent and the action may have run.
     """
+    if exact_name and spoken_name:
+        raise ValueError("invoke_action exact_name and spoken_name cannot both be true.")
     desktop = Atspi.get_desktop(0)
     query_lower = query.lower()
     query_name = _normalize_name(query)
+    # Normalised once, and only in spoken-name mode: other modes never call it.
+    query_spoken = normalize_spoken_name(query) if spoken_name else None
     # action_name first, then fallback_action_names in order.
     wanted_actions = [name.lower() for name in (action_name, *fallback_action_names)]
-    # Without either new option the original matching and counting apply unchanged.
-    legacy = not exact_name and not fallback_action_names
+    # Without any of the new options the original matching and counting apply unchanged.
+    legacy = not exact_name and not spoken_name and not fallback_action_names
 
     candidates: list[tuple[object, int, str, str, str, str]] = []
 
@@ -286,6 +306,8 @@ def invoke_action(
 
         if exact_name:
             query_match = bool(query_name) and _normalize_name(name) == query_name
+        elif query_spoken is not None:
+            query_match = spoken_name_matches(query_spoken, normalize_spoken_name(name))
         else:
             query_match = (
                 query_lower in name.lower()
@@ -1018,12 +1040,30 @@ def _handle_request(request: dict) -> dict:
 
     if op == "action":
         exact_name = request.get("exact_name", False)
+        spoken_name = request.get("spoken_name", False)
         raw_query = request.get("query", "")
+        # The engine refuses spoken-name requests like these before starting a session;
+        # this guards direct requests. A refusal, not an exception, so the worker is not
+        # discarded.
+        if spoken_name and exact_name:
+            return {
+                "ok": False,
+                "error": "Refused spoken_name request: exact_name and spoken_name "
+                "cannot both be true.",
+            }
         if exact_name and (not isinstance(raw_query, str) or not _normalize_name(raw_query)):
             return {
                 "ok": False,
                 "error": "Refused exact_name request: the query has no name left after "
                 "collapsing whitespace.",
+            }
+        if spoken_name and (
+            not isinstance(raw_query, str) or not normalize_spoken_name(raw_query).words
+        ):
+            return {
+                "ok": False,
+                "error": "Refused spoken_name request: the query has no name left after "
+                "ignoring case, whitespace and trailing punctuation.",
             }
         try:
             result = invoke_action(
@@ -1033,6 +1073,7 @@ def _handle_request(request: dict) -> dict:
                 # Validated by the engine; passed through unchanged.
                 exact_name=exact_name,
                 fallback_action_names=request.get("fallback_action_names", ()),
+                spoken_name=spoken_name,
             )
         except _IncompleteDiscoveryError as exc:
             # Incomplete discovery is a refused action, not a broken worker:

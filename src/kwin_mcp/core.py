@@ -58,6 +58,7 @@ from kwin_mcp.session import (
     accessibility_enabled,
     process_registry,
 )
+from kwin_mcp.spoken_name import normalize_spoken_name
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -896,14 +897,18 @@ class AutomationEngine:
         app_name: str = "",
         exact_name: bool = False,
         fallback_action_names: list[str] | None = None,
+        spoken_name: bool = False,
     ) -> str:
         """Invoke one AT-SPI action without pointer coordinates.
 
         ``exact_name`` matches the query against element names only, after
         case-folding and collapsing whitespace, instead of as a substring of
-        name, role or description. ``fallback_action_names`` lists further
-        actions an element may expose instead of ``action_name``, which is
-        preferred first, then the fallbacks in order. With either option each
+        name, role or description. ``spoken_name`` matches element names only
+        with deterministic spoken-label normalisation (see
+        :mod:`kwin_mcp.spoken_name`); it cannot be combined with
+        ``exact_name``. ``fallback_action_names`` lists further actions an
+        element may expose instead of ``action_name``, which is preferred
+        first, then the fallbacks in order. With any of these options each
         element counts once; without them the original per-action-index
         matching applies unchanged.
 
@@ -920,12 +925,21 @@ class AutomationEngine:
             raise ValueError("invoke_ui_action app_name must be a string.")
         if not isinstance(exact_name, bool):
             raise ValueError("invoke_ui_action exact_name must be true or false.")
+        if not isinstance(spoken_name, bool):
+            raise ValueError("invoke_ui_action spoken_name must be true or false.")
+        if exact_name and spoken_name:
+            raise ValueError("invoke_ui_action exact_name and spoken_name cannot both be true.")
         fallbacks = [] if fallback_action_names is None else fallback_action_names
         if not isinstance(fallbacks, list) or not all(
             isinstance(name, str) and name.strip() for name in fallbacks
         ):
             raise ValueError(
                 "invoke_ui_action fallback_action_names must be a list of non-empty action names."
+            )
+        if spoken_name and not normalize_spoken_name(query).words:
+            raise ValueError(
+                "invoke_ui_action spoken_name query has no name left after ignoring case, "
+                "whitespace and trailing punctuation."
             )
 
         self._get_session()
@@ -936,6 +950,8 @@ class AutomationEngine:
             options["exact_name"] = True
         if fallbacks:
             options["fallback_action_names"] = fallbacks
+        if spoken_name:
+            options["spoken_name"] = True
 
         # Once the request reached the worker, the worker may finish the walk and
         # invoke the action even after this request timed out or the worker was
@@ -962,7 +978,12 @@ class AutomationEngine:
         result = resp["result"]
         matches = int(result.get("matches", 0))
         # Without the new options these texts are exactly the original ones.
-        target = f"named {query!r}" if exact_name else f"matching {query!r}"
+        if spoken_name:
+            target = f"named {query!r} (spoken-name match)"
+        elif exact_name:
+            target = f"named {query!r}"
+        else:
+            target = f"matching {query!r}"
         actions = " or ".join(repr(name) for name in [action_name, *fallbacks])
 
         if matches == 0:

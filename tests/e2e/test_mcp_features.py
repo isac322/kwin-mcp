@@ -26,6 +26,7 @@ SESSION_REQUIRED_GUIDANCE = "Call session_start or session_connect first."
 TYPED_OUTPUT_TOOLS = frozenset(
     {
         "accessibility_tree",
+        "active_window",
         "find_ui_elements",
         "list_windows",
         "virtual_desktops",

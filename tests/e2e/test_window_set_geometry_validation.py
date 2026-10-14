@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 import kwin_mcp.core as core
+from kwin_mcp.results import ActiveWindowResult, format_active_window
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -279,3 +280,47 @@ def test_kwin_failures_raise_runtime_error(
     engine = _engine_answering(monkeypatch, response)
     with pytest.raises(RuntimeError, match=re.escape(fragment)):
         call(engine)
+
+
+_ACTIVE_RECORD = {
+    "id": "{a1}",
+    "app": "org.kde.kcalc",
+    "caption": "KCalc",
+    "active": True,
+    "frame": {"x": 0, "y": 0, "width": 400, "height": 500},
+    "client": {"x": 0, "y": 30, "width": 400, "height": 470},
+}
+
+
+def test_active_window_data_carries_the_reported_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = _engine_answering(monkeypatch, {"ok": True, "result": _ACTIVE_RECORD})
+
+    data = engine.active_window_data()
+
+    assert data.window is not None
+    assert data.window.model_dump(mode="json") == _ACTIVE_RECORD
+    # active_window() runs its own query; the fake answers it with the same record.
+    assert engine.active_window() == format_active_window(data)
+    assert engine.active_window().startswith('Active window:\n- org.kde.kcalc "KCalc" [active]\n')
+
+
+def test_active_window_data_reports_no_active_window_as_null(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _engine_answering(monkeypatch, {"ok": True, "result": None})
+
+    assert engine.active_window_data() == ActiveWindowResult(window=None)
+    assert engine.active_window() == "No active window."
+
+
+def test_active_window_data_keeps_the_kwin_failure_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = _engine_answering(monkeypatch, {"ok": False, "error": "script timed out"})
+
+    message = "Active window unavailable: script timed out"
+    with pytest.raises(RuntimeError, match=re.escape(message)):
+        engine.active_window_data()
+
+
+def test_active_window_data_needs_a_session() -> None:
+    with pytest.raises(RuntimeError, match="Call session_start or session_connect first"):
+        core.AutomationEngine().active_window_data()

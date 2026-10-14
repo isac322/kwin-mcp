@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `active_window` now publishes a typed MCP `outputSchema` and returns matching `structuredContent`: `window` is the window KWin treats as active, with the same `id`, `app`, `caption`, `active` flag, and `frame` and `client` rectangles as a `window_geometry` entry, or `null` when no window is active. The active window can be one that `window_geometry` does not list, such as a dialog. The text content and the `kwin-mcp-cli` output are unchanged, and a failed KWin query or a missing session is still a tool error without structured content. Clients that ignore `structuredContent` see no change; clients that parsed the previous `{"result": "<text>"}` `structuredContent` of `active_window` now receive the typed object instead and should read the text content or the new field.
+
 ## [0.12.0] - 2026-10-15
 
 ### Added

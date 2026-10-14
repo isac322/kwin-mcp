@@ -30,7 +30,7 @@ class Rect(BaseModel):
 
 
 class WindowGeometry(BaseModel):
-    """One KWin window as reported by window_geometry."""
+    """One KWin window with its stable id and geometry (window_geometry, active_window)."""
 
     id: str = Field(
         description=(
@@ -70,6 +70,27 @@ def format_window_geometry(r: WindowGeometryResult, app_name: str = "", window_i
             return f"No window with id {window_id!r}."
         return "No windows found." if not app_name else f"No windows found for '{app_name}'."
     return "\n".join([f"Windows ({len(r.windows)}):", *(format_window(w) for w in r.windows)])
+
+
+# ── active_window ────────────────────────────────────────────────────────
+
+
+class ActiveWindowResult(BaseModel):
+    """Result of active_window."""
+
+    window: WindowGeometry | None = Field(
+        description=(
+            "The window KWin treats as active, which may be one window_geometry does not "
+            "list, such as a dialog; null when no window is active."
+        )
+    )
+
+
+def format_active_window(r: ActiveWindowResult) -> str:
+    """Render an active_window result."""
+    if r.window is None:
+        return "No active window."
+    return f"Active window:\n{format_window(r.window)}"
 
 
 # ── virtual_desktops / window_set_desktop ────────────────────────────────

@@ -1,6 +1,6 @@
 """Typed structured output over the installed MCP stdio server.
 
-``window_geometry``, ``find_ui_elements``, ``accessibility_tree``,
+``window_geometry``, ``active_window``, ``find_ui_elements``, ``accessibility_tree``,
 ``list_windows``, ``virtual_desktops``, and ``window_set_desktop`` advertise a
 typed ``outputSchema`` and return matching
 ``structuredContent``, while their TextContent stays the human-readable text the
@@ -19,11 +19,13 @@ from mcp_harness import running_mcp_server
 
 from kwin_mcp.results import (
     AccessibilityTreeResult,
+    ActiveWindowResult,
     FindUIElementsResult,
     ListWindowsResult,
     VirtualDesktopsResult,
     WindowGeometryResult,
     WindowSetDesktopResult,
+    format_active_window,
     format_find,
     format_list_windows,
     format_tree,
@@ -48,6 +50,7 @@ MISSING_NAME = "definitely-not-a-real-kwrite-element"
 
 STRUCTURED_TOOL_PROPERTIES: dict[str, frozenset[str]] = {
     "accessibility_tree": frozenset({"elements"}),
+    "active_window": frozenset({"window"}),
     "find_ui_elements": frozenset({"query", "states", "elements"}),
     "list_windows": frozenset({"applications"}),
     "window_geometry": frozenset({"windows"}),
@@ -127,6 +130,24 @@ async def test_typed_tools_advertise_object_output_schemas() -> None:
         properties = schema.get("properties")
         assert isinstance(properties, dict), (name, schema)
         assert frozenset(properties) == expected_properties, (name, schema)
+
+    # active_window is singular: one required "window" that is a window record or null.
+    active_schema = schemas["active_window"]
+    assert active_schema.get("required") == ["window"], active_schema
+    validator = Draft202012Validator(active_schema)
+    rect = {"x": 0, "y": 0, "width": 10, "height": 10}
+    window = {
+        "id": "{a}",
+        "app": "a",
+        "caption": "c",
+        "active": True,
+        "frame": rect,
+        "client": rect,
+    }
+    assert validator.is_valid({"window": None}), active_schema
+    assert validator.is_valid({"window": window}), active_schema
+    assert not validator.is_valid({}), active_schema
+    assert not validator.is_valid({"window": {"id": "{a}"}}), active_schema
 
     # Untyped tools keep the SDK's wrapped string result.
     stop_schema = schemas["session_stop"]
@@ -240,6 +261,14 @@ async def test_typed_tools_return_schema_valid_structured_content_matching_text(
             geometry_text, geometry = await _wait_for_single_active_window(client, schemas)
             _assert_window_geometry(geometry_text, geometry)
 
+            # active_window reports the same window record that window_geometry marks active.
+            active_text, active = await _call_structured(client, schemas, "active_window")
+            assert active_text == format_active_window(ActiveWindowResult.model_validate(active))
+            marked = [window for window in geometry["windows"] if window["active"]]
+            assert active == {"window": marked[0]}, (active, marked)
+            assert active_text.startswith("Active window:\n"), active_text
+            assert f"    id:     {marked[0]['id']}" in active_text.splitlines(), active_text
+
             desktops_text, desktops = await _call_structured(client, schemas, "virtual_desktops")
             assert desktops_text == format_virtual_desktops(
                 VirtualDesktopsResult.model_validate(desktops)
@@ -338,6 +367,27 @@ async def test_typed_tools_return_schema_valid_structured_content_matching_text(
             stop_output = await client.call_text("session_stop")
             session_running = False
             assert stop_output == "Session stopped.", stop_output
+        finally:
+            if session_running:
+                await client.call_text("session_stop")
+
+
+@pytest.mark.anyio
+async def test_active_window_without_an_active_window_is_null() -> None:
+    """No window to activate: an explicit null, not an empty listing or a fabricated window."""
+    async with running_mcp_server() as client:
+        session_running = False
+        try:
+            schemas = await _output_schemas(client)
+            await client.call_text(
+                "session_start", {"screen_width": SCREEN_WIDTH, "screen_height": SCREEN_HEIGHT}
+            )
+            session_running = True
+
+            text, structured = await _call_structured(client, schemas, "active_window")
+
+            assert structured == {"window": None}, structured
+            assert text == "No active window.", text
         finally:
             if session_running:
                 await client.call_text("session_stop")

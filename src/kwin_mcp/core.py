@@ -28,6 +28,7 @@ from kwin_mcp import progress
 from kwin_mcp.input import InputBackend, MouseButton, check_typeable
 from kwin_mcp.results import (
     AccessibilityTreeResult,
+    ActiveWindowResult,
     FindUIElementsResult,
     ListWindowsResult,
     UIElement,
@@ -35,12 +36,12 @@ from kwin_mcp.results import (
     WindowGeometry,
     WindowGeometryResult,
     WindowSetDesktopResult,
+    format_active_window,
     format_find,
     format_found,
     format_list_windows,
     format_tree,
     format_virtual_desktops,
-    format_window,
     format_window_geometry,
     format_window_set_desktop,
     search_description,
@@ -1479,17 +1480,24 @@ class AutomationEngine:
             self.window_geometry_data(app_name, window_id), app_name, window_id
         )
 
-    def active_window(self) -> str:
-        """Report the window KWin currently treats as active (the one focus_window sets)."""
+    def active_window_data(self) -> ActiveWindowResult:
+        """Report the window KWin currently treats as active, as data (``window`` may be None).
+
+        Raises RuntimeError when KWin cannot be queried, as window_geometry_data does.
+        """
         self._get_session()
         resp = self._run_kwin_query({"op": "active"})
         if not resp["ok"]:
             msg = f"Active window unavailable: {resp['error']}"
             raise RuntimeError(msg)
         window = resp["result"]
-        if window is None:
-            return "No active window."
-        return f"Active window:\n{format_window(WindowGeometry.model_validate(window))}"
+        return ActiveWindowResult(
+            window=None if window is None else WindowGeometry.model_validate(window)
+        )
+
+    def active_window(self) -> str:
+        """Report the window KWin currently treats as active (the one focus_window sets)."""
+        return format_active_window(self.active_window_data())
 
     def window_set_geometry(
         self,

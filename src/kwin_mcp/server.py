@@ -37,11 +37,13 @@ from kwin_mcp import progress
 from kwin_mcp.core import AutomationEngine
 from kwin_mcp.results import (
     AccessibilityTreeResult,
+    ActiveWindowResult,
     FindUIElementsResult,
     ListWindowsResult,
     VirtualDesktopsResult,
     WindowGeometryResult,
     WindowSetDesktopResult,
+    format_active_window,
     format_find,
     format_list_windows,
     format_tree,
@@ -1246,13 +1248,15 @@ def window_geometry(
 
 
 @_tool(annotations=_READ_ONLY)
-def active_window() -> str:
+def active_window() -> Annotated[CallToolResult, ActiveWindowResult]:
     """Report the window KWin currently treats as active.
 
     Returns the same id, frame and client fields as window_geometry for the
-    one window that has focus, e.g. after focus_window.
+    one window that has focus, e.g. after focus_window. Structured output is
+    {"window": ...}, or {"window": null} when no window is active.
     """
-    return _engine.active_window()
+    data = _engine.active_window_data()
+    return _structured(format_active_window(data), data)
 
 
 @_tool(annotations=_DESTRUCTIVE_IDEMPOTENT)

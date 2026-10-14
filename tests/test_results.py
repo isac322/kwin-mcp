@@ -1,7 +1,7 @@
 """Byte-exact contracts for the text formatters in ``kwin_mcp.results``.
 
 The MCP TextContent and ``kwin-mcp-cli`` output of ``window_geometry``,
-``find_ui_elements``, ``accessibility_tree``, and ``list_windows`` are rendered
+``active_window``, ``find_ui_elements``, ``accessibility_tree``, and ``list_windows`` are rendered
 from the typed result models. Every expected string below is a literal captured
 from the pre-model formatting code, so any drift in the human-readable output
 fails here without needing a KWin session.
@@ -17,12 +17,14 @@ from kwin_mcp.results import (
     AccessibilityTreeResult,
     AccessibleApplication,
     AccessibleWindow,
+    ActiveWindowResult,
     FindUIElementsResult,
     ListWindowsResult,
     Rect,
     UIElement,
     WindowGeometry,
     WindowGeometryResult,
+    format_active_window,
     format_find,
     format_list_windows,
     format_tree,
@@ -257,6 +259,27 @@ def test_format_window_geometry_reports_no_windows(
     app_name: str, window_id: str, expected: str
 ) -> None:
     assert format_window_geometry(WindowGeometryResult(), app_name, window_id) == expected
+
+
+def test_format_active_window_renders_the_active_window() -> None:
+    expected = (
+        "Active window:\n"
+        '- org.kde.kcalc "KCalc — "x"" [active]\n'
+        "    id:     {3f2c-a1}\n"
+        "    frame:  (-5, 0, 400x500)\n"
+        "    client: (0, 30, 390x465)"
+    )
+
+    assert format_active_window(ActiveWindowResult(window=WINDOWS[0])) == expected
+
+
+def test_format_active_window_reports_no_active_window() -> None:
+    assert format_active_window(ActiveWindowResult(window=None)) == "No active window."
+
+
+def test_active_window_result_keeps_an_explicit_null_window() -> None:
+    """No active window is {"window": null}, never an empty listing or a fabricated window."""
+    assert ActiveWindowResult(window=None).model_dump(mode="json") == {"window": None}
 
 
 def test_format_list_windows_renders_state_markers_and_child_counts() -> None:

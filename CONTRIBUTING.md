@@ -260,16 +260,12 @@ tests/e2e/
 ├── test_installed_package.py           # Wheel, dependencies, and entry points
 ├── test_environment_evidence.py        # Safe environment.json provenance
 ├── test_mcp_protocol.py                # All 35 tool schemas and protocol errors
-├── test_mcp_features.py                # Installed stdio annotations, opt-in PNG attachments, and requested-only progress
-├── test_structured_output.py           # Installed stdio outputSchema and schema-valid structuredContent matching text
 ├── test_tool_registration.py           # Repeated tool registration replaces each tool with the latest flags (no KWin)
 ├── test_mcp_session_observation.py     # Installed stdio session and observation flow
-├── test_mcp_stdin_isolation.py         # Installed stdio stdin stays private; launched child reads nothing
 ├── test_mcp_pointer_keyboard.py        # Installed stdio pointer and keyboard flow
 ├── test_mcp_touch_clipboard.py         # Installed stdio touch and clipboard flow
 ├── test_screenshot_behavior.py         # Capture backends, frames, errors, and cleanup
 ├── test_screenshot_reframe.py          # Synthetic crop/downscale mappings, flag parsing, and capture-file cleanup
-├── test_spectacle_composition.py       # Spectacle fallback decisions with stubbed topology/binary, not real multi-output capture
 ├── test_visual_qa.py                   # Pixel-backed nested compositor oracles
 ├── test_interaction_probe.py           # Full probe interaction feedback loop
 ├── test_input_cleanup.py               # Input state reset across sessions and failures
@@ -298,18 +294,16 @@ tests/e2e/
 ├── test_kwin_script_render.py          # Caller values reach KWin scripts only as JSON literals (no KWin)
 ├── test_window_control.py              # Focus, scroll, drag, and touch behavior
 ├── test_window_match.py                # Chromium/Flatpak AT-SPI top-levels matched to KWin windows via buffer geometry and captions
-├── test_caption_match.py               # AT-SPI/KWin caption whitespace and app-name suffix matching (no session needed)
 ├── test_window_set_geometry_validation.py # window_set_geometry input validation and request reporting (no KWin)
 ├── test_window_tool_errors.py          # focus_window/window_close/window_set_geometry argument errors before any session lookup
 ├── test_pointer_reconnect.py           # Clicks reach a window mapped under a parked pointer
 ├── test_dbus_args.py                   # dbus_call argument parser (no session needed)
-├── test_atspi_service_acquisition.py   # Bounded AT-SPI service-file lookup across trusted XDG data roots (no session needed)
+├── test_atspi_service_acquisition.py   # Bounded service-file lookup and real-session activation after inaccessible metadata
 ├── test_atspi_exec_security.py        # Direct AT-SPI Exec= execution security against implicit shell/interpreter fallback
 ├── test_dbus_service_file.py           # Service file Exec= argv as dbus-daemon gives it (no session needed)
 ├── test_dbus_call.py                   # dbus_call arguments as received by a test D-Bus service
 ├── test_lazy_libei.py                  # Import without libei and the missing-libei input backend path
 ├── test_eis_device_replacement.py      # Input after KWin replaces or drops its EIS devices
-├── test_eis_handshake.py               # Scripted-libei EIS handshake and device lifecycle (no KWin)
 └── test_input_injection.py             # Engine-level EIS input behavior
 
 integrations/

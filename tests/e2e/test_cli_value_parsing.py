@@ -120,6 +120,15 @@ def test_invoke_ui_action_spoken_name_converts_to_bool() -> None:
     assert kwargs["spoken_name"] is True
 
 
+def test_invoke_ui_action_spoken_name_false_converts_to_false() -> None:
+    engine = AutomationEngine()
+    kwargs = cli._parse_args(
+        engine.invoke_ui_action, "query='save as' action_name=Press spoken_name=false"
+    )
+
+    assert kwargs["spoken_name"] is False
+
+
 def test_invoke_ui_action_rejects_an_unknown_spoken_name_literal() -> None:
     """spoken_name=banana must not quietly become False and fall back to substring matching."""
     engine = AutomationEngine()

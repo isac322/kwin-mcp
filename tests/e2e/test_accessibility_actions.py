@@ -1332,9 +1332,9 @@ def test_spoken_name_still_refuses_a_match_beyond_the_depth_limit(
     assert invoked == []
 
 
-@pytest.mark.parametrize("query", ["...", "?!\u2026", ". . ."])
+@pytest.mark.parametrize("query", ["...", "?!\u2026", ". . .", None, 7])
 def test_worker_refuses_an_empty_spoken_query_before_walking(
-    query: str, invoked: list[tuple[str, int]]
+    query: Any, invoked: list[tuple[str, int]]
 ) -> None:
     """Defence in depth: the engine refuses these first, but direct requests must too."""
     response = _spoken({"editor": [_ActionsNode("...", ["Press"])]}, query)
@@ -1351,6 +1351,10 @@ def test_worker_refuses_spoken_and_exact_name_together(invoked: list[tuple[str, 
 
     assert response["ok"] is False
     assert "cannot both be true" in response["error"]
+    assert invoked == []
+
+    with pytest.raises(ValueError, match="cannot both be true"):
+        accessibility.invoke_action("save", "Press", exact_name=True, spoken_name=True)
     assert invoked == []
 
 

@@ -269,6 +269,8 @@ def invoke_action(
     ``invoked: None`` and the exception text in ``error``: the request was
     sent and the action may have run.
     """
+    if exact_name and spoken_name:
+        raise ValueError("invoke_action exact_name and spoken_name cannot both be true.")
     desktop = Atspi.get_desktop(0)
     query_lower = query.lower()
     query_name = _normalize_name(query)

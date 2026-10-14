@@ -1134,6 +1134,8 @@ class Session:
             else f"; set {ATSPI_DIRECT_START_ENV}=1 to start it directly from its service files"
         )
         return f"""\
+# Keep every background child in the registered group, even with inherited monitor mode.
+set +m
 echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
 
 # Ensure all child processes are cleaned up on exit.

@@ -939,25 +939,46 @@ def test_session_start_reports_a_failed_accessibility_bus_activation(
     assert _a11y_bus_has_owner(engine).split()[-1:] == ["false"]
 
 
+@pytest.mark.parametrize(
+    "inherited_monitor", [False, True], ids=["default-shell", "inherited-monitor"]
+)
 def test_session_start_starts_the_accessibility_bus_directly_when_activation_is_denied(
     engine: AutomationEngine,
     start_session: Callable[..., str],
     wait_for_app: Callable[[str], str],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    inherited_monitor: bool,
 ) -> None:
     # Fedora's SELinux policy denies the launcher's activation from a private
     # session bus with exactly this error; a direct start works.
+    monkeypatch.setenv("SHELLOPTS", "monitor" if inherited_monitor else "")
     real_launcher = _real_launcher_argv()
+    real_registry = _real_registry_argv()
     launcher_record = tmp_path / "launcher-argv"
     launcher_identity_path = tmp_path / "launcher-identity"
+    launcher_fd_log = tmp_path / "launcher-fds"
     launcher = tmp_path / "recording-launcher"
     launcher_exec = _recording_launcher_script(
-        launcher, launcher_record, launcher_identity_path, real_launcher
+        launcher,
+        launcher_record,
+        launcher_identity_path,
+        real_launcher,
+        fd_log=launcher_fd_log,
     )
     data_dir = _service_data_dir(tmp_path, monkeypatch, launcher_exec=launcher_exec)
+    registry_record = tmp_path / "registry-argv"
+    registry_identity_path = tmp_path / "registry-identity"
+    registry_fd_log = tmp_path / "registry-fds"
+    registry_exec = _recording_launcher_script(
+        tmp_path / "recording-registry",
+        registry_record,
+        registry_identity_path,
+        real_registry,
+        fd_log=registry_fd_log,
+    )
     (data_dir / "dbus-1/accessibility-services/org.a11y.atspi.Registry.service").write_text(
-        _real_service_file("accessibility-services/org.a11y.atspi.Registry.service")
+        f"[D-BUS Service]\nName=org.a11y.atspi.Registry\nExec={registry_exec}\n"
     )
     monkeypatch.setenv(ATSPI_DIRECT_START_ENV, "1")
     _deny_first_a11y_activation(tmp_path, monkeypatch)
@@ -969,6 +990,8 @@ def test_session_start_starts_the_accessibility_bus_directly_when_activation_is_
         output = start_session()
 
         assert "Session started. Wayland socket: " in output, output
+        assert (tmp_path / "activation-denied").is_file()
+        assert "Input backend: KWin EIS" in output, output
         warnings = [line for line in output.splitlines() if line.startswith("Warning: ")]
         assert any(
             "started the accessibility bus and registry directly" in line for line in warnings
@@ -980,10 +1003,24 @@ def test_session_start_starts_the_accessibility_bus_directly_when_activation_is_
         launcher_identity = _assert_process_identity(launcher_identity_path)
         assert _bus_name_owner_pid(session_bus, A11Y_BUS_NAME) == launcher_identity[0]
         registry_bus = _a11y_registry_address(session_bus)
-        registry_pid = _bus_name_owner_pid(registry_bus, "org.a11y.atspi.Registry")
-        registry_process = _process_identity(registry_pid)
-        assert registry_process is not None
-        registry_identity = (registry_pid, *registry_process)
+        registry_identity = _assert_process_identity(registry_identity_path)
+        assert _bus_name_owner_pid(registry_bus, "org.a11y.atspi.Registry") == registry_identity[0]
+        pgid = session.info.kwin_pid
+        assert launcher_identity[1] == registry_identity[1] == pgid
+        for record, real_argv, fd_log in (
+            (launcher_record, real_launcher, launcher_fd_log),
+            (registry_record, real_registry, registry_fd_log),
+        ):
+            assert record.read_bytes().split(b"\0")[:-1] == [
+                argument.encode() for argument in ["--record", *real_argv]
+            ]
+            targets = fd_log.read_text().splitlines()
+            assert targets, "service did not record its file descriptors"
+            assert not any(
+                target == str(data_dir) or target.startswith(str(data_dir) + os.sep)
+                for target in targets
+            ), targets
+        _assert_real_session_state(engine)
 
         reply = engine.dbus_call(
             service="org.a11y.Bus",
@@ -1001,10 +1038,22 @@ def test_session_start_starts_the_accessibility_bus_directly_when_activation_is_
         assert engine.session_stop() == "Session stopped."
         _assert_process_identity_exited(launcher_identity)
         _assert_process_identity_exited(registry_identity)
+        assert session._process is None
+        assert not _group_pids(pgid)
         assert _process_identity(neighbor.pid) == neighbor_identity
     finally:
-        engine.session_stop()
-        _reap(neighbor)
+        try:
+            engine.session_stop()
+        finally:
+            # Before the regression is fixed, monitor can give each owned role
+            # its own group. Recover only a recorder's still-matching identity.
+            for path in (launcher_identity_path, registry_identity_path):
+                if path.is_file():
+                    pid, pgid, start_time = _read_process_identity(path)
+                    if pid == pgid and _process_identity(pid) == (pgid, start_time):
+                        with contextlib.suppress(ProcessLookupError, PermissionError):
+                            os.killpg(pgid, signal.SIGKILL)
+            _reap(neighbor)
 
 
 def test_session_start_does_not_start_the_accessibility_bus_directly_without_opt_in(
@@ -1165,14 +1214,28 @@ def test_atspi_direct_start_fails_closed_for_missing_or_invalid_services(
     assert _a11y_bus_has_owner(engine).split()[-1:] == ["false"]
 
 
+@pytest.mark.parametrize(
+    ("inherited_monitor", "direct_opt_in"),
+    [
+        pytest.param(False, True, id="default-shell-enabled"),
+        pytest.param(True, True, id="inherited-monitor-enabled"),
+        pytest.param(True, False, id="inherited-monitor-default-off"),
+    ],
+)
 def test_healthy_activation_does_not_fall_back_to_the_direct_launcher(
     engine: AutomationEngine,
     start_session: Callable[..., str],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    inherited_monitor: bool,
+    direct_opt_in: bool,
 ) -> None:
-    """An enabled fallback must remain unused when normal activation succeeds."""
-    monkeypatch.setenv(ATSPI_DIRECT_START_ENV, "1")
+    """Healthy activation retains owned KWin teardown regardless of shell options."""
+    monkeypatch.setenv("SHELLOPTS", "monitor" if inherited_monitor else "")
+    if direct_opt_in:
+        monkeypatch.setenv(ATSPI_DIRECT_START_ENV, "1")
+    else:
+        monkeypatch.delenv(ATSPI_DIRECT_START_ENV, raising=False)
     real_launcher = _real_launcher_argv()
     launcher = tmp_path / "activation-observer"
     recorded = tmp_path / "activation-modes"
@@ -1195,16 +1258,56 @@ def test_healthy_activation_does_not_fall_back_to_the_direct_launcher(
         _real_service_file("accessibility-services/org.a11y.atspi.Registry.service")
     )
 
-    output = start_session()
+    neighbor = _spawn_neighbor(f"kwin-mcp-activation-neighbor-{uuid4().hex}")
+    neighbor_identity = _process_identity(neighbor.pid)
+    assert neighbor_identity is not None
+    kwin_identity: tuple[int, int, int] | None = None
+    try:
+        output = start_session()
 
-    assert "Session started. Wayland socket: " in output, output
-    assert all(
-        "started the accessibility bus and registry directly" not in line
-        for line in output.splitlines()
-    )
-    assert _a11y_bus_has_owner(engine).split()[-1:] == ["true"]
-    assert recorded.is_file()
-    assert recorded.read_text().splitlines() == ["activated"]
+        assert "Session started. Wayland socket: " in output, output
+        assert "Input backend: KWin EIS" in output, output
+        assert all(
+            "started the accessibility bus and registry directly" not in line
+            for line in output.splitlines()
+        )
+        assert _a11y_bus_has_owner(engine).split()[-1:] == ["true"]
+        assert recorded.is_file()
+        assert recorded.read_text().splitlines() == ["activated"]
+        session = engine._session
+        assert isinstance(session, Session) and session.info is not None
+        pgid = session.info.kwin_pid
+        kwin_pid = _bus_name_owner_pid(session.info.dbus_address, "org.kde.KWin")
+        kwin_process = _process_identity(kwin_pid)
+        assert kwin_process is not None
+        kwin_identity = (kwin_pid, *kwin_process)
+        assert kwin_process[0] == pgid
+        _assert_real_session_state(engine)
+        assert _process_identity(neighbor.pid) == neighbor_identity
+        assert engine.session_stop() == "Session stopped."
+        assert session._process is None
+        _assert_process_identity_exited(kwin_identity)
+        assert not _group_pids(pgid)
+        assert _process_identity(neighbor.pid) == neighbor_identity
+    finally:
+        escaped_group_members: dict[int, tuple[int, int] | None] = {}
+        if kwin_identity is not None:
+            pid, pgid, start_time = kwin_identity
+            if pid == pgid and _process_identity(pid) == (pgid, start_time):
+                escaped_group_members = {
+                    member: _process_identity(member) for member in _group_pids(pgid)
+                }
+        try:
+            engine.session_stop()
+        finally:
+            # A matching member proves this remains the test's escaped KWin
+            # group, even if stopping the wrapper already reaped its leader.
+            for member, identity in escaped_group_members.items():
+                if identity is not None and _process_identity(member) == identity:
+                    with contextlib.suppress(ProcessLookupError, PermissionError):
+                        os.killpg(identity[0], signal.SIGKILL)
+                    break
+            _reap(neighbor)
 
 
 def test_session_start_runs_the_service_file_command_as_dbus_would(
@@ -1286,7 +1389,14 @@ def _accessibility_daemons() -> int:
     return count
 
 
-@pytest.mark.parametrize("registry_mode", ["exits", "ignores-term"])
+@pytest.mark.parametrize(
+    ("registry_mode", "inherited_monitor"),
+    [
+        pytest.param("exits", False, id="exits"),
+        pytest.param("ignores-term", False, id="ignores-term"),
+        pytest.param("ignores-term", True, id="inherited-monitor-ignores-term"),
+    ],
+)
 def test_session_start_stops_the_direct_launcher_when_the_registry_fails(
     engine: AutomationEngine,
     start_session: Callable[..., str],
@@ -1294,9 +1404,11 @@ def test_session_start_stops_the_direct_launcher_when_the_registry_fails(
     monkeypatch: pytest.MonkeyPatch,
     background_start: Callable[..., _BackgroundStart],
     registry_mode: str,
+    inherited_monitor: bool,
 ) -> None:
     # Both an immediate exit and a TERM-resistant registry must leave no
     # owned accessibility children before the usable session is published.
+    monkeypatch.setenv("SHELLOPTS", "monitor" if inherited_monitor else "")
     launcher_identity_path = tmp_path / "launcher-identity"
     launcher = tmp_path / "recording-launcher"
     launcher_exec = _recording_launcher_script(
@@ -1333,6 +1445,7 @@ def test_session_start_stops_the_direct_launcher_when_the_registry_fails(
         assert isinstance(output, str), output
 
         assert "Session started. Wayland socket: " in output, output
+        assert (tmp_path / "activation-denied").is_file()
         warnings = [line for line in output.splitlines() if line.startswith("Warning: ")]
         assert any("accessibility tools may be unavailable" in line for line in warnings), output
         assert launcher_identity_path.is_file()
@@ -1353,6 +1466,7 @@ def test_session_start_stops_the_direct_launcher_when_the_registry_fails(
         assert _process_identity(neighbor.pid) == neighbor_identity
         pgid = session.info.kwin_pid
         assert engine.session_stop() == "Session stopped."
+        assert session._process is None
         assert not _group_pids(pgid)
         assert _process_identity(neighbor.pid) == neighbor_identity
     finally:
@@ -1364,8 +1478,16 @@ def test_session_start_stops_the_direct_launcher_when_the_registry_fails(
             session._process.pid if session._process is not None else None,
             f"atspi-recovery-{uuid4().hex}",
         )
-        engine.session_stop()
-        _reap(neighbor)
+        try:
+            engine.session_stop()
+        finally:
+            for path in (launcher_identity_path, registry_identity_path):
+                if path.is_file():
+                    pid, pgid, start_time = _read_process_identity(path)
+                    if pid == pgid and _process_identity(pid) == (pgid, start_time):
+                        with contextlib.suppress(ProcessLookupError, PermissionError):
+                            os.killpg(pgid, signal.SIGKILL)
+            _reap(neighbor)
 
 
 @pytest.mark.parametrize("ignore_term", [False, True], ids=["honors-term", "ignores-term"])

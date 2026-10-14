@@ -604,12 +604,18 @@ def test_server_sigterm_stops_the_virtual_session_and_app() -> None:
             server.wait()
 
 
+@pytest.mark.parametrize("shell_options", ["unset", "monitor"], ids=["unset", "inherited-monitor"])
 @pytest.mark.parametrize("fault", ["launcher", "lookup"])
 def test_server_sigterm_during_direct_atspi_start_cleans_owned_children(
-    fault: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    fault: str, shell_options: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A signal during either owned AT-SPI child wait exits without orphaning it."""
+    """Both shell-option modes keep stalled AT-SPI children owned across signal exit."""
     real_interpreter = sys.executable
+    # Set the fresh installed server's actual environment, not a wrapper mock.
+    # Unset controls must not inherit unrelated Bash options from the test host.
+    monkeypatch.delenv("SHELLOPTS", raising=False)
+    if shell_options == "monitor":
+        monkeypatch.setenv("SHELLOPTS", "monitor")
     identity_path = tmp_path / "stalled-launcher-identity"
     launcher = tmp_path / "stalled-launcher"
     if fault == "launcher":
@@ -651,6 +657,27 @@ def test_server_sigterm_during_direct_atspi_start_cleans_owned_children(
     pgid: int | None = None
     owned_identities: dict[int, tuple[int, int]] = {}
     stalled_identity: tuple[int, int, int] | None = None
+
+    def remember_owned_children() -> None:
+        # Capture descendants while their parentage still proves test ownership.
+        # Inherited monitor can move a child outside the registered wrapper group.
+        roots = [
+            pid for pid, identity in owned_identities.items() if _process_identity(pid) == identity
+        ]
+        if pgid is not None and pgid in roots:
+            roots.extend(_group_pids(pgid))
+        seen: set[int] = set()
+        while roots:
+            pid = roots.pop()
+            if pid in seen:
+                continue
+            seen.add(pid)
+            identity = _process_identity(pid)
+            if identity is None:
+                continue
+            owned_identities[pid] = identity
+            roots.extend(_children(pid))
+
     try:
         assert neighbor_identity is not None
         server = _spawn_with_stderr(argv)
@@ -693,6 +720,7 @@ def test_server_sigterm_during_direct_atspi_start_cleans_owned_children(
             pid, child_pgid, start_time = candidate
             if _process_identity(pid) != (child_pgid, start_time):
                 return False
+            owned_identities[pid] = (child_pgid, start_time)
             child_argv = _cmdline(pid)
             # exec happens after installing SIG_IGN, so this is an event guard,
             # not a sleep that might signal the child before its trap is ready.
@@ -707,13 +735,13 @@ def test_server_sigterm_during_direct_atspi_start_cleans_owned_children(
             f"the {fault} fault never reached its actual owned child wait"
         )
         assert stalled_identity is not None
-        assert stalled_identity[1] == pgid, "AT-SPI child escaped the owned session group"
+        remember_owned_children()
+        assert stalled_identity[1] == pgid, (
+            f"AT-SPI {fault} child escaped the owned session group with "
+            f"SHELLOPTS={shell_options}: child={stalled_identity}, wrapper={pgid}"
+        )
         assert (tmp_path / "activation-denied").is_file()
         assert server.poll() is None, "server exited before receiving SIGTERM"
-        for pid in _group_pids(pgid):
-            identity = _process_identity(pid)
-            if identity is not None:
-                owned_identities[pid] = identity
 
         # Leave stdin open: only SIGTERM, not an incidental transport EOF, exits.
         deadline = time.monotonic() + SERVER_EXIT_TIMEOUT_TOOL_OVERRUN_SECONDS
@@ -747,19 +775,28 @@ def test_server_sigterm_during_direct_atspi_start_cleans_owned_children(
     finally:
         try:
             if server is not None:
+                remember_owned_children()
                 if server.poll() is None:
                     # Give real cleanup a chance even when an event assertion fails.
                     server.send_signal(signal.SIGTERM)
                     with contextlib.suppress(subprocess.TimeoutExpired):
                         server.wait(timeout=SERVER_EXIT_TIMEOUT_TOOL_OVERRUN_SECONDS)
-                if pgid is not None and any(
-                    _process_identity(pid) == identity for pid, identity in owned_identities.items()
-                ):
-                    # A matching member keeps this original group ID reserved;
-                    # never signal a group just because an old numeric PID exists.
+                for owned_pgid in {identity[0] for identity in owned_identities.values()}:
+                    if owned_pgid <= 1 or owned_pgid in (os.getpgrp(), neighbor.pid):
+                        continue
+                    if not any(
+                        identity[0] == owned_pgid and _process_identity(pid) == identity
+                        for pid, identity in owned_identities.items()
+                    ):
+                        continue
+                    # An exact live PID/group/start-time match keeps this group's
+                    # ID reserved. This also cleans up a proven test-owned child
+                    # that escaped under monitor; never kill a reused numeric PID.
                     with contextlib.suppress(ProcessLookupError, PermissionError):
-                        os.killpg(pgid, signal.SIGKILL)
-                    _wait_until(lambda: not _group_pids(pgid), CLEANUP_SETTLE_SECONDS)
+                        os.killpg(owned_pgid, signal.SIGKILL)
+                    _wait_until(
+                        lambda target=owned_pgid: not _group_pids(target), CLEANUP_SETTLE_SECONDS
+                    )
                 if server.poll() is None:
                     server.kill()
                     server.wait(timeout=SERVER_EXIT_TIMEOUT_TOOL_OVERRUN_SECONDS)

@@ -4,9 +4,9 @@ A virtual KWin session starts with one desktop, so each test adds two through
 KWin's own VirtualDesktopManager D-Bus interface, which also serves as an
 independent witness for the current desktop.
 
-KWin moves a window's transients along with it, and a modal dialog's main
-window too; the relationship tests read those relationships back from KWin
-before relying on them, so they cannot pass without the relationship in place.
+KWin propagates desktop changes through transients and modal main windows, but
+stops at windows already on exactly the requested desktop. Relationship tests
+read the actual KWin chain and memberships before exercising those boundaries.
 """
 
 from __future__ import annotations
@@ -135,6 +135,67 @@ def _run_script(engine: AutomationEngine, tmp_path: Path, source: str) -> None:
     )
     assert output.lstrip("-").isdigit(), output
     engine.dbus_call("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "start")
+
+
+def _set_test_desktops(
+    engine: AutomationEngine, tmp_path: Path, assignments: dict[str, str]
+) -> None:
+    """Build split memberships with native setters, then independently observe them."""
+    # Assign ancestors before descendants so later setters establish the split
+    # after any native propagation. This bypass exists only in test setup.
+    _run_script(
+        engine,
+        tmp_path,
+        f"""
+        var assignments = {json.dumps(list(assignments.items()))};
+        var windows = workspace.windowList();
+        var desktops = workspace.desktops;
+        for (var a = 0; a < assignments.length; a++) {{
+            for (var w = 0; w < windows.length; w++) {{
+                if (String(windows[w].internalId) !== assignments[a][0]) {{
+                    continue;
+                }}
+                for (var d = 0; d < desktops.length; d++) {{
+                    if (String(desktops[d].id) === assignments[a][1]) {{
+                        windows[w].desktops = [desktops[d]];
+                        break;
+                    }}
+                }}
+                break;
+            }}
+        }}
+        """,
+    )
+    deadline = time.monotonic() + _WAIT_SECONDS
+    while True:
+        windows = _relations(engine)
+        if all(
+            window_id in windows and windows[window_id]["desktops"] == [desktop_id]
+            for window_id, desktop_id in assignments.items()
+        ):
+            return
+        assert time.monotonic() < deadline, (assignments, windows)
+        time.sleep(0.25)
+
+
+def _assert_desktop_state(
+    engine: AutomationEngine,
+    before: dict[str, dict[str, Any]],
+    changed: dict[str, str],
+    current_id: str,
+    current_dbus: str,
+) -> None:
+    """Independently witness every membership, window survival, current and active window."""
+    after = _relations(engine)
+    assert set(after) == set(before), (before, after)
+    for window_id, window in before.items():
+        expected = [changed[window_id]] if window_id in changed else window["desktops"]
+        assert after[window_id]["desktops"] == expected, (window_id, before, after)
+    assert [w["id"] for w in after.values() if w["active"]] == [
+        w["id"] for w in before.values() if w["active"]
+    ], (before, after)
+    assert [d.id for d in engine.virtual_desktops_data().desktops if d.current] == [current_id]
+    assert _current_from_dbus(engine) == current_dbus
 
 
 def test_virtual_desktops_lists_stable_ids_names_and_one_current(
@@ -360,6 +421,116 @@ def test_transient_child_moves_alone_then_its_parent_may_follow(
     after = _relations(kcalc_session)
     assert after[parent["id"]]["desktops"] == [target.id], after[parent["id"]]
     assert after[child["id"]]["desktops"] == [target.id], after[child["id"]]
+
+
+def test_parent_already_on_target_is_noop_with_divergent_transient_child(
+    kcalc_session: AutomationEngine, tmp_path: Path
+) -> None:
+    desktops = _add_two_desktops(kcalc_session)
+    current = next(d for d in desktops if d.current)
+    other = next(d for d in desktops if not d.current)
+    kcalc_session.launch_app(command=f"python3 {_TRANSIENT_PROBE}")
+    parent, child = _wait_for_transient(kcalc_session, "Transient Probe Dialog", modal=False)
+    assignments = {parent["id"]: current.id, child["id"]: other.id}
+    _set_test_desktops(kcalc_session, tmp_path, assignments)
+
+    (sentinel_id,) = _kcalc_ids(kcalc_session, 1)[:1]
+    assert kcalc_session.focus_window(window_id=sentinel_id).startswith("Focused:")
+    before = _await_active(kcalc_session, sentinel_id)
+    assert before[parent["id"]]["transientFor"] is None, before[parent["id"]]
+    assert before[child["id"]]["transientFor"] == parent["id"], before[child["id"]]
+    assert before[child["id"]]["modal"] is False, before[child["id"]]
+    for window_id, desktop_id in assignments.items():
+        assert before[window_id]["desktops"] == [desktop_id], before[window_id]
+    current_dbus = _current_from_dbus(kcalc_session)
+    assert current.id in current_dbus
+
+    data = kcalc_session.window_set_desktop_data(window_id=parent["id"], desktop_id=current.id)
+
+    assert data.applied is True, data
+    assert data.observation_error is None, data
+    assert data.before == data.observed == [current.id], data
+    assert data.before_on_all_desktops is False, data
+    assert data.current_desktop_id_before == data.current_desktop_id_after == current.id, data
+    _assert_desktop_state(kcalc_session, before, {}, current.id, current_dbus)
+
+
+def test_parent_moves_only_itself_when_targeted_child_stops_nested_propagation(
+    kcalc_session: AutomationEngine, tmp_path: Path
+) -> None:
+    desktops = _add_two_desktops(kcalc_session)
+    current = next(d for d in desktops if d.current)
+    target = next(d for d in desktops if not d.current)
+    kcalc_session.launch_app(command=f"python3 {_TRANSIENT_PROBE} --nested")
+    parent, child = _wait_for_transient(kcalc_session, "Transient Probe Dialog", modal=False)
+    middle, grandchild = _wait_for_transient(
+        kcalc_session, "Transient Probe Grandchild", modal=False
+    )
+    assert middle["id"] == child["id"], (child, middle, grandchild)
+    assignments = {parent["id"]: current.id, child["id"]: target.id, grandchild["id"]: current.id}
+    _set_test_desktops(kcalc_session, tmp_path, assignments)
+
+    (sentinel_id,) = _kcalc_ids(kcalc_session, 1)[:1]
+    assert kcalc_session.focus_window(window_id=sentinel_id).startswith("Focused:")
+    before = _await_active(kcalc_session, sentinel_id)
+    assert before[parent["id"]]["transientFor"] is None, before[parent["id"]]
+    assert before[child["id"]]["transientFor"] == parent["id"], before[child["id"]]
+    assert before[grandchild["id"]]["transientFor"] == child["id"], before[grandchild["id"]]
+    for window in (child, grandchild):
+        assert before[window["id"]]["modal"] is False, before[window["id"]]
+    for window_id, desktop_id in assignments.items():
+        assert before[window_id]["desktops"] == [desktop_id], before[window_id]
+    current_dbus = _current_from_dbus(kcalc_session)
+    assert current.id in current_dbus
+
+    data = kcalc_session.window_set_desktop_data(window_id=parent["id"], desktop_id=target.id)
+
+    assert data.applied is True, data
+    assert data.observation_error is None, data
+    assert data.before == [current.id], data
+    assert data.observed == [target.id], data
+    assert data.before_on_all_desktops is False, data
+    assert data.current_desktop_id_before == data.current_desktop_id_after == current.id, data
+    _assert_desktop_state(
+        kcalc_session, before, {parent["id"]: target.id}, current.id, current_dbus
+    )
+
+
+def test_parent_move_refuses_both_nested_transients_that_would_change(
+    kcalc_session: AutomationEngine, tmp_path: Path
+) -> None:
+    desktops = _add_two_desktops(kcalc_session)
+    current = next(d for d in desktops if d.current)
+    target, third = (d for d in desktops if not d.current)
+    kcalc_session.launch_app(command=f"python3 {_TRANSIENT_PROBE} --nested")
+    parent, child = _wait_for_transient(kcalc_session, "Transient Probe Dialog", modal=False)
+    middle, grandchild = _wait_for_transient(
+        kcalc_session, "Transient Probe Grandchild", modal=False
+    )
+    assert middle["id"] == child["id"], (child, middle, grandchild)
+    assignments = {parent["id"]: current.id, child["id"]: current.id, grandchild["id"]: third.id}
+    _set_test_desktops(kcalc_session, tmp_path, assignments)
+
+    (sentinel_id,) = _kcalc_ids(kcalc_session, 1)[:1]
+    assert kcalc_session.focus_window(window_id=sentinel_id).startswith("Focused:")
+    before = _await_active(kcalc_session, sentinel_id)
+    assert before[parent["id"]]["transientFor"] is None, before[parent["id"]]
+    assert before[child["id"]]["transientFor"] == parent["id"], before[child["id"]]
+    assert before[grandchild["id"]]["transientFor"] == child["id"], before[grandchild["id"]]
+    for window in (child, grandchild):
+        assert before[window["id"]]["modal"] is False, before[window["id"]]
+    for window_id, desktop_id in assignments.items():
+        assert before[window_id]["desktops"] == [desktop_id], before[window_id]
+        assert desktop_id != target.id
+    current_dbus = _current_from_dbus(kcalc_session)
+    assert current.id in current_dbus
+
+    with pytest.raises(RuntimeError, match="related window") as refused:
+        kcalc_session.window_set_desktop_data(window_id=parent["id"], desktop_id=target.id)
+
+    assert child["id"] in str(refused.value), refused.value
+    assert grandchild["id"] in str(refused.value), refused.value
+    _assert_desktop_state(kcalc_session, before, {}, current.id, current_dbus)
 
 
 def test_modal_dialog_is_refused_because_its_main_window_would_move(

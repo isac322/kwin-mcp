@@ -265,9 +265,9 @@ callDBus("{sink}", "{path}", "{sink}", "Report", JSON.stringify({
 #
 # KWin's Window::setDesktops (checked at v6.3.6 and unchanged through 6.7) also
 # sets the desktops of every transient of the window, recursively, and, when the
-# window is modal, of its main windows. The script checks those relationships
-# across workspace.windowList() at request time and refuses before assignment
-# if an enumerated related window is not already on the requested desktop.
+# window is modal, of its main windows. An equal desktop list returns before
+# propagation, including at related windows. Preflight follows those boundaries
+# and refuses if an enumerated related window would change membership.
 #
 # Preflight refusal covers only relationships KWin scripting can enumerate.
 # Linked but unpainted or unlisted children may follow their parent; when they
@@ -293,16 +293,16 @@ function desktopIds(w) {
 }
 
 function refusal(start, desktopId, windows) {
-    for (var u = 0; u < windows.length; u++) {
-        if (windows[u].transient && !windows[u].transientFor) {
-            return {refused: "unsupported"};
-        }
-    }
     var closure = [start];
     var seen = {};
     seen[String(start.internalId)] = true;
     for (var c = 0; c < closure.length; c++) {
         var w = closure[c];
+        // Selected equality is handled before refusal; related equality stops traversal.
+        var memberships = desktopIds(w);
+        if (c > 0 && memberships.length === 1 && memberships[0] === desktopId) {
+            continue;
+        }
         var id = String(w.internalId);
         for (var t = 0; t < windows.length; t++) {
             var other = windows[t];
@@ -352,14 +352,27 @@ for (var j = 0; j < windows.length; j++) {
     result.before = desktopIds(w);
     result.beforeOnAllDesktops = w.onAllDesktops;
     if (desktop !== null) {
-        var refused = refusal(w, String(desktop.id), windows);
-        if (refused !== null) {
-            result.refused = refused.refused;
-            if (refused.related) {
-                result.related = refused.related;
+        // Keep the global X11 group-transient guard, even for a selected no-op.
+        var unsupported = false;
+        for (var u = 0; u < windows.length; u++) {
+            if (windows[u].transient && !windows[u].transientFor) {
+                unsupported = true;
+                break;
             }
-        } else {
-            w.desktops = [desktop];
+        }
+        if (unsupported) {
+            result.refused = "unsupported";
+        } else if (result.before.length !== 1 || result.before[0] !== String(desktop.id)) {
+            // Native equality returns before transient or modal propagation.
+            var refused = refusal(w, String(desktop.id), windows);
+            if (refused !== null) {
+                result.refused = refused.refused;
+                if (refused.related) {
+                    result.related = refused.related;
+                }
+            } else {
+                w.desktops = [desktop];
+            }
         }
     }
     break;

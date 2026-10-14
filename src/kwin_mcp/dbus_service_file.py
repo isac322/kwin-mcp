@@ -64,8 +64,6 @@ def _unescape_value(value: str) -> str:
     out: list[str] = []
     chars = iter(value)
     for char in chars:
-        if char == "\0":
-            raise ServiceFileError("value contains a nul byte")
         if char != "\\":
             out.append(char)
             continue
@@ -220,6 +218,8 @@ def service_file_argv(data: bytes, name: str) -> list[str]:
     """
     if len(data) > _MAX_SERVICE_FILE_BYTES:
         raise ServiceFileError(f"larger than {_MAX_SERVICE_FILE_BYTES} bytes")
+    if b"\0" in data:
+        raise ServiceFileError("service file contains a nul byte")
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as exc:

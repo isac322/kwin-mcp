@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The internal, standard-library-only helper runs the installed `dbus_service_file.py` with the server's existing `sys.executable -I -S`, then `os.execv`. It rejects implicit `PATH` lookup, shell builtins, function evaluation, and `ENOEXEC` shell fallback while preserving explicit interpreter commands such as `/bin/sh -c` and valid `#!` scripts. No installation step or MCP tool is added.
   - Direct processes retain the same user, private bus, session process group, environment, and inherited server working directory. They start from the server's SELinux domain rather than through D-Bus service activation, which can mean less confinement. The opt-in does not modify SELinux policy or sandbox programs that escape the session group; SELinux-enforcing Fedora behavior is not verified by simulated activation-denial tests.
 
+### Fixed
+
+- Direct AT-SPI service-file parsing rejects embedded NUL bytes anywhere in the file, including ignored comments and localized entries, matching dbus-daemon's rejection.
+
 ## [0.11.0] - 2026-10-12
 
 ### Added

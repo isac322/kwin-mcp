@@ -103,6 +103,14 @@ def test_the_first_service_group_without_exec_is_an_error() -> None:
         "[D-BUS Service]\nExec=/bin/x\n",
         "[D-BUS Service]\nName=org.example.Other\nExec=/bin/x\n",
         "[D-BUS Service]\nExec=/bin/x\n[D-BUS Service]\nName=org.example.Test\n",
+        pytest.param(
+            "[D-BUS Service]\nName=org.example.Test\nExec=/bin/x\n# executed\x00\n",
+            id="nul-in-comment-after-exec",
+        ),
+        pytest.param(
+            "[D-BUS Service]\nName=org.example.Test\nExec=/bin/x\nDescription[en]=executed\x00\n",
+            id="nul-in-localized-entry-after-exec",
+        ),
     ],
 )
 def test_malformed_service_files_are_rejected(text: str) -> None:

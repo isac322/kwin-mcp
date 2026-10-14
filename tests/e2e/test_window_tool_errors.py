@@ -22,6 +22,8 @@ if TYPE_CHECKING:
 
 FOCUS_SELECTOR_REQUIRED = "focus_window needs app_name or window_id (see window_geometry)."
 CLOSE_ID_REQUIRED = "window_close needs a window_id (see window_geometry)."
+DESKTOP_WINDOW_REQUIRED = "window_set_desktop needs a window_id (see window_geometry)."
+DESKTOP_ID_REQUIRED = "window_set_desktop needs a desktop_id (see virtual_desktops)."
 
 
 @pytest.fixture
@@ -44,6 +46,21 @@ def test_focus_window_without_a_selector_is_rejected_without_a_session(
 def test_window_close_without_an_id_is_rejected_without_a_session() -> None:
     with pytest.raises(ValueError, match=re.escape(CLOSE_ID_REQUIRED)):
         AutomationEngine().window_close("")
+
+
+@pytest.mark.parametrize(
+    ("window_id", "desktop_id", "message"),
+    [
+        ("", "desktop", DESKTOP_WINDOW_REQUIRED),
+        ("{window}", "", DESKTOP_ID_REQUIRED),
+    ],
+    ids=["no-window-id", "no-desktop-id"],
+)
+def test_window_set_desktop_without_an_id_is_rejected_without_a_session(
+    window_id: str, desktop_id: str, message: str
+) -> None:
+    with pytest.raises(ValueError, match=re.escape(message)):
+        AutomationEngine().window_set_desktop(window_id, desktop_id)
 
 
 @pytest.mark.anyio
@@ -69,3 +86,25 @@ async def test_window_set_geometry_zero_width_is_a_tool_error_over_mcp() -> None
     # The published schema (gt=0) rejects the value before the engine runs, so
     # only the field name is pinned, not the engine's wording.
     assert "width" in _result_text(result), _result_text(result)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        ({"window_id": "", "desktop_id": "desktop"}, DESKTOP_WINDOW_REQUIRED),
+        ({"window_id": "{window}", "desktop_id": ""}, DESKTOP_ID_REQUIRED),
+    ],
+    ids=["no-window-id", "no-desktop-id"],
+)
+async def test_window_set_desktop_without_an_id_is_a_tool_error_over_mcp(
+    arguments: dict[str, str], message: str
+) -> None:
+    async with running_mcp_server() as client:
+        result = await client.call_result("window_set_desktop", arguments)
+
+    assert result.is_error is True, _result_text(result)
+    assert result.structured_content is None, result.structured_content
+    # The engine's own message, not "No active session", proves the argument
+    # check ran first.
+    assert message in _result_text(result), _result_text(result)

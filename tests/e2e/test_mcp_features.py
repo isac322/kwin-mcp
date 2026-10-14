@@ -24,7 +24,14 @@ SCREENSHOT_IMAGES_FLAG = "--screenshot-images"
 SCREENSHOT_PREFIX = "Screenshot saved: "
 SESSION_REQUIRED_GUIDANCE = "Call session_start or session_connect first."
 TYPED_OUTPUT_TOOLS = frozenset(
-    {"accessibility_tree", "find_ui_elements", "list_windows", "window_geometry"}
+    {
+        "accessibility_tree",
+        "find_ui_elements",
+        "list_windows",
+        "virtual_desktops",
+        "window_geometry",
+        "window_set_desktop",
+    }
 )
 SCREEN_WIDTH = 1280
 SCREEN_HEIGHT = 800
@@ -178,6 +185,13 @@ EXPECTED_ANNOTATIONS: dict[str, dict[str, bool]] = {
     },
     "window_geometry": {"readOnlyHint": True, "openWorldHint": False},
     "window_set_geometry": {
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+    "virtual_desktops": {"readOnlyHint": True, "openWorldHint": False},
+    "window_set_desktop": {
         "readOnlyHint": False,
         "destructiveHint": True,
         "idempotentHint": True,

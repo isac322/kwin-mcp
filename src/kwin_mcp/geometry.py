@@ -6,10 +6,12 @@ hand the numbers back over D-Bus.
 
 Two entry points share one script round-trip:
 
-- ``query()`` / ``active()`` / ``activate()`` / ``close()`` / ``outputs()``
-  / ``active_class()`` run in a subprocess (`python -m kwin_mcp.geometry`)
-  for the public ``window_geometry`` / ``active_window`` / ``focus_window``
-  / ``window_close`` tools, for screenshot coordinate mapping, and for the
+- ``query()`` / ``active()`` / ``activate()`` / ``close()`` / ``desktops()``
+  / ``set_desktop()`` / ``outputs()`` / ``active_class()`` run in a subprocess
+  (`python -m kwin_mcp.geometry`) for the public ``window_geometry`` /
+  ``active_window`` / ``focus_window`` / ``window_close`` /
+  ``virtual_desktops`` / ``window_set_desktop`` tools, for screenshot
+  coordinate mapping, and for the
   paste chord ``keyboard_type_unicode`` chooses.
 - ``collect_windows()`` runs in-process inside the AT-SPI2 query subprocess so
   `accessibility.py` can translate element rectangles into screen coordinates.
@@ -218,6 +220,164 @@ callDBus("{sink}", "{path}", "{sink}", "Report", JSON.stringify(result));
 _ACTIVE_CLASS_SCRIPT = """
 var w = workspace.activeWindow;
 callDBus("{sink}", "{path}", "{sink}", "Report", w ? String(w.resourceClass) : "");
+"""
+
+# Virtual desktops in KWin's order, with the current one, addressed by their
+# stable id (a UUID string), never by position. When {window_id} is not empty the
+# report also carries that window's desktop ids, read in this separate script so
+# window_set_desktop observes the state KWin committed after its own script ran.
+# The window population is the one window_geometry reports (normal windows).
+# In KWin 6 a window on all desktops has an empty desktops list.
+_DESKTOPS_SCRIPT_TEMPLATE = """
+var target = {window_id};
+var current = workspace.currentDesktop;
+var currentId = current ? String(current.id) : null;
+var desktops = [];
+var list = workspace.desktops;
+for (var i = 0; i < list.length; i++) {
+    var d = list[i];
+    desktops.push({id: String(d.id), name: String(d.name), current: String(d.id) === currentId});
+}
+var found = null;
+if (target) {
+    var windows = workspace.windowList();
+    for (var j = 0; j < windows.length; j++) {
+        var w = windows[j];
+        if (!w.normalWindow || String(w.internalId) !== target) {
+            continue;
+        }
+        var ids = [];
+        for (var k = 0; k < w.desktops.length; k++) {
+            ids.push(String(w.desktops[k].id));
+        }
+        found = {desktops: ids, onAllDesktops: w.onAllDesktops};
+        break;
+    }
+}
+callDBus("{sink}", "{path}", "{sink}", "Report", JSON.stringify({
+    desktops: desktops, current: currentId, window: found
+}));
+"""
+
+# Assign the requested window, by exact internalId, to exactly one virtual desktop,
+# by exact id. Nothing is assigned unless both are found. The script does not
+# write currentDesktop or activate or raise the window.
+#
+# KWin's Window::setDesktops (checked at v6.3.6 and unchanged through 6.7) also
+# sets the desktops of every transient of the window, recursively, and, when the
+# window is modal, of its main windows. An equal desktop list returns before
+# propagation, including at related windows. Preflight follows those boundaries
+# and refuses if an enumerated related window would change membership.
+#
+# Preflight refusal covers only relationships KWin scripting can enumerate.
+# Linked but unpainted or unlisted children may follow their parent; when they
+# first appear, KWin may switch the current desktop. Scripts see transientFor
+# and modal but not transients() or mainWindows(); an X11 group transient
+# (transient, no transientFor) links to main windows scripts cannot see, so while
+# one exists the request is refused too. Nothing is moved back afterwards.
+_SET_DESKTOP_SCRIPT_TEMPLATE = """
+var target = {window_id};
+var wanted = {desktop_id};
+var current = workspace.currentDesktop;
+var result = {
+    windowFound: false, desktopFound: false,
+    current: current ? String(current.id) : null
+};
+
+function desktopIds(w) {
+    var ids = [];
+    for (var k = 0; k < w.desktops.length; k++) {
+        ids.push(String(w.desktops[k].id));
+    }
+    return ids;
+}
+
+function refusal(start, desktopId, windows) {
+    var closure = [start];
+    var seen = {};
+    seen[String(start.internalId)] = true;
+    for (var c = 0; c < closure.length; c++) {
+        var w = closure[c];
+        // Selected equality is handled before refusal; related equality stops traversal.
+        var memberships = desktopIds(w);
+        if (c > 0 && memberships.length === 1 && memberships[0] === desktopId) {
+            continue;
+        }
+        var id = String(w.internalId);
+        for (var t = 0; t < windows.length; t++) {
+            var other = windows[t];
+            var otherId = String(other.internalId);
+            if (other.transientFor && String(other.transientFor.internalId) === id
+                    && !seen[otherId]) {
+                seen[otherId] = true;
+                closure.push(other);
+            }
+        }
+        if (w.modal && w.transientFor && !seen[String(w.transientFor.internalId)]) {
+            seen[String(w.transientFor.internalId)] = true;
+            closure.push(w.transientFor);
+        }
+    }
+    var related = [];
+    for (var r = 1; r < closure.length; r++) {
+        var ids = desktopIds(closure[r]);
+        if (ids.length !== 1 || ids[0] !== desktopId) {
+            related.push({
+                id: String(closure[r].internalId),
+                app: String(closure[r].resourceClass),
+                caption: String(closure[r].caption),
+                desktops: ids
+            });
+        }
+    }
+    return related.length ? {refused: "related", related: related} : null;
+}
+
+var desktop = null;
+var list = workspace.desktops;
+for (var i = 0; i < list.length; i++) {
+    if (String(list[i].id) === wanted) {
+        desktop = list[i];
+        break;
+    }
+}
+result.desktopFound = desktop !== null;
+var windows = workspace.windowList();
+for (var j = 0; j < windows.length; j++) {
+    var w = windows[j];
+    if (!w.normalWindow || String(w.internalId) !== target) {
+        continue;
+    }
+    result.windowFound = true;
+    result.before = desktopIds(w);
+    result.beforeOnAllDesktops = w.onAllDesktops;
+    if (desktop !== null) {
+        // Keep the global X11 group-transient guard, even for a selected no-op.
+        var unsupported = false;
+        for (var u = 0; u < windows.length; u++) {
+            if (windows[u].transient && !windows[u].transientFor) {
+                unsupported = true;
+                break;
+            }
+        }
+        if (unsupported) {
+            result.refused = "unsupported";
+        } else if (result.before.length !== 1 || result.before[0] !== String(desktop.id)) {
+            // Native equality returns before transient or modal propagation.
+            var refused = refusal(w, String(desktop.id), windows);
+            if (refused !== null) {
+                result.refused = refused.refused;
+                if (refused.related) {
+                    result.related = refused.related;
+                }
+            } else {
+                w.desktops = [desktop];
+            }
+        }
+    }
+    break;
+}
+callDBus("{sink}", "{path}", "{sink}", "Report", JSON.stringify(result));
 """
 
 # Output topology for screenshot coordinate mapping. Geometry is logical (the
@@ -452,6 +612,112 @@ def close(window_id: str, timeout: float = 5.0) -> dict[str, object]:
     return payload
 
 
+def _is_id_list(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def _valid_desktops(payload: object) -> bool:
+    """Whether a desktops() payload has every field and type the engine reads."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("desktops"), list):
+        return False
+    for desktop in payload["desktops"]:
+        if not (
+            isinstance(desktop, dict)
+            and isinstance(desktop.get("id"), str)
+            and isinstance(desktop.get("name"), str)
+            and isinstance(desktop.get("current"), bool)
+        ):
+            return False
+    if not isinstance(payload.get("current"), str):
+        return False
+    if "window" not in payload:
+        return False
+    window = payload["window"]
+    return window is None or (
+        isinstance(window, dict)
+        and _is_id_list(window.get("desktops"))
+        and isinstance(window.get("onAllDesktops"), bool)
+    )
+
+
+def _valid_set_desktop(payload: object) -> bool:
+    """Whether a set_desktop() payload has every field and type the engine reads."""
+    if not (
+        isinstance(payload, dict)
+        and isinstance(payload.get("windowFound"), bool)
+        and isinstance(payload.get("desktopFound"), bool)
+        and isinstance(payload.get("current"), str)
+    ):
+        return False
+    if not payload["windowFound"]:
+        return True
+    if not (
+        _is_id_list(payload.get("before")) and isinstance(payload.get("beforeOnAllDesktops"), bool)
+    ):
+        return False
+    refused = payload.get("refused")
+    if refused is None:
+        return "related" not in payload
+    # The guard runs only after both the window and the desktop were found.
+    if refused == "unsupported":
+        return payload["desktopFound"] and "related" not in payload
+    if refused == "related":
+        related = payload.get("related")
+        return (
+            payload["desktopFound"]
+            and isinstance(related, list)
+            and bool(related)
+            and all(
+                isinstance(window, dict)
+                and isinstance(window.get("id"), str)
+                and isinstance(window.get("app"), str)
+                and isinstance(window.get("caption"), str)
+                and _is_id_list(window.get("desktops"))
+                for window in related
+            )
+        )
+    return False
+
+
+def desktops(window_id: str = "", timeout: float = 5.0) -> dict[str, object]:
+    """Ask KWin for its virtual desktops and, optionally, one window's desktops.
+
+    Returns ``{"desktops": [{"id", "name", "current"}], "current": id,
+    "window": {"desktops": [id], "onAllDesktops": bool} | None}``; ``window`` is
+    None when ``window_id`` is empty or no window has exactly that id.
+    """
+    script = _render_script(_DESKTOPS_SCRIPT_TEMPLATE, {"window_id": window_id})
+    payload = json.loads(run_kwin_script(script, timeout))
+    if not _valid_desktops(payload):
+        msg = f"KWin returned a malformed desktop list: {payload!r}"
+        raise RuntimeError(msg)
+    return payload
+
+
+def set_desktop(window_id: str, desktop_id: str, timeout: float = 5.0) -> dict[str, object]:
+    """Assign the window with exactly this id to exactly the desktop with this id.
+
+    Returns ``{"windowFound", "desktopFound", "current"}`` and, when the window
+    was found, its ``before`` desktop ids and ``beforeOnAllDesktops``. The
+    assignment happens only when both were found and no enumerated related window
+    would move; otherwise ``refused`` is ``"related"`` (with the ``related`` windows
+    that would also move) or ``"unsupported"`` (an X11 group transient exists)
+    and nothing is assigned. Preflight refusal covers only relationships KWin
+    scripting can enumerate at request time. Linked but unpainted or unlisted
+    children may follow their parent, and KWin may switch the current desktop
+    when they first appear. Read the selected window's membership back with
+    ``desktops(window_id)``; the reported current desktop is a point-in-time observation.
+    """
+    script = _render_script(
+        _SET_DESKTOP_SCRIPT_TEMPLATE, {"window_id": window_id, "desktop_id": desktop_id}
+    )
+    payload = json.loads(run_kwin_script(script, timeout))
+    if not _valid_set_desktop(payload):
+        msg = f"KWin returned a malformed desktop assignment result: {payload!r}"
+        raise RuntimeError(msg)
+    return payload
+
+
 def active_class(timeout: float = 5.0) -> str:
     """Return the active window's resource class, or "" when none is active."""
     return run_kwin_script(_ACTIVE_CLASS_SCRIPT, timeout)
@@ -512,6 +778,26 @@ def main() -> None:
                             y=request.get("y"),
                             width=request.get("width"),
                             height=request.get("height"),
+                        ),
+                    }
+                )
+            )
+            return
+        if op == "desktops":
+            print(
+                json.dumps(
+                    {"ok": True, "result": desktops(window_id=str(request.get("window_id", "")))}
+                )
+            )
+            return
+        if op == "set_desktop":
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "result": set_desktop(
+                            window_id=str(request.get("window_id", "")),
+                            desktop_id=str(request.get("desktop_id", "")),
                         ),
                     }
                 )

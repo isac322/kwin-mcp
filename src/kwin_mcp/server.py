@@ -39,11 +39,15 @@ from kwin_mcp.results import (
     AccessibilityTreeResult,
     FindUIElementsResult,
     ListWindowsResult,
+    VirtualDesktopsResult,
     WindowGeometryResult,
+    WindowSetDesktopResult,
     format_find,
     format_list_windows,
     format_tree,
+    format_virtual_desktops,
     format_window_geometry,
+    format_window_set_desktop,
 )
 from kwin_mcp.session import process_registry
 
@@ -1282,6 +1286,48 @@ def window_set_geometry(
         width=width,
         height=height,
     )
+
+
+@_tool(annotations=_READ_ONLY)
+def virtual_desktops() -> Annotated[CallToolResult, VirtualDesktopsResult]:
+    """List KWin virtual desktops in order, with stable ids and the current one.
+
+    Pass a desktop id to window_set_desktop. Ids stay valid while the desktop
+    exists, unlike positions, which change when desktops are added or reordered.
+    """
+    data = _engine.virtual_desktops_data()
+    return _structured(format_virtual_desktops(data), data)
+
+
+@_tool(annotations=_DESTRUCTIVE_IDEMPOTENT)
+def window_set_desktop(
+    window_id: Annotated[
+        str,
+        Field(description="Exact KWin window id from window_geometry."),
+    ],
+    desktop_id: Annotated[
+        str,
+        Field(description="Exact virtual desktop id from virtual_desktops."),
+    ],
+) -> Annotated[CallToolResult, WindowSetDesktopResult]:
+    """Put one window, by exact id, on exactly one virtual desktop, by exact id.
+
+    The operation does not explicitly select the current desktop or activate the
+    window. A window on all desktops ends up on only the requested one. Missing
+    ids, an unknown window or desktop, and a request whose result did not come
+    back are tool errors. Requests that would move related windows (transients
+    or modal main windows) enumerated by KWin scripting at request time are
+    refused before assignment, as are requests while an X11 group transient
+    exists. Linked but unpainted or unlisted children may follow their parent,
+    and KWin may switch the current desktop when they first appear.
+
+    applied verifies only that a separate readback observed the selected window
+    on exactly the requested desktop; when readback fails, it may already have
+    moved. The current desktop before and after is reported independently as
+    point-in-time observations, not future desktop or focus guarantees.
+    """
+    data = _engine.window_set_desktop_data(window_id=window_id, desktop_id=desktop_id)
+    return _structured(format_window_set_desktop(data), data)
 
 
 @_tool(annotations=_DESTRUCTIVE_IDEMPOTENT)

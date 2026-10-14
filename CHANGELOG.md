@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Direct AT-SPI service-file parsing rejects embedded NUL bytes anywhere in the file, including ignored comments and localized entries, matching dbus-daemon's rejection.
+- Expanded the bounded CI budget for the full virtual KWin E2E suite to a 30-minute test deadline and a 40-minute job deadline to avoid premature cutoff.
 
 ## [0.11.0] - 2026-10-12
 

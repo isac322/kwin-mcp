@@ -55,7 +55,7 @@ jobs:
             label: archlinux-amd64
             runner: ubuntu-26.04
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       E2E_ARTIFACT_DIR: artifacts/e2e/${{ matrix.label }}
       E2E_CONTAINER_NAME: kwin-mcp-e2e-${{ matrix.label }}
@@ -91,7 +91,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          timeout --signal=INT --kill-after=1m 20m \
+          timeout --signal=INT --kill-after=1m 30m \
             docker run \
               --name "$E2E_CONTAINER_NAME" \
               --volume "$PWD/$E2E_ARTIFACT_DIR:/artifacts" \

@@ -100,13 +100,29 @@ def test_invoke_ui_action_respects_application_filter(
 
 
 def test_invoke_ui_action_exact_name_on_kcalc(kcalc_session: AutomationEngine) -> None:
-    """KCalc's "Seven" button is matched by its whole name, with Press chosen over click."""
-    result = kcalc_session.invoke_ui_action(
-        query="seven",
+    """KCalc's "Clear" and "Seven" buttons verify live exact-name disambiguation and fallback."""
+    with pytest.raises(RuntimeError, match=r"^Refused ambiguous AT-SPI action:"):
+        kcalc_session.invoke_ui_action(
+            query="Clear",
+            action_name="Press",
+            app_name="kcalc",
+        )
+
+    cleared = kcalc_session.invoke_ui_action(
+        query="clear",
         action_name="Press",
         app_name="kcalc",
         exact_name=True,
-        fallback_action_names=["click"],
+    )
+    assert cleared.startswith("Invoked AT-SPI action: Press on "), cleared
+    assert '"Clear"' in cleared, cleared
+
+    result = kcalc_session.invoke_ui_action(
+        query="seven",
+        action_name="click",
+        app_name="kcalc",
+        exact_name=True,
+        fallback_action_names=["Press"],
     )
     assert result.startswith("Invoked AT-SPI action: Press on "), result
     assert '"Seven"' in result, result
@@ -731,6 +747,23 @@ def test_exact_name_refuses_two_exact_matches(invoked: list[tuple[str, int]]) ->
     assert invoked == []
 
 
+@pytest.mark.parametrize("query", ["", "   ", "\t\n"])
+def test_exact_name_empty_or_whitespace_query_never_matches_unnamed_elements(
+    query: str, invoked: list[tuple[str, int]]
+) -> None:
+    """Unnamed controls must never match an empty or whitespace-only exact query."""
+    nodes: list[_FakeNode] = [_ActionsNode("", ["Press"]), _ActionsNode("Save", ["Press"])]
+
+    response = _request({"editor": nodes}, query)
+    assert response["ok"] is False
+    assert "no name left" in str(response["error"])
+    assert invoked == []
+
+    direct = accessibility.invoke_action(query, "Press", exact_name=True)
+    assert direct == {"matches": 0, "invoked": False}
+    assert invoked == []
+
+
 def test_exact_name_without_a_listed_action_is_not_a_candidate(
     invoked: list[tuple[str, int]],
 ) -> None:
@@ -748,15 +781,24 @@ def test_exact_name_without_a_listed_action_is_not_a_candidate(
         (["click", "Press"], ("Press", 1)),
         (["Press", "click"], ("Press", 0)),
         (["SetFocus", "click"], ("click", 1)),
+        (["activate", "Click"], ("Click", 1)),
         (["press"], ("press", 0)),
     ],
-    ids=["press-preferred-later", "press-preferred-first", "click-fallback", "own-spelling"],
+    ids=[
+        "press-preferred-later",
+        "press-preferred-first",
+        "click-fallback",
+        "earlier-fallback-preferred-casefold",
+        "own-spelling",
+    ],
 )
 def test_fallback_actions_follow_preference_order(
     actions: list[str], expected: tuple[str, int], invoked: list[tuple[str, int]]
 ) -> None:
     response = _request(
-        {"editor": [_ActionsNode("Save", actions)]}, "save", fallback_action_names=["click"]
+        {"editor": [_ActionsNode("Save", actions)]},
+        "save",
+        fallback_action_names=["click", "activate"],
     )
 
     assert response["result"]["matches"] == 1
@@ -813,12 +855,13 @@ def test_press_and_click_elements_in_different_apps_are_ambiguous(
 
 def test_fallback_actions_also_work_in_substring_mode(invoked: list[tuple[str, int]]) -> None:
     response = _request(
-        {"gtk-app": [_ActionsNode("Seven", ["click"])]},
+        {"gtk-app": [_ActionsNode("Seven", ["click", "click"])]},
         "seven",
         exact_name=False,
         fallback_action_names=["click"],
     )
 
+    assert response["result"]["matches"] == 1
     assert response["result"]["action"] == "click"
     assert invoked == [("Seven", 0)]
 
@@ -875,6 +918,7 @@ def test_engine_exact_name_reports_the_invoked_fallback_action(
     )
 
     assert result == 'Invoked AT-SPI action: click on [push button] "Save" in gtk-app'
+    assert invoked == [("Save", 0)]
 
 
 def test_engine_exact_name_not_found_message(
@@ -1028,6 +1072,7 @@ def test_engine_sends_the_new_options_only_when_used(monkeypatch: pytest.MonkeyP
         ({"exact_name": 1}, "exact_name must be true or false"),
         ({"fallback_action_names": "click"}, "fallback_action_names must be a list"),
         ({"fallback_action_names": [""]}, "fallback_action_names must be a list"),
+        ({"fallback_action_names": ["   "]}, "fallback_action_names must be a list"),
         ({"fallback_action_names": ["click", 7]}, "fallback_action_names must be a list"),
     ],
 )
@@ -1037,3 +1082,23 @@ def test_engine_rejects_invalid_options_without_a_session(
     """Option errors are ValueErrors raised before the session is looked up."""
     with pytest.raises(ValueError, match=message):
         core.AutomationEngine().invoke_ui_action("save", "Press", **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("query", "action_name", "exact_name", "message"),
+    [
+        ("", "Press", False, "invoke_ui_action needs a query"),
+        ("   ", "Press", False, "invoke_ui_action needs a query"),
+        ("\t\n", "Press", True, "invoke_ui_action needs a query"),
+        ("save", "", False, "invoke_ui_action needs an action_name"),
+        ("save", "   ", True, "invoke_ui_action needs an action_name"),
+    ],
+)
+def test_engine_rejects_empty_or_whitespace_query_and_action_without_a_session(
+    query: str, action_name: str, exact_name: bool, message: str
+) -> None:
+    """Blank queries and action names are rejected before the session is looked up."""
+    with pytest.raises(ValueError, match=message):
+        core.AutomationEngine().invoke_ui_action(
+            query=query, action_name=action_name, exact_name=exact_name
+        )

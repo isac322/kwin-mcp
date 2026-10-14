@@ -907,16 +907,16 @@ class AutomationEngine:
         requests raise. A matched action whose dispatch the application did not
         confirm is reported as sent, since it may still have run.
         """
-        if not query:
+        if not query or not query.strip():
             raise ValueError("invoke_ui_action needs a query.")
-        if not action_name:
+        if not action_name or not action_name.strip():
             raise ValueError("invoke_ui_action needs an action_name.")
         # The CLI forwards raw values without MCP schema validation.
         if not isinstance(exact_name, bool):
             raise ValueError("invoke_ui_action exact_name must be true or false.")
         fallbacks = [] if fallback_action_names is None else fallback_action_names
         if not isinstance(fallbacks, list) or not all(
-            isinstance(name, str) and name for name in fallbacks
+            isinstance(name, str) and name.strip() for name in fallbacks
         ):
             raise ValueError(
                 "invoke_ui_action fallback_action_names must be a list of non-empty action names."

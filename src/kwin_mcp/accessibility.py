@@ -285,7 +285,7 @@ def invoke_action(
             raise _IncompleteDiscoveryError(f"could not read element description: {exc}") from exc
 
         if exact_name:
-            query_match = _normalize_name(name) == query_name
+            query_match = bool(query_name) and _normalize_name(name) == query_name
         else:
             query_match = (
                 query_lower in name.lower()
@@ -1017,13 +1017,20 @@ def _handle_request(request: dict) -> dict:
         return {"ok": True, "result": [asdict(e) for e in elements]}
 
     if op == "action":
+        exact_name = request.get("exact_name", False)
+        if exact_name and not _normalize_name(request.get("query", "")):
+            return {
+                "ok": False,
+                "error": "Refused exact_name request: the query has no name left after "
+                "collapsing whitespace.",
+            }
         try:
             result = invoke_action(
                 query=request.get("query", ""),
                 action_name=request.get("action_name", ""),
                 app_name=request.get("app_name", ""),
                 # Validated by the engine; passed through unchanged.
-                exact_name=request.get("exact_name", False),
+                exact_name=exact_name,
                 fallback_action_names=request.get("fallback_action_names", ()),
             )
         except _IncompleteDiscoveryError as exc:

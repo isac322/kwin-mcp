@@ -1018,7 +1018,8 @@ def _handle_request(request: dict) -> dict:
 
     if op == "action":
         exact_name = request.get("exact_name", False)
-        if exact_name and not _normalize_name(request.get("query", "")):
+        raw_query = request.get("query", "")
+        if exact_name and (not isinstance(raw_query, str) or not _normalize_name(raw_query)):
             return {
                 "ok": False,
                 "error": "Refused exact_name request: the query has no name left after "

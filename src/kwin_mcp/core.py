@@ -907,11 +907,13 @@ class AutomationEngine:
         requests raise. A matched action whose dispatch the application did not
         confirm is reported as sent, since it may still have run.
         """
-        if not query or not query.strip():
+        # The CLI forwards raw JSON values without MCP schema validation.
+        if not isinstance(query, str) or not query.strip():
             raise ValueError("invoke_ui_action needs a query.")
-        if not action_name or not action_name.strip():
+        if not isinstance(action_name, str) or not action_name.strip():
             raise ValueError("invoke_ui_action needs an action_name.")
-        # The CLI forwards raw values without MCP schema validation.
+        if not isinstance(app_name, str):
+            raise ValueError("invoke_ui_action app_name must be a string.")
         if not isinstance(exact_name, bool):
             raise ValueError("invoke_ui_action exact_name must be true or false.")
         fallbacks = [] if fallback_action_names is None else fallback_action_names

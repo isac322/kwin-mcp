@@ -1085,20 +1085,23 @@ def test_engine_rejects_invalid_options_without_a_session(
 
 
 @pytest.mark.parametrize(
-    ("query", "action_name", "exact_name", "message"),
+    ("query", "action_name", "app_name", "exact_name", "message"),
     [
-        ("", "Press", False, "invoke_ui_action needs a query"),
-        ("   ", "Press", False, "invoke_ui_action needs a query"),
-        ("\t\n", "Press", True, "invoke_ui_action needs a query"),
-        ("save", "", False, "invoke_ui_action needs an action_name"),
-        ("save", "   ", True, "invoke_ui_action needs an action_name"),
+        ("", "Press", "", False, "invoke_ui_action needs a query"),
+        ("   ", "Press", "", False, "invoke_ui_action needs a query"),
+        ("\t\n", "Press", "", True, "invoke_ui_action needs a query"),
+        (7, "Press", "", False, "invoke_ui_action needs a query"),
+        ("save", "", "", False, "invoke_ui_action needs an action_name"),
+        ("save", "   ", "", True, "invoke_ui_action needs an action_name"),
+        ("save", 7, "", True, "invoke_ui_action needs an action_name"),
+        ("save", "Press", 7, False, "invoke_ui_action app_name must be a string"),
     ],
 )
-def test_engine_rejects_empty_or_whitespace_query_and_action_without_a_session(
-    query: str, action_name: str, exact_name: bool, message: str
+def test_engine_rejects_empty_or_non_string_query_and_action_without_a_session(
+    query: Any, action_name: Any, app_name: Any, exact_name: bool, message: str
 ) -> None:
-    """Blank queries and action names are rejected before the session is looked up."""
+    """Blank or non-string queries and action names fail before the session is looked up."""
     with pytest.raises(ValueError, match=message):
         core.AutomationEngine().invoke_ui_action(
-            query=query, action_name=action_name, exact_name=exact_name
+            query=query, action_name=action_name, app_name=app_name, exact_name=exact_name
         )

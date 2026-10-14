@@ -79,6 +79,10 @@ See ROADMAP.md. Key modules:
 
 **Manual invocation**: Use `/check-docs-seo` skill or the `@docs-seo` agent directly.
 
+## Release Gate
+
+Before tagging a release, verify every kwin-mcp tool end to end on the release commit with the Docker E2E suite (`scripts/run-e2e-docker.sh`, once per `--distro` variant).
+
 ## System Dependencies (Arch/Manjaro)
 
 - `at-spi2-core`: AT-SPI2 accessibility framework (installed)

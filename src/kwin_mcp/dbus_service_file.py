@@ -4,11 +4,17 @@ dbus-daemon reads the key with its desktop-file parser (``bus/desktop-file.c``),
 which unescapes ``\\s``, ``\\t``, ``\\n``, ``\\r`` and ``\\\\``, then splits the
 value with ``_dbus_shell_parse_argv`` (``dbus/dbus-shell.c``): shell-like
 single and double quotes and backslash escapes, ``#`` comments, and no
-expansion of any kind. This module ports both, so a command started from a
-service file receives the argv activation would have given it.
+expansion of any kind. This module preserves those parsing rules.
 """
 
 from __future__ import annotations
+
+import os
+import stat
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _SERVICE_SECTION = "D-BUS Service"
 _NAME_KEY = "Name"
@@ -24,6 +30,29 @@ _DOUBLE_QUOTE_ESCAPES = frozenset('"\\`$\n')
 
 class ServiceFileError(ValueError):
     """The service file or its ``Exec=`` command is one dbus-daemon rejects."""
+
+
+def _read_service_file(path: Path) -> bytes | None:
+    """Read one regular service file without unbounded allocation or blocking."""
+    fd = -1
+    try:
+        fd = os.open(
+            path,
+            os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOCTTY,
+        )
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        if info.st_size > _MAX_SERVICE_FILE_BYTES:
+            raise ServiceFileError(f"larger than {_MAX_SERVICE_FILE_BYTES} bytes")
+        with os.fdopen(fd, "rb", closefd=False) as service_file:
+            data = service_file.read(_MAX_SERVICE_FILE_BYTES + 1)
+        if len(data) > _MAX_SERVICE_FILE_BYTES:
+            raise ServiceFileError(f"larger than {_MAX_SERVICE_FILE_BYTES} bytes")
+        return data
+    finally:
+        if fd != -1:
+            os.close(fd)
 
 
 def _unescape_value(value: str) -> str:

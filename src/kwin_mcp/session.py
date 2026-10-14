@@ -14,6 +14,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -23,7 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kwin_mcp import progress
-from kwin_mcp.dbus_service_file import ServiceFileError, service_file_argv
+from kwin_mcp.dbus_service_file import ServiceFileError, _read_service_file, service_file_argv
 
 if TYPE_CHECKING:
     from typing import IO
@@ -37,8 +38,8 @@ if TYPE_CHECKING:
 # stdout open, or a partial line that never terminates.
 _STARTUP_READ_TIMEOUT = 60.0
 
-# KWin creates its Wayland socket early in startup but owns org.kde.KWin on
-# the session bus only once its workspace exists, which took over 2 s on a
+# KWin creates its Wayland socket early in startup but owns org.kde.KWin on the
+# session bus only once its workspace exists, which took over 2 s on a
 # loaded host. Every D-Bus consumer (EIS input, screenshots, scripting)
 # needs that name, so the wrapper waits for it before printing READY; this
 # bounds that wait.
@@ -55,21 +56,30 @@ _A11Y_STATUS_INTERFACE = "org.a11y.Status"
 _A11Y_CALL_TIMEOUT_S = 5.0
 _KWIN_BUS_NAME_TIMEOUT = 30
 # Opt-in: when the AT-SPI bus activation fails, start the launcher and the
-# registry directly from their service files' Exec= lines. They then run in the
-# server's own SELinux domain instead of the one activation would give them.
+# registry directly from their service files' Exec= lines. Direct helpers run
+# in the server's SELinux domain by specific operator opt-in.
 ATSPI_DIRECT_START_ENV = "KWIN_MCP_ATSPI_DIRECT_START"
 _ATSPI_REGISTRY_BUS_NAME = "org.a11y.atspi.Registry"
+_ATSPI_EXEC_HELPER_CODE = "import os,sys;os.execv(sys.argv[1],sys.argv[1:])"
 
 
 def _atspi_service_argv(subdir: str, name: str, env: dict[str, str]) -> list[str] | None:
-    """Return the argv of the first ``dbus-1/<subdir>/<name>.service`` file on XDG_DATA_DIRS."""
+    """Return the first matching service file found under the XDG data roots."""
     for data_dir in (env.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":"):
         path = Path(data_dir) / "dbus-1" / subdir / f"{name}.service"
         if not data_dir or not path.is_file():
             continue
         try:
-            return service_file_argv(path.read_bytes(), name)
+            data = _read_service_file(path)
+        except FileNotFoundError:
+            continue
         except (OSError, ServiceFileError):
+            return None
+        if data is None:
+            continue
+        try:
+            return service_file_argv(data, name)
+        except ServiceFileError:
             return None
     return None
 
@@ -1149,7 +1159,13 @@ class Session:
         # The opt-in is read from the server's environment, never from a
         # session's extra env. On failure the warning names it unless it is set.
         direct_start = os.environ.get(ATSPI_DIRECT_START_ENV) == "1"
-        launcher, registry = _atspi_direct_start_argvs(env) if direct_start else ([], [])
+        python_executable = sys.executable
+        helper = (
+            [python_executable, "-I", "-S", "-c", _ATSPI_EXEC_HELPER_CODE]
+            if python_executable
+            else []
+        )
+        launcher, registry = _atspi_direct_start_argvs(env) if direct_start and helper else ([], [])
         atspi_hint = (
             ""
             if direct_start
@@ -1172,8 +1188,8 @@ cleanup() {{
 trap cleanup EXIT TERM INT HUP
 
 # Bring up the AT-SPI accessibility bus via synchronous D-Bus activation.
-# Calling org.a11y.Bus.GetAddress makes dbus-daemon resolve the distro-provided
-# service file (/usr/share/dbus-1/services/org.a11y.Bus.service) and exec the
+# Calling org.a11y.Bus.GetAddress makes dbus-daemon resolve a service file from
+# the XDG data roots (typically /usr/share/dbus-1/services) and exec the
 # launcher at whatever path the current distro uses — /usr/libexec on
 # Fedora/Debian/Ubuntu, /usr/libexec/at-spi2 on openSUSE, /app/libexec on
 # Flatpak, and so on. A hardcoded candidate list silently misses every layout
@@ -1187,14 +1203,13 @@ trap cleanup EXIT TERM INT HUP
 # failure is reported to the caller instead of being hidden.
 #
 # When activation fails and KWIN_MCP_ATSPI_DIRECT_START=1, the launcher and the
-# registry are started directly. Fedora's SELinux policy refuses the activation
-# from a private dbus-run-session bus (the bus runs as unconfined_dbusd_t, which
-# may not enter gnome_atspi_t for unconfined_r;
-# fedora-selinux/selinux-policy#3385). Started directly, they run in this
-# script's domain instead of gnome_atspi_t, so this is opt-in. Their argv is
-# read from the Exec= lines of the same service files and split the way
-# dbus-daemon splits them (kwin_mcp.dbus_service_file); empty when the direct
-# start is off or a service file is missing or invalid.
+# registry are started directly. Some SELinux policies deny activation from a
+# private dbus-run-session bus; direct helpers instead run in the server's
+# domain by specific operator opt-in. Their argv is read from the Exec= lines
+# of the same service files and split the way dbus-daemon splits them
+# (kwin_mcp.dbus_service_file); empty when the direct start is off or a service
+# file is missing or invalid.
+ATSPI_HELPER=({shlex.join(helper)})
 ATSPI_LAUNCHER=({shlex.join(launcher)})
 ATSPI_REGISTRY=({shlex.join(registry)})
 # Wait up to 5 s (by the clock, not by attempts) for name $2 to get an owner
@@ -1214,14 +1229,16 @@ atspi_wait_for_name() {{
 }}
 atspi_start_directly() {{
     local address launcher_pid registry_pid
-    [ "${{#ATSPI_LAUNCHER[@]}}" -gt 0 ] && [ "${{#ATSPI_REGISTRY[@]}}" -gt 0 ] || return 1
-    "${{ATSPI_LAUNCHER[@]}}" >/dev/null &
+    [ "${{#ATSPI_HELPER[@]}}" -gt 0 ] || return 1
+    [ "${{#ATSPI_LAUNCHER[@]}}" -gt 0 ] || return 1
+    [ "${{#ATSPI_REGISTRY[@]}}" -gt 0 ] || return 1
+    "${{ATSPI_HELPER[@]}}" "${{ATSPI_LAUNCHER[@]}}" >/dev/null &
     launcher_pid=$!
     if atspi_wait_for_name --session org.a11y.Bus "$launcher_pid" \\
         && address=$(dbus-send --session --print-reply=literal --reply-timeout=5000 \\
             --dest=org.a11y.Bus /org/a11y/bus org.a11y.Bus.GetAddress 2>/dev/null); then
         address=$(echo $address)
-        "${{ATSPI_REGISTRY[@]}}" >/dev/null &
+        "${{ATSPI_HELPER[@]}}" "${{ATSPI_REGISTRY[@]}}" >/dev/null &
         registry_pid=$!
         if atspi_wait_for_name "--bus=$address" org.a11y.atspi.Registry "$registry_pid"; then
             return 0

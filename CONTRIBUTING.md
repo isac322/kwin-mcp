@@ -167,6 +167,7 @@ The suite collects every test under `tests/e2e`. Together they prove:
 - accessibility-bus startup: `org.a11y.Bus` must have an owner as soon as `session_start`
   returns, and a failed activation (a `dbus-send` stub on `PATH`) must reach the caller as a
   `Warning:` line.
+- direct AT-SPI service-file and launch security coverage: acquisition is bounded at 128 KiB and avoids blocking on nonregular candidates; implicit `PATH` lookup, shell builtins/function evaluation, and `ENOEXEC` fallback are rejected, while explicit interpreter commands and valid `#!` scripts remain supported;
 
 The image needs no `--privileged`, GPU, `/dev/dri`, or other device flags. Engine tests use
 KWin's exact virtual backend with llvmpipe. Visual tests start Xvfb and a nested KWin compositor
@@ -291,6 +292,8 @@ tests/e2e/
 ├── test_window_tool_errors.py          # focus_window/window_close/window_set_geometry argument errors before any session lookup
 ├── test_pointer_reconnect.py           # Clicks reach a window mapped under a parked pointer
 ├── test_dbus_args.py                   # dbus_call argument parser (no session needed)
+├── test_atspi_service_acquisition.py   # Bounded AT-SPI service-file lookup across trusted XDG data roots (no session needed)
+├── test_atspi_exec_security.py        # Direct AT-SPI Exec= execution security against implicit shell/interpreter fallback
 ├── test_dbus_service_file.py           # Service file Exec= argv as dbus-daemon gives it (no session needed)
 ├── test_dbus_call.py                   # dbus_call arguments as received by a test D-Bus service
 ├── test_lazy_libei.py                  # Import without libei and the missing-libei input backend path

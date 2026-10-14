@@ -104,6 +104,7 @@ EXPECTED_TOOL_PROPERTIES: dict[str, dict[str, tuple[object, object]]] = {
         "app_name": ("string", ""),
         "exact_name": ("boolean", False),
         "fallback_action_names": (NULLABLE_ARRAY_OF_STRINGS, None),
+        "spoken_name": ("boolean", False),
     },
     "keyboard_key": {
         "key": ("string", NO_DEFAULT),

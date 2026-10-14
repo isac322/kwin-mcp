@@ -216,6 +216,7 @@ src/kwin_mcp/
 ├── session.py         # KWin session management (isolated virtual + live) and the owned-process registry for exit cleanup
 ├── screenshot.py      # ScreenShot2, Spectacle, and X11/scrot capture normalized to logical pixels
 ├── accessibility.py   # AT-SPI2 accessibility tree inspection
+├── spoken_name.py     # Deterministic spoken accessible-name normalization and matching for invoke_ui_action (no GI)
 ├── geometry.py        # Window geometry, activation, and output topology via KWin scripting
 ├── clipboard.py       # Private Wayland data-control helper for keyboard_type_unicode paste
 ├── dbus_args.py       # dbus_call argument parser (dbus-send strings and typed JSON)
@@ -279,7 +280,8 @@ tests/e2e/
 ├── test_clipboard_helper_protocol.py   # Private clipboard helper framing, timeouts, and restore
 ├── test_virtual_session_smoke.py       # Minimum isolated KWin contract
 ├── test_observation_tools.py           # Accessibility, window, log, and Wayland tools
-├── test_accessibility_actions.py       # invoke_ui_action on a background window; ambiguity, app scoping, exact names, fallback actions, and incomplete discovery refused
+├── test_accessibility_actions.py       # invoke_ui_action on a background window; ambiguity, app scoping, exact names, spoken names, fallback actions, and incomplete discovery refused
+├── test_spoken_name.py                 # spoken_name normalisation and word-boundary matching (no KWin)
 ├── test_accessibility_switch.py        # org.a11y.Status.IsEnabled switch, live opt-in, bounded calls, restore
 ├── test_atspi_worker.py                # AT-SPI worker reuse across session changes and crashes
 ├── test_window_geometry.py             # Global window geometry and element coordinate space

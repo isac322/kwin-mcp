@@ -804,11 +804,24 @@ def invoke_ui_action(
             "many of these actions it exposes."
         ),
     ] = None,
+    spoken_name: Annotated[
+        bool,
+        Field(
+            description="Deterministic accessible-name matching for spoken labels, "
+            "against element names only: ignores case, normalises whitespace and "
+            "tolerates a trailing run of . , ! ? ; : …; all other punctuation counts. A "
+            'multi-word query also matches the same words joined into one label ("save '
+            'as" matches "SaveAs"), never the reverse. Every matching actionable element '
+            "counts, so actionable names that differ only in these ways are refused as "
+            "ambiguous. Not fuzzy matching. Cannot be combined with exact_name."
+        ),
+    ] = False,
 ) -> str:
     """Invoke a native AT-SPI action without pointer coordinates.
 
     Exactly one element must match the query, app filter and action name (or a
-    fallback action name). Ambiguous matches fail closed. Discovery also fails
+    fallback action name). spoken_name is a deterministic name-matching mode for
+    dictated labels, not fuzzy matching. Ambiguous matches fail closed. Discovery also fails
     closed: if any node in the searched scope cannot be read, or a subtree is
     deeper than 64 levels, nothing is invoked and the error names that
     application — set app_name to search only the target application. No
@@ -824,6 +837,7 @@ def invoke_ui_action(
         app_name=app_name,
         exact_name=exact_name,
         fallback_action_names=fallback_action_names,
+        spoken_name=spoken_name,
     )
 
 

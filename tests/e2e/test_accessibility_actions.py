@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from kwin_mcp import accessibility, core
+from kwin_mcp import accessibility, core, server
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -123,6 +123,21 @@ def test_invoke_ui_action_exact_name_on_kcalc(kcalc_session: AutomationEngine) -
         app_name="kcalc",
         exact_name=True,
         fallback_action_names=["Press"],
+    )
+    assert result.startswith("Invoked AT-SPI action: Press on "), result
+    assert '"Seven"' in result, result
+
+    _wait_for_binary(kcalc_session, "111")
+
+
+def test_invoke_ui_action_spoken_name_on_kcalc(kcalc_session: AutomationEngine) -> None:
+    """A dictated "SEVEN." names KCalc's "Seven" button; Press is chosen over click."""
+    result = kcalc_session.invoke_ui_action(
+        query="SEVEN.",
+        action_name="Press",
+        app_name="kcalc",
+        fallback_action_names=["click"],
+        spoken_name=True,
     )
     assert result.startswith("Invoked AT-SPI action: Press on "), result
     assert '"Seven"' in result, result
@@ -652,6 +667,8 @@ def _request(
     exact_name: bool = True,
     action_name: str = "Press",
     fallback_action_names: list[str] | None = None,
+    spoken_name: bool = False,
+    app_name: str = "",
 ) -> dict:
     """One worker 'action' request over a desktop with the given applications."""
     _DESKTOP.clear()
@@ -666,12 +683,14 @@ def _request(
         "op": "action",
         "query": query,
         "action_name": action_name,
-        "app_name": "",
+        "app_name": app_name,
     }
     if exact_name:
         request["exact_name"] = True
     if fallback_action_names is not None:
         request["fallback_action_names"] = fallback_action_names
+    if spoken_name:
+        request["spoken_name"] = True
     return accessibility._handle_request(request)
 
 
@@ -1105,3 +1124,393 @@ def test_engine_rejects_empty_or_non_string_query_and_action_without_a_session(
         core.AutomationEngine().invoke_ui_action(
             query=query, action_name=action_name, app_name=app_name, exact_name=exact_name
         )
+
+
+# ── Spoken names (fake AT-SPI, no session needed) ────────────────────────
+#
+# spoken_name matches element names with kwin_mcp.spoken_name's deterministic
+# normalisation; the candidate and action rules are #109's. Every actionable
+# element that matches is a candidate, so normalisation never picks a winner.
+
+
+def _spoken(apps: Mapping[str, Sequence[_FakeNode]], query: str, **kwargs: Any) -> dict:
+    return _request(apps, query, exact_name=False, spoken_name=True, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("label", "query"),
+    [
+        ("Save As...", "Save As"),
+        ("Save As...", "save as"),
+        ("Save As...", "SAVE AS."),
+        ("Save As...", "save as\u2026"),
+        ("Save As...", "save as ,"),
+        ("SaveAs", "save as"),
+        ("SaveAs", "saveas"),
+        ("Bang!", "bang"),
+    ],
+)
+def test_spoken_name_invokes_the_one_matching_label(
+    label: str, query: str, invoked: list[tuple[str, int]]
+) -> None:
+    response = _spoken({"editor": [_ActionsNode(label, ["Press"])]}, query)
+
+    assert response["result"]["matches"] == 1
+    assert response["result"]["name"] == label
+    assert invoked == [(label, 0)]
+
+
+@pytest.mark.parametrize(
+    ("labels", "query"),
+    [
+        (["Saves A"], "save as"),
+        (["Save As"], "saveas"),
+        (["Saves A"], "saveas"),
+        (["Save As", "Saves A"], "saveas"),
+        (["Save As", "Save As..."], "saveas"),
+    ],
+)
+def test_spoken_name_never_splits_or_resegments_words(
+    labels: list[str], query: str, invoked: list[tuple[str, int]]
+) -> None:
+    nodes: list[_FakeNode] = [_ActionsNode(label, ["Press"]) for label in labels]
+
+    response = _spoken({"editor": nodes}, query)
+
+    assert response == {"ok": True, "result": {"matches": 0, "invoked": False}}
+    assert invoked == []
+
+
+def test_spoken_name_one_word_query_takes_only_the_joined_label(
+    invoked: list[tuple[str, int]],
+) -> None:
+    nodes: list[_FakeNode] = [_ActionsNode("Save As", ["Press"]), _ActionsNode("SaveAs", ["Press"])]
+
+    response = _spoken({"editor": nodes}, "saveas")
+
+    assert response["result"]["matches"] == 1
+    assert invoked == [("SaveAs", 0)]
+
+
+@pytest.mark.parametrize(
+    ("labels", "query"),
+    [
+        (["Save As...", "SaveAs"], "save as"),
+        (["Save As", "Save As..."], "save as"),
+        (["Save As", "Save As..."], "save as..."),
+        (["Save As", "Save As..."], "Save As"),
+        (["Bang!", "Bang"], "bang"),
+        (["Save As\u2026", "Save As..."], "save as"),
+        (["Save As", "Save\u00a0As"], "save as"),
+        (["Save As", "Save\tAs"], "save as"),
+        (["Save As", "save  as"], "save as"),
+    ],
+)
+def test_spoken_name_normalisation_never_breaks_a_tie(
+    labels: list[str], query: str, invoked: list[tuple[str, int]]
+) -> None:
+    """Punctuation, whitespace and joined forms are all candidates: refused, nothing invoked."""
+    nodes: list[_FakeNode] = [_ActionsNode(label, ["Press"]) for label in labels]
+
+    response = _spoken({"editor": nodes}, query)
+
+    assert response == {"ok": True, "result": {"matches": 2, "invoked": False}}
+    assert invoked == []
+
+
+def test_spoken_name_press_and_click_elements_in_different_apps_are_ambiguous(
+    invoked: list[tuple[str, int]],
+) -> None:
+    apps = {
+        "qt-app": [_ActionsNode("Save As", ["Press"])],
+        "gtk-app": [_ActionsNode("Save As...", ["click"])],
+    }
+
+    response = _spoken(apps, "save as", fallback_action_names=["click"])
+
+    assert response["result"] == {"matches": 2, "invoked": False}
+    assert invoked == []
+
+
+def test_spoken_name_app_name_still_scopes_the_search(invoked: list[tuple[str, int]]) -> None:
+    apps = {
+        "qt-app": [_ActionsNode("Save As", ["Press"])],
+        "gtk-app": [_ActionsNode("Save As...", ["click"])],
+    }
+
+    response = _spoken(apps, "save as", fallback_action_names=["click"], app_name="gtk")
+
+    assert response["result"]["matches"] == 1
+    assert invoked == [("Save As...", 0)]
+
+
+@pytest.mark.parametrize(
+    "node",
+    [
+        _ActionsNode("Export", ["Press"], role="Save As"),
+        _ActionsNode("Export", ["Press"], description="Save As"),
+    ],
+    ids=["role", "description"],
+)
+def test_spoken_name_matches_names_only(node: _FakeNode, invoked: list[tuple[str, int]]) -> None:
+    response = _spoken({"editor": [node]}, "save as")
+
+    assert response["result"] == {"matches": 0, "invoked": False}
+    assert invoked == []
+
+
+def test_spoken_name_label_without_a_requested_action_adds_no_ambiguity(
+    invoked: list[tuple[str, int]],
+) -> None:
+    nodes: list[_FakeNode] = [
+        _ActionsNode("Save As...", [], role="label"),
+        _ActionsNode("Save As", ["Press"]),
+    ]
+
+    response = _spoken({"editor": nodes}, "save as")
+
+    assert response["result"]["matches"] == 1
+    assert invoked == [("Save As", 0)]
+
+
+@pytest.mark.parametrize(
+    ("actions", "expected"),
+    [
+        (["click", "Press"], ("Press", 1)),
+        (["Press", "click"], ("Press", 0)),
+        (["SetFocus", "click"], ("click", 1)),
+        (["Press", "Press"], ("Press", 0)),
+    ],
+    ids=["press-preferred-later", "press-preferred-first", "click-fallback", "duplicate-press"],
+)
+def test_spoken_name_keeps_action_preference_and_counts_each_element_once(
+    actions: list[str], expected: tuple[str, int], invoked: list[tuple[str, int]]
+) -> None:
+    response = _spoken(
+        {"editor": [_ActionsNode("Save As...", actions)]},
+        "save as",
+        fallback_action_names=["click"],
+    )
+
+    assert response["result"]["matches"] == 1
+    assert response["result"]["action"] == expected[0]
+    assert invoked == [("Save As...", expected[1])]
+
+
+def test_spoken_name_without_fallbacks_still_counts_each_element_once(
+    invoked: list[tuple[str, int]],
+) -> None:
+    """spoken_name alone still uses one-candidate-per-element counting."""
+    response = _spoken({"editor": [_ActionsNode("Save As...", ["Press", "Press"])]}, "save as")
+
+    assert response["result"]["matches"] == 1
+    assert invoked == [("Save As...", 0)]
+
+
+@pytest.mark.parametrize("fault", ["name", "role", "description", "child_count"])
+def test_spoken_name_still_refuses_incomplete_discovery(
+    fault: str, invoked: list[tuple[str, int]]
+) -> None:
+    nodes: list[_FakeNode] = [_ActionsNode("Save", ["Press"]), _FakeNode("Status", fault=fault)]
+
+    response = _spoken({"editor": nodes}, "save.")
+
+    _assert_discovery_refusal(response, [])
+    assert invoked == []
+
+
+def test_spoken_name_still_refuses_a_match_beyond_the_depth_limit(
+    invoked: list[tuple[str, int]],
+) -> None:
+    buried: _FakeNode = _ActionsNode("Save", ["Press"])
+    for _ in range(accessibility._ACTION_SEARCH_MAX_DEPTH):
+        buried = _FakeNode("panel", children=[buried])
+
+    response = _spoken({"editor": [_ActionsNode("Save", ["Press"]), buried]}, "save")
+
+    _assert_discovery_refusal(response, [])
+    assert invoked == []
+
+
+@pytest.mark.parametrize("query", ["...", "?!\u2026", ". . ."])
+def test_worker_refuses_an_empty_spoken_query_before_walking(
+    query: str, invoked: list[tuple[str, int]]
+) -> None:
+    """Defence in depth: the engine refuses these first, but direct requests must too."""
+    response = _spoken({"editor": [_ActionsNode("...", ["Press"])]}, query)
+
+    assert response["ok"] is False
+    assert "no name left" in response["error"]
+    assert invoked == []
+
+
+def test_worker_refuses_spoken_and_exact_name_together(invoked: list[tuple[str, int]]) -> None:
+    response = _request(
+        {"editor": [_ActionsNode("Save", ["Press"])]}, "save", exact_name=True, spoken_name=True
+    )
+
+    assert response["ok"] is False
+    assert "cannot both be true" in response["error"]
+    assert invoked == []
+
+
+def test_other_modes_never_call_the_spoken_normaliser(
+    invoked: list[tuple[str, int]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Legacy and exact_name requests stay isolated from spoken-name normalisation."""
+
+    def unreachable(_text: str) -> None:
+        pytest.fail("normalize_spoken_name called without spoken_name")
+
+    monkeypatch.setattr(accessibility, "normalize_spoken_name", unreachable)
+    monkeypatch.setattr(core, "normalize_spoken_name", unreachable)
+    nodes: list[_FakeNode] = [_ActionsNode("Save", ["Press"])]
+
+    assert _request({"editor": nodes}, "save", exact_name=False)["result"]["matches"] == 1
+    assert _request({"editor": nodes}, "save", exact_name=True)["result"]["matches"] == 1
+    engine = _engine_over_fake_worker(monkeypatch)
+    engine.invoke_ui_action(query="save", action_name="Press", exact_name=True)
+    assert invoked == [("Save", 0)] * 3
+
+
+def test_invoke_action_with_an_empty_spoken_query_matches_nothing(
+    invoked: list[tuple[str, int]],
+) -> None:
+    _request({"editor": [_ActionsNode("...", ["Press"])]}, "x")
+
+    result = accessibility.invoke_action("...", "Press", spoken_name=True)
+
+    assert result == {"matches": 0, "invoked": False}
+    assert invoked == []
+
+
+# ── Engine: spoken names (no session needed) ─────────────────────────────
+
+
+def _engine_without_session(monkeypatch: pytest.MonkeyPatch) -> core.AutomationEngine:
+    """An engine whose session lookup and worker fail the test if they are reached."""
+    engine = core.AutomationEngine()
+
+    def unreachable(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("no session or AT-SPI request may be started")
+
+    monkeypatch.setattr(engine, "_get_session", unreachable)
+    monkeypatch.setattr(engine, "_run_atspi", unreachable)
+    return engine
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"spoken_name": "yes"}, "spoken_name must be true or false"),
+        ({"spoken_name": 1}, "spoken_name must be true or false"),
+        ({"spoken_name": None}, "spoken_name must be true or false"),
+        ({"spoken_name": True, "exact_name": True}, "exact_name and spoken_name cannot both"),
+    ],
+)
+def test_engine_rejects_invalid_spoken_options_before_the_session(
+    kwargs: dict[str, Any], message: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = _engine_without_session(monkeypatch)
+
+    with pytest.raises(ValueError, match=message):
+        engine.invoke_ui_action("save", "Press", **kwargs)
+
+
+@pytest.mark.parametrize("query", ["...", "?!\u2026", ". . .", "; :"])
+def test_engine_rejects_an_empty_spoken_query_before_the_session(
+    query: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = _engine_without_session(monkeypatch)
+
+    with pytest.raises(ValueError, match="spoken_name query has no name left"):
+        engine.invoke_ui_action(query, "Press", spoken_name=True)
+
+
+def test_engine_sends_spoken_name_only_when_used(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = core.AutomationEngine()
+    monkeypatch.setattr(engine, "_get_session", lambda: object())
+    requests: list[dict[str, object]] = []
+
+    def run_atspi(op: str, *, retry: bool = True, **kwargs: object) -> dict:
+        requests.append({"op": op, **kwargs})
+        return {"ok": True, "result": {"matches": 0, "invoked": False}}
+
+    monkeypatch.setattr(engine, "_run_atspi", run_atspi)
+
+    options: tuple[dict[str, Any], ...] = (
+        {},
+        {"spoken_name": False},
+        {"spoken_name": True},
+        {"spoken_name": True, "fallback_action_names": ["click"]},
+        {"exact_name": True, "spoken_name": False},
+    )
+    for kwargs in options:
+        with pytest.raises(RuntimeError):
+            engine.invoke_ui_action("save", "Press", **kwargs)
+
+    base = {"op": "action", "query": "save", "action_name": "Press", "app_name": ""}
+    assert requests == [
+        base,
+        base,
+        {**base, "spoken_name": True},
+        {**base, "spoken_name": True, "fallback_action_names": ["click"]},
+        {**base, "exact_name": True},
+    ]
+
+
+def test_engine_spoken_name_messages(
+    invoked: list[tuple[str, int]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = _engine_over_fake_worker(monkeypatch)
+
+    _request({"editor": [_ActionsNode("Saves A", ["Press"])]}, "x")
+    with pytest.raises(RuntimeError) as not_found:
+        engine.invoke_ui_action(
+            query="save as", action_name="Press", fallback_action_names=["click"], spoken_name=True
+        )
+    _request(
+        {"editor": [_ActionsNode("Save As", ["Press"]), _ActionsNode("SaveAs", ["Press"])]}, "x"
+    )
+    with pytest.raises(RuntimeError) as ambiguous:
+        engine.invoke_ui_action(query="save as", action_name="Press", spoken_name=True)
+
+    assert str(not_found.value) == (
+        "No element named 'save as' (spoken-name match) exposes AT-SPI action 'Press' or 'click'."
+    )
+    assert str(ambiguous.value) == (
+        "Refused ambiguous AT-SPI action: 2 elements named 'save as' (spoken-name match) "
+        "expose 'Press'."
+    )
+    assert invoked == []
+
+
+def test_server_tool_forwards_spoken_name_to_the_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    class _RecordingEngine:
+        def invoke_ui_action(self, **kwargs: object) -> str:
+            calls.append(kwargs)
+            return "ok"
+
+    # main() creates the engine; at import time the module only declares it.
+    monkeypatch.setattr(server, "_engine", _RecordingEngine(), raising=False)
+
+    server.invoke_ui_action(query="save as", action_name="Press", spoken_name=True)
+    server.invoke_ui_action(query="save", action_name="Press")
+
+    assert [call["spoken_name"] for call in calls] == [True, False]
+
+
+def test_engine_spoken_name_reports_the_invoked_element(
+    invoked: list[tuple[str, int]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _request({"gtk-app": [_ActionsNode("Save As...", ["click"])]}, "x")
+    engine = _engine_over_fake_worker(monkeypatch)
+
+    result = engine.invoke_ui_action(
+        query="Save as.", action_name="Press", fallback_action_names=["click"], spoken_name=True
+    )
+
+    assert result == 'Invoked AT-SPI action: click on [push button] "Save As..." in gtk-app'
+    assert invoked == [("Save As...", 0)]

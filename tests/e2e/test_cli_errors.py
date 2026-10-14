@@ -122,6 +122,31 @@ def test_invalid_boolean_is_rejected_before_any_session_or_action(
     _assert_one_error_line(captured.err, "Error: Invalid boolean value: 'banana'")
 
 
+def test_invalid_spoken_name_boolean_is_rejected_before_any_session_or_action(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """spoken_name=banana never reaches invoke_ui_action as False (substring matching).
+
+    The generic strict boolean parser rejects it; reaching the engine's session lookup
+    or the AT-SPI worker fails the test.
+    """
+    engine = AutomationEngine()
+
+    def unreachable(*_args: object, **_kwargs: object) -> NoReturn:
+        pytest.fail("the invalid boolean reached the session lookup or AT-SPI dispatch")
+
+    monkeypatch.setattr(engine, "_get_session", unreachable)
+    monkeypatch.setattr(engine, "_run_atspi", unreachable)
+
+    KwinMcpShell(engine=engine).default(
+        "invoke_ui_action query='save as' action_name=Press spoken_name=banana"
+    )
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    _assert_one_error_line(captured.err, "Error: Invalid boolean value: 'banana'")
+
+
 @pytest.mark.parametrize(
     ("payload", "prefix"),
     [

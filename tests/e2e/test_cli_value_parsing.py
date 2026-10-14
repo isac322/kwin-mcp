@@ -111,6 +111,25 @@ def test_invoke_ui_action_rejects_an_unknown_exact_name_literal() -> None:
         cli._parse_args(engine.invoke_ui_action, "query=Save action_name=Press exact_name=banana")
 
 
+def test_invoke_ui_action_spoken_name_converts_to_bool() -> None:
+    engine = AutomationEngine()
+    kwargs = cli._parse_args(
+        engine.invoke_ui_action, "query='save as' action_name=Press spoken_name=true"
+    )
+
+    assert kwargs["spoken_name"] is True
+
+
+def test_invoke_ui_action_rejects_an_unknown_spoken_name_literal() -> None:
+    """spoken_name=banana must not quietly become False and fall back to substring matching."""
+    engine = AutomationEngine()
+
+    with pytest.raises(ValueError, match="Invalid boolean value: 'banana'"):
+        cli._parse_args(
+            engine.invoke_ui_action, "query='save as' action_name=Press spoken_name=banana"
+        )
+
+
 def test_quoted_json_list_arg_converts_to_list() -> None:
     engine = AutomationEngine()
     kwargs = cli._parse_args(engine.find_ui_elements, "query=x states='[\"focused\"]'")

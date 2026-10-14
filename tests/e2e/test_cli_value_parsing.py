@@ -5,9 +5,14 @@ resolve parameter annotations and convert the string values. Optional parameters
 annotated ``T | None`` (a ``types.UnionType``) have no ``__origin__`` attribute, so
 ``_parse_value`` must unwrap them with ``typing.get_origin``/``typing.get_args``;
 these tests would leave the value a raw string on Python 3.12-3.14 otherwise.
+
+Booleans accept only true/false, yes/no and 1/0 in any case; any other literal raises
+instead of silently becoming False.
 """
 
 from __future__ import annotations
+
+import shlex
 
 import pytest
 
@@ -45,6 +50,29 @@ def test_optional_bool_arg_converts_to_bool() -> None:
     assert type(kwargs["flag"]) is bool
 
 
+@pytest.mark.parametrize("literal", ["true", "TRUE", "True", "1", "yes", "YES", "Yes"])
+def test_true_literals_convert_to_true(literal: str) -> None:
+    assert cli._parse_value(literal, bool) is True
+    assert cli._parse_args(_bool_or_none_probe, f"flag={literal}")["flag"] is True
+
+
+@pytest.mark.parametrize("literal", ["false", "FALSE", "False", "0", "no", "NO", "No"])
+def test_false_literals_convert_to_false(literal: str) -> None:
+    assert cli._parse_value(literal, bool) is False
+    assert cli._parse_args(_bool_or_none_probe, f"flag={literal}")["flag"] is False
+
+
+@pytest.mark.parametrize(
+    "literal", ["banana", "", "2", "y", "n", "on", "off", "t", "f", " true", "false "]
+)
+def test_unknown_bool_literals_are_rejected(literal: str) -> None:
+    """An unrecognised literal fails loudly; before, it silently became False."""
+    with pytest.raises(ValueError, match="Invalid boolean value"):
+        cli._parse_value(literal, bool)
+    with pytest.raises(ValueError, match="Invalid boolean value"):
+        cli._parse_args(_bool_or_none_probe, f"flag={shlex.quote(literal)}")
+
+
 def test_plain_int_annotation_still_converts() -> None:
     """Regression: non-Optional annotations keep working through the same path."""
     engine = AutomationEngine()
@@ -64,6 +92,23 @@ def test_invoke_ui_action_exact_options_convert_to_bool_and_list() -> None:
     assert kwargs["exact_name"] is True
     assert kwargs["fallback_action_names"] == ["click"]
     assert type(kwargs["fallback_action_names"]) is list
+
+
+def test_invoke_ui_action_exact_name_false_converts_to_false() -> None:
+    engine = AutomationEngine()
+    kwargs = cli._parse_args(
+        engine.invoke_ui_action, "query=save action_name=Press exact_name=false"
+    )
+
+    assert kwargs["exact_name"] is False
+
+
+def test_invoke_ui_action_rejects_an_unknown_exact_name_literal() -> None:
+    """exact_name=banana must not quietly become False and fall back to substring matching."""
+    engine = AutomationEngine()
+
+    with pytest.raises(ValueError, match="Invalid boolean value: 'banana'"):
+        cli._parse_args(engine.invoke_ui_action, "query=Save action_name=Press exact_name=banana")
 
 
 def test_quoted_json_list_arg_converts_to_list() -> None:

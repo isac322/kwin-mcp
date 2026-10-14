@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import errno
 import os
+import stat
 import subprocess
 import sys
 import tracemalloc
 from pathlib import Path
 
 import pytest
+from test_session_lifecycle import _bus_name_has_owner
 
-from kwin_mcp.session import _atspi_service_argv
+from kwin_mcp.session import ATSPI_DIRECT_START_ENV, Session, SessionConfig, _atspi_service_argv
 
 _SERVICE_NAME = "org.a11y.Bus"
 _SERVICE_LIMIT = 128 * 1024
@@ -116,12 +119,22 @@ def test_valid_service_symlink_is_followed(tmp_path: Path) -> None:
     assert _atspi_service_argv("services", _SERVICE_NAME, _environment(tmp_path)) == _VALID_ARGV
 
 
-@pytest.mark.parametrize("kind", ["dangling-symlink", "directory", "fifo"])
+@pytest.mark.parametrize(
+    "kind",
+    ["missing", "not-directory", "dangling-symlink", "symlink-loop", "directory", "fifo"],
+)
 def test_nonregular_candidate_is_skipped_for_later_data_root(tmp_path: Path, kind: str) -> None:
     first_root = tmp_path / "first"
     first_path = _service_path(first_root)
     first_path.parent.mkdir(parents=True)
-    if kind == "dangling-symlink":
+    if kind == "missing":
+        pass
+    elif kind == "not-directory":
+        first_path.parent.rmdir()
+        first_path.parent.write_bytes(b"not a directory")
+    elif kind == "symlink-loop":
+        first_path.symlink_to(first_path)
+    elif kind == "dangling-symlink":
         first_path.symlink_to(first_path.with_name("missing.service"))
     elif kind == "directory":
         first_path.mkdir()
@@ -135,6 +148,50 @@ def test_nonregular_candidate_is_skipped_for_later_data_root(tmp_path: Path, kin
         _atspi_service_argv("services", _SERVICE_NAME, _environment(first_root, second_root))
         == _VALID_ARGV
     )
+
+
+def test_nul_data_root_is_skipped_for_later_data_root(tmp_path: Path) -> None:
+    invalid_root = f"{tmp_path}/invalid\0share"
+    second_root = tmp_path / "second"
+    _write_service(second_root, _service_bytes())
+    environment = {"XDG_DATA_DIRS": f"{invalid_root}{os.pathsep}{second_root}"}
+
+    # Exercise the private lookup's path handling, not public session environment support.
+    with pytest.raises(ValueError):
+        _service_path(Path(invalid_root)).stat()
+
+    assert _atspi_service_argv("services", _SERVICE_NAME, environment) == _VALID_ARGV
+
+
+def test_bad_descriptor_metadata_error_is_skipped_for_later_data_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first_root = tmp_path / "first"
+    first_path = _write_service(first_root, _service_bytes().replace(b"/bin/true", b"/bin/false"))
+    second_root = tmp_path / "second"
+    second_path = _write_service(second_root, _service_bytes())
+    real_stat = Path.stat
+    injected = False
+    second_stat_called = False
+
+    def stat_with_bad_descriptor(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        nonlocal injected, second_stat_called
+        if path == first_path:
+            injected = True
+            raise OSError(errno.EBADF, os.strerror(errno.EBADF), str(path))
+        if path == second_path:
+            second_stat_called = True
+        return real_stat(path, follow_symlinks=follow_symlinks)
+
+    # Model the metadata I/O boundary; the later candidate still uses the real filesystem.
+    monkeypatch.setattr(Path, "stat", stat_with_bad_descriptor)
+
+    assert (
+        _atspi_service_argv("services", _SERVICE_NAME, _environment(first_root, second_root))
+        == _VALID_ARGV
+    )
+    assert injected, "the first candidate did not reach the metadata error injection"
+    assert second_stat_called, "the later candidate did not reach the real metadata lookup"
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="permission failure requires an unprivileged tester")
@@ -155,6 +212,74 @@ def test_unreadable_regular_candidate_fails_closed_without_later_root_fallback(
         path.chmod(0o600)
 
     assert result is None
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="permission failure requires an unprivileged tester")
+def test_unsearchable_data_root_fails_closed_without_later_root_fallback(
+    tmp_path: Path,
+) -> None:
+    first_root = tmp_path / "first"
+    first_path = _write_service(first_root, _service_bytes())
+    second_root = tmp_path / "second"
+    _write_service(second_root, _service_bytes())
+    original_mode = stat.S_IMODE(first_root.stat().st_mode)
+    first_root.chmod(0)
+
+    try:
+        with pytest.raises(PermissionError) as denied:
+            first_path.stat()
+        assert denied.value.errno == errno.EACCES
+        result = _atspi_service_argv(
+            "services", _SERVICE_NAME, _environment(first_root, second_root)
+        )
+    finally:
+        first_root.chmod(original_mode)
+
+    assert result is None
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="permission failure requires an unprivileged tester")
+def test_unsearchable_data_root_does_not_prevent_healthy_accessibility_bus_activation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    screen_size: tuple[int, int],
+) -> None:
+    first_root = tmp_path / "blocked-share"
+    first_path = _write_service(first_root, _service_bytes())
+    monkeypatch.setenv(ATSPI_DIRECT_START_ENV, "1")
+    monkeypatch.setenv(
+        "XDG_DATA_DIRS",
+        _environment(first_root, Path("/usr/local/share"), Path("/usr/share"))["XDG_DATA_DIRS"],
+    )
+    original_mode = stat.S_IMODE(first_root.stat().st_mode)
+    session = Session()
+    first_root.chmod(0)
+
+    try:
+        with pytest.raises(PermissionError) as denied:
+            first_path.stat()
+        assert denied.value.errno == errno.EACCES
+        info = session.start(
+            SessionConfig(
+                screen_width=screen_size[0],
+                screen_height=screen_size[1],
+                isolate_home=True,
+            )
+        )
+        assert info.startup_warnings == []
+        assert _bus_name_has_owner(info.dbus_address, _SERVICE_NAME)
+    finally:
+        first_root.chmod(original_mode)
+        try:
+            session.stop()
+        finally:
+            # Metadata lookup can fail before spawning, when stop() cannot clean up.
+            if session._process is None:
+                session._cleanup_start_dirs()
+
+    assert info.home_dir is not None
+    assert not info.home_dir.exists()
+    assert not info.screenshot_dir.exists()
 
 
 def test_regular_to_fifo_replacement_at_read_boundary_cannot_hang(

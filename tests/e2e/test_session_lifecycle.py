@@ -1501,10 +1501,6 @@ _DENIED_ACTIVATION_ERROR = (
     "Error org.freedesktop.DBus.Error.Spawn.ExecFailed: Failed to execute program org.a11y.Bus:"
     " Permission denied"
 )
-_DIRECT_START_WARNING = (
-    f"Warning: AT-SPI bus activation failed ({_DENIED_ACTIVATION_ERROR}); started the"
-    " accessibility bus and registry directly instead"
-)
 
 
 def _deny_first_a11y_activation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

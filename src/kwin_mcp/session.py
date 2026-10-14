@@ -8,11 +8,13 @@ Manages the lifecycle of KWin Wayland sessions:
 from __future__ import annotations
 
 import contextlib
+import errno
 import os
 import select
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -66,9 +68,19 @@ _ATSPI_EXEC_HELPER_CODE = "import os,sys;os.execv(sys.argv[1],sys.argv[1:])"
 def _atspi_service_argv(subdir: str, name: str, env: dict[str, str]) -> list[str] | None:
     """Return the first matching service file found under the XDG data roots."""
     for data_dir in (env.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":"):
-        path = Path(data_dir) / "dbus-1" / subdir / f"{name}.service"
-        if not data_dir or not path.is_file():
+        if not data_dir:
             continue
+        path = Path(data_dir) / "dbus-1" / subdir / f"{name}.service"
+        try:
+            if not stat.S_ISREG(path.stat().st_mode):
+                continue
+        except ValueError:
+            continue
+        except OSError as exc:
+            # Preserve is_file()'s missing/invalid-path skips; other failures close direct start.
+            if exc.errno in (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP):
+                continue
+            return None
         try:
             data = _read_service_file(path)
         except FileNotFoundError:

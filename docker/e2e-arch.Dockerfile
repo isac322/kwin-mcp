@@ -160,7 +160,6 @@ COPY --chown=1000:1000 README.md CHANGELOG.md CONTRIBUTING.md ROADMAP.md /app/
 # Read-only references for the docs/listing checks; the package itself is the
 # installed wheel in /opt/kwin-mcp-venv.
 COPY --chown=1000:1000 src/ /app/src/
-COPY --chown=1000:1000 docs/ /app/docs/
 COPY --chown=1000:1000 docker/README.md /app/docker/README.md
 COPY --chown=1000:1000 scripts/ /app/scripts/
 COPY --chown=1000:1000 integrations/ /app/integrations/

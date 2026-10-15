@@ -223,7 +223,8 @@ required checks, one per row; each check reads only its own five shard results a
 counts. Shard execution keeps the `not slow` selection, strict skip handling, layer-shell
 requirement, and existing timeouts. Image artifacts are retained for one day; diagnostic and status
 artifacts keep the repository's default retention. Artifact names include the workflow attempt.
-shard statuses; an individual job rerun does not reuse artifacts from another attempt. The local
+Rerun the whole workflow to rebuild the images and produce matching shard statuses; an individual
+job rerun does not reuse artifacts from another attempt. The local
 `scripts/run-e2e-docker.sh` interface is unchanged.
 
 See `docker/README.md` for backend details and test-by-test coverage.

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-15
+
 ### Added
 
 - Added `virtual_desktops` and `window_set_desktop`, bringing the server to 37 tools. `virtual_desktops` (read-only) lists KWin's virtual desktops in order, each with its stable id, name, and whether it is the current desktop. `window_set_desktop` (destructive, idempotent) assigns a window, addressed by the exact KWin id from `window_geometry`, to only the desktop with the exact id from `virtual_desktops`; there is no app-name or position fallback. The operation does not explicitly select the current desktop or activate the window, and a window on all desktops ends up on only the requested one. Preflight refuses requests that would move related windows (transients or modal main windows) KWin scripting can enumerate at request time, and requests while an X11 group transient exists. Linked but unpainted or unlisted children may follow their parent, and KWin may switch the current desktop when they first appear. Both tools return structured content. `window_set_desktop` reports previous desktops (so they can be restored), membership observed by a separate KWin query, and `applied` verifying only the selected window's observed membership. The current desktop ids before and after are point-in-time observations, not future desktop or focus guarantees. Missing or unknown ids, a refused request, a failed `virtual_desktops` query, and a request whose result did not come back are tool errors; a readback that cannot observe the window is reported in `observation_error`, since the window may already have moved.
@@ -302,7 +304,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keyboard input: text typing and key combinations via KWin EIS
 - FastMCP-based MCP server with stdio transport
 
-[Unreleased]: https://github.com/isac322/kwin-mcp/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/isac322/kwin-mcp/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/isac322/kwin-mcp/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/isac322/kwin-mcp/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/isac322/kwin-mcp/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/isac322/kwin-mcp/compare/v0.9.0...v0.9.1

@@ -2,7 +2,7 @@
 
 Over stdio, the server's stdin pipe carries every JSON-RPC request and its stdout
 pipe carries every response. Session processes used to inherit them: the
-compositor wrapper and every ``launch_app`` program shared the server's stdin
+compositor wrapper and every ``app_launch`` program shared the server's stdin
 pipe, so a launched program that reads stdin (a shell script, ``cat``, a CLI
 tool) consumed request lines and those calls never got a response. The transport
 must not be inherited by any session process on any fd.
@@ -17,6 +17,8 @@ from pathlib import Path
 import anyio
 import pytest
 from mcp_harness import running_mcp_server
+
+from kwin_mcp.models import AppLaunchResult, SessionInfo, SessionStopResult
 
 CALL_TIMEOUT_SECONDS = 15
 FOLLOW_UP_CALLS = 8
@@ -100,12 +102,14 @@ async def test_session_processes_cannot_read_the_json_rpc_stdin(tmp_path: Path) 
     async with running_mcp_server() as client:
         session_running = False
         try:
-            start_output = await client.call_text("session_start", {})
+            info = await client.call_model("session_start", {})
             session_running = True
-            assert "Session started." in start_output, start_output
+            assert isinstance(info, SessionInfo)
+            assert info.kind == "virtual", info
 
-            launch_output = await client.call_text("launch_app", {"command": reader})
-            assert launch_output.startswith("App launched:"), launch_output
+            launched = await client.call_model("app_launch", {"command": reader})
+            assert isinstance(launched, AppLaunchResult)
+            assert launched.command == reader, launched
 
             # The compositor, D-Bus, AT-SPI2, and the launched reader are all
             # running now; none of them may hold the transport on any fd.
@@ -114,12 +118,12 @@ async def test_session_processes_cannot_read_the_json_rpc_stdin(tmp_path: Path) 
             completed = 0
             for _ in range(FOLLOW_UP_CALLS):
                 with anyio.move_on_after(CALL_TIMEOUT_SECONDS) as scope:
-                    await client.call_text("list_windows")
+                    await client.call_structured("window_list", {})
                 if scope.cancelled_caught:
                     break
                 completed += 1
             assert completed == FOLLOW_UP_CALLS, (
-                f"only {completed}/{FOLLOW_UP_CALLS} list_windows calls answered within "
+                f"only {completed}/{FOLLOW_UP_CALLS} window_list calls answered within "
                 f"{CALL_TIMEOUT_SECONDS}s; the reader captured "
                 f"{stolen.read_bytes()[:200]!r}"
             )
@@ -127,4 +131,6 @@ async def test_session_processes_cannot_read_the_json_rpc_stdin(tmp_path: Path) 
         finally:
             if session_running:
                 with anyio.fail_after(CALL_TIMEOUT_SECONDS):
-                    assert await client.call_text("session_stop") == "Session stopped."
+                    stopped = await client.call_model("session_stop", {})
+                    assert isinstance(stopped, SessionStopResult)
+                    assert stopped.stopped, stopped

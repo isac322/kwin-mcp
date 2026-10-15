@@ -1,0 +1,120 @@
+{
+ "scenario": "scroll_horizontal_3",
+ "captured_from": "kwin-mcp 0.11.0 @ 7a5d781 (AutomationEngine, virtual KWin session)",
+ "call": {
+  "delta": 3,
+  "horizontal": true,
+  "local": [
+   300,
+   200
+  ],
+  "tool": "mouse_scroll"
+ },
+ "returned_text": [
+  "Scrolled horizontal (smooth) by 3 at (440, 292)"
+ ],
+ "probe": {
+  "client_size": [
+   1000,
+   640
+  ],
+  "coordinates": "probe-local logical px (global = client origin + local)"
+ },
+ "repeats": 5,
+ "sequence": [
+  {
+   "kind": "motion",
+   "x": 299,
+   "y": 200,
+   "mods": [],
+   "held": []
+  },
+  {
+   "kind": "motion",
+   "x": 300,
+   "y": 200,
+   "mods": [],
+   "held": []
+  },
+  {
+   "kind": "scroll",
+   "x": 300,
+   "y": 200,
+   "mods": [],
+   "direction": "smooth",
+   "dx": 4.5,
+   "dy": 0.0,
+   "is_stop": false
+  },
+  {
+   "kind": "scroll",
+   "x": 300,
+   "y": 200,
+   "mods": [],
+   "direction": "smooth",
+   "dx": 0.0,
+   "dy": 0.0,
+   "is_stop": true
+  }
+ ],
+ "gaps_ms": [
+  {
+   "from": 0,
+   "to": 1,
+   "mono": {
+    "min": 0.11,
+    "median": 0.16,
+    "max": 0.29
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 1,
+   "to": 2,
+   "mono": {
+    "min": 20.19,
+    "median": 20.22,
+    "max": 20.29
+   },
+   "event_clock": {
+    "min": 20.0,
+    "median": 21.0,
+    "max": 21.0
+   }
+  },
+  {
+   "from": 2,
+   "to": 3,
+   "mono": {
+    "min": 0.12,
+    "median": 0.26,
+    "max": 0.28
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 0.0
+   }
+  }
+ ],
+ "call_start_to_first_event_ms": {
+  "min": 0.47,
+  "median": 1.15,
+  "max": 1.95
+ },
+ "last_event_to_call_return_ms": {
+  "min": -1.2,
+  "median": -0.81,
+  "max": -0.47
+ },
+ "first_to_last_event_ms": {
+  "min": 20.41,
+  "median": 20.66,
+  "max": 20.82
+ },
+ "other_variants": []
+}

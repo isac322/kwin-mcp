@@ -1,0 +1,955 @@
+{
+ "scenario": "drag_waypoint_dwell",
+ "captured_from": "kwin-mcp 0.11.0 @ 7a5d781 (AutomationEngine, virtual KWin session)",
+ "call": {
+  "from_local": [
+   100,
+   300
+  ],
+  "to_local": [
+   400,
+   300
+  ],
+  "tool": "mouse_drag",
+  "waypoints_local": [
+   [
+    250,
+    200,
+    150
+   ]
+  ]
+ },
+ "returned_text": [
+  "Dragged from (240, 392) to (540, 392) via 1 waypoints"
+ ],
+ "probe": {
+  "client_size": [
+   1000,
+   640
+  ],
+  "coordinates": "probe-local logical px (global = client origin + local)"
+ },
+ "repeats": 5,
+ "sequence": [
+  {
+   "kind": "motion",
+   "x": 99,
+   "y": 300,
+   "mods": [],
+   "held": []
+  },
+  {
+   "kind": "motion",
+   "x": 100,
+   "y": 300,
+   "mods": [],
+   "held": []
+  },
+  {
+   "kind": "button_press",
+   "button": "left",
+   "x": 100,
+   "y": 300,
+   "mods": [],
+   "held": []
+  },
+  {
+   "kind": "motion",
+   "x": 108,
+   "y": 294,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 117,
+   "y": 289,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 125,
+   "y": 283,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 133,
+   "y": 278,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 142,
+   "y": 272,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 150,
+   "y": 267,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 158,
+   "y": 261,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 167,
+   "y": 256,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 175,
+   "y": 250,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 183,
+   "y": 244,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 192,
+   "y": 239,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 200,
+   "y": 233,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 208,
+   "y": 228,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 217,
+   "y": 222,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 225,
+   "y": 217,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 233,
+   "y": 211,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 242,
+   "y": 206,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 250,
+   "y": 200,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 258,
+   "y": 206,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 267,
+   "y": 211,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 275,
+   "y": 217,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 283,
+   "y": 222,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 292,
+   "y": 228,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 300,
+   "y": 233,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 308,
+   "y": 239,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 317,
+   "y": 244,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 325,
+   "y": 250,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 333,
+   "y": 256,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 342,
+   "y": 261,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 350,
+   "y": 267,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 358,
+   "y": 272,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 367,
+   "y": 278,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 375,
+   "y": 283,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 383,
+   "y": 289,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 392,
+   "y": 294,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "motion",
+   "x": 400,
+   "y": 300,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "button_release",
+   "button": "left",
+   "x": 400,
+   "y": 300,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  }
+ ],
+ "gaps_ms": [
+  {
+   "from": 0,
+   "to": 1,
+   "mono": {
+    "min": 0.1,
+    "median": 0.24,
+    "max": 0.42
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 8.0
+   }
+  },
+  {
+   "from": 1,
+   "to": 2,
+   "mono": {
+    "min": 17.96,
+    "median": 50.42,
+    "max": 55.98
+   },
+   "event_clock": {
+    "min": 28.0,
+    "median": 51.0,
+    "max": 58.0
+   }
+  },
+  {
+   "from": 2,
+   "to": 3,
+   "mono": {
+    "min": 21.57,
+    "median": 22.54,
+    "max": 23.94
+   },
+   "event_clock": {
+    "min": 21.0,
+    "median": 22.0,
+    "max": 24.0
+   }
+  },
+  {
+   "from": 3,
+   "to": 4,
+   "mono": {
+    "min": 10.02,
+    "median": 10.62,
+    "max": 12.01
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 13.0
+   }
+  },
+  {
+   "from": 4,
+   "to": 5,
+   "mono": {
+    "min": 10.65,
+    "median": 10.85,
+    "max": 14.38
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 12.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 5,
+   "to": 6,
+   "mono": {
+    "min": 8.89,
+    "median": 11.77,
+    "max": 12.76
+   },
+   "event_clock": {
+    "min": 9.0,
+    "median": 12.0,
+    "max": 12.0
+   }
+  },
+  {
+   "from": 6,
+   "to": 7,
+   "mono": {
+    "min": 10.64,
+    "median": 11.78,
+    "max": 12.49
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 11.0,
+    "max": 13.0
+   }
+  },
+  {
+   "from": 7,
+   "to": 8,
+   "mono": {
+    "min": 11.12,
+    "median": 12.77,
+    "max": 13.14
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 12.0,
+    "max": 13.0
+   }
+  },
+  {
+   "from": 8,
+   "to": 9,
+   "mono": {
+    "min": 8.87,
+    "median": 12.29,
+    "max": 13.61
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 12.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 9,
+   "to": 10,
+   "mono": {
+    "min": 10.76,
+    "median": 12.97,
+    "max": 13.54
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 13.0,
+    "max": 13.0
+   }
+  },
+  {
+   "from": 10,
+   "to": 11,
+   "mono": {
+    "min": 11.51,
+    "median": 13.14,
+    "max": 16.41
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 12.0,
+    "max": 17.0
+   }
+  },
+  {
+   "from": 11,
+   "to": 12,
+   "mono": {
+    "min": 9.55,
+    "median": 11.55,
+    "max": 12.3
+   },
+   "event_clock": {
+    "min": 9.0,
+    "median": 12.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 12,
+   "to": 13,
+   "mono": {
+    "min": 10.11,
+    "median": 11.2,
+    "max": 12.07
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 12.0
+   }
+  },
+  {
+   "from": 13,
+   "to": 14,
+   "mono": {
+    "min": 10.11,
+    "median": 11.75,
+    "max": 15.69
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 12.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 14,
+   "to": 15,
+   "mono": {
+    "min": 10.33,
+    "median": 11.43,
+    "max": 13.63
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 11.0,
+    "max": 13.0
+   }
+  },
+  {
+   "from": 15,
+   "to": 16,
+   "mono": {
+    "min": 8.97,
+    "median": 10.67,
+    "max": 12.78
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 13.0
+   }
+  },
+  {
+   "from": 16,
+   "to": 17,
+   "mono": {
+    "min": 10.64,
+    "median": 11.65,
+    "max": 14.22
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 17,
+   "to": 18,
+   "mono": {
+    "min": 10.53,
+    "median": 12.13,
+    "max": 12.53
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 12.0,
+    "max": 13.0
+   }
+  },
+  {
+   "from": 18,
+   "to": 19,
+   "mono": {
+    "min": 9.83,
+    "median": 10.97,
+    "max": 12.29
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 12.0
+   }
+  },
+  {
+   "from": 19,
+   "to": 20,
+   "mono": {
+    "min": 10.08,
+    "median": 11.39,
+    "max": 13.88
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 12.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 20,
+   "to": 21,
+   "mono": {
+    "min": 161.42,
+    "median": 162.52,
+    "max": 166.06
+   },
+   "event_clock": {
+    "min": 161.0,
+    "median": 162.0,
+    "max": 166.0
+   }
+  },
+  {
+   "from": 21,
+   "to": 22,
+   "mono": {
+    "min": 9.05,
+    "median": 10.62,
+    "max": 12.39
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 11.0,
+    "max": 12.0
+   }
+  },
+  {
+   "from": 22,
+   "to": 23,
+   "mono": {
+    "min": 10.47,
+    "median": 12.42,
+    "max": 14.46
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 15.0
+   }
+  },
+  {
+   "from": 23,
+   "to": 24,
+   "mono": {
+    "min": 9.99,
+    "median": 11.63,
+    "max": 14.93
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 12.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 24,
+   "to": 25,
+   "mono": {
+    "min": 11.16,
+    "median": 11.66,
+    "max": 14.08
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 12.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 25,
+   "to": 26,
+   "mono": {
+    "min": 10.06,
+    "median": 11.24,
+    "max": 12.3
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 12.0
+   }
+  },
+  {
+   "from": 26,
+   "to": 27,
+   "mono": {
+    "min": 10.6,
+    "median": 12.18,
+    "max": 14.94
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 12.0,
+    "max": 15.0
+   }
+  },
+  {
+   "from": 27,
+   "to": 28,
+   "mono": {
+    "min": 9.56,
+    "median": 11.13,
+    "max": 11.34
+   },
+   "event_clock": {
+    "min": 9.0,
+    "median": 11.0,
+    "max": 12.0
+   }
+  },
+  {
+   "from": 28,
+   "to": 29,
+   "mono": {
+    "min": 10.2,
+    "median": 11.0,
+    "max": 13.49
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 11.0,
+    "max": 13.0
+   }
+  },
+  {
+   "from": 29,
+   "to": 30,
+   "mono": {
+    "min": 11.13,
+    "median": 11.87,
+    "max": 13.88
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 12.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 30,
+   "to": 31,
+   "mono": {
+    "min": 10.45,
+    "median": 11.55,
+    "max": 18.79
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 12.0,
+    "max": 18.0
+   }
+  },
+  {
+   "from": 31,
+   "to": 32,
+   "mono": {
+    "min": 8.85,
+    "median": 11.4,
+    "max": 12.47
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 11.0,
+    "max": 12.0
+   }
+  },
+  {
+   "from": 32,
+   "to": 33,
+   "mono": {
+    "min": 11.99,
+    "median": 13.79,
+    "max": 14.16
+   },
+   "event_clock": {
+    "min": 12.0,
+    "median": 13.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 33,
+   "to": 34,
+   "mono": {
+    "min": 9.96,
+    "median": 11.28,
+    "max": 14.99
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 15.0
+   }
+  },
+  {
+   "from": 34,
+   "to": 35,
+   "mono": {
+    "min": 11.62,
+    "median": 12.47,
+    "max": 16.83
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 13.0,
+    "max": 15.0
+   }
+  },
+  {
+   "from": 35,
+   "to": 36,
+   "mono": {
+    "min": 9.06,
+    "median": 10.73,
+    "max": 12.55
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 13.0
+   }
+  },
+  {
+   "from": 36,
+   "to": 37,
+   "mono": {
+    "min": 10.17,
+    "median": 10.65,
+    "max": 13.53
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 37,
+   "to": 38,
+   "mono": {
+    "min": 10.24,
+    "median": 12.21,
+    "max": 14.98
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 12.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 38,
+   "to": 39,
+   "mono": {
+    "min": 30.92,
+    "median": 33.33,
+    "max": 35.79
+   },
+   "event_clock": {
+    "min": 31.0,
+    "median": 33.0,
+    "max": 35.0
+   }
+  }
+ ],
+ "call_start_to_first_event_ms": {
+  "min": 1.0,
+  "median": 3.55,
+  "max": 37.41
+ },
+ "last_event_to_call_return_ms": {
+  "min": -1.38,
+  "median": -0.52,
+  "max": -0.34
+ },
+ "first_to_last_event_ms": {
+  "min": 647.92,
+  "median": 664.56,
+  "max": 677.61
+ },
+ "other_variants": []
+}

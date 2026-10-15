@@ -10,7 +10,15 @@ Build the E2E image and run the installed-package test suite on Docker's native
 architecture. --distro selects the image variant: debian (docker/e2e.Dockerfile,
 the default), fedora (docker/e2e-fedora.Dockerfile), opensuse
 (docker/e2e-opensuse.Dockerfile), or archlinux (docker/e2e-arch.Dockerfile).
-Additional arguments are passed directly to pytest.
+Additional arguments are passed directly to pytest. The suite under tests/ runs
+by default (the same tree CI runs); when an argument names an existing path,
+such as tests/e2e/test_pointer_hold.py or tests/unit/test_render.py::test_x,
+only the named paths run. Shard like CI with `-- --kwin-shard=1/5`.
+
+Unregistered skips fail the run (KWIN_MCP_E2E_STRICT_SKIPS, default 1) and the
+layer-shell capability is required (KWIN_MCP_E2E_REQUIRE, default layer-shell);
+override either variable to relax them locally. KWIN_MCP_E2E_SCREENSHOT is
+forwarded into the container when set.
 EOF
 }
 
@@ -155,12 +163,44 @@ if [ "$status" -eq 0 ]; then
     cat "$artifact_dir/quality.log" || :
 fi
 
+# pytest runs the whole tests/ tree unless a forwarded argument names an
+# existing path (a node id's file part counts); then the caller's paths replace
+# the default. Values of options that take a path or expression are not
+# selections, so `--deselect tests/e2e/x.py::y` keeps the full suite.
+default_path=tests
+option_value=0
+for arg in "$@"; do
+    if [ "$option_value" -eq 1 ]; then
+        option_value=0
+        continue
+    fi
+    case $arg in
+        --deselect|--ignore|--ignore-glob|--rootdir|--confcutdir|--basetemp|\
+        --junitxml|--junit-xml|-c|-p|-k|-m|-o|--override-ini)
+            option_value=1
+            ;;
+        -*)
+            ;;
+        *)
+            if [ -e "${arg%%::*}" ]; then
+                default_path=
+            fi
+            ;;
+    esac
+done
+if [ -n "$default_path" ]; then
+    set -- "$default_path" "$@"
+fi
+
 if [ "$status" -eq 0 ]; then
     if docker run \
         --name "$container_name" \
+        --env KWIN_MCP_E2E_STRICT_SKIPS="${KWIN_MCP_E2E_STRICT_SKIPS:-1}" \
+        --env KWIN_MCP_E2E_REQUIRE="${KWIN_MCP_E2E_REQUIRE:-layer-shell}" \
+        --env KWIN_MCP_E2E_SCREENSHOT \
         --volume "$artifact_dir:/artifacts" \
         "$image_tag" \
-        /opt/kwin-mcp-venv/bin/python -m pytest tests/e2e -v \
+        /opt/kwin-mcp-venv/bin/python -m pytest -v \
         --junitxml=/artifacts/junit.xml \
         "$@" >"$artifact_dir/pytest.log" 2>&1; then
         status=0

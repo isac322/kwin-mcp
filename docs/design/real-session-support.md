@@ -1,7 +1,11 @@
 # Design: Real KWin Session Support
 
 > **Issue**: [#1 --dangerously-skip-isolation](https://github.com/isac322/kwin-mcp/issues/1)
-> **Status**: Design approved, implementation pending
+> **Status**: Implemented in 0.x (live sessions shipped as `session_connect`)
+>
+> **Historical document.** This design predates kwin-mcp 1.0 and names the 0.x tools and parameters it was written against. In 1.0 the app launcher is `app_launch`, app logs are read with `app_log`, Wayland globals with `wayland_list`, retention is `retention={artifacts, home}` and home isolation is `home="isolated"`; the ydotool fallback was never implemented. See the [CHANGELOG 1.0.0 migration tables](../../CHANGELOG.md#100---2026-10-12) for every renamed tool and parameter.
+
+<!-- stale-name-scan: allow-begin (historical design record below uses the 0.x tool names) -->
 
 ## Context
 
@@ -144,3 +148,5 @@ No changes needed (key rationale):
 | Input (EIS) | `KWIN_WAYLAND_NO_PERMISSION_CHECKS=1` | May work (same user) → ydotool fallback |
 | Accessibility (AT-SPI2) | Isolated bus | Host bus (works) |
 | Clipboard | Requires `enable_clipboard=True` | Always available |
+
+<!-- stale-name-scan: allow-end -->

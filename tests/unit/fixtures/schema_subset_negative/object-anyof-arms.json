@@ -1,0 +1,41 @@
+{
+ "type": "object",
+ "properties": {
+  "t": {
+   "anyOf": [
+    {
+     "type": "object",
+     "properties": {
+      "x": {
+       "type": "integer"
+      }
+     },
+     "required": [
+      "x"
+     ],
+     "additionalProperties": false
+    },
+    {
+     "type": "object",
+     "properties": {
+      "x": {
+       "type": "integer"
+      },
+      "y": {
+       "type": "integer"
+      }
+     },
+     "required": [
+      "x",
+      "y"
+     ],
+     "additionalProperties": false
+    }
+   ]
+  }
+ },
+ "required": [
+  "t"
+ ],
+ "additionalProperties": false
+}

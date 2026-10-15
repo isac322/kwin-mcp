@@ -1,4 +1,19 @@
-"""Test-owned live KWin compositor shared by the session_connect end-to-end tests."""
+"""Test-owned live KWin compositor shared by the session_connect end-to-end tests.
+
+``live_kwin(*, output_count=1, accessible_kwin=True) -> ContextManager[LiveKWin]``
+starts ``kwin_wayland --virtual`` (1280x800 per output) plus an AT-SPI bus inside
+its own ``dbus-run-session`` and stops the whole process group on exit. With
+``accessible_kwin=False`` KWin itself does not register as an AT-SPI2 app, so an
+un-launched session has zero accessible applications.
+
+``LiveKWin`` fields: ``dbus_address``, ``wayland_display``, ``socket_path``,
+``process``. Methods:
+    ``oracle(*, timeout_s=10.0) -> KWinOracle``: a test-owned KWin script reader
+    on this compositor's bus (never ``kwin_mcp``).
+    ``wait_for_windows(predicate, *, timeout_s=15.0, interval_s=0.2)
+    -> list[OracleWindow]``: polls ``KWinOracle.windows()`` until
+    ``predicate(windows)`` holds; ``AssertionError`` on timeout.
+"""
 
 from __future__ import annotations
 
@@ -14,9 +29,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+from kwin_oracle import KWinOracle
+
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Callable, Generator
     from typing import IO
+
+    from kwin_oracle import OracleWindow
 
 
 @dataclass(frozen=True)
@@ -27,6 +46,20 @@ class LiveKWin:
     wayland_display: str
     socket_path: Path
     process: subprocess.Popen[bytes]
+
+    def oracle(self, *, timeout_s: float = 10.0) -> KWinOracle:
+        """A ``KWinOracle`` on this compositor's session bus."""
+        return KWinOracle(self.dbus_address, timeout_s=timeout_s)
+
+    def wait_for_windows(
+        self,
+        predicate: Callable[[list[OracleWindow]], bool],
+        *,
+        timeout_s: float = 15.0,
+        interval_s: float = 0.2,
+    ) -> list[OracleWindow]:
+        """Poll KWin's window list until ``predicate`` holds, then return it."""
+        return self.oracle().wait_for_windows(predicate, timeout_s=timeout_s, interval_s=interval_s)
 
 
 def _stderr_excerpt(stderr_file: IO[bytes]) -> str:
@@ -48,7 +81,15 @@ def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
 
 
 @contextlib.contextmanager
-def live_kwin() -> Generator[LiveKWin]:
+def live_kwin(*, output_count: int = 1, accessible_kwin: bool = True) -> Generator[LiveKWin]:
+    if isinstance(output_count, bool) or output_count < 1:
+        msg = f"output_count must be a positive integer, got {output_count!r}"
+        raise ValueError(msg)
+    # KWin registers itself as an accessible app only when the Qt accessibility
+    # env flags reach it; unsetting them gives a zero-app AT-SPI2 tree.
+    inaccessible = (
+        "" if accessible_kwin else "-u QT_LINUX_ACCESSIBILITY_ALWAYS_ON -u QT_ACCESSIBILITY "
+    )
     runtime_dir = Path(os.environ["XDG_RUNTIME_DIR"])
     wayland_display = f"wayland-live-test-{os.getpid()}-{uuid4().hex}"
     socket_path = runtime_dir / wayland_display
@@ -66,10 +107,10 @@ sleep 0.2
 dbus-update-activation-environment \\
     WAYLAND_DISPLAY={wayland_display} QT_QPA_PLATFORM=wayland
 env -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM -u KDE_FULL_SESSION -u KDE_SESSION_VERSION \\
-    KWIN_WAYLAND_NO_PERMISSION_CHECKS=1 \\
+    {inaccessible}KWIN_WAYLAND_NO_PERMISSION_CHECKS=1 \\
     KWIN_SCREENSHOT_NO_PERMISSION_CHECKS=1 \\
     kwin_wayland --virtual --no-lockscreen --width 1280 --height 800 \\
-    --socket {wayland_display} &
+    --output-count {output_count} --socket {wayland_display} &
 KWIN_PID=$!
 for _ in $(seq 1 300); do
     [ -S "$XDG_RUNTIME_DIR/{wayland_display}" ] && break

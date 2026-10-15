@@ -1,29 +1,40 @@
-"""AT-SPI2 accessibility tree reader.
+"""AT-SPI2 accessibility worker.
 
-Can be run as a subprocess CLI for isolated D-Bus session support. By default it
-reads one JSON request from stdin and writes one JSON response to stdout. With
-``--serve`` it answers newline-delimited JSON requests until stdin closes; the
-automation engine keeps one such worker per session bus.
+Runs as ``python -m kwin_mcp.accessibility --serve --generation <N>`` on the
+session's D-Bus: it answers newline-delimited JSON requests on stdin until
+stdin closes, one response line per request. The automation engine keeps one
+worker per session bus and bumps ``N`` on every (re)spawn.
+
+Operations (``op``):
+
+- ``query``: one filtered pre-order walk (``locator``, ``max_depth``).
+- ``wait``: ``query`` polled until the matches are present or absent.
+- ``resolve``: live element data for refs minted by ``query``/``wait``.
+- ``action``: invoke one AT-SPI action on a ref, or on the single
+  (element, action) candidate a strict, fail-closed search finds.
+
+Every element a response returns carries a ref ``e<generation>.<n>`` that
+names its ``Atspi.Accessible`` in this worker's LRU ref table.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
 import sys
 import time
+from collections import OrderedDict
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import gi
 
-from kwin_mcp.spoken_name import normalize_spoken_name, spoken_name_matches
+from kwin_mcp.models import Locator
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from kwin_mcp.geometry import KWinWindow
 
 gi.require_version("Atspi", "2.0")
@@ -41,7 +52,10 @@ class ElementInfo:
     ``x``/``y``/``width``/``height`` are global screen coordinates when
     ``mapped`` is true. When ``mapped`` is false the rectangle could not be
     placed on the screen with certainty; ``unavailable`` carries the reason
-    and the coordinates must not be used for input.
+    and the coordinates must not be used for input. ``ref`` names the element
+    in the worker's ref table, ``app`` is its application's name and
+    ``window_id`` the KWin id of the window its top-level matched (None for
+    application nodes and unmapped top-levels).
     """
 
     role: str
@@ -61,6 +75,9 @@ class ElementInfo:
     has_extents: bool
     mapped: bool
     unavailable: str
+    ref: str = ""
+    app: str = ""
+    window_id: str | None = None
 
 
 @dataclass
@@ -84,110 +101,405 @@ class _WindowMapping:
 # root node, or AT-SPI children that vanished mid-walk).
 _UNMAPPED = _WindowMapping(None, "not-a-window")
 
-
-def get_accessibility_tree(
-    app_name: str = "",
-    max_depth: int = 15,
-    role: str = "",
-) -> list[ElementInfo]:
-    """Walk the accessibility tree in pre-order.
-
-    Args:
-        app_name: Filter to a specific application (empty = all apps).
-        max_depth: Maximum tree depth to traverse.
-        role: Filter to elements with this role (empty = all roles).
-            Non-matching elements are hidden but their children are still traversed.
-
-    Returns:
-        Role-filtered elements with screen coordinates (or an unavailable
-        reason); nesting is given by each element's ``depth``.
-    """
-    kwin_before, kwin_error = _kwin_windows()
-    desktop = Atspi.get_desktop(0)
-    entries: list[tuple[ElementInfo, _WindowMapping]] = []
-    mappings_by_app: dict[frozenset[int], list[_WindowMapping]] = {}
-    role_filter = role.lower()
-
-    for i in range(desktop.get_child_count()):
-        app = desktop.get_child_at_index(i)
-        if app is None:
-            continue
-
-        name = app.get_name() or ""
-        if app_name and app_name.lower() not in name.lower():
-            continue
-
-        pids, mappings, children = _resolve_app(app, kwin_before, kwin_error)
-        mappings_by_app.setdefault(pids, []).extend(mappings)
-        entries.append((_extract_info(app, 0), _UNMAPPED))
-        for child, mapping in zip(children, mappings, strict=True):
-            if child is not None:
-                _collect_tree(child, mapping, entries, depth=1, max_depth=max_depth)
-
-    _apply_stability(mappings_by_app, kwin_before, kwin_error)
-
-    return [
-        _finalize(info, mapping)
-        for info, mapping in entries
-        if not role_filter or role_filter == info.role.lower()
-    ]
-
-
-def find_elements(
-    query: str, app_name: str = "", states: list[str] | None = None
-) -> list[ElementInfo]:
-    """Find elements matching a query string and/or required states.
-
-    Searches element names, roles, and descriptions. Optionally filters
-    by AT-SPI2 states.
-
-    Args:
-        query: Search string (case-insensitive). Empty string matches all elements.
-        app_name: Filter to a specific application.
-        states: If provided, only return elements that have ALL of these states.
-
-    Returns:
-        List of matching ElementInfo objects.
-    """
-    kwin_before, kwin_error = _kwin_windows()
-    desktop = Atspi.get_desktop(0)
-    results: list[tuple[ElementInfo, _WindowMapping]] = []
-    mappings_by_app: dict[frozenset[int], list[_WindowMapping]] = {}
-    query_lower = query.lower()
-
-    for i in range(desktop.get_child_count()):
-        app = desktop.get_child_at_index(i)
-        if app is None:
-            continue
-
-        name = app.get_name() or ""
-        if app_name and app_name.lower() not in name.lower():
-            continue
-
-        pids, mappings, children = _resolve_app(app, kwin_before, kwin_error)
-        mappings_by_app.setdefault(pids, []).extend(mappings)
-        app_info = _extract_info(app, 0)
-        if _matches(app_info, query_lower, states):
-            results.append((app_info, _UNMAPPED))
-        for child, mapping in zip(children, mappings, strict=True):
-            if child is not None:
-                _search_element(
-                    child, mapping, query_lower, results, depth=1, required_states=states
-                )
-
-    _apply_stability(mappings_by_app, kwin_before, kwin_error)
-    return [_finalize(info, mapping) for info, mapping in results]
-
-
 # Acting on an element found by an incomplete discovery could trigger the
 # wrong control, so any unreadable node in the searched scope — even a
-# non-candidate — fails the request closed instead of being skipped. The
-# depth limit exists for the same reason: no match may hide below it.
+# non-candidate — fails the strict search closed instead of being skipped.
+# The depth limit exists for the same reason: no match may hide below it.
 _ACTION_SEARCH_MAX_DEPTH = 64
 
-# How long wait_for_elements re-polls matches whose window mapping failed
-# because KWin's window list changed during the walk.
+# How long a wait for present elements re-polls matches whose window mapping
+# failed because KWin's window list changed during the walk.
 _WINDOWS_CHANGED_SETTLE_S = 1.0
+
+# Entries of the ref table; the least recently used ref is evicted beyond it.
+REF_TABLE_CAPACITY = 4096
+
+_REF_PATTERN = re.compile(r"e(\d+)\.(\d+)")
+
+
+# ── Locator matching ─────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class _Criteria:
+    """A Locator prepared for matching.
+
+    ``app``, ``query`` and ``role`` are lowercased (case-insensitive);
+    ``states`` are AT-SPI state nicks compared exactly. Empty values match
+    everything, so ``Locator()`` selects every element.
+    """
+
+    app: str = ""
+    query: str = ""
+    role: str = ""
+    states: tuple[str, ...] = ()
+
+    @classmethod
+    def from_locator(cls, locator: Locator) -> _Criteria:
+        return cls(
+            app=(locator.app or "").lower(),
+            query=(locator.query or "").lower(),
+            role=(locator.role or "").lower(),
+            states=tuple(locator.states or ()),
+        )
+
+    def matches_app(self, app_name: str) -> bool:
+        """Application-name substring, case-insensitive."""
+        return self.app in app_name.lower()
+
+    def matches_text(self, name: str, role: str, description: str) -> bool:
+        """Role (exact) and query (substring of name/role/description), case-insensitive."""
+        if self.role and role.lower() != self.role:
+            return False
+        if not self.query:
+            return True
+        return (
+            self.query in name.lower()
+            or self.query in role.lower()
+            or self.query in description.lower()
+        )
+
+    def matches_states(self, states: list[str]) -> bool:
+        """Every required state nick is present, compared case-sensitively."""
+        return all(state in states for state in self.states)
+
+    def matches(self, info: ElementInfo) -> bool:
+        """Role, query and states; the app is checked once per application."""
+        return self.matches_text(info.name, info.role, info.description) and self.matches_states(
+            info.states
+        )
+
+
+# ── Ref table ────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class _RefEntry:
+    """What a ref names: the element and what is needed to re-read it in place.
+
+    ``role`` is the role at mint time (a changed role makes the ref stale);
+    ``application`` is the element's application node and ``toplevel`` its
+    depth-1 ancestor (itself at depth 1, None for an application node), from
+    which the live window mapping is recomputed.
+    """
+
+    accessible: Atspi.Accessible
+    role: str
+    app: str
+    depth: int
+    application: Atspi.Accessible
+    toplevel: Atspi.Accessible | None
+
+
+class _StaleRefError(Exception):
+    """A ref that cannot be resolved; the message is the caller-facing text."""
+
+
+class _RefTable:
+    """LRU map from ``e<generation>.<n>`` refs to the elements they name.
+
+    ``n`` increases monotonically for the life of the worker, so minting the
+    same element again yields a new ref. Resolving a ref makes it the most
+    recently used; beyond ``capacity`` the least recently used ref is evicted.
+    """
+
+    def __init__(self, generation: int = 1, capacity: int = REF_TABLE_CAPACITY) -> None:
+        self.generation = generation
+        self.capacity = capacity
+        self._entries: OrderedDict[str, _RefEntry] = OrderedDict()
+        self._counter = 0
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def mint(self, entry: _RefEntry) -> str:
+        self._counter += 1
+        ref = f"e{self.generation}.{self._counter}"
+        self._entries[ref] = entry
+        while len(self._entries) > self.capacity:
+            self._entries.popitem(last=False)
+        return ref
+
+    def resolve(self, ref: str) -> _RefEntry:
+        """The entry ``ref`` names, now most recently used; ``_StaleRefError`` otherwise."""
+        match = _REF_PATTERN.fullmatch(ref)
+        if match is None:
+            msg = (
+                f"Malformed ref {ref!r}: refs look like e<generation>.<n>, as element_query "
+                "returns them.\nRe-run element_query and copy a ref."
+            )
+            raise _StaleRefError(msg)
+        if int(match.group(1)) != self.generation:
+            msg = f"Stale ref {ref} (AT-SPI worker restarted); re-run element_query."
+            raise _StaleRefError(msg)
+        entry = self._entries.get(ref)
+        if entry is None:
+            msg = (
+                f"Stale ref {ref} (evicted from the ref table or never issued); "
+                "re-run element_query."
+            )
+            raise _StaleRefError(msg)
+        self._entries.move_to_end(ref)
+        return entry
+
+
+# The worker's ref table; ``_serve`` replaces it with one for its generation.
+_REFS = _RefTable()
+
+
+# ── query / wait: the lenient filtered walk ──────────────────────────────
+
+
+@dataclass
+class _Found:
+    """One element a walk selected, with its mapping and the entry a ref will name."""
+
+    info: ElementInfo
+    mapping: _WindowMapping
+    entry: _RefEntry
+
+
+def _walk(criteria: _Criteria, max_depth: int) -> list[_Found]:
+    """One filtered pre-order walk from the application nodes (depth 0).
+
+    Elements deeper than ``max_depth`` are not visited (``<= 0``: application
+    nodes only). Non-matching elements are hidden but their children are
+    still searched. A node that cannot be read is skipped with its subtree;
+    applications without children are included.
+    """
+    kwin_before, kwin_error = _kwin_windows()
+    found: list[_Found] = []
+    mappings_by_app: dict[frozenset[int], list[_WindowMapping]] = {}
+    desktop = Atspi.get_desktop(0)
+    for app in _children(desktop):
+        try:
+            app_name = app.get_name() or ""
+        except Exception:
+            continue
+        if not criteria.matches_app(app_name):
+            continue
+        try:
+            app_info = _extract_info(app, 0)
+        except Exception:
+            continue
+        if criteria.matches(app_info):
+            entry = _RefEntry(app, app_info.role, app_name, 0, app, None)
+            found.append(_Found(app_info, _UNMAPPED, entry))
+        if max_depth < 1:
+            continue
+        try:
+            pids, mappings, toplevels = _resolve_app(app, kwin_before, kwin_error)
+        except Exception:
+            continue
+        mappings_by_app.setdefault(pids, []).extend(mappings)
+        for toplevel, mapping in zip(toplevels, mappings, strict=True):
+            if toplevel is not None:
+                scope = _Scope(app, app_name, toplevel, mapping)
+                _collect(toplevel, scope, 1, max_depth, criteria, found)
+
+    _apply_stability(mappings_by_app, kwin_before, kwin_error)
+    for item in found:
+        _finalize(item.info, item.mapping)
+    return found
+
+
+@dataclass(frozen=True)
+class _Scope:
+    """The application and top-level a subtree belongs to."""
+
+    application: Atspi.Accessible
+    app: str
+    toplevel: Atspi.Accessible
+    mapping: _WindowMapping
+
+
+def _collect(
+    element: Atspi.Accessible,
+    scope: _Scope,
+    depth: int,
+    max_depth: int,
+    criteria: _Criteria,
+    found: list[_Found],
+) -> None:
+    """Add ``element`` (when it matches) and its matching descendants to ``found``."""
+    if depth > max_depth:
+        return
+    try:
+        info = _extract_info(element, depth)
+    except Exception:
+        return
+    if criteria.matches(info):
+        entry = _RefEntry(element, info.role, scope.app, depth, scope.application, scope.toplevel)
+        found.append(_Found(info, scope.mapping, entry))
+    for child in _children(element, info.children_count):
+        _collect(child, scope, depth + 1, max_depth, criteria, found)
+
+
+def _children(element: Atspi.Accessible, count: int | None = None) -> list[Atspi.Accessible]:
+    """The readable children of ``element``; unreadable ones are left out."""
+    if count is None:
+        try:
+            count = element.get_child_count()
+        except Exception:
+            return []
+    children: list[Atspi.Accessible] = []
+    for index in range(count):
+        try:
+            child = element.get_child_at_index(index)
+        except Exception:
+            continue
+        if child is not None:
+            children.append(child)
+    return children
+
+
+def _mint(item: _Found) -> dict[str, Any]:
+    """Give a found element a new ref and serialize it."""
+    item.info.ref = _REFS.mint(item.entry)
+    item.info.app = item.entry.app
+    return asdict(item.info)
+
+
+def query_elements(locator: Locator, max_depth: int = 15) -> list[dict[str, Any]]:
+    """Every element matching ``locator`` down to ``max_depth``, in pre-order, with refs."""
+    return [_mint(item) for item in _walk(_Criteria.from_locator(locator), max_depth)]
+
+
+def wait_elements(
+    locator: Locator,
+    max_depth: int = 15,
+    until: str = "present",
+    timeout_ms: int = 5000,
+    poll_interval_ms: int = 200,
+) -> dict[str, Any]:
+    """Poll the ``locator`` walk until its matches are present (``>= 1``) or absent (none).
+
+    ``timeout_ms <= 0`` polls exactly once; negative values of both
+    ``timeout_ms`` and ``poll_interval_ms`` count as 0. Present matches whose
+    window mapping failed only because KWin's window list changed during the
+    walk are re-polled for up to ``_WINDOWS_CHANGED_SETTLE_S`` (bounded by the
+    timeout) and then returned as they are. A timeout is data:
+    ``satisfied=False`` with the matches of the last poll.
+    """
+    criteria = _Criteria.from_locator(locator)
+    interval = max(poll_interval_ms, 0) / 1000.0
+    start = time.monotonic()
+    deadline = start + max(timeout_ms, 0) / 1000.0
+    settle_deadline: float | None = None
+    while True:
+        found = _walk(criteria, max_depth)
+        now = time.monotonic()
+        if until == "absent":
+            satisfied = not found
+        else:
+            satisfied = bool(found)
+            if satisfied and any(item.info.unavailable == "windows-changed" for item in found):
+                # KWin's window list changed during the walk (typically a
+                # window still opening): re-poll briefly so the caller gets
+                # coordinates, then return what is there.
+                if settle_deadline is None:
+                    settle_deadline = min(deadline, now + _WINDOWS_CHANGED_SETTLE_S)
+                if now < settle_deadline:
+                    time.sleep(min(interval, settle_deadline - now))
+                    continue
+        if satisfied or now >= deadline:
+            return {
+                "elements": [_mint(item) for item in found],
+                "satisfied": satisfied,
+                "elapsed_ms": round((now - start) * 1000),
+            }
+        time.sleep(min(interval, deadline - now))
+
+
+# ── resolve: live data for minted refs ───────────────────────────────────
+
+
+@dataclass
+class _Resolved:
+    """A ref resolved against the live tree: its entry and info, or the error text."""
+
+    ref: str
+    entry: _RefEntry | None = None
+    info: ElementInfo | None = None
+    error: str = ""
+
+
+def _resolve_refs(refs: list[str]) -> list[_Resolved]:
+    """Re-read every ref's element with its live rect and window mapping.
+
+    A ref is stale when it is malformed, of another generation, unknown or
+    evicted, when its element is defunct or unreadable, or when its role
+    changed (a changed name is tolerated). Every application involved is
+    mapped once against one KWin window snapshot, with the same stability
+    check as a walk.
+    """
+    kwin_before, kwin_error = _kwin_windows()
+    apps: list[tuple[Atspi.Accessible, list[Atspi.Accessible | None], list[_WindowMapping]]] = []
+    mappings_by_app: dict[frozenset[int], list[_WindowMapping]] = {}
+    results: list[_Resolved] = []
+    pending: list[tuple[ElementInfo, _WindowMapping]] = []
+
+    def toplevel_mapping(entry: _RefEntry) -> _WindowMapping:
+        if entry.toplevel is None:
+            return _UNMAPPED
+        record = next((item for item in apps if item[0] is entry.application), None)
+        if record is None:
+            try:
+                pids, mappings, toplevels = _resolve_app(entry.application, kwin_before, kwin_error)
+            except Exception:
+                pids, mappings, toplevels = frozenset(), [], []
+            mappings_by_app.setdefault(pids, []).extend(mappings)
+            record = (entry.application, list(toplevels), mappings)
+            apps.append(record)
+        for toplevel, mapping in zip(record[1], record[2], strict=True):
+            if toplevel is not None and toplevel == entry.toplevel:
+                return mapping
+        # The top-level is no longer one of its application's children.
+        return _WindowMapping(None, "window-set-mismatch")
+
+    for ref in refs:
+        try:
+            entry = _REFS.resolve(ref)
+        except _StaleRefError as exc:
+            results.append(_Resolved(ref, error=str(exc)))
+            continue
+        try:
+            info = _extract_info(entry.accessible, entry.depth)
+        except Exception:
+            info = None
+        if info is None or "defunct" in info.states:
+            error = f"Stale ref {ref} (element no longer exists); re-run element_query."
+            results.append(_Resolved(ref, entry, error=error))
+            continue
+        if info.role != entry.role:
+            error = (
+                f"Stale ref {ref} (role changed from '{entry.role}' to '{info.role}'); "
+                "re-run element_query."
+            )
+            results.append(_Resolved(ref, entry, error=error))
+            continue
+        info.ref, info.app = ref, entry.app
+        pending.append((info, toplevel_mapping(entry)))
+        results.append(_Resolved(ref, entry, info))
+
+    _apply_stability(mappings_by_app, kwin_before, kwin_error)
+    for info, mapping in pending:
+        _finalize(info, mapping)
+    return results
+
+
+def resolve_refs(refs: list[str]) -> list[dict[str, Any]]:
+    """``{ref, ok: true, element}`` or ``{ref, ok: false, error}`` per ref, in order."""
+    out: list[dict[str, Any]] = []
+    for resolved in _resolve_refs(refs):
+        if resolved.info is None:
+            out.append({"ref": resolved.ref, "ok": False, "error": resolved.error})
+        else:
+            out.append({"ref": resolved.ref, "ok": True, "element": asdict(resolved.info)})
+    return out
+
+
+# ── action: invoke by ref or by strict locator ───────────────────────────
 
 
 class _IncompleteDiscoveryError(Exception):
@@ -202,120 +514,80 @@ class _IncompleteDiscoveryError(Exception):
         self.application = ""
 
 
-def _incomplete_discovery_message(exc: _IncompleteDiscoveryError, app_name: str) -> str:
-    """Refusal text naming the incompletely read application and how to scope around it."""
+class _ActionRefusedError(Exception):
+    """No action was invoked; the message is the caller-facing text."""
+
+
+def _incomplete_discovery_message(exc: _IncompleteDiscoveryError, app_filter: str) -> str:
+    """Refusal text naming the incompletely read application and how to get around it."""
     if not exc.application:
         return f"Incomplete discovery: {exc}"
-    message = f"Incomplete discovery in application {exc.application!r}: {exc}"
-    if not app_name:
-        message += ". Set app_name to search only the target application."
-    return message
+    message = f"Incomplete discovery in application '{exc.application}': {exc}."
+    if app_filter:
+        # Already scoped: only a ref, which skips the search, gets past it.
+        return message + "\nFind the element with element_query, then act on its ref."
+    return message + f"\nSet app='{exc.application}' to scope the search."
 
 
-def _normalize_name(text: str) -> str:
-    """Case-fold and collapse whitespace runs; punctuation stays significant."""
-    return " ".join(text.split()).casefold()
+def _exposed(actions: list[str]) -> str:
+    return ", ".join(actions) if actions else "(none)"
 
 
-def invoke_action(
-    query: str,
-    action_name: str,
-    app_name: str = "",
-    exact_name: bool = False,
-    fallback_action_names: Sequence[str] = (),
-    spoken_name: bool = False,
-) -> dict[str, object]:
-    """Invoke exactly one matching AT-SPI action.
+@dataclass
+class _Candidate:
+    """One (element, action) pair a strict search found."""
 
-    Matching is case-insensitive. By default the element query is a substring
-    of the element's name, role or description, every action index named
-    ``action_name`` is a candidate, and these original semantics are kept
-    exactly while none of the options below is used. Action names match
-    exactly apart from case.
+    entry: _RefEntry
+    name: str
+    action: str
 
-    With ``exact_name`` the query must equal the element's name after both are
-    case-folded and their whitespace runs collapsed (punctuation stays
-    significant); role and description are not matched.
 
-    With ``spoken_name`` the query is matched only against the element name
-    using deterministic spoken-label normalisation
-    (:func:`kwin_mcp.spoken_name.normalize_spoken_name`): Unicode NFC and case
-    folding, normalised word whitespace, and removal of an explicit trailing
-    sentence-punctuation run. Internal punctuation remains significant. Equal
-    normalised word sequences match. A multi-word query may also match the
-    same characters joined into a single-word label (for example ``"save as"``
-    -> ``"SaveAs"``), but a single-word query is never split to match a
-    multi-word label. Role and description are not matched. Every actionable
-    element satisfying those rules is a candidate; multiple candidates are
-    refused as ambiguous, with no spelling or punctuation tie-breaker.
+def _strict_candidates(criteria: _Criteria, wanted: str) -> tuple[list[_Candidate], list[str]]:
+    """Every (element, action) pair whose element matches and whose action is ``wanted``.
 
-    With any of ``exact_name``, ``spoken_name`` or ``fallback_action_names``
-    the candidate is the element: it qualifies when it exposes ``action_name``
-    or one of ``fallback_action_names``, and the action invoked is
-    ``action_name`` if it exposes it, otherwise the first of
-    ``fallback_action_names`` it exposes, at the first index carrying that
-    name. The element counts once however many of these actions it exposes,
-    while two distinct elements always count as two. Ambiguous matches fail
-    closed and no action is performed.
-
-    Discovery must be complete before anything is invoked: every element in
-    the searched scope is fully read, because a read failure could hide the
-    real unique match — or a second match that must refuse the action. Any
-    failed read, and any subtree deeper than ``_ACTION_SEARCH_MAX_DEPTH``,
-    raises :class:`_IncompleteDiscoveryError`; the request branch in
-    ``_handle_request`` converts it into an ``ok: False`` response.
-
-    If the dispatch itself raises after a unique match, the result carries
-    ``invoked: None`` and the exception text in ``error``: the request was
-    sent and the action may have run.
+    ``wanted`` is lowercased; action names compare case-insensitively. Also
+    returns the actions the matching elements expose, for the zero-candidate
+    refusal. Discovery must be complete: every element in scope is fully
+    read, because a read failure could hide the real unique match — or a
+    second match that must refuse the action. Any failed read, and any
+    subtree deeper than ``_ACTION_SEARCH_MAX_DEPTH``, raises
+    :class:`_IncompleteDiscoveryError`.
     """
-    if exact_name and spoken_name:
-        raise ValueError("invoke_action exact_name and spoken_name cannot both be true.")
-    desktop = Atspi.get_desktop(0)
-    query_lower = query.lower()
-    query_name = _normalize_name(query)
-    # Normalised once, and only in spoken-name mode: other modes never call it.
-    query_spoken = normalize_spoken_name(query) if spoken_name else None
-    # action_name first, then fallback_action_names in order.
-    wanted_actions = [name.lower() for name in (action_name, *fallback_action_names)]
-    # Without any of the new options the original matching and counting apply unchanged.
-    legacy = not exact_name and not spoken_name and not fallback_action_names
+    candidates: list[_Candidate] = []
+    exposed: list[str] = []
 
-    candidates: list[tuple[object, int, str, str, str, str]] = []
-
-    def visit(element: Atspi.Accessible, application: str, depth: int) -> None:
+    def visit(
+        element: Atspi.Accessible,
+        application: Atspi.Accessible,
+        app_name: str,
+        toplevel: Atspi.Accessible | None,
+        depth: int,
+    ) -> None:
         if depth > _ACTION_SEARCH_MAX_DEPTH:
-            raise _IncompleteDiscoveryError(
-                f"accessibility subtree deeper than {_ACTION_SEARCH_MAX_DEPTH} levels"
-            )
-
+            msg = f"accessibility subtree deeper than {_ACTION_SEARCH_MAX_DEPTH} levels"
+            raise _IncompleteDiscoveryError(msg)
         try:
             name = element.get_name() or ""
         except Exception as exc:
             raise _IncompleteDiscoveryError(f"could not read element name: {exc}") from exc
-
         try:
             role = element.get_role_name() or "unknown"
         except Exception as exc:
             raise _IncompleteDiscoveryError(f"could not read element role: {exc}") from exc
-
         try:
             description = element.get_description() or ""
         except Exception as exc:
             raise _IncompleteDiscoveryError(f"could not read element description: {exc}") from exc
 
-        if exact_name:
-            query_match = bool(query_name) and _normalize_name(name) == query_name
-        elif query_spoken is not None:
-            query_match = spoken_name_matches(query_spoken, normalize_spoken_name(name))
-        else:
-            query_match = (
-                query_lower in name.lower()
-                or query_lower in role.lower()
-                or query_lower in description.lower()
-            )
+        matched = criteria.matches_text(name, role, description)
+        if matched and criteria.states:
+            try:
+                states = _state_nicks(element)
+            except Exception as exc:
+                raise _IncompleteDiscoveryError(f"could not read element states: {exc}") from exc
+            matched = criteria.matches_states(states)
 
-        if query_match:
+        if matched:
             # An element without an Action interface is not a candidate;
             # every other failure to enumerate its actions is a read fault.
             try:
@@ -327,55 +599,35 @@ def invoke_action(
                     action_count = action_iface.get_n_actions()
                 except Exception as exc:
                     raise _IncompleteDiscoveryError(f"could not read action count: {exc}") from exc
-                # Read every action name before choosing, so a read fault still
-                # refuses the request even when an earlier action already fits.
-                exposed: list[tuple[int, str]] = []
                 for index in range(action_count):
                     try:
-                        exposed.append((index, action_iface.get_action_name(index) or ""))
+                        available = action_iface.get_action_name(index) or ""
                     except Exception as exc:
-                        raise _IncompleteDiscoveryError(
-                            f"could not read action name: {exc}"
-                        ) from exc
-                if legacy:
-                    # Original semantics: every matching action index is a candidate.
-                    candidates.extend(
-                        (action_iface, index, application, role, name, available)
-                        for index, available in exposed
-                        if available.lower() == wanted_actions[0]
-                    )
-                else:
-                    # The element is the candidate: at most one entry per element.
-                    selected: tuple[int, str] | None = None
-                    for wanted in wanted_actions:
-                        for index, available in exposed:
-                            if available.lower() == wanted:
-                                selected = (index, available)
-                                break
-                        if selected is not None:
-                            break
-                    if selected is not None:
-                        index, available = selected
-                        candidates.append((action_iface, index, application, role, name, available))
+                        msg = f"could not read action name: {exc}"
+                        raise _IncompleteDiscoveryError(msg) from exc
+                    if available and available not in exposed:
+                        exposed.append(available)
+                    if available.lower() == wanted:
+                        entry = _RefEntry(element, role, app_name, depth, application, toplevel)
+                        candidates.append(_Candidate(entry, name, available))
 
         try:
             child_count = element.get_child_count()
         except Exception as exc:
             raise _IncompleteDiscoveryError(f"could not read child count: {exc}") from exc
-
         for index in range(child_count):
             try:
                 child = element.get_child_at_index(index)
             except Exception as exc:
                 raise _IncompleteDiscoveryError(f"could not read child: {exc}") from exc
             if child is not None:
-                visit(child, application, depth + 1)
+                visit(child, application, app_name, child if depth == 0 else toplevel, depth + 1)
 
+    desktop = Atspi.get_desktop(0)
     try:
         app_count = desktop.get_child_count()
     except Exception as exc:
         raise _IncompleteDiscoveryError(f"could not read desktop child count: {exc}") from exc
-
     for index in range(app_count):
         try:
             app = desktop.get_child_at_index(index)
@@ -383,203 +635,130 @@ def invoke_action(
             raise _IncompleteDiscoveryError(f"could not read desktop child: {exc}") from exc
         if app is None:
             continue
-
         # The app filter decides scope, so the name of every application is
         # needed even when a filter would later exclude it.
         try:
-            application = app.get_name() or ""
+            app_name = app.get_name() or ""
         except Exception as exc:
             raise _IncompleteDiscoveryError(f"could not read application name: {exc}") from exc
-        if app_name and app_name.lower() not in application.lower():
+        if not criteria.matches_app(app_name):
             continue
-
         try:
-            visit(app, application, 0)
+            visit(app, app, app_name, None, 0)
         except _IncompleteDiscoveryError as exc:
-            exc.application = application
+            # An application that stopped answering (e.g. a stopped process) can
+            # report an empty name instead of failing; name it by its process so
+            # the remedy can still say which app= to scope to.
+            exc.application = app_name or _process_name(app)
             raise
+    return candidates, exposed
 
-    if len(candidates) != 1:
-        return {
-            "matches": len(candidates),
-            "invoked": False,
-        }
 
-    action_iface, index, application, role, name, actual_action = candidates[0]
+def _process_name(app: _AccessibleApp) -> str:
+    """The process name (``/proc/<pid>/comm``) behind an AT-SPI application, or ""."""
     try:
-        invoked = bool(Atspi.Action.do_action(action_iface, index))
+        pid = int(app.get_process_id())
+        return Path(f"/proc/{pid}/comm").read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
+def _action_by_ref(ref: str, action_name: str) -> tuple[_RefEntry, ElementInfo, object, int, str]:
+    """The live element ``ref`` names and its action matching ``action_name``."""
+    resolved = _resolve_refs([ref])[0]
+    if resolved.entry is None or resolved.info is None:
+        raise _ActionRefusedError(resolved.error)
+    entry, info = resolved.entry, resolved.info
+    try:
+        action_iface = entry.accessible.get_action_iface()
+        names: list[str] = []
+        if action_iface is not None:
+            names = [
+                action_iface.get_action_name(index) or ""
+                for index in range(action_iface.get_n_actions())
+            ]
+    except Exception as exc:
+        msg = f"Stale ref {ref} (element no longer exists); re-run element_query."
+        raise _ActionRefusedError(msg) from exc
+    wanted = action_name.lower()
+    indexes = [index for index, name in enumerate(names) if name.lower() == wanted]
+    if action_iface is None or not indexes:
+        msg = (
+            f'Element {ref} [{info.role}] "{info.name}" has no AT-SPI action '
+            f"'{action_name}'; it exposes: {_exposed([n for n in names if n])}.\n"
+            "Use one of those action names."
+        )
+        raise _ActionRefusedError(msg)
+    # Prefer the exact spelling when the element offers several casings.
+    index = next((i for i in indexes if names[i] == action_name), indexes[0])
+    return entry, info, action_iface, index, names[index]
+
+
+def _action_by_locator(
+    locator: Locator, action_name: str
+) -> tuple[_RefEntry, ElementInfo, object, int, str]:
+    """The single (element, action) candidate of a strict search; refuse anything else."""
+    criteria = _Criteria.from_locator(locator)
+    try:
+        candidates, exposed = _strict_candidates(criteria, action_name.lower())
+    except _IncompleteDiscoveryError as exc:
+        raise _ActionRefusedError(_incomplete_discovery_message(exc, criteria.app)) from exc
+    desc = locator.describe()
+    if not candidates:
+        msg = (
+            f"No element matching {desc} exposes AT-SPI action '{action_name}'. "
+            f"Matching elements expose: {_exposed(exposed)}.\n"
+            "Use one of those action names, or check the locator with element_query."
+        )
+        raise _ActionRefusedError(msg)
+    refs = [_REFS.mint(candidate.entry) for candidate in candidates]
+    if len(candidates) > 1:
+        listed = "; ".join(
+            f'[{candidate.entry.role}] "{candidate.name}" in {candidate.entry.app} ({ref})'
+            for candidate, ref in zip(candidates, refs, strict=True)
+        )
+        msg = (
+            f"Refused ambiguous AT-SPI action: {len(candidates)} elements matching {desc} "
+            f"expose '{action_name}': {listed}\n"
+            "Narrow the locator (role, states, app) or act on one ref."
+        )
+        raise _ActionRefusedError(msg)
+    return _action_by_ref(refs[0], candidates[0].action)
+
+
+def invoke_action(address: dict[str, Any], action_name: str) -> dict[str, Any]:
+    """Invoke one AT-SPI action on ``{ref}`` or on the strict ``{strict: locator}`` match.
+
+    The ref path skips the search: the element must still be alive with its
+    role unchanged and expose the action (case-insensitive). The strict path
+    counts (element, action) candidates over a fail-closed walk; anything
+    but exactly one raises :class:`_ActionRefusedError` and nothing is invoked.
+
+    If the dispatch itself raises, the result carries ``invoked: None`` and
+    the exception text in ``error``: the request was sent and the action may
+    have run.
+    """
+    if "ref" in address:
+        entry, info, action_iface, index, actual = _action_by_ref(str(address["ref"]), action_name)
+    else:
+        locator = Locator.model_validate(address.get("strict") or {})
+        entry, info, action_iface, index, actual = _action_by_locator(locator, action_name)
+    result: dict[str, Any] = {
+        "matches": 1,
+        "app": entry.app,
+        "role": info.role,
+        "name": info.name,
+        "action": actual,
+        "element": asdict(info),
+    }
+    try:
+        result["invoked"] = bool(Atspi.Action.do_action(action_iface, index))
     except Exception as exc:
         # The request was sent but no reply arrived (e.g. a D-Bus timeout
         # because the action opened a modal dialog): it may still have run.
-        return {
-            "matches": 1,
-            "invoked": None,
-            "error": str(exc),
-            "app": application,
-            "role": role,
-            "name": name,
-            "action": actual_action,
-        }
-
-    return {
-        "matches": 1,
-        "invoked": invoked,
-        "app": application,
-        "role": role,
-        "name": name,
-        "action": actual_action,
-    }
-
-
-def list_windows() -> list[dict[str, object]]:
-    """List accessible applications with their top-level windows.
-
-    Applications without children are skipped. ``window_count`` is the AT-SPI
-    child count, which can exceed ``len(windows)`` when a child vanished.
-
-    Returns:
-        ``{"name", "window_count", "windows": [{"title", "active", "focused"}]}``
-        per application, with "(unnamed)"/"(untitled)" for empty names.
-    """
-    desktop = Atspi.get_desktop(0)
-    apps: list[dict[str, object]] = []
-    for i in range(desktop.get_child_count()):
-        app = desktop.get_child_at_index(i)
-        if app is None:
-            continue
-        child_count = app.get_child_count()
-        if child_count == 0:
-            continue
-        windows: list[dict[str, object]] = []
-        for j in range(child_count):
-            win = app.get_child_at_index(j)
-            if win is None:
-                continue
-            state_set = win.get_state_set()
-            windows.append(
-                {
-                    "title": win.get_name() or "(untitled)",
-                    "active": state_set.contains(Atspi.StateType.ACTIVE),
-                    "focused": state_set.contains(Atspi.StateType.FOCUSED),
-                }
-            )
-        apps.append(
-            {"name": app.get_name() or "(unnamed)", "window_count": child_count, "windows": windows}
-        )
-    return apps
-
-
-def wait_for_elements(
-    query: str,
-    app_name: str = "",
-    timeout_ms: int = 5000,
-    poll_interval_ms: int = 200,
-    states: list[str] | None = None,
-) -> list[ElementInfo]:
-    """Poll for elements matching a query and/or states until found or timeout.
-
-    Matches whose window mapping failed only because KWin's window list
-    changed during the walk are re-polled for up to
-    ``_WINDOWS_CHANGED_SETTLE_S`` (bounded by the timeout); after that the
-    latest matches are returned as they are.
-
-    Args:
-        query: Search string (case-insensitive). Empty string matches all elements.
-        app_name: Filter to a specific application.
-        timeout_ms: Maximum wait time in milliseconds.
-        poll_interval_ms: Polling interval in milliseconds.
-        states: If provided, only match elements that have ALL of these states.
-
-    Returns:
-        List of matching elements.
-
-    Raises:
-        TimeoutError: If no elements found within timeout.
-    """
-    deadline = time.monotonic() + timeout_ms / 1000.0
-    interval = poll_interval_ms / 1000.0
-    settle_deadline: float | None = None
-
-    while True:
-        elements = find_elements(query, app_name=app_name, states=states)
-        now = time.monotonic()
-        if elements:
-            if not any(e.unavailable == "windows-changed" for e in elements):
-                return elements
-            # KWin's window list changed during the walk (typically a window
-            # still opening): re-poll briefly so the caller gets coordinates,
-            # then return what is there rather than waiting the full timeout.
-            if settle_deadline is None:
-                settle_deadline = min(deadline, now + _WINDOWS_CHANGED_SETTLE_S)
-            if now >= settle_deadline:
-                return elements
-            time.sleep(min(interval, settle_deadline - now))
-            continue
-
-        if now >= deadline:
-            criteria = f"query='{query}'"
-            if states:
-                criteria += f", states={states}"
-            msg = f"Timeout after {timeout_ms}ms: no elements matching {criteria}"
-            raise TimeoutError(msg)
-
-        time.sleep(interval)
-
-
-def _collect_tree(
-    element: Atspi.Accessible,
-    mapping: _WindowMapping,
-    entries: list[tuple[ElementInfo, _WindowMapping]],
-    depth: int,
-    max_depth: int,
-) -> None:
-    """Collect an element and its children for later formatting."""
-    if depth > max_depth:
-        return
-
-    info = _extract_info(element, depth)
-    entries.append((info, mapping))
-
-    for i in range(info.children_count):
-        child = element.get_child_at_index(i)
-        if child is not None:
-            _collect_tree(child, mapping, entries, depth + 1, max_depth)
-
-
-def _search_element(
-    element: Atspi.Accessible,
-    mapping: _WindowMapping,
-    query: str,
-    results: list[tuple[ElementInfo, _WindowMapping]],
-    depth: int,
-    max_depth: int = 15,
-    required_states: list[str] | None = None,
-) -> None:
-    """Recursively search for elements matching the query and/or required states."""
-    if depth > max_depth:
-        return
-
-    info = _extract_info(element, depth)
-
-    if _matches(info, query, required_states):
-        results.append((info, mapping))
-
-    # Search children
-    for i in range(info.children_count):
-        child = element.get_child_at_index(i)
-        if child is not None:
-            _search_element(child, mapping, query, results, depth + 1, max_depth, required_states)
-
-
-def _matches(info: ElementInfo, query: str, required_states: list[str] | None) -> bool:
-    """Query (name/role/description substring) and required-states check."""
-    query_match = (
-        query in info.name.lower()
-        or query in info.role.lower()
-        or query in info.description.lower()
-    )
-    states_match = required_states is None or all(s in info.states for s in required_states)
-    return query_match and states_match
+        result["invoked"] = None
+        result["error"] = str(exc)
+    return result
 
 
 def _finalize(info: ElementInfo, mapping: _WindowMapping) -> ElementInfo:
@@ -587,8 +766,10 @@ def _finalize(info: ElementInfo, mapping: _WindowMapping) -> ElementInfo:
 
     Element-level problems (no extents at all, empty rectangle) win over
     mapping problems: an element without a rectangle has no position to
-    translate regardless of whether its window was identified.
+    translate regardless of whether its window was identified. ``window_id``
+    is the matched KWin window either way.
     """
+    info.window_id = None if mapping.window is None else mapping.window["id"]
     if not info.has_extents:
         info.mapped = False
         info.unavailable = "no-extents"
@@ -604,6 +785,16 @@ def _finalize(info: ElementInfo, mapping: _WindowMapping) -> ElementInfo:
         info.mapped = False
         info.unavailable = mapping.reason or "unmapped"
     return info
+
+
+def _state_nicks(element: Atspi.Accessible) -> list[str]:
+    """The element's active AT-SPI state nicks.
+
+    ``get_states()`` returns only the active members, which is both cheaper
+    than probing every enum value and portable: GI enum types are not
+    iterable in newer PyGObject releases.
+    """
+    return [state.value_nick for state in element.get_state_set().get_states() if state.value_nick]
 
 
 # ── AT-SPI top-level → KWin window mapping ───────────────────────────────
@@ -917,14 +1108,7 @@ def _extract_info(element: Atspi.Accessible, depth: int) -> ElementInfo:
     name = element.get_name() or ""
     description = element.get_description() or ""
 
-    # Get states. get_states() returns only the active members, which is both
-    # cheaper than probing every enum value and portable: GI enum types are not
-    # iterable in newer PyGObject releases.
-    states: list[str] = []
-    for state in element.get_state_set().get_states():
-        state_name = state.value_nick
-        if state_name:
-            states.append(state_name)
+    states = _state_nicks(element)
 
     # Get position and size. WINDOW extents are window-local and reliable for
     # both Qt and GTK; SCREEN extents are (0,0) on GTK4 and already include the
@@ -1002,102 +1186,62 @@ def _extract_info(element: Atspi.Accessible, depth: int) -> ElementInfo:
     )
 
 
-# ── CLI entrypoint for subprocess execution ──────────────────────────────
+# ── Worker entrypoint ────────────────────────────────────────────────────
 
 
-def _handle_request(request: dict) -> dict:
-    """Dispatch a JSON request to the appropriate function."""
+def _locator(request: dict[str, Any]) -> Locator:
+    return Locator.model_validate(request.get("locator") or {})
+
+
+def _handle_request(request: dict[str, Any]) -> dict[str, Any]:
+    """Dispatch one JSON request to its operation.
+
+    Refusals (stale refs, missing actions, ambiguous or incomplete strict
+    searches) are answered ``{"ok": false, "error": <text>}``: the worker is
+    fine and the text is meant for the caller as it is.
+    """
     op = request.get("op", "")
 
-    if op == "tree":
-        elements = get_accessibility_tree(
-            app_name=request.get("app_name", ""),
-            max_depth=request.get("max_depth", 15),
-            role=request.get("role", ""),
-        )
-        return {"ok": True, "result": [asdict(e) for e in elements]}
-
-    if op == "find":
-        elements = find_elements(
-            query=request.get("query", ""),
-            app_name=request.get("app_name", ""),
-            states=request.get("states"),
-        )
-        return {"ok": True, "result": [asdict(e) for e in elements]}
+    if op == "query":
+        elements = query_elements(_locator(request), max_depth=int(request.get("max_depth", 15)))
+        return {"ok": True, "result": elements}
 
     if op == "wait":
-        try:
-            elements = wait_for_elements(
-                query=request.get("query", ""),
-                app_name=request.get("app_name", ""),
-                timeout_ms=request.get("timeout_ms", 5000),
-                poll_interval_ms=request.get("poll_interval_ms", 200),
-                states=request.get("states"),
-            )
-        except TimeoutError as exc:
-            return {"ok": False, "error": str(exc)}
-        return {"ok": True, "result": [asdict(e) for e in elements]}
-
-    if op == "action":
-        exact_name = request.get("exact_name", False)
-        spoken_name = request.get("spoken_name", False)
-        raw_query = request.get("query", "")
-        # The engine refuses spoken-name requests like these before starting a session;
-        # this guards direct requests. A refusal, not an exception, so the worker is not
-        # discarded.
-        if spoken_name and exact_name:
-            return {
-                "ok": False,
-                "error": "Refused spoken_name request: exact_name and spoken_name "
-                "cannot both be true.",
-            }
-        if exact_name and (not isinstance(raw_query, str) or not _normalize_name(raw_query)):
-            return {
-                "ok": False,
-                "error": "Refused exact_name request: the query has no name left after "
-                "collapsing whitespace.",
-            }
-        if spoken_name and (
-            not isinstance(raw_query, str) or not normalize_spoken_name(raw_query).words
-        ):
-            return {
-                "ok": False,
-                "error": "Refused spoken_name request: the query has no name left after "
-                "ignoring case, whitespace and trailing punctuation.",
-            }
-        try:
-            result = invoke_action(
-                query=request.get("query", ""),
-                action_name=request.get("action_name", ""),
-                app_name=request.get("app_name", ""),
-                # Validated by the engine; passed through unchanged.
-                exact_name=exact_name,
-                fallback_action_names=request.get("fallback_action_names", ()),
-                spoken_name=spoken_name,
-            )
-        except _IncompleteDiscoveryError as exc:
-            # Incomplete discovery is a refused action, not a broken worker:
-            # report it as a regular error so the caller surfaces a refusal
-            # instead of discarding and retrying a worker that is still fine.
-            return {
-                "ok": False,
-                "error": _incomplete_discovery_message(exc, request.get("app_name", "")),
-            }
+        result = wait_elements(
+            _locator(request),
+            max_depth=int(request.get("max_depth", 15)),
+            until=str(request.get("until", "present")),
+            timeout_ms=int(request.get("timeout_ms", 5000)),
+            poll_interval_ms=int(request.get("poll_interval_ms", 200)),
+        )
         return {"ok": True, "result": result}
 
-    if op == "list_windows":
-        return {"ok": True, "result": list_windows()}
+    if op == "resolve":
+        return {"ok": True, "result": resolve_refs([str(ref) for ref in request.get("refs", [])])}
+
+    if op == "action":
+        try:
+            result = invoke_action(
+                dict(request.get("address") or {}), str(request.get("action_name", ""))
+            )
+        except _ActionRefusedError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "result": result}
 
     return {"ok": False, "error": f"Unknown operation: {op}"}
 
 
-def _serve() -> None:
+def _serve(generation: int) -> None:
     """Answer newline-delimited JSON requests on stdin until EOF.
 
-    A request that raises is answered with ``{"worker_error": ...}`` so the
-    caller can discard this worker and retry on a fresh one.
+    Refs are minted for ``generation``. A request that raises is answered
+    with ``{"worker_error": ...}`` so the caller can discard this worker and
+    retry on a fresh one.
     """
     import warnings
+
+    global _REFS
+    _REFS = _RefTable(generation)
 
     # The worker's stderr is the server's stderr; silence the one library
     # warning that fires on every tree walk and is not actionable for users.
@@ -1115,17 +1259,13 @@ def _serve() -> None:
         responses.flush()
 
 
+def _main(argv: list[str]) -> None:
+    parser = argparse.ArgumentParser(prog="python -m kwin_mcp.accessibility")
+    parser.add_argument("--serve", action="store_true", required=True)
+    parser.add_argument("--generation", type=int, default=1)
+    args = parser.parse_args(argv)
+    _serve(args.generation)
+
+
 if __name__ == "__main__":
-    if sys.argv[1:] == ["--serve"]:
-        _serve()
-        sys.exit(0)
-
-    raw = sys.stdin.read()
-    try:
-        req = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        json.dump({"ok": False, "error": f"Invalid JSON: {exc}"}, sys.stdout)
-        sys.exit(1)
-
-    resp = _handle_request(req)
-    json.dump(resp, sys.stdout)
+    _main(sys.argv[1:])

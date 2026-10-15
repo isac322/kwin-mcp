@@ -1,0 +1,961 @@
+{
+ "note": "Hand-written valid and invalid arguments per tool for the raw-vs-compact schema equivalence gate. The test adds mechanical mutations of every valid sample (dropped keys, extra keys, swapped types, nulls).",
+ "valid": {
+  "session_start": [
+   {},
+   {
+    "screen_width": 1280,
+    "screen_height": 800,
+    "enable_clipboard": true,
+    "home": "isolated",
+    "retention": {
+     "artifacts": true,
+     "home": true
+    }
+   }
+  ],
+  "session_connect": [
+   {},
+   {
+    "dbus_address": "unix:path=/run/user/1000/bus",
+    "wayland_display": "wayland-0",
+    "enable_accessibility": true,
+    "retention": {
+     "artifacts": true
+    }
+   }
+  ],
+  "session_stop": [
+   {}
+  ],
+  "session_info": [
+   {}
+  ],
+  "app_launch": [
+   {
+    "command": "kcalc"
+   },
+   {
+    "command": "kate --new",
+    "env": {
+     "LANG": "C",
+     "QT_SCALE_FACTOR": "1"
+    }
+   }
+  ],
+  "app_log": [
+   {
+    "pid": 1234
+   },
+   {
+    "pid": 1234,
+    "last_n_lines": 0
+   }
+  ],
+  "screen_capture": [
+   {},
+   {
+    "region": {
+     "x": 10,
+     "y": 20,
+     "width": 100,
+     "height": 50
+    },
+    "max_edge": 0,
+    "include_cursor": true
+   }
+  ],
+  "element_query": [
+   {},
+   {
+    "locator": {
+     "app": "kcalc",
+     "query": "7",
+     "role": "push button",
+     "states": [
+      "focused",
+      "enabled"
+     ]
+    },
+    "max_depth": -1,
+    "wait": {
+     "until": "absent",
+     "timeout_ms": 0,
+     "poll_interval_ms": -5
+    }
+   }
+  ],
+  "element_act": [
+   {
+    "element": {
+     "ref": "e1.4"
+    },
+    "action": "Press"
+   },
+   {
+    "element": {
+     "strict": {
+      "query": "OK",
+      "app": "kcalc"
+     }
+    },
+    "action": "press",
+    "capture": {
+     "delays_ms": [
+      0,
+      100,
+      100
+     ],
+     "region": {
+      "x": 0,
+      "y": 0,
+      "width": 64,
+      "height": 48
+     },
+     "max_edge": 320,
+     "include_cursor": true
+    }
+   }
+  ],
+  "window_list": [
+   {},
+   {
+    "filter": {
+     "active": true
+    }
+   },
+   {
+    "filter": {
+     "app_id": "kate",
+     "caption": "notes",
+     "active": true,
+     "kind": [
+      "normal",
+      "dialog"
+     ]
+    }
+   }
+  ],
+  "desktop_list": [
+   {}
+  ],
+  "window_focus": [
+   {
+    "window": {
+     "id": "{k1}"
+    }
+   },
+   {
+    "window": {
+     "app_id": "kate",
+     "caption": "notes",
+     "active": true,
+     "kind": [
+      "normal",
+      "dialog"
+     ]
+    },
+    "capture": {
+     "delays_ms": []
+    }
+   }
+  ],
+  "window_place": [
+   {
+    "window": {
+     "id": "{k1}"
+    },
+    "frame": {
+     "x": 0,
+     "y": 0,
+     "width": 800,
+     "height": 600
+    }
+   },
+   {
+    "window": {
+     "app_id": "kate",
+     "kind": [
+      "normal"
+     ]
+    },
+    "desktop": "d2",
+    "frame": {
+     "x": -10
+    },
+    "capture": {
+     "delays_ms": [
+      0,
+      100,
+      100
+     ],
+     "region": {
+      "x": 0,
+      "y": 0,
+      "width": 64,
+      "height": 48
+     },
+     "max_edge": 320,
+     "include_cursor": true
+    }
+   }
+  ],
+  "window_close": [
+   {
+    "window": {
+     "id": "{k1}"
+    }
+   },
+   {
+    "window": {
+     "caption": "notes"
+    },
+    "capture": {
+     "delays_ms": [
+      50
+     ]
+    }
+   }
+  ],
+  "pointer_click": [
+   {
+    "target": {
+     "x": 10,
+     "y": 20
+    }
+   },
+   {
+    "target": {
+     "ref": "e1.3",
+     "dx": 2,
+     "dy": -1
+    },
+    "button": "right",
+    "count": 3,
+    "modifiers": "ctrl+shift",
+    "hold_ms": -5,
+    "capture": {
+     "delays_ms": [
+      0,
+      100,
+      100
+     ],
+     "region": {
+      "x": 0,
+      "y": 0,
+      "width": 64,
+      "height": 48
+     },
+     "max_edge": 320,
+     "include_cursor": true
+    }
+   }
+  ],
+  "pointer_move": [
+   {
+    "target": {
+     "x": 10,
+     "y": 20
+    }
+   },
+   {
+    "target": {
+     "ref": "e1.3",
+     "dx": 2,
+     "dy": -1
+    },
+    "capture": {
+     "delays_ms": [
+      0
+     ]
+    }
+   }
+  ],
+  "pointer_scroll": [
+   {
+    "target": {
+     "x": 10,
+     "y": 20
+    },
+    "delta": -3
+   },
+   {
+    "target": {
+     "ref": "e1.3",
+     "dx": 2,
+     "dy": -1
+    },
+    "delta": 120,
+    "axis": "horizontal",
+    "unit": "detent",
+    "steps": 0,
+    "capture": {
+     "delays_ms": [
+      0,
+      100,
+      100
+     ],
+     "region": {
+      "x": 0,
+      "y": 0,
+      "width": 64,
+      "height": 48
+     },
+     "max_edge": 320,
+     "include_cursor": true
+    }
+   }
+  ],
+  "pointer_drag": [
+   {
+    "from": {
+     "x": 10,
+     "y": 20
+    },
+    "to": {
+     "ref": "e1.3",
+     "dx": 2,
+     "dy": -1
+    }
+   },
+   {
+    "from": {
+     "ref": "e1.3",
+     "dx": 2,
+     "dy": -1
+    },
+    "to": {
+     "x": 10,
+     "y": 20
+    },
+    "button": "middle",
+    "modifiers": "alt",
+    "waypoints": [
+     {
+      "x": 1,
+      "y": 2
+     },
+     {
+      "x": 3,
+      "y": 4,
+      "dwell_ms": -1
+     }
+    ],
+    "dwell_ms": 500,
+    "capture": {
+     "delays_ms": [
+      0,
+      100,
+      100
+     ],
+     "region": {
+      "x": 0,
+      "y": 0,
+      "width": 64,
+      "height": 48
+     },
+     "max_edge": 320,
+     "include_cursor": true
+    }
+   }
+  ],
+  "pointer_hold": [
+   {
+    "phase": "press",
+    "target": {
+     "x": 10,
+     "y": 20
+    }
+   },
+   {
+    "phase": "release",
+    "button": "right",
+    "target": {
+     "ref": "e1.3",
+     "dx": 2,
+     "dy": -1
+    },
+    "capture": {
+     "delays_ms": [
+      0,
+      100,
+      100
+     ],
+     "region": {
+      "x": 0,
+      "y": 0,
+      "width": 64,
+      "height": 48
+     },
+     "max_edge": 320,
+     "include_cursor": true
+    }
+   }
+  ],
+  "keyboard_press": [
+   {
+    "keys": "Return"
+   },
+   {
+    "keys": "ctrl+shift+t",
+    "capture": {
+     "delays_ms": [
+      0,
+      100,
+      100
+     ],
+     "region": {
+      "x": 0,
+      "y": 0,
+      "width": 64,
+      "height": 48
+     },
+     "max_edge": 320,
+     "include_cursor": true
+    }
+   }
+  ],
+  "keyboard_type": [
+   {
+    "text": "hello"
+   },
+   {
+    "text": "héllo wörld",
+    "method": "unicode",
+    "capture": {
+     "delays_ms": [
+      0,
+      100,
+      100
+     ],
+     "region": {
+      "x": 0,
+      "y": 0,
+      "width": 64,
+      "height": 48
+     },
+     "max_edge": 320,
+     "include_cursor": true
+    }
+   }
+  ],
+  "keyboard_hold": [
+   {
+    "phase": "press",
+    "keys": "shift"
+   },
+   {
+    "phase": "release",
+    "keys": "ctrl+Return",
+    "capture": {
+     "delays_ms": [
+      0,
+      100,
+      100
+     ],
+     "region": {
+      "x": 0,
+      "y": 0,
+      "width": 64,
+      "height": 48
+     },
+     "max_edge": 320,
+     "include_cursor": true
+    }
+   }
+  ],
+  "touch_tap": [
+   {
+    "target": {
+     "x": 10,
+     "y": 20
+    }
+   },
+   {
+    "target": {
+     "ref": "e1.3",
+     "dx": 2,
+     "dy": -1
+    },
+    "hold_ms": 600,
+    "capture": {
+     "delays_ms": [
+      0,
+      100,
+      100
+     ],
+     "region": {
+      "x": 0,
+      "y": 0,
+      "width": 64,
+      "height": 48
+     },
+     "max_edge": 320,
+     "include_cursor": true
+    }
+   }
+  ],
+  "touch_swipe": [
+   {
+    "from": {
+     "x": 10,
+     "y": 20
+    },
+    "to": {
+     "x": 10,
+     "y": 20
+    }
+   },
+   {
+    "from": {
+     "ref": "e1.3",
+     "dx": 2,
+     "dy": -1
+    },
+    "to": {
+     "x": 10,
+     "y": 20
+    },
+    "fingers": 3,
+    "duration_ms": 0,
+    "capture": {
+     "delays_ms": [
+      0,
+      100,
+      100
+     ],
+     "region": {
+      "x": 0,
+      "y": 0,
+      "width": 64,
+      "height": 48
+     },
+     "max_edge": 320,
+     "include_cursor": true
+    }
+   }
+  ],
+  "touch_pinch": [
+   {
+    "center": {
+     "x": 10,
+     "y": 20
+    },
+    "start_distance": 100,
+    "end_distance": 20
+   },
+   {
+    "center": {
+     "ref": "e1.3",
+     "dx": 2,
+     "dy": -1
+    },
+    "start_distance": -1,
+    "end_distance": 0,
+    "duration_ms": 1,
+    "capture": {
+     "delays_ms": [
+      0,
+      100,
+      100
+     ],
+     "region": {
+      "x": 0,
+      "y": 0,
+      "width": 64,
+      "height": 48
+     },
+     "max_edge": 320,
+     "include_cursor": true
+    }
+   }
+  ],
+  "clipboard_read": [
+   {}
+  ],
+  "clipboard_write": [
+   {
+    "text": ""
+   },
+   {
+    "text": "a\u0000b"
+   }
+  ],
+  "dbus_call": [
+   {
+    "service": "org.kde.KWin",
+    "path": "/KWin",
+    "interface": "org.kde.KWin",
+    "method": "reconfigure"
+   },
+   {
+    "service": "org.kde.KWin",
+    "path": "/Scripting",
+    "interface": "org.kde.kwin.Scripting",
+    "method": "loadScript",
+    "args": [
+     "string:/tmp/x.js",
+     {
+      "type": "string",
+      "value": "x"
+     },
+     {
+      "type": "array",
+      "element_type": "int32",
+      "value": [
+       1,
+       2
+      ]
+     },
+     {
+      "type": "variant",
+      "value": {
+       "a": [
+        1,
+        null,
+        true
+       ]
+      }
+     }
+    ]
+   }
+  ],
+  "wayland_list": [
+   {},
+   {
+    "filter": "plasma"
+   }
+  ]
+ },
+ "invalid": {
+  "session_start": [
+   {
+    "screen_width": 0
+   },
+   {
+    "home": "sandbox"
+   },
+   {
+    "retention": {
+     "keep": true
+    }
+   },
+   {
+    "screen_width": "wide"
+   }
+  ],
+  "session_connect": [
+   {
+    "enable_accessibility": "yes"
+   }
+  ],
+  "app_launch": [
+   {},
+   {
+    "command": [
+     "kate"
+    ]
+   },
+   {
+    "command": "kate",
+    "env": {
+     "A": 1
+    }
+   }
+  ],
+  "app_log": [
+   {},
+   {
+    "pid": 1,
+    "last_n_lines": -1
+   }
+  ],
+  "screen_capture": [
+   {
+    "region": [
+     0,
+     0,
+     10,
+     10
+    ]
+   },
+   {
+    "region": {
+     "x": 0,
+     "y": 0,
+     "width": 0,
+     "height": 5
+    }
+   },
+   {
+    "max_edge": -1
+   }
+  ],
+  "element_query": [
+   {
+    "locator": {
+     "name": "OK"
+    }
+   },
+   {
+    "wait": {
+     "until": "gone"
+    }
+   },
+   {
+    "locator": {
+     "states": "focused"
+    }
+   }
+  ],
+  "element_act": [
+   {
+    "element": {
+     "ref": "e1.1"
+    }
+   },
+   {
+    "element": {
+     "query": "OK"
+    },
+    "action": "Press"
+   },
+   {
+    "element": {
+     "ref": "e1.1",
+     "strict": {}
+    },
+    "action": "Press"
+   }
+  ],
+  "window_list": [
+   {
+    "filter": {
+     "kind": []
+    }
+   },
+   {
+    "filter": {
+     "kind": [
+      "toolbar"
+     ]
+    }
+   },
+   {
+    "filter": {
+     "name": "x"
+    }
+   }
+  ],
+  "window_focus": [
+   {},
+   {
+    "window": "kate"
+   }
+  ],
+  "window_place": [
+   {
+    "window": {
+     "id": "w"
+    },
+    "frame": {
+     "width": 0
+    }
+   },
+   {
+    "window": {
+     "id": "w"
+    },
+    "frame": {
+     "x": "1"
+    }
+   }
+  ],
+  "window_close": [
+   {
+    "window": {
+     "id": "w"
+    },
+    "capture": {
+     "delays_ms": "100"
+    }
+   },
+   {
+    "window": {
+     "id": "w"
+    },
+    "capture": {}
+   }
+  ],
+  "pointer_click": [
+   {},
+   {
+    "target": {
+     "x": 1
+    }
+   },
+   {
+    "target": {
+     "x": 10,
+     "y": 20
+    },
+    "count": 4
+   },
+   {
+    "target": {
+     "x": 10,
+     "y": 20
+    },
+    "count": 0
+   },
+   {
+    "target": {
+     "x": 10,
+     "y": 20
+    },
+    "button": "back"
+   },
+   {
+    "target": {
+     "x": 1,
+     "y": 2,
+     "ref": "e1.1"
+    }
+   }
+  ],
+  "pointer_scroll": [
+   {
+    "target": {
+     "x": 10,
+     "y": 20
+    }
+   },
+   {
+    "target": {
+     "x": 10,
+     "y": 20
+    },
+    "delta": 1,
+    "axis": "diagonal"
+   }
+  ],
+  "pointer_drag": [
+   {
+    "from": {
+     "x": 10,
+     "y": 20
+    }
+   },
+   {
+    "from": {
+     "x": 10,
+     "y": 20
+    },
+    "to": {
+     "x": 10,
+     "y": 20
+    },
+    "waypoints": [
+     {
+      "x": 1
+     }
+    ]
+   }
+  ],
+  "pointer_hold": [
+   {
+    "target": {
+     "x": 10,
+     "y": 20
+    }
+   },
+   {
+    "phase": "hold",
+    "target": {
+     "x": 10,
+     "y": 20
+    }
+   }
+  ],
+  "keyboard_press": [
+   {},
+   {
+    "keys": [
+     "ctrl",
+     "c"
+    ]
+   }
+  ],
+  "keyboard_type": [
+   {
+    "text": 1
+   },
+   {
+    "text": "a",
+    "method": "paste"
+   }
+  ],
+  "keyboard_hold": [
+   {
+    "phase": "move",
+    "keys": "a"
+   }
+  ],
+  "touch_swipe": [
+   {
+    "from": {
+     "x": 10,
+     "y": 20
+    },
+    "to": {
+     "x": 10,
+     "y": 20
+    },
+    "fingers": 0
+   }
+  ],
+  "touch_pinch": [
+   {
+    "center": {
+     "x": 10,
+     "y": 20
+    },
+    "start_distance": 1
+   }
+  ],
+  "clipboard_write": [
+   {}
+  ],
+  "dbus_call": [
+   {
+    "service": "a"
+   },
+   {
+    "service": "a",
+    "path": "/",
+    "interface": "a",
+    "method": "m",
+    "args": [
+     {
+      "value": 1
+     }
+    ]
+   },
+   {
+    "service": "a",
+    "path": "/",
+    "interface": "a",
+    "method": "m",
+    "args": "string:x"
+   }
+  ],
+  "wayland_list": [
+   {
+    "filter": null
+   },
+   {
+    "filter": 5
+   }
+  ]
+ }
+}

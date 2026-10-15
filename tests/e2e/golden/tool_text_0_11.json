@@ -1,0 +1,2942 @@
+{
+ "captured_from": "kwin-mcp 0.11.0 @ 7a5d781, installed server over MCP stdio (image kwin-mcp-e2e:p0-7a5d781, Debian arm64)",
+ "server": {
+  "name": "kwin-mcp",
+  "version": "0.11.0"
+ },
+ "placeholders": {
+  "dbus address": "<DBUS_ADDRESS>",
+  "temp path": "<DIR>/",
+  "capture timestamp": "<TIMESTAMP>",
+  "mkdtemp suffix": "<RAND>",
+  "same-second collision suffix": "",
+  "virtual socket": "<WAYLAND_DISPLAY>",
+  "live socket": "<WAYLAND_DISPLAY>",
+  "pid": "PID=<PID>",
+  "pid list": "[<PIDS>]",
+  "size": "(<SIZE> KB)",
+  "window id": "{<WINDOW_n>} (numbered by first appearance)",
+  "dbus machine id": "<DBUS_MACHINE_ID>",
+  "structured pid / size_kb": "<PID> / <SIZE>"
+ },
+ "dropped_calls": [
+  "read_app_log.kwrite_after_close"
+ ],
+ "calls": [
+  {
+   "label": "no_session.screenshot",
+   "tool": "screenshot",
+   "arguments": {},
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool screenshot: No active session. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.accessibility_tree",
+   "tool": "accessibility_tree",
+   "arguments": {},
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool accessibility_tree: No active session. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.find_ui_elements",
+   "tool": "find_ui_elements",
+   "arguments": {
+    "query": "x"
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool find_ui_elements: No active session. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.mouse_click",
+   "tool": "mouse_click",
+   "arguments": {
+    "x": 1,
+    "y": 1
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool mouse_click: No input backend. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.mouse_move",
+   "tool": "mouse_move",
+   "arguments": {
+    "x": 1,
+    "y": 1
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool mouse_move: No input backend. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.mouse_scroll",
+   "tool": "mouse_scroll",
+   "arguments": {
+    "delta": 1,
+    "x": 1,
+    "y": 1
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool mouse_scroll: No input backend. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.mouse_drag",
+   "tool": "mouse_drag",
+   "arguments": {
+    "from_x": 1,
+    "from_y": 1,
+    "to_x": 2,
+    "to_y": 2
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool mouse_drag: No input backend. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.mouse_button_down",
+   "tool": "mouse_button_down",
+   "arguments": {
+    "x": 1,
+    "y": 1
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool mouse_button_down: No input backend. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.mouse_button_up",
+   "tool": "mouse_button_up",
+   "arguments": {
+    "x": 1,
+    "y": 1
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool mouse_button_up: No input backend. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.invoke_ui_action",
+   "tool": "invoke_ui_action",
+   "arguments": {
+    "action_name": "Press",
+    "query": "x"
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool invoke_ui_action: No active session. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.keyboard_type",
+   "tool": "keyboard_type",
+   "arguments": {
+    "text": "a"
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool keyboard_type: No input backend. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.keyboard_type_unicode",
+   "tool": "keyboard_type_unicode",
+   "arguments": {
+    "text": "a"
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool keyboard_type_unicode: No input backend. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.keyboard_key",
+   "tool": "keyboard_key",
+   "arguments": {
+    "key": "a"
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool keyboard_key: No input backend. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.keyboard_key_down",
+   "tool": "keyboard_key_down",
+   "arguments": {
+    "key": "a"
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool keyboard_key_down: No input backend. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.keyboard_key_up",
+   "tool": "keyboard_key_up",
+   "arguments": {
+    "key": "a"
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool keyboard_key_up: No input backend. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.touch_tap",
+   "tool": "touch_tap",
+   "arguments": {
+    "x": 1,
+    "y": 1
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool touch_tap: No input backend. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.touch_swipe",
+   "tool": "touch_swipe",
+   "arguments": {
+    "from_x": 1,
+    "from_y": 1,
+    "to_x": 2,
+    "to_y": 2
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool touch_swipe: No input backend. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.touch_pinch",
+   "tool": "touch_pinch",
+   "arguments": {
+    "center_x": 100,
+    "center_y": 100,
+    "end_distance": 20,
+    "start_distance": 10
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool touch_pinch: No input backend. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.touch_multi_swipe",
+   "tool": "touch_multi_swipe",
+   "arguments": {
+    "from_x": 1,
+    "from_y": 1,
+    "to_x": 2,
+    "to_y": 2
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool touch_multi_swipe: No input backend. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.clipboard_get",
+   "tool": "clipboard_get",
+   "arguments": {},
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool clipboard_get: Clipboard not enabled. Pass enable_clipboard=True to session_start, or use session_connect (clipboard is always enabled for live sessions).",
+   "structured": null
+  },
+  {
+   "label": "no_session.clipboard_set",
+   "tool": "clipboard_set",
+   "arguments": {
+    "text": "a"
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool clipboard_set: Clipboard not enabled. Pass enable_clipboard=True to session_start, or use session_connect (clipboard is always enabled for live sessions).",
+   "structured": null
+  },
+  {
+   "label": "no_session.wait_for_element",
+   "tool": "wait_for_element",
+   "arguments": {
+    "query": "x",
+    "timeout_ms": 0
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool wait_for_element: No active session. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.launch_app",
+   "tool": "launch_app",
+   "arguments": {
+    "command": "true"
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool launch_app: No active session. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.list_windows",
+   "tool": "list_windows",
+   "arguments": {},
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool list_windows: No active session. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.focus_window",
+   "tool": "focus_window",
+   "arguments": {
+    "app_name": "x"
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool focus_window: No active session. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.window_geometry",
+   "tool": "window_geometry",
+   "arguments": {},
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool window_geometry: No active session. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.active_window",
+   "tool": "active_window",
+   "arguments": {},
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool active_window: No active session. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.window_set_geometry",
+   "tool": "window_set_geometry",
+   "arguments": {
+    "window_id": "{x}",
+    "x": 0
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool window_set_geometry: No active session. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.window_close",
+   "tool": "window_close",
+   "arguments": {
+    "window_id": "{x}"
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool window_close: No active session. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.dbus_call",
+   "tool": "dbus_call",
+   "arguments": {
+    "interface": "org.freedesktop.DBus",
+    "method": "GetId",
+    "path": "/org/freedesktop/DBus",
+    "service": "org.freedesktop.DBus"
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool dbus_call: No active session. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.read_app_log",
+   "tool": "read_app_log",
+   "arguments": {
+    "pid": 1
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool read_app_log: No active session. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "no_session.wayland_info",
+   "tool": "wayland_info",
+   "arguments": {},
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool wayland_info: No active session. Call session_start or session_connect first.",
+   "structured": null
+  },
+  {
+   "label": "session_stop.no_session",
+   "tool": "session_stop",
+   "arguments": {},
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "No session running.",
+   "structured": {
+    "result": "No session running."
+   }
+  },
+  {
+   "label": "session_start.kcalc_clipboard",
+   "tool": "session_start",
+   "arguments": {
+    "app_command": "kcalc",
+    "enable_clipboard": true,
+    "screen_height": 800,
+    "screen_width": 1280
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Session started. Wayland socket: <WAYLAND_DISPLAY>\nApp launched: kcalc (PID=<PID>)\nApp log: <DIR>/app_kcalc_1.log\nInput backend: KWin EIS",
+   "structured": {
+    "result": "Session started. Wayland socket: <WAYLAND_DISPLAY>\nApp launched: kcalc (PID=<PID>)\nApp log: <DIR>/app_kcalc_1.log\nInput backend: KWin EIS"
+   }
+  },
+  {
+   "label": "session_start.double_start",
+   "tool": "session_start",
+   "arguments": {
+    "screen_height": 800,
+    "screen_width": 1280
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool session_start: Session already running. Call session_stop first.",
+   "structured": null
+  },
+  {
+   "label": "wait_for_element.app_present",
+   "tool": "wait_for_element",
+   "arguments": {
+    "app_name": "kcalc",
+    "query": "",
+    "timeout_ms": 15000
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Found 229 elements matching (all):\n\n- [application] \"kcalc\" @ unavailable (no-extents)\n- [frame] \"\" @ screen (320, 172, 640x480)\n- [filler] \"\" @ screen (320, 194, 640x436)\n- [panel] \"\" @ screen (320, 195, 640x109)\n- [label] \"\" @ screen (341, 196, 40x20)\n- [label] \"Dec\" @ unavailable (empty-extents)\n- [label] \"Deg\" @ unavailable (empty-extents)\n- [label] \"\" @ screen (396, 196, 20x20)\n- [text] \"\" @ screen (331, 216, 618x19) [actions: SetFocus]\n- [panel] \"\" @ screen (331, 240, 618x3)\n- [panel] \"\" @ screen (331, 243, 618x60) [actions: SetFocus]\n- [panel] \"\" @ unavailable (empty-extents)\n- [filler] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [label] \"56\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [label] \"48\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [label] \"40\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [label] \"32\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [label] \"24\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [label] \"16\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [label] \"8\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [label] \"0\" @ unavailable (empty-extents)\n- [radio button] \"Deg\" @ unavailable (empty-extents) [actions: Toggle, SetFocus]\n- [radio button] \"Rad\" @ unavailable (empty-extents) [actions: Toggle, SetFocus]\n- [radio button] \"Grad\" @ unavailable (empty-extents) [actions: Toggle, SetFocus]\n- [combo box] \"Dec\" @ unavailable (empty-extents) [actions: ShowMenu, Press]\n- [list] \"\" @ unavailable (empty-extents)\n- [list item] \"Hex\" @ screen (320, 172, 707x25) [actions: Toggle]\n- [list item] \"Dec\" @ screen (320, 197, 707x25) [actions: Toggle]\n- [list item] \"Oct\" @ screen (320, 222, 707x25) [actions: Toggle]\n- [list item] \"Bin\" @ screen (320, 247, 707x25) [actions: Toggle]\n- [filler] \"\" @ unavailable (empty-extents)\n- [filler] \"\" @ unavailable (empty-extents)\n- [label] \"\" @ unavailable (empty-extents)\n- [label] \"\" @ unavailable (empty-extents)\n- [filler] \"\" @ unavailable (empty-extents)\n- [label] \"\" @ unavailable (empty-extents)\n- [label] \"\" @ unavailable (empty-extents)\n- [filler] \"\" @ unavailable (empty-extents)\n- [label] \"\" @ unavailable (empty-extents)\n- [label] \"\" @ unavailable (empty-extents)\n- [filler] \"\" @ unavailable (empty-extents)\n- [button] \"x<sup>2</sup>\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"B\" @ unavailable (empty-extents)\n- [button] \"OR\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"E\" @ unavailable (empty-extents)\n- [button] \"Sine\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"C2\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"C\" @ unavailable (empty-extents)\n- [button] \"x<small>·10</small><sup>y</sup>\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"mod\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"N\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"log\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"tan\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"F\" @ unavailable (empty-extents)\n- [button] \"AND\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"C6\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"A\" @ unavailable (empty-extents)\n- [button] \"D\" @ unavailable (empty-extents)\n- [button] \"C1\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [check box] \"Hyp\" @ unavailable (empty-extents) [actions: Toggle, Press, SetFocus]\n- [button] \"XOR\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Mea\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"x!\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Dat\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"C3\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Cmp\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"CSt\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Rsh\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Cosine\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"1/x\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"ln\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"i\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Med\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"C5\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"C4\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"σ<sub>N</sub>\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Lsh\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"radic;x\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"x<sup>y</sup>\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [filler] \"\" @ screen (326, 316, 415x308)\n- [button] \"Six\" @ screen (536, 441, 99x58) [actions: Press, SetFocus]\n- [button] \"Two\" @ screen (432, 503, 100x57) [actions: Press, SetFocus]\n- [button] \"Percentage\" @ screen (328, 318, 100x58) [actions: Press, SetFocus]\n- [button] \"Nine\" @ screen (536, 380, 99x57) [actions: Press, SetFocus]\n- [button] \"Four\" @ screen (328, 441, 100x58) [actions: Press, SetFocus]\n- [button] \"Five\" @ screen (432, 441, 100x58) [actions: Press, SetFocus]\n- [button] \"Subtract\" @ screen (639, 318, 100x58) [actions: Press, SetFocus]\n- [button] \"Add\" @ screen (639, 380, 100x119) [actions: Press, SetFocus]\n- [button] \"One\" @ screen (328, 503, 100x57) [actions: Press, SetFocus]\n- [button] \"Divide\" @ screen (432, 318, 100x58) [actions: Press, SetFocus]\n- [button] \"Multiply\" @ screen (536, 318, 99x58) [actions: Press, SetFocus]\n- [button] \"Zero\" @ screen (328, 564, 204x58) [actions: Press, SetFocus]\n- [button] \"Decimal point\" @ screen (536, 564, 99x58) [actions: Press, SetFocus]\n- [button] \"Three\" @ screen (536, 503, 99x57) [actions: Press, SetFocus]\n- [button] \"Equals\" @ screen (639, 503, 100x119) [actions: Press, SetFocus]\n- [button] \"Seven\" @ screen (328, 380, 100x57) [actions: Press, SetFocus]\n- [button] \"Eight\" @ screen (432, 380, 100x57) [actions: Press, SetFocus]\n- [filler] \"\" @ screen (747, 316, 207x308)\n- [button] \"All clear\" @ screen (749, 380, 201x57) [actions: Press, SetFocus]\n- [button] \"Memory clear\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Memory recall\" @ unavailable (empty-extents)\n- [button] \"+/−\" @ screen (749, 564, 201x58) [actions: Press, SetFocus]\n- [button] \"(\" @ screen (749, 441, 201x58) [actions: Press, SetFocus]\n- [button] \"Clear\" @ screen (749, 318, 201x58) [actions: Press, SetFocus]\n- [button] \"M+\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Memory store\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \")\" @ screen (749, 503, 201x57) [actions: Press, SetFocus]\n- [button] \"Return\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [check box] \"Shift\" @ unavailable (empty-extents) [actions: Toggle, Press, SetFocus]\n- [text] \"\" @ unavailable (empty-extents) [actions: SetFocus]\n- [filler] \"\" @ unavailable (empty-extents)\n- [filler] \"\" @ unavailable (empty-extents)\n- [scroll bar] \"\" @ unavailable (empty-extents) value=0/0 [actions: Increase, Decrease]\n- [filler] \"\" @ unavailable (empty-extents)\n- [scroll bar] \"\" @ unavailable (empty-extents) value=0/0 [actions: Increase, Decrease]\n- [status bar] \"\" @ screen (320, 630, 640x22)\n- [label] \"NORM\" @ screen (876, 633, 52x17)\n- [label] \"DEC\" @ unavailable (empty-extents)\n- [label] \"DEG\" @ unavailable (empty-extents)\n- [label] \"\" @ screen (934, 633, 26x17)\n- [menu bar] \"\" @ screen (320, 172, 640x22)\n- [menu item] \"File\" @ screen (326, 172, 28x22) [actions: ShowMenu]\n- [popup menu] \"\" @ unavailable (empty-extents)\n- [menu item] \"Quit\" @ screen (320, 172, 156x25) [actions: Press]\n- [menu item] \"Edit\" @ screen (360, 172, 31x22) [actions: ShowMenu]\n- [popup menu] \"\" @ unavailable (empty-extents)\n- [menu item] \"Undo\" @ screen (320, 172, 214x25) [actions: Press]\n- [menu item] \"Redo\" @ screen (320, 197, 214x25) [actions: Press]\n- [separator] \"\" @ screen (320, 222, 214x2)\n- [menu item] \"Cut\" @ screen (320, 224, 214x25) [actions: Press]\n- [menu item] \"Copy\" @ screen (320, 249, 214x25) [actions: Press]\n- [menu item] \"Paste\" @ screen (320, 274, 214x25) [actions: Press]\n- [menu item] \"Settings\" @ screen (397, 172, 54x22) [actions: ShowMenu]\n- [popup menu] \"\" @ unavailable (empty-extents)\n- [menu item] \"Simple Mode\" @ screen (320, 172, 328x25) [actions: Press]\n- [menu item] \"Science Mode\" @ screen (320, 197, 328x25) [actions: Press]\n- [menu item] \"Statistic Mode\" @ screen (320, 222, 328x25) [actions: Press]\n- [menu item] \"Numeral System Mode\" @ screen (320, 247, 328x25) [actions: Press]\n- [separator] \"\" @ screen (320, 272, 328x2)\n- [menu item] \"Show History\" @ screen (320, 274, 328x25) [actions: Press]\n- [menu item] \"Constants Buttons\" @ screen (320, 299, 328x25) [actions: Press]\n- [menu item] \"Show Bit Edit\" @ screen (320, 324, 328x25) [actions: Press]\n- [separator] \"\" @ screen (320, 349, 328x2)\n- [menu item] \"Configure Keyboard Shortcuts…\" @ screen (320, 351, 328x25) [actions: Press]\n- [menu item] \"Configure KCalc…\" @ screen (320, 376, 328x25) [actions: Press]\n- [separator] \"\" @ unavailable (no-extents)\n- [menu item] \"Help\" @ screen (457, 172, 35x22) [actions: ShowMenu]\n- [popup menu] \"\" @ unavailable (empty-extents)\n- [menu item] \"KCalc Handbook\" @ screen (320, 172, 222x25) [actions: Press]\n- [menu item] \"What's This?\" @ screen (320, 197, 222x25) [actions: Press]\n- [menu item] \"Find Action…\" @ screen (320, 222, 222x25) [actions: Press]\n- [separator] \"\" @ screen (320, 247, 222x2)\n- [menu item] \"Report Bug…\" @ screen (320, 249, 222x25) [actions: Press]\n- [separator] \"\" @ screen (320, 274, 222x2)\n- [menu item] \"Donate\" @ screen (320, 276, 222x25) [actions: Press]\n- [separator] \"\" @ screen (320, 301, 222x2)\n- [menu item] \"About KCalc\" @ screen (320, 303, 222x25) [actions: Press]\n- [menu item] \"About KDE\" @ screen (320, 328, 222x25) [actions: Press]\n- [tool bar] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents) [actions: Toggle, Press]\n- [button] \"Undo\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Redo\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Cut\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Copy\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Paste\" @ unavailable (empty-extents) [actions: Press, SetFocus]",
+   "structured": {
+    "result": "Found 229 elements matching (all):\n\n- [application] \"kcalc\" @ unavailable (no-extents)\n- [frame] \"\" @ screen (320, 172, 640x480)\n- [filler] \"\" @ screen (320, 194, 640x436)\n- [panel] \"\" @ screen (320, 195, 640x109)\n- [label] \"\" @ screen (341, 196, 40x20)\n- [label] \"Dec\" @ unavailable (empty-extents)\n- [label] \"Deg\" @ unavailable (empty-extents)\n- [label] \"\" @ screen (396, 196, 20x20)\n- [text] \"\" @ screen (331, 216, 618x19) [actions: SetFocus]\n- [panel] \"\" @ screen (331, 240, 618x3)\n- [panel] \"\" @ screen (331, 243, 618x60) [actions: SetFocus]\n- [panel] \"\" @ unavailable (empty-extents)\n- [filler] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [label] \"56\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [label] \"48\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [label] \"40\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [label] \"32\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [label] \"24\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [label] \"16\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [label] \"8\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [label] \"0\" @ unavailable (empty-extents)\n- [radio button] \"Deg\" @ unavailable (empty-extents) [actions: Toggle, SetFocus]\n- [radio button] \"Rad\" @ unavailable (empty-extents) [actions: Toggle, SetFocus]\n- [radio button] \"Grad\" @ unavailable (empty-extents) [actions: Toggle, SetFocus]\n- [combo box] \"Dec\" @ unavailable (empty-extents) [actions: ShowMenu, Press]\n- [list] \"\" @ unavailable (empty-extents)\n- [list item] \"Hex\" @ screen (320, 172, 707x25) [actions: Toggle]\n- [list item] \"Dec\" @ screen (320, 197, 707x25) [actions: Toggle]\n- [list item] \"Oct\" @ screen (320, 222, 707x25) [actions: Toggle]\n- [list item] \"Bin\" @ screen (320, 247, 707x25) [actions: Toggle]\n- [filler] \"\" @ unavailable (empty-extents)\n- [filler] \"\" @ unavailable (empty-extents)\n- [label] \"\" @ unavailable (empty-extents)\n- [label] \"\" @ unavailable (empty-extents)\n- [filler] \"\" @ unavailable (empty-extents)\n- [label] \"\" @ unavailable (empty-extents)\n- [label] \"\" @ unavailable (empty-extents)\n- [filler] \"\" @ unavailable (empty-extents)\n- [label] \"\" @ unavailable (empty-extents)\n- [label] \"\" @ unavailable (empty-extents)\n- [filler] \"\" @ unavailable (empty-extents)\n- [button] \"x<sup>2</sup>\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"B\" @ unavailable (empty-extents)\n- [button] \"OR\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"E\" @ unavailable (empty-extents)\n- [button] \"Sine\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"C2\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"C\" @ unavailable (empty-extents)\n- [button] \"x<small>·10</small><sup>y</sup>\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"mod\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"N\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"log\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"tan\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"F\" @ unavailable (empty-extents)\n- [button] \"AND\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"C6\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"A\" @ unavailable (empty-extents)\n- [button] \"D\" @ unavailable (empty-extents)\n- [button] \"C1\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [check box] \"Hyp\" @ unavailable (empty-extents) [actions: Toggle, Press, SetFocus]\n- [button] \"XOR\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Mea\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"x!\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Dat\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"C3\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Cmp\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"CSt\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Rsh\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Cosine\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"1/x\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"ln\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"i\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Med\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"C5\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"C4\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"σ<sub>N</sub>\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Lsh\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"radic;x\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"x<sup>y</sup>\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [filler] \"\" @ screen (326, 316, 415x308)\n- [button] \"Six\" @ screen (536, 441, 99x58) [actions: Press, SetFocus]\n- [button] \"Two\" @ screen (432, 503, 100x57) [actions: Press, SetFocus]\n- [button] \"Percentage\" @ screen (328, 318, 100x58) [actions: Press, SetFocus]\n- [button] \"Nine\" @ screen (536, 380, 99x57) [actions: Press, SetFocus]\n- [button] \"Four\" @ screen (328, 441, 100x58) [actions: Press, SetFocus]\n- [button] \"Five\" @ screen (432, 441, 100x58) [actions: Press, SetFocus]\n- [button] \"Subtract\" @ screen (639, 318, 100x58) [actions: Press, SetFocus]\n- [button] \"Add\" @ screen (639, 380, 100x119) [actions: Press, SetFocus]\n- [button] \"One\" @ screen (328, 503, 100x57) [actions: Press, SetFocus]\n- [button] \"Divide\" @ screen (432, 318, 100x58) [actions: Press, SetFocus]\n- [button] \"Multiply\" @ screen (536, 318, 99x58) [actions: Press, SetFocus]\n- [button] \"Zero\" @ screen (328, 564, 204x58) [actions: Press, SetFocus]\n- [button] \"Decimal point\" @ screen (536, 564, 99x58) [actions: Press, SetFocus]\n- [button] \"Three\" @ screen (536, 503, 99x57) [actions: Press, SetFocus]\n- [button] \"Equals\" @ screen (639, 503, 100x119) [actions: Press, SetFocus]\n- [button] \"Seven\" @ screen (328, 380, 100x57) [actions: Press, SetFocus]\n- [button] \"Eight\" @ screen (432, 380, 100x57) [actions: Press, SetFocus]\n- [filler] \"\" @ screen (747, 316, 207x308)\n- [button] \"All clear\" @ screen (749, 380, 201x57) [actions: Press, SetFocus]\n- [button] \"Memory clear\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Memory recall\" @ unavailable (empty-extents)\n- [button] \"+/−\" @ screen (749, 564, 201x58) [actions: Press, SetFocus]\n- [button] \"(\" @ screen (749, 441, 201x58) [actions: Press, SetFocus]\n- [button] \"Clear\" @ screen (749, 318, 201x58) [actions: Press, SetFocus]\n- [button] \"M+\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Memory store\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \")\" @ screen (749, 503, 201x57) [actions: Press, SetFocus]\n- [button] \"Return\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [check box] \"Shift\" @ unavailable (empty-extents) [actions: Toggle, Press, SetFocus]\n- [text] \"\" @ unavailable (empty-extents) [actions: SetFocus]\n- [filler] \"\" @ unavailable (empty-extents)\n- [filler] \"\" @ unavailable (empty-extents)\n- [scroll bar] \"\" @ unavailable (empty-extents) value=0/0 [actions: Increase, Decrease]\n- [filler] \"\" @ unavailable (empty-extents)\n- [scroll bar] \"\" @ unavailable (empty-extents) value=0/0 [actions: Increase, Decrease]\n- [status bar] \"\" @ screen (320, 630, 640x22)\n- [label] \"NORM\" @ screen (876, 633, 52x17)\n- [label] \"DEC\" @ unavailable (empty-extents)\n- [label] \"DEG\" @ unavailable (empty-extents)\n- [label] \"\" @ screen (934, 633, 26x17)\n- [menu bar] \"\" @ screen (320, 172, 640x22)\n- [menu item] \"File\" @ screen (326, 172, 28x22) [actions: ShowMenu]\n- [popup menu] \"\" @ unavailable (empty-extents)\n- [menu item] \"Quit\" @ screen (320, 172, 156x25) [actions: Press]\n- [menu item] \"Edit\" @ screen (360, 172, 31x22) [actions: ShowMenu]\n- [popup menu] \"\" @ unavailable (empty-extents)\n- [menu item] \"Undo\" @ screen (320, 172, 214x25) [actions: Press]\n- [menu item] \"Redo\" @ screen (320, 197, 214x25) [actions: Press]\n- [separator] \"\" @ screen (320, 222, 214x2)\n- [menu item] \"Cut\" @ screen (320, 224, 214x25) [actions: Press]\n- [menu item] \"Copy\" @ screen (320, 249, 214x25) [actions: Press]\n- [menu item] \"Paste\" @ screen (320, 274, 214x25) [actions: Press]\n- [menu item] \"Settings\" @ screen (397, 172, 54x22) [actions: ShowMenu]\n- [popup menu] \"\" @ unavailable (empty-extents)\n- [menu item] \"Simple Mode\" @ screen (320, 172, 328x25) [actions: Press]\n- [menu item] \"Science Mode\" @ screen (320, 197, 328x25) [actions: Press]\n- [menu item] \"Statistic Mode\" @ screen (320, 222, 328x25) [actions: Press]\n- [menu item] \"Numeral System Mode\" @ screen (320, 247, 328x25) [actions: Press]\n- [separator] \"\" @ screen (320, 272, 328x2)\n- [menu item] \"Show History\" @ screen (320, 274, 328x25) [actions: Press]\n- [menu item] \"Constants Buttons\" @ screen (320, 299, 328x25) [actions: Press]\n- [menu item] \"Show Bit Edit\" @ screen (320, 324, 328x25) [actions: Press]\n- [separator] \"\" @ screen (320, 349, 328x2)\n- [menu item] \"Configure Keyboard Shortcuts…\" @ screen (320, 351, 328x25) [actions: Press]\n- [menu item] \"Configure KCalc…\" @ screen (320, 376, 328x25) [actions: Press]\n- [separator] \"\" @ unavailable (no-extents)\n- [menu item] \"Help\" @ screen (457, 172, 35x22) [actions: ShowMenu]\n- [popup menu] \"\" @ unavailable (empty-extents)\n- [menu item] \"KCalc Handbook\" @ screen (320, 172, 222x25) [actions: Press]\n- [menu item] \"What's This?\" @ screen (320, 197, 222x25) [actions: Press]\n- [menu item] \"Find Action…\" @ screen (320, 222, 222x25) [actions: Press]\n- [separator] \"\" @ screen (320, 247, 222x2)\n- [menu item] \"Report Bug…\" @ screen (320, 249, 222x25) [actions: Press]\n- [separator] \"\" @ screen (320, 274, 222x2)\n- [menu item] \"Donate\" @ screen (320, 276, 222x25) [actions: Press]\n- [separator] \"\" @ screen (320, 301, 222x2)\n- [menu item] \"About KCalc\" @ screen (320, 303, 222x25) [actions: Press]\n- [menu item] \"About KDE\" @ screen (320, 328, 222x25) [actions: Press]\n- [tool bar] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents) [actions: Toggle, Press]\n- [button] \"Undo\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Redo\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Cut\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Copy\" @ unavailable (empty-extents) [actions: Press, SetFocus]\n- [button] \"Paste\" @ unavailable (empty-extents) [actions: Press, SetFocus]"
+   }
+  },
+  {
+   "label": "wait_for_element.timeout",
+   "tool": "wait_for_element",
+   "arguments": {
+    "app_name": "kcalc",
+    "query": "zz-none",
+    "timeout_ms": 200
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Timeout after 200ms: no elements matching query='zz-none'",
+   "structured": {
+    "result": "Timeout after 200ms: no elements matching query='zz-none'"
+   }
+  },
+  {
+   "label": "wait_for_element.states",
+   "tool": "wait_for_element",
+   "arguments": {
+    "app_name": "kcalc",
+    "expected_states": [
+     "enabled",
+     "showing"
+    ],
+    "query": "Seven",
+    "timeout_ms": 2000
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Found 1 elements matching query='Seven', states=['enabled', 'showing']:\n\n- [button] \"Seven\" @ screen (328, 380, 100x57) [actions: Press, SetFocus]",
+   "structured": {
+    "result": "Found 1 elements matching query='Seven', states=['enabled', 'showing']:\n\n- [button] \"Seven\" @ screen (328, 380, 100x57) [actions: Press, SetFocus]"
+   }
+  },
+  {
+   "label": "accessibility_tree.kcalc_depth2",
+   "tool": "accessibility_tree",
+   "arguments": {
+    "app_name": "kcalc",
+    "max_depth": 2
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "# Accessibility Tree (6 elements)\n\n- [application] \"kcalc\" (enabled, sensitive, showing, visible) @ unavailable (no-extents)\n  - [frame] \"\" (active, enabled, resizable, sensitive, showing, visible) @ screen (320, 172, 640x480)\n    - [filler] \"\" (enabled, sensitive, showing, visible) @ screen (320, 194, 640x436)\n    - [status bar] \"\" (enabled, sensitive, showing, visible, read-only) @ screen (320, 630, 640x22)\n    - [menu bar] \"\" (enabled, sensitive, showing, visible) @ screen (320, 172, 640x22)\n    - [tool bar] \"\" (enabled, sensitive) @ unavailable (empty-extents)",
+   "structured": {
+    "elements": [
+     {
+      "actions": [],
+      "depth": 0,
+      "description": "/usr/bin/kcalc",
+      "name": "kcalc",
+      "rect": null,
+      "role": "application",
+      "states": [
+       "enabled",
+       "sensitive",
+       "showing",
+       "visible"
+      ],
+      "text": "",
+      "unavailable": "no-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 1,
+      "description": "",
+      "name": "",
+      "rect": {
+       "height": 480,
+       "width": 640,
+       "x": 320,
+       "y": 172
+      },
+      "role": "frame",
+      "states": [
+       "active",
+       "enabled",
+       "resizable",
+       "sensitive",
+       "showing",
+       "visible"
+      ],
+      "text": "",
+      "unavailable": null,
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 2,
+      "description": "",
+      "name": "",
+      "rect": {
+       "height": 436,
+       "width": 640,
+       "x": 320,
+       "y": 194
+      },
+      "role": "filler",
+      "states": [
+       "enabled",
+       "sensitive",
+       "showing",
+       "visible"
+      ],
+      "text": "",
+      "unavailable": null,
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 2,
+      "description": "",
+      "name": "",
+      "rect": {
+       "height": 22,
+       "width": 640,
+       "x": 320,
+       "y": 630
+      },
+      "role": "status bar",
+      "states": [
+       "enabled",
+       "sensitive",
+       "showing",
+       "visible",
+       "read-only"
+      ],
+      "text": "",
+      "unavailable": null,
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 2,
+      "description": "",
+      "name": "",
+      "rect": {
+       "height": 22,
+       "width": 640,
+       "x": 320,
+       "y": 172
+      },
+      "role": "menu bar",
+      "states": [
+       "enabled",
+       "sensitive",
+       "showing",
+       "visible"
+      ],
+      "text": "",
+      "unavailable": null,
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 2,
+      "description": "",
+      "name": "",
+      "rect": null,
+      "role": "tool bar",
+      "states": [
+       "enabled",
+       "sensitive"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     }
+    ]
+   }
+  },
+  {
+   "label": "accessibility_tree.role_push_button",
+   "tool": "accessibility_tree",
+   "arguments": {
+    "app_name": "kcalc",
+    "role": "push button"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "(no accessible applications found)",
+   "structured": {
+    "elements": []
+   }
+  },
+  {
+   "label": "accessibility_tree.unknown_app",
+   "tool": "accessibility_tree",
+   "arguments": {
+    "app_name": "zz-none"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "(no accessible applications found)",
+   "structured": {
+    "elements": []
+   }
+  },
+  {
+   "label": "find_ui_elements.seven",
+   "tool": "find_ui_elements",
+   "arguments": {
+    "app_name": "kcalc",
+    "query": "Seven"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Found 1 elements matching query='Seven':\n\n- [button] \"Seven\" @ screen (328, 380, 100x57) [actions: Press, SetFocus]",
+   "structured": {
+    "elements": [
+     {
+      "actions": [
+       "Press",
+       "SetFocus"
+      ],
+      "depth": 4,
+      "description": "",
+      "name": "Seven",
+      "rect": {
+       "height": 57,
+       "width": 100,
+       "x": 328,
+       "y": 380
+      },
+      "role": "button",
+      "states": [
+       "enabled",
+       "focusable",
+       "sensitive",
+       "showing",
+       "visible"
+      ],
+      "text": "",
+      "unavailable": null,
+      "value": null,
+      "value_max": null
+     }
+    ],
+    "query": "Seven",
+    "states": null
+   }
+  },
+  {
+   "label": "find_ui_elements.states",
+   "tool": "find_ui_elements",
+   "arguments": {
+    "app_name": "kcalc",
+    "query": "Seven",
+    "states": [
+     "focusable"
+    ]
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Found 1 elements matching query='Seven', states=['focusable']:\n\n- [button] \"Seven\" @ screen (328, 380, 100x57) [actions: Press, SetFocus]",
+   "structured": {
+    "elements": [
+     {
+      "actions": [
+       "Press",
+       "SetFocus"
+      ],
+      "depth": 4,
+      "description": "",
+      "name": "Seven",
+      "rect": {
+       "height": 57,
+       "width": 100,
+       "x": 328,
+       "y": 380
+      },
+      "role": "button",
+      "states": [
+       "enabled",
+       "focusable",
+       "sensitive",
+       "showing",
+       "visible"
+      ],
+      "text": "",
+      "unavailable": null,
+      "value": null,
+      "value_max": null
+     }
+    ],
+    "query": "Seven",
+    "states": [
+     "focusable"
+    ]
+   }
+  },
+  {
+   "label": "find_ui_elements.digit_7_descriptions",
+   "tool": "find_ui_elements",
+   "arguments": {
+    "app_name": "kcalc",
+    "query": "7"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Found 36 elements matching query='7':\n\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)\n- [check box] \"\" @ unavailable (empty-extents)",
+   "structured": {
+    "elements": [
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 63 = 9,223,372,036,854,775,808",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 62 = 4,611,686,018,427,387,904",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 60 = 1,152,921,504,606,846,976",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 59 = 576,460,752,303,423,488",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 58 = 288,230,376,151,711,744",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 57 = 144,115,188,075,855,872",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 56 = 72,057,594,037,927,936",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 55 = 36,028,797,018,963,968",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 53 = 9,007,199,254,740,992",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 52 = 4,503,599,627,370,496",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 51 = 2,251,799,813,685,248",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 48 = 281,474,976,710,656",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 47 = 140,737,488,355,328",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 46 = 70,368,744,177,664",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 45 = 35,184,372,088,832",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 44 = 17,592,186,044,416",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 43 = 8,796,093,022,208",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 40 = 1,099,511,627,776",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 39 = 549,755,813,888",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 38 = 274,877,906,944",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 37 = 137,438,953,472",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 36 = 68,719,476,736",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 35 = 34,359,738,368",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 34 = 17,179,869,184",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 32 = 4,294,967,296",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 31 = 2,147,483,648",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 30 = 1,073,741,824",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 29 = 536,870,912",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 27 = 134,217,728",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 26 = 67,108,864",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 24 = 16,777,216",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 21 = 2,097,152",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 20 = 1,048,576",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 17 = 131,072",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 15 = 32,768",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     },
+     {
+      "actions": [],
+      "depth": 4,
+      "description": "Bit 7 = 128",
+      "name": "",
+      "rect": null,
+      "role": "check box",
+      "states": [
+       "focusable",
+       "checkable"
+      ],
+      "text": "",
+      "unavailable": "empty-extents",
+      "value": null,
+      "value_max": null
+     }
+    ],
+    "query": "7",
+    "states": null
+   }
+  },
+  {
+   "label": "find_ui_elements.no_match",
+   "tool": "find_ui_elements",
+   "arguments": {
+    "app_name": "kcalc",
+    "query": "zz-none"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "No elements found matching query='zz-none'",
+   "structured": {
+    "elements": [],
+    "query": "zz-none",
+    "states": null
+   }
+  },
+  {
+   "label": "invoke_ui_action.press_seven",
+   "tool": "invoke_ui_action",
+   "arguments": {
+    "action_name": "Press",
+    "app_name": "kcalc",
+    "query": "Seven"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Invoked AT-SPI action: Press on [button] \"Seven\" in kcalc",
+   "structured": {
+    "result": "Invoked AT-SPI action: Press on [button] \"Seven\" in kcalc"
+   }
+  },
+  {
+   "label": "invoke_ui_action.ambiguous",
+   "tool": "invoke_ui_action",
+   "arguments": {
+    "action_name": "Press",
+    "app_name": "kcalc",
+    "query": "button"
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool invoke_ui_action: Refused ambiguous AT-SPI action: 64 elements matching 'button' expose 'Press'.",
+   "structured": null
+  },
+  {
+   "label": "invoke_ui_action.wrong_app",
+   "tool": "invoke_ui_action",
+   "arguments": {
+    "action_name": "Press",
+    "app_name": "definitely-not-kcalc",
+    "query": "Seven"
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool invoke_ui_action: No element matching 'Seven' exposes AT-SPI action 'Press'.",
+   "structured": null
+  },
+  {
+   "label": "invoke_ui_action.no_match",
+   "tool": "invoke_ui_action",
+   "arguments": {
+    "action_name": "Press",
+    "app_name": "kcalc",
+    "query": "zz-none"
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool invoke_ui_action: No element matching 'zz-none' exposes AT-SPI action 'Press'.",
+   "structured": null
+  },
+  {
+   "label": "mouse_click.single",
+   "tool": "mouse_click",
+   "arguments": {
+    "x": 378,
+    "y": 408
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Clicked left at (378, 408)",
+   "structured": {
+    "result": "Clicked left at (378, 408)"
+   }
+  },
+  {
+   "label": "mouse_click.double_right",
+   "tool": "mouse_click",
+   "arguments": {
+    "button": "right",
+    "double": true,
+    "x": 378,
+    "y": 408
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Clicked right at (378, 408) (double)",
+   "structured": {
+    "result": "Clicked right at (378, 408) (double)"
+   }
+  },
+  {
+   "label": "keyboard_key.escape_menu",
+   "tool": "keyboard_key",
+   "arguments": {
+    "key": "Escape"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Pressed: Escape",
+   "structured": {
+    "result": "Pressed: Escape"
+   }
+  },
+  {
+   "label": "mouse_click.triple",
+   "tool": "mouse_click",
+   "arguments": {
+    "triple": true,
+    "x": 378,
+    "y": 408
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Clicked left at (378, 408) (triple)",
+   "structured": {
+    "result": "Clicked left at (378, 408) (triple)"
+   }
+  },
+  {
+   "label": "mouse_click.modifiers_hold",
+   "tool": "mouse_click",
+   "arguments": {
+    "hold_ms": 100,
+    "modifiers": [
+     "ctrl",
+     "shift"
+    ],
+    "x": 378,
+    "y": 408
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Clicked left at (378, 408) with ctrl+shift held 100ms",
+   "structured": {
+    "result": "Clicked left at (378, 408) with ctrl+shift held 100ms"
+   }
+  },
+  {
+   "label": "mouse_click.burst",
+   "tool": "mouse_click",
+   "arguments": {
+    "screenshot_after_ms": [
+     0,
+     50
+    ],
+    "x": 378,
+    "y": 408
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool mouse_click: Frame burst capture failed: ScreenShot2 (org.freedesktop.DBus.Error.UnknownObject: No such object path '/org/kde/KWin/ScreenShot2'); Spectacle (spectacle failed (exit 1): On Wayland, Spectacle requires KDE Plasma's KWin compositor, which does not seem to be available. Use Spectacle on KDE Plasma, or use a different screenshot tool.\n)",
+   "structured": null
+  },
+  {
+   "label": "mouse_click.bad_button",
+   "tool": "mouse_click",
+   "arguments": {
+    "button": "side",
+    "x": 378,
+    "y": 408
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool mouse_click: 'side' is not a valid MouseButton",
+   "structured": null
+  },
+  {
+   "label": "mouse_click.bad_modifier",
+   "tool": "mouse_click",
+   "arguments": {
+    "modifiers": [
+     "hyper"
+    ],
+    "x": 378,
+    "y": 408
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool mouse_click: Unknown modifier: 'hyper'",
+   "structured": null
+  },
+  {
+   "label": "mouse_move.plain",
+   "tool": "mouse_move",
+   "arguments": {
+    "x": 378,
+    "y": 408
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Mouse moved to (378, 408)",
+   "structured": {
+    "result": "Mouse moved to (378, 408)"
+   }
+  },
+  {
+   "label": "mouse_scroll.smooth",
+   "tool": "mouse_scroll",
+   "arguments": {
+    "delta": 3,
+    "x": 378,
+    "y": 408
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Scrolled vertical (smooth) by 3 at (378, 408)",
+   "structured": {
+    "result": "Scrolled vertical (smooth) by 3 at (378, 408)"
+   }
+  },
+  {
+   "label": "mouse_scroll.smooth_steps",
+   "tool": "mouse_scroll",
+   "arguments": {
+    "delta": 3,
+    "steps": 3,
+    "x": 378,
+    "y": 408
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Scrolled vertical (smooth) by 3 at (378, 408) in 3 steps",
+   "structured": {
+    "result": "Scrolled vertical (smooth) by 3 at (378, 408) in 3 steps"
+   }
+  },
+  {
+   "label": "mouse_scroll.discrete_horizontal",
+   "tool": "mouse_scroll",
+   "arguments": {
+    "delta": -2,
+    "discrete": true,
+    "horizontal": true,
+    "x": 378,
+    "y": 408
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Scrolled horizontal (discrete) by -2 at (378, 408)",
+   "structured": {
+    "result": "Scrolled horizontal (discrete) by -2 at (378, 408)"
+   }
+  },
+  {
+   "label": "mouse_drag.plain",
+   "tool": "mouse_drag",
+   "arguments": {
+    "from_x": 100,
+    "from_y": 300,
+    "to_x": 400,
+    "to_y": 300
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Dragged from (100, 300) to (400, 300)",
+   "structured": {
+    "result": "Dragged from (100, 300) to (400, 300)"
+   }
+  },
+  {
+   "label": "mouse_drag.modifiers_waypoints",
+   "tool": "mouse_drag",
+   "arguments": {
+    "button": "left",
+    "from_x": 100,
+    "from_y": 300,
+    "modifiers": [
+     "ctrl"
+    ],
+    "to_x": 400,
+    "to_y": 300,
+    "waypoints": [
+     [
+      200,
+      320,
+      0
+     ],
+     [
+      300,
+      320,
+      50
+     ]
+    ]
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Dragged from (100, 300) to (400, 300) with ctrl via 2 waypoints",
+   "structured": {
+    "result": "Dragged from (100, 300) to (400, 300) with ctrl via 2 waypoints"
+   }
+  },
+  {
+   "label": "mouse_drag.bad_waypoint",
+   "tool": "mouse_drag",
+   "arguments": {
+    "from_x": 1,
+    "from_y": 1,
+    "to_x": 2,
+    "to_y": 2,
+    "waypoints": [
+     [
+      1,
+      2
+     ]
+    ]
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool mouse_drag: waypoints[0] must be [x, y, dwell_ms], got [1, 2]",
+   "structured": null
+  },
+  {
+   "label": "mouse_button_down.left",
+   "tool": "mouse_button_down",
+   "arguments": {
+    "x": 378,
+    "y": 408
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Button left pressed at (378, 408)",
+   "structured": {
+    "result": "Button left pressed at (378, 408)"
+   }
+  },
+  {
+   "label": "mouse_move.while_held",
+   "tool": "mouse_move",
+   "arguments": {
+    "x": 383,
+    "y": 408
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Mouse moved to (383, 408)",
+   "structured": {
+    "result": "Mouse moved to (383, 408)"
+   }
+  },
+  {
+   "label": "mouse_button_up.left",
+   "tool": "mouse_button_up",
+   "arguments": {
+    "x": 378,
+    "y": 408
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Button left released at (378, 408)",
+   "structured": {
+    "result": "Button left released at (378, 408)"
+   }
+  },
+  {
+   "label": "mouse_button_up.right_untracked",
+   "tool": "mouse_button_up",
+   "arguments": {
+    "button": "right",
+    "x": 378,
+    "y": 408
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Button right released at (378, 408)",
+   "structured": {
+    "result": "Button right released at (378, 408)"
+   }
+  },
+  {
+   "label": "keyboard_type.text",
+   "tool": "keyboard_type",
+   "arguments": {
+    "text": "12"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Typed: '12'",
+   "structured": {
+    "result": "Typed: '12'"
+   }
+  },
+  {
+   "label": "keyboard_type.long_201",
+   "tool": "keyboard_type",
+   "arguments": {
+    "text": "111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Typed: <201 characters>",
+   "structured": {
+    "result": "Typed: <201 characters>"
+   }
+  },
+  {
+   "label": "keyboard_type.unsupported",
+   "tool": "keyboard_type",
+   "arguments": {
+    "text": "日本"
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool keyboard_type: keyboard_type cannot type '日', '本'; use keyboard_type_unicode",
+   "structured": null
+  },
+  {
+   "label": "keyboard_type_unicode.text",
+   "tool": "keyboard_type_unicode",
+   "arguments": {
+    "text": "é"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Typed unicode: 'é'",
+   "structured": {
+    "result": "Typed unicode: 'é'"
+   }
+  },
+  {
+   "label": "keyboard_key.combo",
+   "tool": "keyboard_key",
+   "arguments": {
+    "key": "ctrl+a"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Pressed: ctrl+a",
+   "structured": {
+    "result": "Pressed: ctrl+a"
+   }
+  },
+  {
+   "label": "keyboard_key.unknown",
+   "tool": "keyboard_key",
+   "arguments": {
+    "key": "notakey"
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool keyboard_key: Unknown key: notakey",
+   "structured": null
+  },
+  {
+   "label": "keyboard_key_down.shift",
+   "tool": "keyboard_key_down",
+   "arguments": {
+    "key": "shift"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Key down: shift",
+   "structured": {
+    "result": "Key down: shift"
+   }
+  },
+  {
+   "label": "keyboard_key_up.shift",
+   "tool": "keyboard_key_up",
+   "arguments": {
+    "key": "shift"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Key up: shift",
+   "structured": {
+    "result": "Key up: shift"
+   }
+  },
+  {
+   "label": "keyboard_key.escape",
+   "tool": "keyboard_key",
+   "arguments": {
+    "key": "Escape"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Pressed: Escape",
+   "structured": {
+    "result": "Pressed: Escape"
+   }
+  },
+  {
+   "label": "touch_tap.plain",
+   "tool": "touch_tap",
+   "arguments": {
+    "x": 378,
+    "y": 408
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Touch tap at (378, 408)",
+   "structured": {
+    "result": "Touch tap at (378, 408)"
+   }
+  },
+  {
+   "label": "touch_tap.hold",
+   "tool": "touch_tap",
+   "arguments": {
+    "hold_ms": 200,
+    "x": 378,
+    "y": 408
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Touch tap at (378, 408) held 200ms",
+   "structured": {
+    "result": "Touch tap at (378, 408) held 200ms"
+   }
+  },
+  {
+   "label": "touch_swipe.plain",
+   "tool": "touch_swipe",
+   "arguments": {
+    "duration_ms": 100,
+    "from_x": 378,
+    "from_y": 408,
+    "to_x": 378,
+    "to_y": 458
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Touch swipe from (378, 408) to (378, 458) in 100ms",
+   "structured": {
+    "result": "Touch swipe from (378, 408) to (378, 458) in 100ms"
+   }
+  },
+  {
+   "label": "touch_pinch.out",
+   "tool": "touch_pinch",
+   "arguments": {
+    "center_x": 378,
+    "center_y": 408,
+    "duration_ms": 100,
+    "end_distance": 150,
+    "start_distance": 50
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Pinch out at (378, 408): 50→150px",
+   "structured": {
+    "result": "Pinch out at (378, 408): 50→150px"
+   }
+  },
+  {
+   "label": "touch_pinch.in",
+   "tool": "touch_pinch",
+   "arguments": {
+    "center_x": 378,
+    "center_y": 408,
+    "duration_ms": 100,
+    "end_distance": 50,
+    "start_distance": 150
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Pinch in at (378, 408): 150→50px",
+   "structured": {
+    "result": "Pinch in at (378, 408): 150→50px"
+   }
+  },
+  {
+   "label": "touch_multi_swipe.three",
+   "tool": "touch_multi_swipe",
+   "arguments": {
+    "duration_ms": 100,
+    "fingers": 3,
+    "from_x": 378,
+    "from_y": 408,
+    "to_x": 378,
+    "to_y": 458
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "3-finger swipe from (378, 408) to (378, 458) in 100ms",
+   "structured": {
+    "result": "3-finger swipe from (378, 408) to (378, 458) in 100ms"
+   }
+  },
+  {
+   "label": "touch_multi_swipe.zero",
+   "tool": "touch_multi_swipe",
+   "arguments": {
+    "fingers": 0,
+    "from_x": 378,
+    "from_y": 408,
+    "to_x": 378,
+    "to_y": 458
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool touch_multi_swipe: 1 validation error for touch_multi_swipeArguments\nfingers\n  Input should be greater than or equal to 1 [type=greater_than_equal, input_value=0, input_type=int]\n    For further information visit https://errors.pydantic.dev/2.14/v/greater_than_equal",
+   "structured": null
+  },
+  {
+   "label": "clipboard_get.empty",
+   "tool": "clipboard_get",
+   "arguments": {},
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool clipboard_get: Failed to read clipboard: Nothing is copied\n",
+   "structured": null
+  },
+  {
+   "label": "clipboard_set.short",
+   "tool": "clipboard_set",
+   "arguments": {
+    "text": "hello 'q'"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Clipboard set: \"hello 'q'\"",
+   "structured": {
+    "result": "Clipboard set: \"hello 'q'\""
+   }
+  },
+  {
+   "label": "clipboard_get.short",
+   "tool": "clipboard_get",
+   "arguments": {},
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "hello 'q'",
+   "structured": {
+    "result": "hello 'q'"
+   }
+  },
+  {
+   "label": "clipboard_set.long_201",
+   "tool": "clipboard_set",
+   "arguments": {
+    "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Clipboard set: <201 characters>",
+   "structured": {
+    "result": "Clipboard set: <201 characters>"
+   }
+  },
+  {
+   "label": "screenshot.full",
+   "tool": "screenshot",
+   "arguments": {},
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool screenshot: Screenshot capture failed: ScreenShot2 (org.freedesktop.DBus.Error.UnknownObject: No such object path '/org/kde/KWin/ScreenShot2'); Spectacle (spectacle failed (exit 1): On Wayland, Spectacle requires KDE Plasma's KWin compositor, which does not seem to be available. Use Spectacle on KDE Plasma, or use a different screenshot tool.\n)",
+   "structured": null
+  },
+  {
+   "label": "screenshot.region",
+   "tool": "screenshot",
+   "arguments": {
+    "region": [
+     0,
+     0,
+     100,
+     50
+    ]
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool screenshot: Screenshot capture failed: ScreenShot2 (org.freedesktop.DBus.Error.UnknownObject: No such object path '/org/kde/KWin/ScreenShot2'); Spectacle (spectacle failed (exit 1): On Wayland, Spectacle requires KDE Plasma's KWin compositor, which does not seem to be available. Use Spectacle on KDE Plasma, or use a different screenshot tool.\n)",
+   "structured": null
+  },
+  {
+   "label": "launch_app.kwrite",
+   "tool": "launch_app",
+   "arguments": {
+    "command": "kwrite"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "App launched: kwrite (PID=<PID>)\nApp log: <DIR>/app_kwrite_2.log",
+   "structured": {
+    "result": "App launched: kwrite (PID=<PID>)\nApp log: <DIR>/app_kwrite_2.log"
+   }
+  },
+  {
+   "label": "launch_app.empty",
+   "tool": "launch_app",
+   "arguments": {
+    "command": "  "
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool launch_app: command must contain a command to launch",
+   "structured": null
+  },
+  {
+   "label": "launch_app.unbalanced",
+   "tool": "launch_app",
+   "arguments": {
+    "command": "kwrite 'x"
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool launch_app: Invalid command: No closing quotation",
+   "structured": null
+  },
+  {
+   "label": "launch_app.env",
+   "tool": "launch_app",
+   "arguments": {
+    "command": "sh -c 'echo $GOLDEN_VAR; echo second >&2'",
+    "env": {
+     "GOLDEN_VAR": "v1"
+    }
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "App launched: sh -c 'echo $GOLDEN_VAR; echo second >&2' (PID=<PID>)\nApp log: <DIR>/app_sh_3.log",
+   "structured": {
+    "result": "App launched: sh -c 'echo $GOLDEN_VAR; echo second >&2' (PID=<PID>)\nApp log: <DIR>/app_sh_3.log"
+   }
+  },
+  {
+   "label": "read_app_log.default",
+   "tool": "read_app_log",
+   "arguments": {
+    "pid": "<PID>"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "v1\nsecond",
+   "structured": {
+    "result": "v1\nsecond"
+   }
+  },
+  {
+   "label": "read_app_log.last_1",
+   "tool": "read_app_log",
+   "arguments": {
+    "last_n_lines": 1,
+    "pid": "<PID>"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "second",
+   "structured": {
+    "result": "second"
+   }
+  },
+  {
+   "label": "read_app_log.unknown_pid",
+   "tool": "read_app_log",
+   "arguments": {
+    "pid": 999999
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool read_app_log: No app with PID 999999. Available PIDs: [<PIDS>]",
+   "structured": null
+  },
+  {
+   "label": "list_windows.two_apps",
+   "tool": "list_windows",
+   "arguments": {},
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Applications (3):\n- kwin (2 windows)\n    - \"(untitled)\"\n    - \"(untitled)\"\n- kcalc (1 windows)\n    - \"(untitled)\"\n- kwrite (1 windows)\n    - \"Welcome \" [active]",
+   "structured": {
+    "applications": [
+     {
+      "name": "kwin",
+      "window_count": 2,
+      "windows": [
+       {
+        "active": false,
+        "focused": false,
+        "title": "(untitled)"
+       },
+       {
+        "active": false,
+        "focused": false,
+        "title": "(untitled)"
+       }
+      ]
+     },
+     {
+      "name": "kcalc",
+      "window_count": 1,
+      "windows": [
+       {
+        "active": false,
+        "focused": false,
+        "title": "(untitled)"
+       }
+      ]
+     },
+     {
+      "name": "kwrite",
+      "window_count": 1,
+      "windows": [
+       {
+        "active": true,
+        "focused": false,
+        "title": "Welcome "
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "label": "window_geometry.all",
+   "tool": "window_geometry",
+   "arguments": {},
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Windows (2):\n- org.kde.kcalc \"KCalc\"\n    id:     {<WINDOW_1>}\n    frame:  (316, 143, 648x513)\n    client: (320, 172, 640x480)\n- org.kde.kwrite \"Welcome — KWrite\" [active]\n    id:     {<WINDOW_2>}\n    frame:  (342, 159, 808x566)\n    client: (346, 188, 800x533)",
+   "structured": {
+    "windows": [
+     {
+      "active": false,
+      "app": "org.kde.kcalc",
+      "caption": "KCalc",
+      "client": {
+       "height": 480,
+       "width": 640,
+       "x": 320,
+       "y": 172
+      },
+      "frame": {
+       "height": 513,
+       "width": 648,
+       "x": 316,
+       "y": 143
+      },
+      "id": "{<WINDOW_1>}"
+     },
+     {
+      "active": true,
+      "app": "org.kde.kwrite",
+      "caption": "Welcome — KWrite",
+      "client": {
+       "height": 533,
+       "width": 800,
+       "x": 346,
+       "y": 188
+      },
+      "frame": {
+       "height": 566,
+       "width": 808,
+       "x": 342,
+       "y": 159
+      },
+      "id": "{<WINDOW_2>}"
+     }
+    ]
+   }
+  },
+  {
+   "label": "window_geometry.kcalc",
+   "tool": "window_geometry",
+   "arguments": {
+    "app_name": "kcalc"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Windows (1):\n- org.kde.kcalc \"KCalc\"\n    id:     {<WINDOW_1>}\n    frame:  (316, 143, 648x513)\n    client: (320, 172, 640x480)",
+   "structured": {
+    "windows": [
+     {
+      "active": false,
+      "app": "org.kde.kcalc",
+      "caption": "KCalc",
+      "client": {
+       "height": 480,
+       "width": 640,
+       "x": 320,
+       "y": 172
+      },
+      "frame": {
+       "height": 513,
+       "width": 648,
+       "x": 316,
+       "y": 143
+      },
+      "id": "{<WINDOW_1>}"
+     }
+    ]
+   }
+  },
+  {
+   "label": "window_geometry.unknown_app",
+   "tool": "window_geometry",
+   "arguments": {
+    "app_name": "zz-none"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "No windows found for 'zz-none'.",
+   "structured": {
+    "windows": []
+   }
+  },
+  {
+   "label": "window_geometry.unknown_id",
+   "tool": "window_geometry",
+   "arguments": {
+    "window_id": "{nope}"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "No window with id '{nope}'.",
+   "structured": {
+    "windows": []
+   }
+  },
+  {
+   "label": "active_window.current",
+   "tool": "active_window",
+   "arguments": {},
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Active window:\n- org.kde.kwrite \"Welcome — KWrite\" [active]\n    id:     {<WINDOW_2>}\n    frame:  (342, 159, 808x566)\n    client: (346, 188, 800x533)",
+   "structured": {
+    "result": "Active window:\n- org.kde.kwrite \"Welcome — KWrite\" [active]\n    id:     {<WINDOW_2>}\n    frame:  (342, 159, 808x566)\n    client: (346, 188, 800x533)"
+   }
+  },
+  {
+   "label": "focus_window.kcalc",
+   "tool": "focus_window",
+   "arguments": {
+    "app_name": "kcalc"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Focused: org.kde.kcalc KCalc",
+   "structured": {
+    "result": "Focused: org.kde.kcalc KCalc"
+   }
+  },
+  {
+   "label": "focus_window.unknown",
+   "tool": "focus_window",
+   "arguments": {
+    "app_name": "zz-none"
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool focus_window: No window matches 'zz-none'.",
+   "structured": null
+  },
+  {
+   "label": "focus_window.by_id",
+   "tool": "focus_window",
+   "arguments": {
+    "window_id": "{<WINDOW_2>}"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Focused: org.kde.kwrite Welcome — KWrite",
+   "structured": {
+    "result": "Focused: org.kde.kwrite Welcome — KWrite"
+   }
+  },
+  {
+   "label": "window_set_geometry.move_resize",
+   "tool": "window_set_geometry",
+   "arguments": {
+    "height": 500,
+    "width": 700,
+    "window_id": "{<WINDOW_2>}",
+    "x": 50,
+    "y": 60
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Geometry update requested: org.kde.kwrite \"Welcome — KWrite\" ({<WINDOW_2>})\nbefore:    (342, 159, 808x566)\nrequested: x=50, y=60, width=700, height=500\nobserved:  (50, 60, 700x500)\nmoveable: True, resizeable: True",
+   "structured": {
+    "result": "Geometry update requested: org.kde.kwrite \"Welcome — KWrite\" ({<WINDOW_2>})\nbefore:    (342, 159, 808x566)\nrequested: x=50, y=60, width=700, height=500\nobserved:  (50, 60, 700x500)\nmoveable: True, resizeable: True"
+   }
+  },
+  {
+   "label": "window_set_geometry.beyond",
+   "tool": "window_set_geometry",
+   "arguments": {
+    "width": 5000,
+    "window_id": "{<WINDOW_2>}"
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool window_set_geometry: window_set_geometry width must be at most 1280 (the KWin workspace width; start the session with a larger screen for bigger windows), got 5000.",
+   "structured": null
+  },
+  {
+   "label": "window_close.kwrite",
+   "tool": "window_close",
+   "arguments": {
+    "window_id": "{<WINDOW_2>}"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Close requested: org.kde.kwrite \"Welcome — KWrite\" ({<WINDOW_2>}). The app may keep the window open, for example to ask about unsaved changes; check window_geometry.",
+   "structured": {
+    "result": "Close requested: org.kde.kwrite \"Welcome — KWrite\" ({<WINDOW_2>}). The app may keep the window open, for example to ask about unsaved changes; check window_geometry."
+   }
+  },
+  {
+   "label": "window_set_geometry.unknown_id",
+   "tool": "window_set_geometry",
+   "arguments": {
+    "window_id": "{nope}",
+    "x": 1
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool window_set_geometry: No window with id '{nope}'.",
+   "structured": null
+  },
+  {
+   "label": "window_close.unknown_id",
+   "tool": "window_close",
+   "arguments": {
+    "window_id": "{nope}"
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool window_close: No window with id '{nope}'.",
+   "structured": null
+  },
+  {
+   "label": "dbus_call.get_id",
+   "tool": "dbus_call",
+   "arguments": {
+    "interface": "org.freedesktop.DBus",
+    "method": "GetId",
+    "path": "/org/freedesktop/DBus",
+    "service": "org.freedesktop.DBus"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "<DBUS_MACHINE_ID>",
+   "structured": {
+    "result": "<DBUS_MACHINE_ID>"
+   }
+  },
+  {
+   "label": "dbus_call.name_has_owner",
+   "tool": "dbus_call",
+   "arguments": {
+    "args": [
+     "string:org.kde.KWin"
+    ],
+    "interface": "org.freedesktop.DBus",
+    "method": "NameHasOwner",
+    "path": "/org/freedesktop/DBus",
+    "service": "org.freedesktop.DBus"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "true",
+   "structured": {
+    "result": "true"
+   }
+  },
+  {
+   "label": "dbus_call.unknown_service",
+   "tool": "dbus_call",
+   "arguments": {
+    "interface": "org.example.Nope",
+    "method": "Nope",
+    "path": "/",
+    "service": "org.example.Nope"
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool dbus_call: D-Bus error: org.freedesktop.DBus.Error.ServiceUnknown: The name org.example.Nope was not provided by any .service files",
+   "structured": null
+  },
+  {
+   "label": "wayland_info.wl_seat",
+   "tool": "wayland_info",
+   "arguments": {
+    "filter_protocol": "wl_seat"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "interface: 'wl_seat',                                    version:  9, name: 10",
+   "structured": {
+    "result": "interface: 'wl_seat',                                    version:  9, name: 10"
+   }
+  },
+  {
+   "label": "wayland_info.no_match",
+   "tool": "wayland_info",
+   "arguments": {
+    "filter_protocol": "zz_none"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "No protocols matching 'zz_none' found.",
+   "structured": {
+    "result": "No protocols matching 'zz_none' found."
+   }
+  },
+  {
+   "label": "session_stop.virtual",
+   "tool": "session_stop",
+   "arguments": {},
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Session stopped.",
+   "structured": {
+    "result": "Session stopped."
+   }
+  },
+  {
+   "label": "session_stop.again",
+   "tool": "session_stop",
+   "arguments": {},
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "No session running.",
+   "structured": {
+    "result": "No session running."
+   }
+  },
+  {
+   "label": "session_start.isolated_keep_all",
+   "tool": "session_start",
+   "arguments": {
+    "isolate_home": true,
+    "keep_home": true,
+    "keep_screenshots": true,
+    "screen_height": 768,
+    "screen_width": 1024
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Session started. Wayland socket: <WAYLAND_DISPLAY>\nIsolated home: <DIR>/kwin-mcp-home-<RAND>\nInput backend: KWin EIS",
+   "structured": {
+    "result": "Session started. Wayland socket: <WAYLAND_DISPLAY>\nIsolated home: <DIR>/kwin-mcp-home-<RAND>\nInput backend: KWin EIS"
+   }
+  },
+  {
+   "label": "session_stop.isolated_keep_all",
+   "tool": "session_stop",
+   "arguments": {},
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Session stopped.",
+   "structured": {
+    "result": "Session stopped."
+   }
+  },
+  {
+   "label": "session_start.no_app",
+   "tool": "session_start",
+   "arguments": {
+    "screen_height": 800,
+    "screen_width": 1280
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Session started. Wayland socket: <WAYLAND_DISPLAY>\nInput backend: KWin EIS",
+   "structured": {
+    "result": "Session started. Wayland socket: <WAYLAND_DISPLAY>\nInput backend: KWin EIS"
+   }
+  },
+  {
+   "label": "launch_app.missing_command",
+   "tool": "launch_app",
+   "arguments": {
+    "command": "zz-no-such-binary"
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool launch_app: [Errno 2] No such file or directory: 'zz-no-such-binary'",
+   "structured": null
+  },
+  {
+   "label": "session_stop.no_app",
+   "tool": "session_stop",
+   "arguments": {},
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Session stopped.",
+   "structured": {
+    "result": "Session stopped."
+   }
+  },
+  {
+   "label": "session_connect.unreachable",
+   "tool": "session_connect",
+   "arguments": {
+    "dbus_address": "unix:path=/nonexistent/bus",
+    "wayland_display": "wayland-nope"
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool session_connect: Cannot reach KWin on D-Bus (unix:path=/nonexistent/bus): org.freedesktop.DBus.Error.FileNotFound: Failed to connect to socket /nonexistent/bus: No such file or directory",
+   "structured": null
+  },
+  {
+   "label": "session_connect.live",
+   "tool": "session_connect",
+   "arguments": {
+    "dbus_address": "<DBUS_ADDRESS>",
+    "wayland_display": "<WAYLAND_DISPLAY>"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Connected to live KWin session. D-Bus: <DBUS_ADDRESS>, Wayland: <WAYLAND_DISPLAY>\nInput backend: KWin EIS\nAccessibility: off (org.a11y.Status.IsEnabled is false), so apps that check it, such as Firefox, expose no accessibility tree. Reconnect with enable_accessibility=true to switch it on until session_stop.",
+   "structured": {
+    "result": "Connected to live KWin session. D-Bus: <DBUS_ADDRESS>, Wayland: <WAYLAND_DISPLAY>\nInput backend: KWin EIS\nAccessibility: off (org.a11y.Status.IsEnabled is false), so apps that check it, such as Firefox, expose no accessibility tree. Reconnect with enable_accessibility=true to switch it on until session_stop."
+   }
+  },
+  {
+   "label": "window_close.live_refused",
+   "tool": "window_close",
+   "arguments": {
+    "window_id": "{nope}"
+   },
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool window_close: window_close is disabled in live sessions: it could discard unsaved work on the real desktop. Close the window through the app's own UI instead.",
+   "structured": null
+  },
+  {
+   "label": "clipboard_get.live",
+   "tool": "clipboard_get",
+   "arguments": {},
+   "is_error": true,
+   "content_types": [
+    "text"
+   ],
+   "text": "Error executing tool clipboard_get: Failed to read clipboard: Nothing is copied\n",
+   "structured": null
+  },
+  {
+   "label": "session_stop.live",
+   "tool": "session_stop",
+   "arguments": {},
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Disconnected from live session.",
+   "structured": {
+    "result": "Disconnected from live session."
+   }
+  },
+  {
+   "label": "session_connect.visual_keep_screenshots",
+   "tool": "session_connect",
+   "arguments": {
+    "dbus_address": "<DBUS_ADDRESS>",
+    "keep_screenshots": true,
+    "wayland_display": "<WAYLAND_DISPLAY>"
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Connected to live KWin session. D-Bus: <DBUS_ADDRESS>, Wayland: <WAYLAND_DISPLAY>\nInput backend: KWin EIS\nAccessibility: off (org.a11y.Status.IsEnabled is false), so apps that check it, such as Firefox, expose no accessibility tree. Reconnect with enable_accessibility=true to switch it on until session_stop.",
+   "structured": {
+    "result": "Connected to live KWin session. D-Bus: <DBUS_ADDRESS>, Wayland: <WAYLAND_DISPLAY>\nInput backend: KWin EIS\nAccessibility: off (org.a11y.Status.IsEnabled is false), so apps that check it, such as Firefox, expose no accessibility tree. Reconnect with enable_accessibility=true to switch it on until session_stop."
+   }
+  },
+  {
+   "label": "screenshot.x11_full",
+   "tool": "screenshot",
+   "arguments": {},
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Screenshot saved: <DIR>/screenshot_<TIMESTAMP>.png (<SIZE> KB)\nCoordinate space: logical; origin (0, 0); size 1280x800; backend x11-scrot (normalized from 1280x800 X11 pixels; scale X11-0 1); coverage full; topology observed stable before/after capture",
+   "structured": {
+    "result": "Screenshot saved: <DIR>/screenshot_<TIMESTAMP>.png (<SIZE> KB)\nCoordinate space: logical; origin (0, 0); size 1280x800; backend x11-scrot (normalized from 1280x800 X11 pixels; scale X11-0 1); coverage full; topology observed stable before/after capture"
+   }
+  },
+  {
+   "label": "screenshot.x11_region",
+   "tool": "screenshot",
+   "arguments": {
+    "region": [
+     10,
+     20,
+     300,
+     200
+    ]
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Screenshot saved: <DIR>/screenshot_<TIMESTAMP>.png (<SIZE> KB)\nCoordinate space: logical; origin (10, 20); size 300x200; backend x11-scrot (normalized from 1280x800 X11 pixels; scale X11-0 1); coverage full; topology observed stable before/after capture",
+   "structured": {
+    "result": "Screenshot saved: <DIR>/screenshot_<TIMESTAMP>.png (<SIZE> KB)\nCoordinate space: logical; origin (10, 20); size 300x200; backend x11-scrot (normalized from 1280x800 X11 pixels; scale X11-0 1); coverage full; topology observed stable before/after capture"
+   }
+  },
+  {
+   "label": "screenshot.x11_cursor_max_edge",
+   "tool": "screenshot",
+   "arguments": {
+    "include_cursor": true,
+    "max_edge": 640
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Screenshot saved: <DIR>/screenshot_<TIMESTAMP>.png (<SIZE> KB)\nCoordinate space: logical; origin (0, 0); size 1280x800; backend x11-scrot (normalized from 1280x800 X11 pixels; scale X11-0 1); coverage full; image 640x400 downscaled: pixel (px, py) shows (0 + (px + 0.5) * 1280 / 640 - 0.5, 0 + (py + 0.5) * 800 / 400 - 0.5); topology observed stable before/after capture",
+   "structured": {
+    "result": "Screenshot saved: <DIR>/screenshot_<TIMESTAMP>.png (<SIZE> KB)\nCoordinate space: logical; origin (0, 0); size 1280x800; backend x11-scrot (normalized from 1280x800 X11 pixels; scale X11-0 1); coverage full; image 640x400 downscaled: pixel (px, py) shows (0 + (px + 0.5) * 1280 / 640 - 0.5, 0 + (py + 0.5) * 800 / 400 - 0.5); topology observed stable before/after capture"
+   }
+  },
+  {
+   "label": "mouse_move.x11_burst",
+   "tool": "mouse_move",
+   "arguments": {
+    "screenshot_after_ms": [
+     0,
+     50,
+     50
+    ],
+    "x": 100,
+    "y": 100
+   },
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Mouse moved to (100, 100)\nCaptured 3 frames:\n  0ms: <DIR>/frame_<TIMESTAMP>_000_0ms.png (<SIZE> KB)\n    Coordinate space: logical; origin (0, 0); size 1280x800; backend x11-scrot (normalized from 1280x800 X11 pixels; scale X11-0 1); coverage full; topology observed stable before/after capture\n  50ms: <DIR>/frame_<TIMESTAMP>_001_50ms.png (<SIZE> KB)\n    Coordinate space: logical; origin (0, 0); size 1280x800; backend x11-scrot (normalized from 1280x800 X11 pixels; scale X11-0 1); coverage full; topology observed stable before/after capture\n  50ms: <DIR>/frame_<TIMESTAMP>_002_50ms.png (<SIZE> KB)\n    Coordinate space: logical; origin (0, 0); size 1280x800; backend x11-scrot (normalized from 1280x800 X11 pixels; scale X11-0 1); coverage full; topology observed stable before/after capture",
+   "structured": {
+    "result": "Mouse moved to (100, 100)\nCaptured 3 frames:\n  0ms: <DIR>/frame_<TIMESTAMP>_000_0ms.png (<SIZE> KB)\n    Coordinate space: logical; origin (0, 0); size 1280x800; backend x11-scrot (normalized from 1280x800 X11 pixels; scale X11-0 1); coverage full; topology observed stable before/after capture\n  50ms: <DIR>/frame_<TIMESTAMP>_001_50ms.png (<SIZE> KB)\n    Coordinate space: logical; origin (0, 0); size 1280x800; backend x11-scrot (normalized from 1280x800 X11 pixels; scale X11-0 1); coverage full; topology observed stable before/after capture\n  50ms: <DIR>/frame_<TIMESTAMP>_002_50ms.png (<SIZE> KB)\n    Coordinate space: logical; origin (0, 0); size 1280x800; backend x11-scrot (normalized from 1280x800 X11 pixels; scale X11-0 1); coverage full; topology observed stable before/after capture"
+   }
+  },
+  {
+   "label": "session_stop.visual",
+   "tool": "session_stop",
+   "arguments": {},
+   "is_error": false,
+   "content_types": [
+    "text"
+   ],
+   "text": "Disconnected from live session.",
+   "structured": {
+    "result": "Disconnected from live session."
+   }
+  }
+ ]
+}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import select
 import shutil
 import signal
@@ -31,6 +32,8 @@ _REQUIRED_BUS_NAMES = {
     "org.a11y.Bus",
     "org.kde.KWin",
 }
+_KWIN_OUTPUT_WINDOW_TITLE = "KDE Wayland Compositor"
+_X_WINDOW_LINE = re.compile(r'^\s*(0x[0-9a-f]+) "([^"]*)".*\s(\d+)x(\d+)\+(-?\d+)\+(-?\d+)\s')
 
 
 @dataclass(frozen=True)
@@ -49,6 +52,7 @@ class NestedVisualKWin:
     screenshot_service_available: bool | None = None
     scale: float = 1.0
     screen_size: tuple[int, int] = (_SCREEN_WIDTH, _SCREEN_HEIGHT)
+    output_count: int = 1
 
 
 class _StartupError(RuntimeError):
@@ -98,6 +102,7 @@ env \
     LIBGL_ALWAYS_SOFTWARE=1 \
     "$VISUAL_KWIN_WAYLAND" \
         --x11-display "$DISPLAY" \
+        --output-count "$VISUAL_OUTPUT_COUNT" \
         --width "$VISUAL_SCREEN_WIDTH" \
         --height "$VISUAL_SCREEN_HEIGHT" \
         --no-lockscreen \
@@ -323,6 +328,57 @@ def _apply_output_scale(
     raise _StartupError(f"nested KWin output scale stayed {scales}, expected {scale:g}")
 
 
+def _output_windows(xwininfo: str, x_display: str) -> list[tuple[int, int, int]]:
+    """``(window id, x, y)`` of every KWin output window on the X root, by window id."""
+    result = subprocess.run(
+        [xwininfo, "-display", x_display, "-root", "-children"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    windows: list[tuple[int, int, int]] = []
+    for line in result.stdout.splitlines():
+        match = _X_WINDOW_LINE.match(line)
+        if match is not None and match.group(2).startswith(_KWIN_OUTPUT_WINDOW_TITLE):
+            windows.append((int(match.group(1), 16), int(match.group(5)), int(match.group(6))))
+    return sorted(windows)
+
+
+def _place_output_windows(*, x_display: str, output_count: int, output_width: int) -> None:
+    """Lay KWin's output windows side by side on the X root (window i at x = i * width).
+
+    Without a window manager every output window of KWin's X11 windowed backend
+    sits at 0,0. KWin creates output i's window i-th, so ascending X window ids are
+    output order [INFERENCE: X11 backend creates outputs in index order].
+    """
+    xwininfo = _executable("xwininfo")
+    xdotool = _executable("xdotool")
+    deadline = time.monotonic() + _X_READY_TIMEOUT
+    windows = _output_windows(xwininfo, x_display)
+    while len(windows) != output_count:
+        if time.monotonic() >= deadline:
+            raise _StartupError(f"expected {output_count} KWin output windows, saw {windows}")
+        time.sleep(0.1)
+        windows = _output_windows(xwininfo, x_display)
+    env = {**os.environ, "DISPLAY": x_display}
+    for index, (window_id, _, _) in enumerate(windows):
+        subprocess.run(
+            [xdotool, "windowmove", str(window_id), str(index * output_width), "0"],
+            env=env,
+            capture_output=True,
+            timeout=5,
+            check=True,
+        )
+    expected = [
+        (window_id, index * output_width, 0) for index, (window_id, _, _) in enumerate(windows)
+    ]
+    while (placed := _output_windows(xwininfo, x_display)) != expected:
+        if time.monotonic() >= deadline:
+            raise _StartupError(f"KWin output windows stayed at {placed}, expected {expected}")
+        time.sleep(0.1)
+
+
 def _log_excerpt(path: Path, limit: int = 2000) -> str:
     try:
         text = path.read_text(encoding="utf-8", errors="replace").strip()
@@ -349,13 +405,19 @@ def nested_visual_kwin(
     *,
     scale: float = 1.0,
     screen_size: tuple[int, int] = (_SCREEN_WIDTH, _SCREEN_HEIGHT),
+    output_count: int = 1,
 ) -> Generator[NestedVisualKWin]:
     """Run Xvfb and nested KWin, yielding connection details for ``session_connect``.
 
-    ``screen_size`` is the physical X11 output size; ``scale`` is applied to the
-    KWin output through kscreen-doctor before the fixture is yielded, so the
-    logical workspace is ``screen_size / scale``.
+    ``screen_size`` is the physical size of each X11 output window; ``scale`` is
+    applied to every KWin output through kscreen-doctor before the fixture is
+    yielded, so the logical size of each output is ``screen_size / scale``.
+    ``output_count`` outputs (``--output-count``) share an Xvfb screen of
+    ``(width * output_count) x height`` with output i's window at x = i * width.
     """
+    if isinstance(output_count, bool) or output_count < 1:
+        msg = f"output_count must be a positive integer, got {output_count!r}"
+        raise ValueError(msg)
     screen_width, screen_height = screen_size
     artifact_root_value = os.environ.get("KWIN_MCP_ARTIFACT_DIR")
     if not artifact_root_value:
@@ -432,7 +494,7 @@ def nested_visual_kwin(
                     str(display_write_fd),
                     "-screen",
                     "0",
-                    f"{screen_width}x{screen_height}x24",
+                    f"{screen_width * output_count}x{screen_height}x24",
                     "-nolisten",
                     "tcp",
                     "-noreset",
@@ -467,6 +529,7 @@ def nested_visual_kwin(
             "VISUAL_DBUS_UPDATE_ENVIRONMENT": dbus_update_environment,
             "VISUAL_DBUS_ADDRESS_PATH": str(address_path),
             "VISUAL_WAYLAND_DISPLAY": wayland_display,
+            "VISUAL_OUTPUT_COUNT": str(output_count),
             "VISUAL_KWIN_WAYLAND": kwin_wayland,
             "VISUAL_SCREEN_HEIGHT": str(screen_height),
             "VISUAL_SCREEN_WIDTH": str(screen_width),
@@ -493,6 +556,10 @@ def nested_visual_kwin(
             address_path=address_path,
             socket_path=socket_path,
         )
+        if output_count > 1:
+            _place_output_windows(
+                x_display=x_display, output_count=output_count, output_width=screen_width
+            )
         if scale != 1.0:
             _apply_output_scale(
                 dbus_address=dbus_address,
@@ -515,6 +582,7 @@ def nested_visual_kwin(
             screenshot_service_available=screenshot_service_available,
             scale=scale,
             screen_size=screen_size,
+            output_count=output_count,
         )
     except _StartupError as error:
         _terminate_process_group(kwin_process)

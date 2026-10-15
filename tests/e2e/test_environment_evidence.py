@@ -24,6 +24,10 @@ ENVIRONMENT_FIELDS = {
 }
 SECRET_NAME = "KWIN_MCP_TEST_SECRET"
 SECRET_VALUE = "environment-recorder-must-not-expose-this"
+# The GtkLayerShell package name per distro image (Debian, Fedora/Arch, openSUSE).
+LAYER_SHELL_PACKAGES = frozenset(
+    {"gir1.2-gtklayershell-0.1", "gtk-layer-shell", "typelib-1_0-GtkLayerShell-0_1"}
+)
 
 
 def run_recorder(artifact_dir: Path, *argv: str) -> subprocess.CompletedProcess[str]:
@@ -102,6 +106,11 @@ def test_recorder_creates_allowlisted_provenance_with_installed_versions(
     assert set(packages) == set(expected_packages)
     missing = [package for package in expected_packages if not packages[package]]
     assert missing == [], f"installed versions not recorded for: {missing}"
+    # window_zoo's layer-shell surfaces need the GtkLayerShell typelib; every image
+    # must install it and the recorder must pin its version.
+    layer_shell = [package for package in packages if package in LAYER_SHELL_PACKAGES]
+    assert len(layer_shell) == 1, f"no layer-shell package recorded: {sorted(packages)}"
+    assert packages[layer_shell[0]], f"no version recorded for {layer_shell[0]}"
 
     assert SECRET_NAME not in contents
     assert SECRET_VALUE not in contents

@@ -11,12 +11,13 @@ When KWin drops the EIS connection altogether, input tools must fail instead
 of reporting input that never arrived. Races and orderings KWin cannot be made
 to produce on demand are covered by the scripted-libei units in
 ``test_eis_handshake.py``.
+
+The triggers (``KeyboardLayoutTrigger``, ``change_output``, ``disconnect_eis``) are
+importable: ``test_eis_held_revalidation.py`` and the held-input tests reuse them.
 """
 
 from __future__ import annotations
 
-import ast
-import re
 import time
 from typing import TYPE_CHECKING
 
@@ -26,97 +27,29 @@ import pytest
 from dbus.lowlevel import SignalMessage
 from dbus.mainloop.glib import DBusGMainLoop
 from gi.repository import GLib
+from probe_session import POLL_S, Probe, field, start_probe_session
 from visual_harness import _apply_output_scale
+
+from kwin_mcp.models import HeldInput
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
     from kwin_mcp.core import AutomationEngine
-    from kwin_mcp.session import SessionInfo
 
-PROBE_COMMAND = "python3 /app/tests/e2e/interaction_probe.py"
-PROBE_SELECTOR = "interaction_probe.py"
-PROBE_ENV = {
-    "GDK_BACKEND": "wayland",
-    "GTK_MODULES": "gail:atk-bridge",
-    "NO_AT_BRIDGE": "0",
-    "XDG_SESSION_TYPE": "wayland",
-}
-POLL_INTERVAL_SECONDS = 0.1
-STATE_TIMEOUT_SECONDS = 5.0
 LAYOUT_SIGNAL_TIMEOUT_SECONDS = 5.0
 # An output change KWin applies through KScreen, like a user changing scale.
 OUTPUT_SCALE = 1.25
 # Input tools must report a dropped EIS connection without stalling.
 DISCONNECT_FAILURE_SECONDS = 1.0
-_RECT = r"\((-?\d+), (-?\d+), (\d+)x(\d+)\)"
-_KEYBOARD_TARGET_LINE = re.compile(r'^\s*- \[[^]]+\] "Keyboard Target"(?:\s|$)')
+EIS_CLOSED = "KWin closed the EIS connection; input is unavailable"
+EIS_DISCONNECTED_WARNING = (
+    "EIS disconnected: held input is no longer tracked; KWin may keep it pressed"
+)
 
 
-@pytest.fixture
-def probe_session(engine: AutomationEngine, start_session: Callable[..., str]) -> SessionInfo:
-    """A virtual session running the interaction probe with EIS input."""
-    output = start_session(PROBE_COMMAND, env=PROBE_ENV)
-    assert "Input backend: KWin EIS" in output, output
-    waited = engine.wait_for_element(
-        query="Keyboard Target", app_name=PROBE_SELECTOR, timeout_ms=15_000
-    )
-    assert "Keyboard Target" in waited, waited[:1500]
-    info = engine._get_session().info
-    assert info is not None
-    return info
-
-
-def _tree(engine: AutomationEngine) -> str:
-    return engine.accessibility_tree(app_name=PROBE_SELECTOR)
-
-
-def _entry_text(tree: str) -> str:
-    for line in tree.splitlines():
-        if _KEYBOARD_TARGET_LINE.match(line) is None:
-            continue
-        match = re.search(r"\btext=(.+?)(?: \[actions:|$)", line)
-        return ast.literal_eval(match.group(1)) if match is not None else ""
-    raise AssertionError(f"Keyboard Target was absent from the accessibility tree:\n{tree[:2000]}")
-
-
-def _wait_for_entry_text(engine: AutomationEngine, expected: str) -> None:
-    deadline = time.monotonic() + STATE_TIMEOUT_SECONDS
-    actual = _entry_text(_tree(engine))
-    while actual != expected and time.monotonic() < deadline:
-        time.sleep(POLL_INTERVAL_SECONDS)
-        actual = _entry_text(_tree(engine))
-    assert actual == expected, f"Keyboard Target text is {actual!r}, expected {expected!r}"
-
-
-def _status(tree: str, prefix: str) -> str:
-    matches = re.findall(rf'\[label] "({re.escape(prefix)}[^"]*)"', tree)
-    assert len(matches) == 1, tree[:2000]
-    return matches[0]
-
-
-def _wait_for_status_change(engine: AutomationEngine, prefix: str, previous: str) -> str:
-    deadline = time.monotonic() + STATE_TIMEOUT_SECONDS
-    current = _status(_tree(engine), prefix)
-    while current == previous and time.monotonic() < deadline:
-        time.sleep(POLL_INTERVAL_SECONDS)
-        current = _status(_tree(engine), prefix)
-    assert current != previous, f"{prefix} stayed {previous!r}"
-    return current
-
-
-def _center(engine: AutomationEngine, name: str) -> tuple[int, int]:
-    elements = engine.find_ui_elements(query=name, app_name=PROBE_SELECTOR)
-    matches = re.findall(
-        rf'^- \[[^]]+] "{re.escape(name)}" @ screen {_RECT}(?:\s|$)', elements, re.MULTILINE
-    )
-    assert len(matches) == 1, elements[:1500]
-    x, y, width, height = map(int, matches[0])
-    return x + width // 2, y + height // 2
-
-
-class _KeyboardLayoutTrigger:
+class KeyboardLayoutTrigger:
     """Make KWin reconfigure its keyboard layouts, as a layout settings change does.
 
     KWin 6.4+ watches kxkbrc through KConfigWatcher and KWin 6.3 listens for
@@ -156,7 +89,7 @@ class _KeyboardLayoutTrigger:
         deadline = time.monotonic() + LAYOUT_SIGNAL_TIMEOUT_SECONDS
         while self._announced < expected and time.monotonic() < deadline:
             if not context.iteration(False):
-                time.sleep(POLL_INTERVAL_SECONDS)
+                time.sleep(POLL_S)
         assert self._announced >= expected, "KWin did not reconfigure its keyboard layouts"
 
     def _barrier(self) -> None:
@@ -167,66 +100,26 @@ class _KeyboardLayoutTrigger:
         self._announced += 1
 
 
-def test_keyboard_input_survives_layout_reconfigures(
-    engine: AutomationEngine, probe_session: SessionInfo
-) -> None:
-    engine.keyboard_type("before")
-    _wait_for_entry_text(engine, "before")
-
-    trigger = _KeyboardLayoutTrigger(probe_session.dbus_address)
-    try:
-        trigger.reconfigure()
-        engine.keyboard_type(" after")
-        _wait_for_entry_text(engine, "before after")
-
-        trigger.reconfigure()
-        engine.keyboard_type(" again")
-        _wait_for_entry_text(engine, "before after again")
-    finally:
-        trigger.close()
-
-    assert engine.session_stop() == "Session stopped."
-
-
-def test_touch_first_then_click_survive_output_change(
-    engine: AutomationEngine, probe_session: SessionInfo, tmp_path: Path
-) -> None:
-    click_status = _status(_tree(engine), "click_status:")
-    engine.mouse_click(*_center(engine, "Click Target"))
-    control = _wait_for_status_change(engine, "click_status:", click_status)
-    assert "button=left count=1" in control, control
-
+def change_output(engine: AutomationEngine, log_dir: Path) -> None:
+    """Rescale every output through KScreen: KWin replaces the absolute pointer device."""
+    info = engine.session_info().session
+    assert info is not None
     _apply_output_scale(
-        dbus_address=probe_session.dbus_address,
-        wayland_display=probe_session.wayland_socket,
+        dbus_address=info.dbus_address,
+        wayland_display=info.wayland_socket,
         scale=OUTPUT_SCALE,
-        log_path=tmp_path / "kscreen-doctor.log",
+        log_path=log_dir / "kscreen-doctor.log",
         isolated_home={},
     )
 
-    # Touch goes first: it resolves the replaced absolute device before any
-    # pointer call could have picked up the new one.
-    drag_status = _status(_tree(engine), "drag_status:")
-    engine.touch_tap(*_center(engine, "Drag Target"))
-    touched = _wait_for_status_change(engine, "drag_status:", drag_status)
-    assert "source=touch" in touched, touched
 
-    click_status = _status(_tree(engine), "click_status:")
-    engine.mouse_click(*_center(engine, "Click Target"), button="right")
-    clicked = _wait_for_status_change(engine, "click_status:", click_status)
-    assert "button=right" in clicked, clicked
-
-
-def test_input_tools_error_after_eis_disconnect(
-    engine: AutomationEngine, probe_session: SessionInfo
-) -> None:
-    engine.keyboard_type("before")
-    _wait_for_entry_text(engine, "before")
-    target = _center(engine, "Click Target")
-
+def disconnect_eis(engine: AutomationEngine) -> None:
+    """Close kwin-mcp's EIS connection from KWin's side (RemoteDesktop.disconnect)."""
+    info = engine.session_info().session
+    assert info is not None
     assert engine._input is not None
     cookie = engine._input._client._cookie
-    bus = dbus.bus.BusConnection(probe_session.dbus_address)
+    bus = dbus.bus.BusConnection(info.dbus_address)
     try:
         remote_desktop = dbus.Interface(
             bus.get_object("org.kde.KWin", "/org/kde/KWin/EIS/RemoteDesktop"),
@@ -236,16 +129,100 @@ def test_input_tools_error_after_eis_disconnect(
     finally:
         bus.close()
 
+
+def wait_for_entry_text(probe: Probe, expected: str) -> None:
+    deadline = time.monotonic() + 5.0
+    actual = probe.entry_text()
+    while actual != expected and time.monotonic() < deadline:
+        time.sleep(POLL_S)
+        actual = probe.entry_text()
+    assert actual == expected, f"Keyboard Target text is {actual!r}, expected {expected!r}"
+
+
+@pytest.fixture
+def probe(engine: AutomationEngine, tmp_path: Path) -> Probe:
+    return start_probe_session(engine, tmp_path)
+
+
+def _wait_change(probe: Probe, prefix: str, previous: str) -> str:
+    return probe.wait_status(prefix, lambda s: s != previous)
+
+
+def test_keyboard_input_survives_layout_reconfigures(
+    engine: AutomationEngine, probe: Probe
+) -> None:
+    engine.keyboard_type("before")
+    wait_for_entry_text(probe, "before")
+
+    trigger = KeyboardLayoutTrigger(probe.dbus_address)
+    try:
+        trigger.reconfigure()
+        engine.keyboard_type(" after")
+        wait_for_entry_text(probe, "before after")
+
+        trigger.reconfigure()
+        engine.keyboard_type(" again")
+        wait_for_entry_text(probe, "before after again")
+    finally:
+        trigger.close()
+
+    stopped = engine.session_stop()
+    assert stopped.stopped and stopped.released == HeldInput()
+
+
+def test_touch_first_then_click_survive_output_change(
+    engine: AutomationEngine, probe: Probe, tmp_path: Path
+) -> None:
+    click_status = probe.status("click_status:")
+    engine.pointer_click(probe.center("Click Target"))
+    control = _wait_change(probe, "click_status:", click_status)
+    assert "button=left count=1" in control, control
+
+    change_output(engine, tmp_path)
+
+    # Touch goes first: it resolves the replaced absolute device before any
+    # pointer call could have picked up the new one.
+    drag_status = probe.status("drag_status:")
+    engine.touch_tap(probe.center("Drag Target"))
+    touched = _wait_change(probe, "drag_status:", drag_status)
+    assert field(touched, "source") == "touch", touched
+
+    click_status = probe.status("click_status:")
+    engine.pointer_click(probe.center("Click Target"), button="right")
+    clicked = _wait_change(probe, "click_status:", click_status)
+    assert field(clicked, "button") == "right", clicked
+
+
+@pytest.mark.qa("QA-INP-045")
+def test_input_tools_error_after_eis_disconnect(engine: AutomationEngine, probe: Probe) -> None:
+    engine.keyboard_type("before")
+    wait_for_entry_text(probe, "before")
+    target = probe.center("Click Target")
+
+    disconnect_eis(engine)
+
+    # The next revalidation (here session_info) reports the loss eagerly.
+    deadline = time.monotonic() + 5.0
+    info = engine.session_info()
+    while EIS_DISCONNECTED_WARNING not in info.warnings:
+        assert time.monotonic() < deadline, info.render()
+        time.sleep(POLL_S)
+        info = engine.session_info()
+    assert info.held == HeldInput()
+    assert info.session is not None and info.session.input_backend is None, info.render()
+
     tools: dict[str, Callable[[], object]] = {
         "keyboard_type": lambda: engine.keyboard_type("x"),
-        "mouse_click": lambda: engine.mouse_click(*target),
-        "touch_tap": lambda: engine.touch_tap(*target),
+        "pointer_click": lambda: engine.pointer_click(target),
+        "touch_tap": lambda: engine.touch_tap(target),
     }
     for name, call in tools.items():
         started = time.monotonic()
-        with pytest.raises(RuntimeError, match=r"(?i)pointer|keyboard|touch|connection"):
+        with pytest.raises(RuntimeError, match=EIS_CLOSED):
             call()
         elapsed = time.monotonic() - started
         assert elapsed < DISCONNECT_FAILURE_SECONDS, (name, elapsed)
+    wait_for_entry_text(probe, "before")
 
-    assert engine.session_stop() == "Session stopped."
+    stopped = engine.session_stop()
+    assert stopped.stopped and stopped.released == HeldInput()

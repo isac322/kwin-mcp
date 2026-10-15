@@ -1,0 +1,1314 @@
+{
+ "scenario": "touch_multi_swipe_2",
+ "captured_from": "kwin-mcp 0.11.0 @ 7a5d781 (AutomationEngine, virtual KWin session)",
+ "call": {
+  "duration_ms": 300,
+  "fingers": 2,
+  "from_local": [
+   300,
+   150
+  ],
+  "to_local": [
+   300,
+   450
+  ],
+  "tool": "touch_multi_swipe"
+ },
+ "returned_text": [
+  "2-finger swipe from (440, 242) to (440, 542) in 300ms"
+ ],
+ "probe": {
+  "client_size": [
+   1000,
+   640
+  ],
+  "coordinates": "probe-local logical px (global = client origin + local)"
+ },
+ "repeats": 5,
+ "sequence": [
+  {
+   "kind": "touch_begin",
+   "x": 300,
+   "y": 140,
+   "touch": 0
+  },
+  {
+   "kind": "touch_begin",
+   "x": 300,
+   "y": 160,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 150,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 170,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 160,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 180,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 170,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 190,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 180,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 200,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 190,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 210,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 200,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 220,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 210,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 230,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 220,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 240,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 230,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 250,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 240,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 260,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 250,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 270,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 260,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 280,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 270,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 290,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 280,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 300,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 290,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 310,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 300,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 320,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 310,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 330,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 320,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 340,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 330,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 350,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 340,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 360,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 350,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 370,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 360,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 380,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 370,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 390,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 380,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 400,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 390,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 410,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 400,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 420,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 410,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 430,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 420,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 440,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 430,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 450,
+   "touch": 1
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 440,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 460,
+   "touch": 1
+  },
+  {
+   "kind": "touch_end",
+   "x": 300,
+   "y": 440,
+   "touch": 0
+  },
+  {
+   "kind": "touch_end",
+   "x": 300,
+   "y": 460,
+   "touch": 1
+  }
+ ],
+ "gaps_ms": [
+  {
+   "from": 0,
+   "to": 1,
+   "mono": {
+    "min": 0.12,
+    "median": 0.2,
+    "max": 0.34
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 2.0
+   }
+  },
+  {
+   "from": 1,
+   "to": 2,
+   "mono": {
+    "min": 0.05,
+    "median": 0.1,
+    "max": 0.18
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 0.0
+   }
+  },
+  {
+   "from": 2,
+   "to": 3,
+   "mono": {
+    "min": 0.04,
+    "median": 0.09,
+    "max": 0.14
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 0.0
+   }
+  },
+  {
+   "from": 3,
+   "to": 4,
+   "mono": {
+    "min": 2.0,
+    "median": 9.88,
+    "max": 10.32
+   },
+   "event_clock": {
+    "min": 8.0,
+    "median": 10.0,
+    "max": 11.0
+   }
+  },
+  {
+   "from": 4,
+   "to": 5,
+   "mono": {
+    "min": 0.11,
+    "median": 0.15,
+    "max": 0.33
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 5,
+   "to": 6,
+   "mono": {
+    "min": 10.61,
+    "median": 11.69,
+    "max": 12.07
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 12.0,
+    "max": 12.0
+   }
+  },
+  {
+   "from": 6,
+   "to": 7,
+   "mono": {
+    "min": 0.1,
+    "median": 0.17,
+    "max": 0.26
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 7,
+   "to": 8,
+   "mono": {
+    "min": 11.0,
+    "median": 11.17,
+    "max": 12.98
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 11.0,
+    "max": 13.0
+   }
+  },
+  {
+   "from": 8,
+   "to": 9,
+   "mono": {
+    "min": 0.1,
+    "median": 0.2,
+    "max": 0.33
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 0.0
+   }
+  },
+  {
+   "from": 9,
+   "to": 10,
+   "mono": {
+    "min": 10.43,
+    "median": 12.51,
+    "max": 13.83
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 13.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 10,
+   "to": 11,
+   "mono": {
+    "min": 0.09,
+    "median": 0.14,
+    "max": 0.31
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 0.0
+   }
+  },
+  {
+   "from": 11,
+   "to": 12,
+   "mono": {
+    "min": 10.94,
+    "median": 11.78,
+    "max": 14.02
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 12.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 12,
+   "to": 13,
+   "mono": {
+    "min": 0.11,
+    "median": 0.18,
+    "max": 0.26
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 0.0
+   }
+  },
+  {
+   "from": 13,
+   "to": 14,
+   "mono": {
+    "min": 9.87,
+    "median": 12.12,
+    "max": 12.69
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 12.0,
+    "max": 13.0
+   }
+  },
+  {
+   "from": 14,
+   "to": 15,
+   "mono": {
+    "min": 0.1,
+    "median": 0.18,
+    "max": 0.36
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 0.0
+   }
+  },
+  {
+   "from": 15,
+   "to": 16,
+   "mono": {
+    "min": 12.82,
+    "median": 13.06,
+    "max": 14.16
+   },
+   "event_clock": {
+    "min": 13.0,
+    "median": 13.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 16,
+   "to": 17,
+   "mono": {
+    "min": 0.1,
+    "median": 0.19,
+    "max": 0.43
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 17,
+   "to": 18,
+   "mono": {
+    "min": 10.06,
+    "median": 11.02,
+    "max": 12.28
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 11.0,
+    "max": 12.0
+   }
+  },
+  {
+   "from": 18,
+   "to": 19,
+   "mono": {
+    "min": 0.17,
+    "median": 0.2,
+    "max": 0.3
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 19,
+   "to": 20,
+   "mono": {
+    "min": 10.97,
+    "median": 12.22,
+    "max": 13.88
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 13.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 20,
+   "to": 21,
+   "mono": {
+    "min": 0.09,
+    "median": 0.2,
+    "max": 0.25
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 21,
+   "to": 22,
+   "mono": {
+    "min": 11.04,
+    "median": 12.43,
+    "max": 14.83
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 12.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 22,
+   "to": 23,
+   "mono": {
+    "min": 0.23,
+    "median": 0.37,
+    "max": 0.51
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 23,
+   "to": 24,
+   "mono": {
+    "min": 10.74,
+    "median": 12.06,
+    "max": 14.15
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 12.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 24,
+   "to": 25,
+   "mono": {
+    "min": 0.21,
+    "median": 0.29,
+    "max": 0.56
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 0.0
+   }
+  },
+  {
+   "from": 25,
+   "to": 26,
+   "mono": {
+    "min": 10.41,
+    "median": 13.91,
+    "max": 14.51
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 14.0,
+    "max": 15.0
+   }
+  },
+  {
+   "from": 26,
+   "to": 27,
+   "mono": {
+    "min": 0.13,
+    "median": 0.31,
+    "max": 0.4
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 0.0
+   }
+  },
+  {
+   "from": 27,
+   "to": 28,
+   "mono": {
+    "min": 10.13,
+    "median": 11.74,
+    "max": 14.93
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 12.0,
+    "max": 15.0
+   }
+  },
+  {
+   "from": 28,
+   "to": 29,
+   "mono": {
+    "min": 0.25,
+    "median": 0.28,
+    "max": 0.39
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 29,
+   "to": 30,
+   "mono": {
+    "min": 12.03,
+    "median": 13.25,
+    "max": 14.25
+   },
+   "event_clock": {
+    "min": 12.0,
+    "median": 13.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 30,
+   "to": 31,
+   "mono": {
+    "min": 0.16,
+    "median": 0.35,
+    "max": 0.41
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 1.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 31,
+   "to": 32,
+   "mono": {
+    "min": 10.3,
+    "median": 11.73,
+    "max": 14.46
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 15.0
+   }
+  },
+  {
+   "from": 32,
+   "to": 33,
+   "mono": {
+    "min": 0.17,
+    "median": 0.26,
+    "max": 0.53
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 33,
+   "to": 34,
+   "mono": {
+    "min": 10.21,
+    "median": 10.93,
+    "max": 13.05
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 13.0
+   }
+  },
+  {
+   "from": 34,
+   "to": 35,
+   "mono": {
+    "min": 0.11,
+    "median": 0.28,
+    "max": 0.51
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 0.0
+   }
+  },
+  {
+   "from": 35,
+   "to": 36,
+   "mono": {
+    "min": 10.06,
+    "median": 12.23,
+    "max": 13.84
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 13.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 36,
+   "to": 37,
+   "mono": {
+    "min": 0.1,
+    "median": 0.38,
+    "max": 0.47
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 37,
+   "to": 38,
+   "mono": {
+    "min": 10.12,
+    "median": 11.74,
+    "max": 14.05
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 38,
+   "to": 39,
+   "mono": {
+    "min": 0.11,
+    "median": 0.19,
+    "max": 0.34
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 0.0
+   }
+  },
+  {
+   "from": 39,
+   "to": 40,
+   "mono": {
+    "min": 10.06,
+    "median": 10.77,
+    "max": 11.06
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 11.0
+   }
+  },
+  {
+   "from": 40,
+   "to": 41,
+   "mono": {
+    "min": 0.11,
+    "median": 0.4,
+    "max": 0.58
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 41,
+   "to": 42,
+   "mono": {
+    "min": 10.03,
+    "median": 12.21,
+    "max": 13.7
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 12.0,
+    "max": 13.0
+   }
+  },
+  {
+   "from": 42,
+   "to": 43,
+   "mono": {
+    "min": 0.1,
+    "median": 0.38,
+    "max": 0.58
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 43,
+   "to": 44,
+   "mono": {
+    "min": 9.21,
+    "median": 10.24,
+    "max": 12.37
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 10.0,
+    "max": 12.0
+   }
+  },
+  {
+   "from": 44,
+   "to": 45,
+   "mono": {
+    "min": 0.1,
+    "median": 0.19,
+    "max": 0.35
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 45,
+   "to": 46,
+   "mono": {
+    "min": 10.18,
+    "median": 11.42,
+    "max": 14.26
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 12.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 46,
+   "to": 47,
+   "mono": {
+    "min": 0.1,
+    "median": 0.18,
+    "max": 0.47
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 47,
+   "to": 48,
+   "mono": {
+    "min": 10.47,
+    "median": 11.03,
+    "max": 13.69
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 48,
+   "to": 49,
+   "mono": {
+    "min": 0.11,
+    "median": 0.27,
+    "max": 0.64
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 1.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 49,
+   "to": 50,
+   "mono": {
+    "min": 9.82,
+    "median": 12.07,
+    "max": 13.96
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 12.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 50,
+   "to": 51,
+   "mono": {
+    "min": 0.1,
+    "median": 0.25,
+    "max": 0.35
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 0.0
+   }
+  },
+  {
+   "from": 51,
+   "to": 52,
+   "mono": {
+    "min": 10.09,
+    "median": 12.73,
+    "max": 15.08
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 13.0,
+    "max": 15.0
+   }
+  },
+  {
+   "from": 52,
+   "to": 53,
+   "mono": {
+    "min": 0.17,
+    "median": 0.31,
+    "max": 0.58
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 0.0
+   }
+  },
+  {
+   "from": 53,
+   "to": 54,
+   "mono": {
+    "min": 9.79,
+    "median": 11.6,
+    "max": 14.05
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 12.0,
+    "max": 15.0
+   }
+  },
+  {
+   "from": 54,
+   "to": 55,
+   "mono": {
+    "min": 0.1,
+    "median": 0.27,
+    "max": 0.34
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 55,
+   "to": 56,
+   "mono": {
+    "min": 10.31,
+    "median": 11.64,
+    "max": 14.62
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 12.0,
+    "max": 15.0
+   }
+  },
+  {
+   "from": 56,
+   "to": 57,
+   "mono": {
+    "min": 0.11,
+    "median": 0.27,
+    "max": 0.33
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 57,
+   "to": 58,
+   "mono": {
+    "min": 10.21,
+    "median": 12.75,
+    "max": 13.67
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 13.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 58,
+   "to": 59,
+   "mono": {
+    "min": 0.1,
+    "median": 0.32,
+    "max": 0.55
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 59,
+   "to": 60,
+   "mono": {
+    "min": 10.49,
+    "median": 11.11,
+    "max": 13.91
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 15.0
+   }
+  },
+  {
+   "from": 60,
+   "to": 61,
+   "mono": {
+    "min": 0.24,
+    "median": 0.34,
+    "max": 0.47
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 61,
+   "to": 62,
+   "mono": {
+    "min": 9.56,
+    "median": 11.2,
+    "max": 13.49
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 13.0
+   }
+  },
+  {
+   "from": 62,
+   "to": 63,
+   "mono": {
+    "min": 0.13,
+    "median": 0.36,
+    "max": 0.66
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 1.0,
+    "max": 1.0
+   }
+  }
+ ],
+ "call_start_to_first_event_ms": {
+  "min": 0.56,
+  "median": 1.17,
+  "max": 9.76
+ },
+ "last_event_to_call_return_ms": {
+  "min": -0.83,
+  "median": -0.36,
+  "max": -0.2
+ },
+ "first_to_last_event_ms": {
+  "min": 329.16,
+  "median": 372.85,
+  "max": 385.58
+ },
+ "other_variants": []
+}

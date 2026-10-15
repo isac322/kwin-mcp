@@ -795,3 +795,37 @@ def test_failed_negotiation_releases_context_and_disconnects(
 
     assert iface.disconnects == [COOKIE]
     assert libei.unref_calls == 1
+
+
+@pytest.mark.qa("QA-INP-072")
+def test_touch_fallback_to_pointer_slot(
+    monkeypatch: pytest.MonkeyPatch, eis_pipe: tuple[int, int]
+) -> None:
+    """A KWin without a touch-capable device gets touches through the absolute pointer."""
+    read_end, write_end = eis_pipe
+    no_touch = {
+        **CAPABILITIES,
+        ABSOLUTE: _ABSOLUTE_CAPABILITIES & ~EI_DEVICE_CAP_TOUCH,
+    }
+    libei = _ScriptedLibei(HANDSHAKE, read_end, write_fd=write_end, capabilities=no_touch)
+    client = _construct(monkeypatch, libei)
+    libei.device_calls.clear()
+
+    touch_id = client.touch_down(10.0, 20.0)
+    client.touch_move(touch_id, 15.0, 25.0)
+    client.touch_up(touch_id)
+
+    assert client._touch_device == 0
+    assert [name for name, device in libei.device_calls if device == ABSOLUTE] == [
+        "ei_device_touch_new",
+        "ei_touch_down",
+        "ei_device_frame",
+        "ei_touch_motion",
+        "ei_device_frame",
+        "ei_touch_up",
+        "ei_device_frame",
+    ]
+    assert {device for _, device in libei.device_calls} == {ABSOLUTE}
+    [touch] = libei.touches
+    assert libei.touches[touch] == ABSOLUTE
+    assert libei.touch_unrefs == {touch: 1}

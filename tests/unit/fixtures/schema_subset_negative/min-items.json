@@ -1,0 +1,13 @@
+{
+ "type": "object",
+ "properties": {
+  "a": {
+   "type": "string",
+   "minItems": 1
+  }
+ },
+ "required": [
+  "a"
+ ],
+ "additionalProperties": false
+}

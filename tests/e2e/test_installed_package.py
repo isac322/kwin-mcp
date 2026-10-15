@@ -1,4 +1,4 @@
-"""Verify the E2E image runs the installed kwin-mcp distribution."""
+"""Verify the E2E image runs the installed kwin-mcp 1.0.0 distribution."""
 
 from __future__ import annotations
 
@@ -6,29 +6,71 @@ import importlib
 import importlib.metadata
 import os
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
+from mcp_harness import running_mcp_server
+from tool_surface import TOOL_NAMES
+
+from kwin_mcp import server
 
 VENV_ROOT = Path("/opt/kwin-mcp-venv")
 VENV_BIN = VENV_ROOT / "bin"
+PYPROJECT = Path(__file__).resolve().parents[2] / "pyproject.toml"
+RELEASE_VERSION = "1.0.0"
+STABLE_CLASSIFIER = "Development Status :: 5 - Production/Stable"
+ALPHA_CLASSIFIER = "Development Status :: 3 - Alpha"
 EXPECTED_ENTRY_POINTS = {
     "kwin-mcp": ("kwin_mcp.server", "main"),
     "kwin-mcp-cli": ("kwin_mcp.cli", "main"),
 }
+# Every module of the 1.0 package, plus the typing marker; results.py was removed in 1.0.
+PACKAGE_FILES = (
+    *tuple(
+        f"kwin_mcp/{module}.py"
+        for module in (
+            "__init__",
+            "__main__",
+            "server",
+            "cli",
+            "core",
+            "models",
+            "session",
+            "screenshot",
+            "accessibility",
+            "input",
+            "clipboard",
+            "progress",
+            "geometry",
+            "dbus_args",
+        )
+    ),
+    "kwin_mcp/py.typed",
+)
+REMOVED_PACKAGE_FILES = ("kwin_mcp/results.py",)
 RUNTIME_IMPORTS = (
     "mcp.server.mcpserver",
     "dbus.mainloop.glib",
     "PIL.Image",
 )
-SERVER_FLAGS = ("--default-live-session", "--screenshot-images", "--screenshot-max-edge")
+SERVER_FLAGS = (
+    "--default-live-session",
+    "--screenshot-images",
+    "--screenshot-max-edge",
+    "--live-consent {elicit,refuse}",
+)
+DOCUMENTATION_LINE = "Documentation: https://github.com/isac322/kwin-mcp#readme\n"
 SERVER_HELP_COMMANDS = (
     (VENV_BIN / "kwin-mcp", "--help"),
     (VENV_BIN / "kwin-mcp", "-h"),
     (VENV_BIN / "python", "-m", "kwin_mcp", "--help"),
+    (VENV_BIN / "kwin-mcp", "--default-live-session", "--help"),
     # Help wins over any other argument, even an invalid one before or after it.
+    (VENV_BIN / "kwin-mcp", "--bogus", "--help"),
     (VENV_BIN / "kwin-mcp", "--screenshot-max-edge", "abc", "--help"),
     (VENV_BIN / "kwin-mcp", "--help", "--screenshot-max-edge", "abc"),
+    (VENV_BIN / "kwin-mcp", "--live-consent=bogus", "--help"),
 )
 # Arguments the server rejects as a usage error (exit 2) before it starts serving,
 # with the stable fragment of argparse's error line.
@@ -39,7 +81,25 @@ SERVER_USAGE_ERRORS = (
     (("--default",), "unrecognized arguments: --default"),
     # Superscript two: str.isdigit() accepts it, int() raises ValueError.
     (("--screenshot-max-edge", "\u00b2"), "needs a pixel count"),
+    # Arabic-Indic three: int() accepts it, but it is not an ASCII pixel count.
+    (("--screenshot-max-edge", "\u0663"), "needs a pixel count"),
+    (("--screenshot-max-edge=-1",), "needs a pixel count"),
+    (("--screenshot-max-edge", "0x10"), "needs a pixel count"),
+    (
+        ("--screenshot-max-edge", "1", "--screenshot-max-edge", "2"),
+        "--screenshot-max-edge may only be specified once",
+    ),
+    (("--live-consent=bogus",), "argument --live-consent: invalid choice"),
+    (("--live-consent",), "argument --live-consent: expected one argument"),
+    (
+        ("--live-consent=elicit", "--live-consent=refuse"),
+        "--live-consent may only be specified once",
+    ),
 )
+
+
+def _pyproject_project() -> dict[str, object]:
+    return tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["project"]
 
 
 def test_kwin_mcp_is_loaded_from_the_runtime_venv() -> None:
@@ -60,6 +120,37 @@ def test_distribution_metadata_owns_the_imported_package() -> None:
         Path(str(distribution.locate_file("kwin_mcp"))).resolve()
         == Path(package.__file__).resolve().parent
     )
+
+
+@pytest.mark.qa("QA-PKG-001")
+def test_wheel_contents() -> None:
+    """The installed wheel's RECORD lists every 1.0 module and nothing removed or cached."""
+    distribution = importlib.metadata.distribution("kwin-mcp")
+    assert distribution.files is not None
+    installed = {file.as_posix() for file in distribution.files}
+
+    missing = [path for path in PACKAGE_FILES if path not in installed]
+    assert missing == []
+    assert [path for path in REMOVED_PACKAGE_FILES if path in installed] == []
+    assert [path for path in installed if "__pycache__" in path and "kwin_mcp" in path] == []
+    assert [path for path in installed if path.startswith("tests/")] == []
+    metadata = distribution.metadata
+    assert metadata["Requires-Python"] == ">=3.12"
+    requirements = [req.replace(" ", "") for req in distribution.requires or []]
+    assert any(req.startswith("mcp") and "<3" in req and ">=2.2.0" in req for req in requirements)
+    summary = metadata["Summary"]
+    assert len(summary) <= 120
+    for term in ("MCP server", "Linux", "GUI automation", "KDE Plasma", "Wayland"):
+        assert term in summary, term
+
+
+@pytest.mark.qa("QA-PKG-005")
+def test_classifier_production_stable() -> None:
+    classifiers = importlib.metadata.distribution("kwin-mcp").metadata.get_all("Classifier") or []
+
+    assert STABLE_CLASSIFIER in classifiers
+    assert ALPHA_CLASSIFIER not in classifiers
+    assert classifiers == _pyproject_project()["classifiers"]
 
 
 @pytest.mark.parametrize("module_name", RUNTIME_IMPORTS)
@@ -91,7 +182,24 @@ def test_console_entry_points_are_installed_and_load_expected_callables() -> Non
 
         assert script.is_file(), script
         assert os.access(script, os.X_OK), script
+        assert entry_points[command].value == f"{module_name}:{attribute_name}"
         assert entry_points[command].load() is expected_callable
+
+
+@pytest.mark.qa("QA-PKG-002")
+@pytest.mark.anyio
+async def test_console_entry_points_and_version() -> None:
+    """Installed metadata, pyproject.toml and the server's serverInfo agree on 1.0.0."""
+    installed_version = importlib.metadata.version("kwin-mcp")
+
+    async with running_mcp_server() as client:
+        server_info = client.initialize_result.server_info
+        listing = await client.session.list_tools()
+
+    assert installed_version == _pyproject_project()["version"] == RELEASE_VERSION
+    assert server_info.name == "kwin-mcp"
+    assert server_info.version == installed_version
+    assert sorted(tool.name for tool in listing.tools) == sorted(TOOL_NAMES)
 
 
 def test_cli_help_runs_without_a_kwin_executable_on_path() -> None:
@@ -146,6 +254,7 @@ def _run_server_with_stdin_open(argv: list[str]) -> tuple[int, str, str]:
     return returncode, stdout, stderr
 
 
+@pytest.mark.qa("QA-MCP-021")
 @pytest.mark.parametrize(
     "command",
     SERVER_HELP_COMMANDS,
@@ -153,26 +262,48 @@ def _run_server_with_stdin_open(argv: list[str]) -> tuple[int, str, str]:
         "kwin-mcp--help",
         "kwin-mcp-h",
         "python-m-kwin_mcp--help",
+        "default-live-session-then-help",
+        "unknown-flag-then-help",
         "invalid-max-edge-then-help",
         "help-then-invalid-max-edge",
+        "invalid-live-consent-then-help",
     ),
 )
 def test_server_help_prints_usage_without_starting_the_stdio_server(
     command: tuple[Path | str, ...],
 ) -> None:
+    usage = server._USAGE
+
     returncode, stdout, stderr = _run_server_with_stdin_open([str(arg) for arg in command])
 
     assert returncode == 0, stderr
-    assert "usage: kwin-mcp" in stdout
+    # Byte-equal to the shipped text that the forbidden-string scan checks.
+    assert stdout == usage
+    assert stdout.startswith("usage: kwin-mcp")
+    assert "-h, --help" in stdout
     for flag in SERVER_FLAGS:
         assert flag in stdout, flag
+    assert stdout.endswith(DOCUMENTATION_LINE)
     assert stderr == ""
 
 
+@pytest.mark.qa("QA-MCP-022")
 @pytest.mark.parametrize(
     ("args", "message"),
     SERVER_USAGE_ERRORS,
-    ids=("unknown-option", "positional", "abbreviation", "non-ascii-max-edge"),
+    ids=(
+        "unknown-option",
+        "positional",
+        "abbreviation",
+        "superscript-max-edge",
+        "arabic-indic-max-edge",
+        "negative-max-edge",
+        "hex-max-edge",
+        "repeated-max-edge",
+        "invalid-live-consent",
+        "live-consent-without-value",
+        "repeated-live-consent",
+    ),
 )
 def test_server_rejects_invalid_arguments_with_a_usage_error(
     args: tuple[str, ...], message: str
@@ -187,3 +318,13 @@ def test_server_rejects_invalid_arguments_with_a_usage_error(
     # Rejected before the server starts: no MCP output and no exit-cleanup report.
     assert stdout == ""
     assert "exit cleanup" not in stderr, stderr
+
+
+@pytest.mark.qa("QA-MCP-022")
+@pytest.mark.anyio
+@pytest.mark.parametrize("consent", ["elicit", "refuse"])
+async def test_server_accepts_each_live_consent_value(consent: str) -> None:
+    async with running_mcp_server(f"--live-consent={consent}") as client:
+        listing = await client.session.list_tools()
+
+    assert sorted(tool.name for tool in listing.tools) == sorted(TOOL_NAMES)

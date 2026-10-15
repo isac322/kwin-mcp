@@ -17,4 +17,13 @@ if [ -n "$artifact_dir" ]; then
     fi
 fi
 
+# kwin-mcp-smoke mode (scripts/client_smoke.sh, QA-CLT-001/002/008): the image has no
+# kwin-mcp-smoke binary; this name runs kwin-mcp against a live-desktop stand-in.
+case "$1" in
+    kwin-mcp-smoke | /opt/kwin-mcp-venv/bin/kwin-mcp-smoke)
+        shift
+        exec /opt/kwin-mcp-venv/bin/python /app/docker/kwin-mcp-smoke.py "$@"
+        ;;
+esac
+
 exec "$@"

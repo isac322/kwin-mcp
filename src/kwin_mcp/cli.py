@@ -1,128 +1,204 @@
-"""Interactive CLI for kwin-mcp automation engine.
+"""Interactive CLI for the kwin-mcp automation engine.
 
 Supports both interactive REPL and pipe mode (non-TTY stdin).
 Uses cmd.Cmd which automatically switches to non-interactive mode
-when stdin is not a TTY.
+when stdin is not a TTY. The commands are the 29 tools, with the same parameters,
+and each prints the same text the MCP server returns (``result.render()``).
+
+Object, list and dict parameters take JSON, validated like the MCP arguments.
 
 Usage:
     # Interactive mode
     $ uv run kwin-mcp-cli
-    kwin-mcp> session_start app_command=kcalc
-    kwin-mcp> accessibility_tree app_name=kcalc max_depth=3
+    kwin-mcp> session_start
+    kwin-mcp> app_launch command=kcalc
+    kwin-mcp> element_query locator='{"app":"kcalc"}' max_depth=3
+    kwin-mcp> pointer_click target='{"x":100,"y":200}'
     kwin-mcp> session_stop
     kwin-mcp> quit
 
     # Pipe mode
     uv run kwin-mcp-cli <<'EOF'
-    session_start app_command=kcalc
-    accessibility_tree
+    session_start
+    app_launch command=kcalc
+    element_query
     session_stop
     EOF
 """
 
 from __future__ import annotations
 
+import argparse
 import cmd
 import contextlib
 import inspect
 import json
+import keyword
 import shlex
 import signal
 import sys
 import traceback
 import types
 import typing
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
+from pydantic import BaseModel, TypeAdapter
+
+from kwin_mcp import models
 from kwin_mcp.core import AutomationEngine
 from kwin_mcp.session import process_registry
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
 
-# Boolean literals, matched case-insensitively. Anything else is an error rather
-# than False: a mistyped flag such as exact_name must not silently turn it off.
-_TRUE_LITERALS = frozenset({"true", "1", "yes"})
-_FALSE_LITERALS = frozenset({"false", "0", "no"})
+
+def _needs_json(annotation: object) -> bool:
+    """Whether a parameter of this type takes JSON: a model, a list, a dict, or a
+    union (e.g. ``Target``, ``X | None``) with such an arm."""
+    origin = typing.get_origin(annotation)
+    if origin is Annotated:
+        return _needs_json(typing.get_args(annotation)[0])
+    if origin is typing.Union or origin is types.UnionType:
+        return any(_needs_json(arm) for arm in typing.get_args(annotation))
+    if origin in (list, dict):
+        return True
+    return inspect.isclass(annotation) and issubclass(annotation, BaseModel)
 
 
-def _parse_value(value_str: str, annotation: type | None) -> object:
-    """Convert a string value to the appropriate Python type based on annotation."""
+def _scalar_type(annotation: object) -> object:
+    """``annotation`` without ``Annotated`` and without a ``None`` union arm."""
+    origin = typing.get_origin(annotation)
+    if origin is Annotated:
+        return _scalar_type(typing.get_args(annotation)[0])
+    if origin is typing.Union or origin is types.UnionType:
+        arms = [arm for arm in typing.get_args(annotation) if arm is not type(None)]
+        if len(arms) == 1:
+            return _scalar_type(arms[0])
+    return annotation
+
+
+# Union aliases of models.py that help shows by name (``Target``, not its arms).
+_NAMED_UNIONS: dict[str, object] = {
+    name: value
+    for name, value in vars(models).items()
+    if not name.startswith("_") and isinstance(value, types.UnionType)
+}
+
+
+def _public_name(name: str) -> str:
+    """The tool-side name of an engine parameter (``from_`` is the tool's ``from``)."""
+    if name.endswith("_") and keyword.iskeyword(name[:-1]):
+        return name[:-1]
+    return name
+
+
+def _type_label(annotation: object) -> str:
+    """A readable type for ``help``: model and alias names, no module paths."""
+    origin = typing.get_origin(annotation)
+    if origin is Annotated:
+        return _type_label(typing.get_args(annotation)[0])
+    for alias, value in _NAMED_UNIONS.items():
+        if annotation == value:
+            return alias
+    if origin is typing.Union or origin is types.UnionType:
+        return " | ".join(_type_label(arm) for arm in typing.get_args(annotation))
+    if origin is Literal:
+        return f"Literal[{', '.join(repr(value) for value in typing.get_args(annotation))}]"
+    if origin is not None:
+        args = ", ".join(_type_label(arg) for arg in typing.get_args(annotation))
+        return f"{getattr(origin, '__name__', str(origin))}[{args}]"
+    if annotation is type(None):
+        return "None"
+    return getattr(annotation, "__name__", str(annotation))
+
+
+def _default_text(value: object) -> str:
+    """A default as ``help`` shows it: models as their JSON, scalars as Python literals."""
+    if isinstance(value, BaseModel):
+        return json.dumps(value.model_dump(mode="json", exclude_none=True))
+    return repr(value)
+
+
+def _parse_value(value_str: str, annotation: object) -> object:
+    """Convert one ``key=value`` value to the parameter's type.
+
+    Models, unions containing one (``Target``, ``ElementAddress``), lists and dicts
+    are JSON-decoded and validated with a pydantic ``TypeAdapter``, so the engine
+    receives model instances, e.g. ``target='{"x":10,"y":20}'`` becomes ``Point``.
+    ``bool``/``int``/``float`` are converted; anything else stays a string. Every
+    value is then validated against the annotation (``Literal`` choices, bounds), so
+    a typo such as ``phase=movee`` fails before the engine sends any input.
+    """
     if annotation is None:
         return value_str
+    if _needs_json(annotation):
+        return TypeAdapter[object](annotation).validate_json(value_str)
+    scalar = _scalar_type(annotation)
+    value: object = value_str
+    if scalar is bool:
+        value = value_str.lower() in ("true", "1", "yes")
+    elif scalar is int:
+        value = int(value_str)
+    elif scalar is float:
+        value = float(value_str)
+    return TypeAdapter[object](annotation).validate_python(value)
 
-    # Unwrap Optional / Union types (e.g. list[int] | None, typing.Optional[int]).
-    # get_origin covers both spellings; X | Y unions have no __origin__ at all.
-    origin = typing.get_origin(annotation)
-    if origin is typing.Union or origin is types.UnionType:
-        # Get non-None args
-        non_none = [a for a in typing.get_args(annotation) if a is not type(None)]
-        if non_none:
-            annotation = non_none[0]
-            origin = typing.get_origin(annotation)
 
-    if annotation is bool:
-        literal = value_str.lower()
-        if literal in _TRUE_LITERALS:
-            return True
-        if literal in _FALSE_LITERALS:
-            return False
-        msg = f"Invalid boolean value: {value_str!r} (expected true/false, yes/no, or 1/0)"
-        raise ValueError(msg)
-    if annotation is int:
-        return int(value_str)
-    if annotation is float:
-        return float(value_str)
-    if annotation is str:
-        return value_str
+def _parameter_types(method: Callable[..., Any]) -> dict[str, object]:
+    """The parameter annotations of an engine method, resolved at runtime."""
+    resolved = typing.get_type_hints(method, include_extras=True)
+    return {
+        name: resolved.get(name) for name in inspect.signature(method).parameters if name != "self"
+    }
 
-    # Handle list[...] and dict[...] via JSON
-    if origin in (list, dict):
-        return json.loads(value_str)
 
-    return value_str
+def _parameter_name(key: str, types_: dict[str, object]) -> str:
+    # A Python keyword cannot be a parameter name: the tool's "from" is the engine's
+    # "from_", and both spellings are accepted.
+    if key not in types_ and f"{key}_" in types_:
+        return f"{key}_"
+    return key
 
 
 def _parse_args(method: Callable[..., Any], arg_string: str) -> dict[str, object]:
-    """Parse 'key=value' arguments or a JSON object into kwargs for a method.
+    """Parse 'key=value' arguments or a JSON object into kwargs for an engine method.
 
     Supports:
       - key=value key2=value2
       - key="value with spaces"
-      - {"key": "value"}  (JSON object)
+      - target='{"x": 10, "y": 20}'  (JSON for object, list and dict parameters)
+      - {"key": "value"}  (one JSON object holding every argument)
+
+    An unknown key is passed through, so the call fails with the method's own
+    "unexpected keyword argument" error.
     """
     arg_string = arg_string.strip()
     if not arg_string:
         return {}
+    types_ = _parameter_types(method)
+    kwargs: dict[str, object] = {}
 
-    # Try JSON first
     if arg_string.startswith("{"):
-        return json.loads(arg_string)
-
-    # Use get_type_hints() to resolve string annotations from `from __future__ import annotations`
-    try:
-        resolved = typing.get_type_hints(method)
-    except Exception:
-        resolved = {}
-
-    sig = inspect.signature(method)
-    hints: dict[str, type | None] = {}
-    for name in sig.parameters:
-        if name == "self":
-            continue
-        hints[name] = resolved.get(name)
+        decoded = json.loads(arg_string)
+        if not isinstance(decoded, dict):
+            msg = "Expected a JSON object of arguments"
+            raise ValueError(msg)
+        for key, value in cast("dict[str, object]", decoded).items():
+            name = _parameter_name(key, types_)
+            annotation = types_.get(name)
+            if annotation is not None:
+                value = TypeAdapter[object](annotation).validate_python(value)
+            kwargs[name] = value
+        return kwargs
 
     # Parse key=value pairs using shlex for proper quoting
-    kwargs: dict[str, object] = {}
-    tokens = shlex.split(arg_string)
-    for token in tokens:
+    for token in shlex.split(arg_string):
         if "=" not in token:
             msg = f"Invalid argument: {token!r} (expected key=value)"
             raise ValueError(msg)
         key, value = token.split("=", 1)
-        annotation = hints.get(key)
-        kwargs[key] = _parse_value(value, annotation)
-
+        name = _parameter_name(key, types_)
+        kwargs[name] = _parse_value(value, types_.get(name))
     return kwargs
 
 
@@ -185,6 +261,7 @@ class KwinMcpShell(cmd.Cmd):
         self.engine = engine or AutomationEngine()
         self.live_session_mode = live_session_mode
         self._commands: dict[str, Callable[..., Any]] = self._discover_commands()
+        self._shipped_docs: dict[str, tuple[str, dict[str, str]]] | None = None
 
         if live_session_mode:
             self.intro = (
@@ -198,14 +275,10 @@ class KwinMcpShell(cmd.Cmd):
             self.intro = ""
 
     def _discover_commands(self) -> dict[str, Callable[..., Any]]:
-        """Discover all public methods on the engine.
-
-        ``*_data`` methods return typed results for the MCP server; their text
-        counterparts (same name without the suffix) are the CLI commands.
-        """
+        """The public methods of the engine: exactly the 29 tools, by name."""
         commands: dict[str, Callable[..., Any]] = {}
         for name in sorted(dir(self.engine)):
-            if name.startswith("_") or name.endswith("_data"):
+            if name.startswith("_"):
                 continue
             attr = getattr(self.engine, name)
             if callable(attr):
@@ -231,11 +304,12 @@ class KwinMcpShell(cmd.Cmd):
                     result = method(**kwargs)
             else:
                 result = method(**kwargs)
-            print(result)
+            # The same text the MCP server returns for this call.
+            print(result.render())
         except (ValueError, RuntimeError, OSError, TypeError) as exc:
             # Tool errors (invalid input, refusals, failed operations, argument typos):
-            # one line, like the MCP isError text. Anything else is a programming error
-            # and keeps its traceback.
+            # the message, like the MCP isError text (its remedy line follows on the
+            # next line). Anything else is a programming error and keeps its traceback.
             print(f"Error: {exc}", file=sys.stderr)
         except Exception:
             traceback.print_exc()
@@ -258,30 +332,48 @@ class KwinMcpShell(cmd.Cmd):
             print(f"  {'quit':30s} Exit the CLI")
             return
 
-        method = self._commands.get(arg)
-        if method is None:
+        command = self._commands.get(arg)
+        if command is None:
             print(f"Unknown command: {arg}")
             return
 
-        sig = inspect.signature(method)
+        sig = inspect.signature(command)
+        types_ = typing.get_type_hints(command, include_extras=True)
+        description, docs = self._tool_docs().get(arg, ("", {}))
         params = []
         for name, param in sig.parameters.items():
             if name == "self":
                 continue
-            ann = param.annotation
-            type_name = getattr(ann, "__name__", str(ann)) if ann != inspect.Parameter.empty else ""
-            if param.default is not inspect.Parameter.empty:
-                params.append(f"  {name}: {type_name} = {param.default!r}")
+            public = _public_name(name)
+            label = _type_label(types_.get(name))
+            if param.default is inspect.Parameter.empty:
+                entry = f"  {public}: {label} (required)"
             else:
-                params.append(f"  {name}: {type_name} (required)")
+                entry = f"  {public}: {label} = {_default_text(param.default)}"
+            params.append(entry)
+            doc = docs.get(public)
+            if doc:
+                params.append(f"      {doc}")
 
         print(f"\n{arg}")
         if params:
             print("Parameters:")
             for p in params:
                 print(p)
-        if method.__doc__:
-            print(f"\n{method.__doc__}")
+        if description:
+            print(f"\n{description}")
+
+    def _tool_docs(self) -> dict[str, tuple[str, dict[str, str]]]:
+        """The shipped MCP descriptions, built once per shell (they never change).
+
+        Live session mode changes only the intro, so the texts are the plain ones.
+        """
+        if self._shipped_docs is None:
+            # Imported here: the server module is only needed for help texts.
+            from kwin_mcp.server import tool_docs
+
+            self._shipped_docs = tool_docs()
+        return self._shipped_docs
 
     def do_quit(self, _arg: str) -> bool:
         """Exit the CLI."""
@@ -298,7 +390,7 @@ class KwinMcpShell(cmd.Cmd):
                 print("Stopping session...")
                 # A signal must not interrupt the teardown (it would skip launched apps).
                 with _defer_shutdown_signals():
-                    print(self.engine.session_stop())
+                    print(self.engine.session_stop().render())
         except Exception:
             traceback.print_exc()
         finally:
@@ -330,6 +422,24 @@ class KwinMcpShell(cmd.Cmd):
         return stop
 
 
+def _build_parser() -> argparse.ArgumentParser:
+    """The ``kwin-mcp-cli`` argument parser (its help is ``kwin-mcp-cli --help``)."""
+    parser = argparse.ArgumentParser(
+        prog="kwin-mcp-cli",
+        description=(
+            "kwin-mcp interactive CLI: the 29 kwin-mcp tools as commands, without an MCP "
+            "client. Type 'help' at the prompt for the commands."
+        ),
+    )
+    parser.add_argument(
+        "--default-live-session",
+        action="store_true",
+        help="Show the live-session prompt; session_connect (the live desktop) is the "
+        "intended session command instead of session_start (an isolated virtual session).",
+    )
+    return parser
+
+
 def main() -> None:
     """Entry point for the kwin-mcp-cli command.
 
@@ -337,15 +447,7 @@ def main() -> None:
     from virtual to live. In live mode, the prompt changes and session_connect
     becomes the recommended session tool.
     """
-    import argparse
-
-    parser = argparse.ArgumentParser(description="kwin-mcp interactive CLI")
-    parser.add_argument(
-        "--default-live-session",
-        action="store_true",
-        help="Use live (real desktop) session as the default instead of virtual/isolated.",
-    )
-    args = parser.parse_args()
+    args = _build_parser().parse_args()
 
     shell = KwinMcpShell(live_session_mode=args.default_live_session)
 

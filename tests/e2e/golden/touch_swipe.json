@@ -1,0 +1,673 @@
+{
+ "scenario": "touch_swipe",
+ "captured_from": "kwin-mcp 0.11.0 @ 7a5d781 (AutomationEngine, virtual KWin session)",
+ "call": {
+  "duration_ms": 300,
+  "from_local": [
+   300,
+   150
+  ],
+  "to_local": [
+   300,
+   450
+  ],
+  "tool": "touch_swipe"
+ },
+ "returned_text": [
+  "Touch swipe from (440, 242) to (440, 542) in 300ms"
+ ],
+ "probe": {
+  "client_size": [
+   1000,
+   640
+  ],
+  "coordinates": "probe-local logical px (global = client origin + local)"
+ },
+ "repeats": 5,
+ "sequence": [
+  {
+   "kind": "touch_begin",
+   "x": 300,
+   "y": 150,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 160,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 170,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 180,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 190,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 200,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 210,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 220,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 230,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 240,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 250,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 260,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 270,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 280,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 290,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 300,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 310,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 320,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 330,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 340,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 350,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 360,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 370,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 380,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 390,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 400,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 410,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 420,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 430,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 440,
+   "touch": 0
+  },
+  {
+   "kind": "touch_update",
+   "x": 300,
+   "y": 450,
+   "touch": 0
+  },
+  {
+   "kind": "touch_end",
+   "x": 300,
+   "y": 450,
+   "touch": 0
+  }
+ ],
+ "gaps_ms": [
+  {
+   "from": 0,
+   "to": 1,
+   "mono": {
+    "min": 0.08,
+    "median": 0.18,
+    "max": 0.4
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 1,
+   "to": 2,
+   "mono": {
+    "min": 8.22,
+    "median": 9.9,
+    "max": 12.26
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 12.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 2,
+   "to": 3,
+   "mono": {
+    "min": 11.44,
+    "median": 13.64,
+    "max": 15.26
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 13.0,
+    "max": 16.0
+   }
+  },
+  {
+   "from": 3,
+   "to": 4,
+   "mono": {
+    "min": 11.43,
+    "median": 12.3,
+    "max": 14.55
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 13.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 4,
+   "to": 5,
+   "mono": {
+    "min": 10.24,
+    "median": 11.95,
+    "max": 13.57
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 12.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 5,
+   "to": 6,
+   "mono": {
+    "min": 10.87,
+    "median": 12.4,
+    "max": 13.84
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 13.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 6,
+   "to": 7,
+   "mono": {
+    "min": 11.26,
+    "median": 12.17,
+    "max": 13.24
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 12.0,
+    "max": 13.0
+   }
+  },
+  {
+   "from": 7,
+   "to": 8,
+   "mono": {
+    "min": 10.86,
+    "median": 11.56,
+    "max": 14.14
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 13.0
+   }
+  },
+  {
+   "from": 8,
+   "to": 9,
+   "mono": {
+    "min": 10.4,
+    "median": 11.43,
+    "max": 13.55
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 12.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 9,
+   "to": 10,
+   "mono": {
+    "min": 10.87,
+    "median": 11.64,
+    "max": 14.9
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 12.0,
+    "max": 15.0
+   }
+  },
+  {
+   "from": 10,
+   "to": 11,
+   "mono": {
+    "min": 9.88,
+    "median": 12.52,
+    "max": 13.53
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 12.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 11,
+   "to": 12,
+   "mono": {
+    "min": 10.64,
+    "median": 11.52,
+    "max": 15.04
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 11.0,
+    "max": 15.0
+   }
+  },
+  {
+   "from": 12,
+   "to": 13,
+   "mono": {
+    "min": 11.78,
+    "median": 12.6,
+    "max": 13.94
+   },
+   "event_clock": {
+    "min": 12.0,
+    "median": 13.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 13,
+   "to": 14,
+   "mono": {
+    "min": 10.47,
+    "median": 11.69,
+    "max": 13.33
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 12.0,
+    "max": 13.0
+   }
+  },
+  {
+   "from": 14,
+   "to": 15,
+   "mono": {
+    "min": 10.52,
+    "median": 11.56,
+    "max": 14.4
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 15,
+   "to": 16,
+   "mono": {
+    "min": 10.22,
+    "median": 10.32,
+    "max": 11.29
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 11.0,
+    "max": 11.0
+   }
+  },
+  {
+   "from": 16,
+   "to": 17,
+   "mono": {
+    "min": 10.24,
+    "median": 13.04,
+    "max": 14.8
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 13.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 17,
+   "to": 18,
+   "mono": {
+    "min": 10.49,
+    "median": 10.74,
+    "max": 11.8
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 12.0
+   }
+  },
+  {
+   "from": 18,
+   "to": 19,
+   "mono": {
+    "min": 10.34,
+    "median": 11.39,
+    "max": 13.45
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 19,
+   "to": 20,
+   "mono": {
+    "min": 10.19,
+    "median": 11.7,
+    "max": 15.65
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 12.0,
+    "max": 15.0
+   }
+  },
+  {
+   "from": 20,
+   "to": 21,
+   "mono": {
+    "min": 10.08,
+    "median": 12.06,
+    "max": 13.37
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 12.0,
+    "max": 13.0
+   }
+  },
+  {
+   "from": 21,
+   "to": 22,
+   "mono": {
+    "min": 10.13,
+    "median": 10.72,
+    "max": 11.73
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 12.0
+   }
+  },
+  {
+   "from": 22,
+   "to": 23,
+   "mono": {
+    "min": 9.99,
+    "median": 10.89,
+    "max": 11.9
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 12.0
+   }
+  },
+  {
+   "from": 23,
+   "to": 24,
+   "mono": {
+    "min": 10.48,
+    "median": 11.9,
+    "max": 13.29
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 12.0,
+    "max": 13.0
+   }
+  },
+  {
+   "from": 24,
+   "to": 25,
+   "mono": {
+    "min": 10.21,
+    "median": 11.74,
+    "max": 14.95
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 12.0,
+    "max": 15.0
+   }
+  },
+  {
+   "from": 25,
+   "to": 26,
+   "mono": {
+    "min": 10.25,
+    "median": 10.87,
+    "max": 14.29
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 15.0
+   }
+  },
+  {
+   "from": 26,
+   "to": 27,
+   "mono": {
+    "min": 10.41,
+    "median": 11.12,
+    "max": 13.09
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 11.0,
+    "max": 13.0
+   }
+  },
+  {
+   "from": 27,
+   "to": 28,
+   "mono": {
+    "min": 10.43,
+    "median": 12.69,
+    "max": 14.09
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 12.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 28,
+   "to": 29,
+   "mono": {
+    "min": 10.1,
+    "median": 11.35,
+    "max": 13.89
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 29,
+   "to": 30,
+   "mono": {
+    "min": 10.16,
+    "median": 12.21,
+    "max": 12.52
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 12.0,
+    "max": 13.0
+   }
+  },
+  {
+   "from": 30,
+   "to": 31,
+   "mono": {
+    "min": 10.38,
+    "median": 11.19,
+    "max": 12.03
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 11.0,
+    "max": 12.0
+   }
+  }
+ ],
+ "call_start_to_first_event_ms": {
+  "min": 0.83,
+  "median": 2.48,
+  "max": 4.49
+ },
+ "last_event_to_call_return_ms": {
+  "min": -0.33,
+  "median": -0.31,
+  "max": 0.16
+ },
+ "first_to_last_event_ms": {
+  "min": 329.87,
+  "median": 358.25,
+  "max": 379.07
+ },
+ "other_variants": []
+}

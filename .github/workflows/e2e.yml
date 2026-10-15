@@ -9,69 +9,68 @@ permissions:
   contents: read
 
 jobs:
-  virtual-session:
-    name: Virtual KWin session (${{ matrix.label }})
+  virtual-session-shard:
+    name: E2E shard (${{ matrix.row.label }}, ${{ matrix.shard }}/5)
     # Every distribution gates the workflow: a failure on Fedora or Tumbleweed
     # is a kwin-mcp portability bug (the ei_dispatch return type once broke
-    # input there only), not noise. Debian keeps its original job and artifact names.
+    # input there only), not noise. Each row runs as five shards; the
+    # `virtual-session` aggregator below keeps the required check names.
     strategy:
       fail-fast: false
       matrix:
-        include:
+        shard: [1, 2, 3, 4, 5]
+        row:
           - distro: debian
             dockerfile: docker/e2e.Dockerfile
-            arch: amd64
             label: amd64
             runner: ubuntu-26.04
           - distro: debian
             dockerfile: docker/e2e.Dockerfile
-            arch: arm64
             label: arm64
             runner: ubuntu-26.04-arm
           - distro: fedora
             dockerfile: docker/e2e-fedora.Dockerfile
-            arch: amd64
             label: fedora-amd64
             runner: ubuntu-26.04
           - distro: fedora
             dockerfile: docker/e2e-fedora.Dockerfile
-            arch: arm64
             label: fedora-arm64
             runner: ubuntu-26.04-arm
           - distro: opensuse
             dockerfile: docker/e2e-opensuse.Dockerfile
-            arch: amd64
             label: opensuse-amd64
             runner: ubuntu-26.04
           - distro: opensuse
             dockerfile: docker/e2e-opensuse.Dockerfile
-            arch: arm64
             label: opensuse-arm64
             runner: ubuntu-26.04-arm
           # Arch Linux publishes amd64 images only; see docker/e2e-arch.Dockerfile.
           - distro: archlinux
             dockerfile: docker/e2e-arch.Dockerfile
-            arch: amd64
             label: archlinux-amd64
             runner: ubuntu-26.04
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 40
+    runs-on: ${{ matrix.row.runner }}
+    timeout-minutes: 30
     env:
-      E2E_ARTIFACT_DIR: artifacts/e2e/${{ matrix.label }}
-      E2E_CONTAINER_NAME: kwin-mcp-e2e-${{ matrix.label }}
+      E2E_ARTIFACT_DIR: artifacts/e2e/${{ matrix.row.label }}-s${{ matrix.shard }}
+      E2E_CONTAINER_NAME: kwin-mcp-e2e-${{ matrix.row.label }}-s${{ matrix.shard }}
+      E2E_SHARD: ${{ matrix.shard }}/5
+      E2E_STATUS_FILE: shard-status/${{ matrix.row.label }}-s${{ matrix.shard }}.txt
     steps:
       - uses: actions/checkout@v7
 
-      - name: Create the artifact directory
-        run: install -d -m 0777 "$E2E_ARTIFACT_DIR"
+      - name: Create the artifact directories
+        run: |
+          install -d -m 0777 "$E2E_ARTIFACT_DIR"
+          install -d shard-status
 
       - name: Build the KWin test image
-        run: docker build --file "${{ matrix.dockerfile }}" --tag kwin-mcp-e2e .
+        run: docker build --file "${{ matrix.row.dockerfile }}" --tag kwin-mcp-e2e .
 
-      # Lint and type checks do not depend on the distro, so run them once per
-      # architecture in the Debian image.
+      # Lint and type checks do not depend on the distro or the shard, so run
+      # them once per architecture in the Debian image.
       - name: Run quality checks
-        if: matrix.distro == 'debian'
+        if: matrix.row.distro == 'debian' && matrix.shard == 1
         run: |
           docker run --rm \
             --volume "${{ github.workspace }}:/workspace:ro" \
@@ -83,6 +82,27 @@ jobs:
               /opt/kwin-mcp-venv/bin/ty check src tests
             '
 
+      # The aggregator proves the shards partition the suite: their
+      # collected counts must add up to the unsharded collection that shard 1
+      # records here.
+      - name: Count collected tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          count_tests() {
+            docker run --rm --env KWIN_MCP_ARTIFACT_DIR= kwin-mcp-e2e \
+              /opt/kwin-mcp-venv/bin/python -m pytest tests \
+                --collect-only -q -m "not slow" "$@" \
+              | grep -cE '^tests/[^ ]*::'
+          }
+          collected=$(count_tests --kwin-shard="$E2E_SHARD")
+          echo "collected=$collected" >> "$E2E_STATUS_FILE"
+          if [[ "${{ matrix.shard }}" == 1 ]]; then
+            full=$(count_tests)
+            echo "full=$full" >> "$E2E_STATUS_FILE"
+          fi
+          cat "$E2E_STATUS_FILE"
+
       # No /dev/dri passthrough on purpose: KWin then runs on the same llvmpipe
       # software path everywhere, so a run here matches a developer's laptop
       # exactly. A DRM node would only let KWin register ScreenShot2, and its
@@ -91,12 +111,16 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          timeout --signal=INT --kill-after=1m 30m \
+          timeout --signal=INT --kill-after=1m 20m \
             docker run \
               --name "$E2E_CONTAINER_NAME" \
+              --env KWIN_MCP_E2E_STRICT_SKIPS=1 \
+              --env KWIN_MCP_E2E_REQUIRE=layer-shell \
               --volume "$PWD/$E2E_ARTIFACT_DIR:/artifacts" \
               kwin-mcp-e2e \
               /opt/kwin-mcp-venv/bin/python -m pytest tests -v \
+                -m "not slow" \
+                --kwin-shard="$E2E_SHARD" \
                 --junitxml=/artifacts/junit.xml \
             2>&1 | tee "$E2E_ARTIFACT_DIR/pytest.log"
 
@@ -128,6 +152,92 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: e2e-${{ matrix.label }}
+          name: e2e-${{ matrix.row.label }}-s${{ matrix.shard }}
           path: ${{ env.E2E_ARTIFACT_DIR }}
           if-no-files-found: warn
+
+      - name: Record the shard result
+        if: always()
+        run: echo "result=${{ job.status }}" >> "$E2E_STATUS_FILE"
+
+      - name: Upload the shard status
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-status-${{ matrix.row.label }}-s${{ matrix.shard }}
+          path: shard-status/
+          if-no-files-found: error
+
+  # Keeps the seven required check names `Virtual KWin session (<label>)`.
+  virtual-session:
+    name: Virtual KWin session (${{ matrix.label }})
+    needs: virtual-session-shard
+    if: always()
+    strategy:
+      fail-fast: false
+      matrix:
+        label:
+          - amd64
+          - arm64
+          - fedora-amd64
+          - fedora-arm64
+          - opensuse-amd64
+          - opensuse-arm64
+          - archlinux-amd64
+    runs-on: ubuntu-26.04
+    steps:
+      # `e2e-status-amd64-s*` does not match `e2e-status-fedora-amd64-s*`, so
+      # each aggregator reads exactly its own row.
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: e2e-status-${{ matrix.label }}-s*
+          merge-multiple: true
+          path: status
+
+      - name: Require every shard to have succeeded and covered the suite
+        shell: bash
+        env:
+          SHARD_MATRIX_RESULT: ${{ needs.virtual-session-shard.result }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          failed=0
+          if [[ "$SHARD_MATRIX_RESULT" != success ]]; then
+            echo "::error::the shard matrix result is '$SHARD_MATRIX_RESULT', not 'success'"
+            failed=1
+          fi
+          files=(status/*.txt)
+          if (( ${#files[@]} != 5 )); then
+            echo "::error::expected 5 shard status files, found ${#files[@]}"
+            failed=1
+          fi
+          sum=0
+          full=
+          for file in "${files[@]}"; do
+            echo "== $file"
+            cat "$file"
+            result=$(sed -n 's/^result=//p' "$file")
+            collected=$(sed -n 's/^collected=//p' "$file")
+            file_full=$(sed -n 's/^full=//p' "$file")
+            if [[ "$result" != success ]]; then
+              echo "::error::$file reports result '$result'"
+              failed=1
+            fi
+            if [[ "$collected" =~ ^[0-9]+$ ]]; then
+              sum=$((sum + collected))
+            else
+              echo "::error::$file has no collected test count"
+              failed=1
+            fi
+            if [[ -n "$file_full" ]]; then
+              full=$file_full
+            fi
+          done
+          if ! [[ "$full" =~ ^[0-9]+$ ]]; then
+            echo "::error::no shard recorded the full collection count"
+            failed=1
+          elif (( sum != full )); then
+            echo "::error::shards collected $sum tests in total, the full collection has $full"
+            failed=1
+          fi
+          exit "$failed"

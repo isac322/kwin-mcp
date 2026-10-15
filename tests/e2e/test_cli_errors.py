@@ -1,41 +1,52 @@
 """How ``kwin-mcp-cli`` reports a failed command, without a KWin session.
 
 A tool error (invalid input, a refusal, a failed operation, a mistyped keyword) is
-printed as one ``Error: <message>`` line on stderr, the CLI form of the MCP
-``isError`` result. Any other exception is a programming error and keeps its
-traceback.
+printed on stderr as ``Error: <message>``: the first line carries the prefix and
+any further message lines (a remedy, a validation detail) follow unchanged, the
+CLI form of the MCP ``isError`` text. Any other exception is a programming error
+and keeps its traceback. Commands are the tool names; each prints ``render()``.
 """
 
 from __future__ import annotations
 
-from typing import NoReturn, cast
+import re
+from typing import cast
 
 import pytest
+from mcp_harness import running_mcp_server
 
 from kwin_mcp.cli import KwinMcpShell
 from kwin_mcp.core import AutomationEngine
+
+# Imported at runtime: the shell resolves the stub's annotations with get_type_hints.
+from kwin_mcp.models import (
+    AppLaunchResult,
+    ClipboardWriteResult,
+    DesktopList,
+    SessionInfo,
+    WaylandGlobals,
+)
 
 
 class _StubEngine:
     """Engine stand-in whose public methods become the shell's commands."""
 
-    def fail_value(self) -> str:
-        msg = "screen_width must be a positive integer, got 0"
+    def session_start(self, screen_width: int = 1920) -> SessionInfo:
+        msg = f"screen_width must be a positive integer, got {screen_width}"
         raise ValueError(msg)
 
-    def fail_runtime(self) -> str:
-        msg = "No session running. Call session_start first."
+    def wayland_list(self, filter: str = "") -> WaylandGlobals:  # noqa: A002
+        msg = "wayland-info failed: synthetic failure"
         raise RuntimeError(msg)
 
-    def fail_os(self) -> str:
-        msg = "No such file or directory: '/nonexistent-app'"
-        raise FileNotFoundError(2, msg)
+    def app_launch(self, command: str) -> AppLaunchResult:
+        raise FileNotFoundError(2, "No such file or directory", command)
 
-    def fail_key(self) -> str:
+    def desktop_list(self) -> DesktopList:
         raise KeyError("missing")
 
-    def echo(self, text: str = "") -> str:
-        return text
+    def clipboard_write(self, text: str = "") -> ClipboardWriteResult:
+        return ClipboardWriteResult(length=len(text), echo=repr(text))
 
 
 def _shell() -> KwinMcpShell:
@@ -52,11 +63,14 @@ def _assert_one_error_line(stderr: str, prefix: str) -> None:
 @pytest.mark.parametrize(
     ("line", "prefix"),
     [
-        ("fail_value", "Error: screen_width must be a positive integer, got 0"),
-        ("fail_runtime", "Error: No session running."),
-        ("fail_os", "Error: [Errno 2] No such file or directory"),
+        ("session_start screen_width=0", "Error: screen_width must be a positive integer, got 0"),
+        ("wayland_list", "Error: wayland-info failed: synthetic failure"),
+        (
+            "app_launch command=/nonexistent-app",
+            "Error: [Errno 2] No such file or directory: '/nonexistent-app'",
+        ),
         # An unknown keyword is a TypeError from the call itself.
-        ("echo nope=1", "Error: "),
+        ("clipboard_write nope=1", "Error: "),
     ],
     ids=["value-error", "runtime-error", "os-error", "type-error"],
 )
@@ -73,7 +87,7 @@ def test_tool_errors_print_one_error_line(
 def test_argument_without_equals_prints_one_error_line(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _shell().default("echo notkeyvalue")
+    _shell().default("clipboard_write notkeyvalue")
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -81,7 +95,7 @@ def test_argument_without_equals_prints_one_error_line(
 
 
 def test_programming_errors_keep_their_traceback(capsys: pytest.CaptureFixture[str]) -> None:
-    _shell().default("fail_key")
+    _shell().default("desktop_list")
 
     captured = capsys.readouterr()
     assert "Traceback" in captured.err, captured.err
@@ -90,91 +104,91 @@ def test_programming_errors_keep_their_traceback(capsys: pytest.CaptureFixture[s
 
 
 def test_successful_command_prints_its_result(capsys: pytest.CaptureFixture[str]) -> None:
-    _shell().default("echo text=hello")
+    _shell().default("clipboard_write text=hello")
 
     captured = capsys.readouterr()
-    assert captured.out == "hello\n"
+    assert captured.out == "Clipboard set: 'hello'\n"
     assert captured.err == ""
 
 
-def test_invalid_boolean_is_rejected_before_any_session_or_action(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """exact_name=banana never reaches invoke_ui_action as False (substring matching).
+# Real engine, no session: every line fails before any KWin is needed.
+_SINGLE_LINE_ERRORS = [
+    ("screen_capture max_edge=abc", "Error: invalid literal for int() with base 10: 'abc'"),
+    ("pointer_click target", "Error: Invalid argument: 'target' (expected key=value)"),
+    ("keyboard_type text='unterminated", "Error: No closing quotation"),
+    ("pointer_click nosuchparam=1", "Error: "),
+]
+_VALIDATION_ERRORS = [
+    "pointer_click target='{bad json'",
+    """pointer_click target='{"x":"a","y":1}'""",
+]
 
-    The real engine supplies the real annotations; reaching its session lookup or the
-    AT-SPI worker fails the test.
+
+@pytest.mark.qa("QA-CLI-005")
+def test_one_line_errors(capsys: pytest.CaptureFixture[str]) -> None:
+    """One ``Error:`` line per failed command, no traceback, nothing on stdout.
+
+    Single-line messages print exactly one line. A pydantic validation message
+    is multi-line; per the contract (CLI errors print ``Error: <first line>`` with
+    the remaining message lines after) its first line carries the only prefix.
     """
-    engine = AutomationEngine()
+    shell = KwinMcpShell(engine=AutomationEngine())
 
-    def unreachable(*_args: object, **_kwargs: object) -> NoReturn:
-        pytest.fail("the invalid boolean reached the session lookup or AT-SPI dispatch")
-
-    monkeypatch.setattr(engine, "_get_session", unreachable)
-    monkeypatch.setattr(engine, "_run_atspi", unreachable)
-
-    KwinMcpShell(engine=engine).default(
-        "invoke_ui_action query=Save action_name=Press exact_name=banana"
+    for line, prefix in _SINGLE_LINE_ERRORS:
+        shell.default(line)
+        captured = capsys.readouterr()
+        assert captured.out == "", (line, captured.out)
+        _assert_one_error_line(captured.err, prefix)
+    assert "unexpected keyword argument 'nosuchparam'" in (
+        _error_of(shell, "pointer_click nosuchparam=1", capsys)
     )
 
+    for line in _VALIDATION_ERRORS:
+        stderr = _error_of(shell, line, capsys)
+        lines = stderr.splitlines()
+        assert lines[0].startswith("Error: "), (line, stderr)
+        assert re.match(r"Error: \d+ validation errors? for ", lines[0]), (line, stderr)
+        assert sum(item.startswith("Error:") for item in lines) == 1, (line, stderr)
+        assert "Traceback" not in stderr, stderr
+
+    shell.default("nosuchcommand")
     captured = capsys.readouterr()
-    assert captured.out == ""
-    _assert_one_error_line(captured.err, "Error: Invalid boolean value: 'banana'")
+    assert captured.out == ("Unknown command: nosuchcommand. Type 'help' for available commands.\n")
+    assert captured.err == ""
 
 
-def test_invalid_spoken_name_boolean_is_rejected_before_any_session_or_action(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """spoken_name=banana never reaches invoke_ui_action as False (substring matching).
+def _error_of(shell: KwinMcpShell, line: str, capsys: pytest.CaptureFixture[str]) -> str:
+    shell.default(line)
+    captured = capsys.readouterr()
+    assert captured.out == "", (line, captured.out)
+    return captured.err
 
-    The generic strict boolean parser rejects it; reaching the engine's session lookup
-    or the AT-SPI worker fails the test.
-    """
-    engine = AutomationEngine()
 
-    def unreachable(*_args: object, **_kwargs: object) -> NoReturn:
-        pytest.fail("the invalid boolean reached the session lookup or AT-SPI dispatch")
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
 
-    monkeypatch.setattr(engine, "_get_session", unreachable)
-    monkeypatch.setattr(engine, "_run_atspi", unreachable)
 
-    KwinMcpShell(engine=engine).default(
-        "invoke_ui_action query='save as' action_name=Press spoken_name=banana"
+@pytest.mark.slow
+@pytest.mark.timeout(600)
+@pytest.mark.anyio
+@pytest.mark.qa("QA-CLI-006")
+async def test_cli_help_shows_types(capsys: pytest.CaptureFixture[str]) -> None:
+    async with running_mcp_server() as client:
+        tools = {tool.name: tool for tool in await client.list_tools()}
+    shipped = tools["pointer_click"].description
+    assert shipped
+
+    KwinMcpShell(engine=AutomationEngine()).do_help("pointer_click")
+    help_text = capsys.readouterr().out
+
+    lines = [line.strip() for line in help_text.splitlines()]
+    assert "target: Target (required)" in lines, help_text
+    assert any(re.fullmatch(r"button: \w[\w\[\]'\", |]* = 'left'", line) for line in lines), (
+        help_text
     )
-
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    _assert_one_error_line(captured.err, "Error: Invalid boolean value: 'banana'")
-
-
-@pytest.mark.parametrize(
-    ("payload", "prefix"),
-    [
-        ('{"query": 7, "action_name": "Press"}', "Error: invoke_ui_action needs a query."),
-        ('{"query": "Save", "action_name": 7}', "Error: invoke_ui_action needs an action_name."),
-        (
-            '{"query": "Save", "action_name": "Press", "app_name": 7}',
-            "Error: invoke_ui_action app_name must be a string.",
-        ),
-    ],
-)
-def test_raw_json_non_string_invoke_ui_action_fields_print_one_error_line(
-    payload: str,
-    prefix: str,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Raw JSON arguments bypass CLI annotation conversion but still fail as tool errors."""
-    engine = AutomationEngine()
-
-    def unreachable(*_args: object, **_kwargs: object) -> NoReturn:
-        pytest.fail("the invalid JSON argument reached the session lookup or AT-SPI dispatch")
-
-    monkeypatch.setattr(engine, "_get_session", unreachable)
-    monkeypatch.setattr(engine, "_run_atspi", unreachable)
-
-    KwinMcpShell(engine=engine).default(f"invoke_ui_action {payload}")
-
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    _assert_one_error_line(captured.err, prefix)
+    assert "count: int = 1" in lines, help_text
+    assert "capture: Capture | None = None" in lines, help_text
+    assert shipped in help_text, (shipped, help_text)
+    for noise in ("ForwardRef", "typing.Annotated", "Annotated[", "kwin_mcp.models.", "<class"):
+        assert noise not in help_text, (noise, help_text)

@@ -1,8 +1,9 @@
-"""Clipboard lifecycle end-to-end tests for ``keyboard_type_unicode`` (issue #45).
+"""Clipboard lifecycle end-to-end tests for ``keyboard_type(method="unicode")`` (issue #45).
 
-``keyboard_type_unicode`` pastes through a transient clipboard selection. These
+The unicode method pastes through a transient clipboard selection. These
 tests drive the public ``AutomationEngine`` against real KWin compositors and
-observe only external state: the KWrite document over AT-SPI2, the selection
+observe only external state: the KWrite document through the independent
+AT-SPI oracle, the selection
 through ``wl-paste``/``wl-copy`` on the session's Wayland socket, and the
 processes the engine call spawned, read from ``/proc``.
 
@@ -20,11 +21,9 @@ deadline bounds how long that hold may last.
 
 from __future__ import annotations
 
-import ast
 import contextlib
 import io
 import os
-import re
 import shlex
 import signal
 import subprocess
@@ -34,9 +33,11 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import pytest
-from _asserts import element_count
+from atspi_oracle import AtspiOracle
 from PIL import Image
 from session_harness import live_kwin
+
+from kwin_mcp.models import WindowSelector
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -44,8 +45,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from kwin_mcp.core import AutomationEngine
+    from kwin_mcp.models import AppLaunchResult, ElementList, KeyboardTypeResult, SessionInfo
 
-_RECT = r"\((-?\d+), (-?\d+), (\d+)x(\d+)\)"
 POLL_INTERVAL_SECONDS = 0.05
 WAIT_TIMEOUT_SECONDS = 5.0
 CALL_TIMEOUT_SECONDS = 30.0
@@ -66,7 +67,7 @@ def _png() -> bytes:
 
 
 def _wait_until(
-    predicate: Callable[[], bool], description: str, call: Future[str] | None = None
+    predicate: Callable[[], bool], description: str, call: Future[KeyboardTypeResult] | None = None
 ) -> None:
     deadline = time.monotonic() + WAIT_TIMEOUT_SECONDS
     while not predicate():
@@ -78,16 +79,18 @@ def _wait_until(
 
 
 def _start_kwrite(
-    start_session: Callable[..., str], wait_for_app: Callable[[str], str], document: Path
-) -> tuple[str, int]:
-    """Start a clipboard-enabled virtual session with KWrite; return socket and PID."""
-    output = start_session(f"kwrite {shlex.quote(str(document))}", enable_clipboard=True)
-    assert "Input backend: KWin EIS" in output, output
-    socket = re.search(r"^Session started\. Wayland socket: (\S+)$", output, re.MULTILINE)
-    pid = re.search(r"\(PID=(\d+)\)", output)
-    assert socket is not None and pid is not None, output
+    start_session: Callable[..., SessionInfo],
+    launch: Callable[..., AppLaunchResult],
+    wait_for_app: Callable[[str], ElementList],
+    document: Path,
+) -> tuple[str, int, AtspiOracle]:
+    """Start a clipboard-enabled virtual session with KWrite; return socket, PID, oracle."""
+    info = start_session(enable_clipboard=True)
+    assert info.input_backend == "eis", info
+    assert info.clipboard is True, info
+    app = launch(f"kwrite {shlex.quote(str(document))}")
     wait_for_app("kwrite")
-    return socket.group(1), int(pid.group(1))
+    return info.wayland_socket, app.pid, AtspiOracle(info.dbus_address)
 
 
 def _mark_engine_calls(monkeypatch: pytest.MonkeyPatch) -> str:
@@ -198,9 +201,21 @@ def _assert_owners_released_on_replace(env: dict[str, str], display: str, token:
 
 
 @contextlib.contextmanager
-def _typing(engine: AutomationEngine, text: str) -> Generator[Future[str]]:
+def _typing(engine: AutomationEngine, text: str) -> Generator[Future[KeyboardTypeResult]]:
     with ThreadPoolExecutor(max_workers=1) as pool:
-        yield pool.submit(engine.keyboard_type_unicode, text)
+        yield pool.submit(engine.keyboard_type, text, "unicode")
+
+
+def _type_unicode(engine: AutomationEngine, text: str) -> None:
+    """Type through the clipboard route and check the reported result."""
+    result = engine.keyboard_type(text, method="unicode")
+    _assert_pasted(result, text)
+
+
+def _assert_pasted(result: KeyboardTypeResult, text: str) -> None:
+    # KWin has no virtual-keyboard protocol, so wtype fails and KWrite pastes on Ctrl+V.
+    assert result.route == "paste:ctrl+v", result.render()
+    assert result.render().splitlines()[0] == f"Typed unicode: {text!r}"
 
 
 @contextlib.contextmanager
@@ -213,22 +228,19 @@ def _paste_target_held(pid: int) -> Generator[None]:
         os.kill(pid, signal.SIGCONT)
 
 
-def _focused_text(engine: AutomationEngine) -> str:
-    output = engine.find_ui_elements(query="text", app_name="kwrite", states=["focused"])
-    assert element_count(output) > 0, output[:500]
-    matches = re.findall(
-        rf'^- \[text] "[^"]*" @ (?:screen {_RECT}|unavailable \([^)]+\))'
-        rf"(?: text=(.*?))?(?: \[actions:.*])?$",
-        output,
-        re.MULTILINE,
-    )
-    assert len(matches) == 1, output[:500]
-    text_repr = matches[0][-1]
-    return ast.literal_eval(text_repr) if text_repr else ""
+def _focused_text(atspi: AtspiOracle) -> str:
+    """Text of KWrite's focused document, read by the test's own AT-SPI walk."""
+    nodes = [
+        n
+        for n in atspi.find(app="kwrite", role="text")
+        if "focused" in n.states and n.error is None
+    ]
+    assert len(nodes) == 1, [(n.role, n.name, sorted(n.states)) for n in nodes]
+    return nodes[0].text or ""
 
 
-def _wait_for_text(engine: AutomationEngine, expected: str) -> None:
-    _wait_until(lambda: _focused_text(engine) == expected, f"document text {expected!r}")
+def _wait_for_text(atspi: AtspiOracle, expected: str) -> None:
+    _wait_until(lambda: _focused_text(atspi) == expected, f"document text {expected!r}")
 
 
 @pytest.mark.parametrize(
@@ -238,39 +250,41 @@ def _wait_for_text(engine: AutomationEngine, expected: str) -> None:
         pytest.param("image/png", _png(), id="png"),
     ],
 )
-def test_type_unicode_restores_every_prior_mime_byte_for_byte(
+def test_keyboard_type_method_unicode_restores_every_prior_mime_byte_for_byte(
     engine: AutomationEngine,
-    start_session: Callable[..., str],
-    wait_for_app: Callable[[str], str],
+    start_session: Callable[..., SessionInfo],
+    launch: Callable[..., AppLaunchResult],
+    wait_for_app: Callable[[str], ElementList],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     mime: str | None,
     data: bytes,
 ) -> None:
-    display, _ = _start_kwrite(start_session, wait_for_app, tmp_path / "restore.txt")
+    display, _, atspi = _start_kwrite(start_session, launch, wait_for_app, tmp_path / "restore.txt")
     env = _tool_env(display)
     _seed(env, data, mime)
     prior = _selection(env)
     assert data in prior.values(), prior
     token = _mark_engine_calls(monkeypatch)
 
-    assert engine.keyboard_type_unicode(SECRET) == f"Typed unicode: {SECRET!r}"
+    _type_unicode(engine, SECRET)
 
-    _wait_for_text(engine, SECRET)
+    _wait_for_text(atspi, SECRET)
     assert _selection(env) == prior
     _wait_for_sole_owner(display, token)
     _assert_secret_not_exposed(display, token)
     _assert_owners_released_on_replace(env, display, token)
 
 
-def test_type_unicode_leaves_an_empty_selection_empty(
+def test_keyboard_type_method_unicode_leaves_an_empty_selection_empty(
     engine: AutomationEngine,
-    start_session: Callable[..., str],
-    wait_for_app: Callable[[str], str],
+    start_session: Callable[..., SessionInfo],
+    launch: Callable[..., AppLaunchResult],
+    wait_for_app: Callable[[str], ElementList],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    display, _ = _start_kwrite(start_session, wait_for_app, tmp_path / "empty.txt")
+    display, _, atspi = _start_kwrite(start_session, launch, wait_for_app, tmp_path / "empty.txt")
     env = _tool_env(display)
     subprocess.run(
         ["wl-copy", "--clear"],
@@ -283,21 +297,24 @@ def test_type_unicode_leaves_an_empty_selection_empty(
     _wait_until(lambda: not _offered_types(env), "empty selection")
     token = _mark_engine_calls(monkeypatch)
 
-    assert engine.keyboard_type_unicode(SECRET) == f"Typed unicode: {SECRET!r}"
+    _type_unicode(engine, SECRET)
 
-    _wait_for_text(engine, SECRET)
+    _wait_for_text(atspi, SECRET)
     assert _offered_types(env) == set()
     _wait_until(lambda: not _spawned(display, token), "spawned processes to exit")
 
 
 def test_transient_offer_carries_the_secret_hint_until_the_paste(
     engine: AutomationEngine,
-    start_session: Callable[..., str],
-    wait_for_app: Callable[[str], str],
+    start_session: Callable[..., SessionInfo],
+    launch: Callable[..., AppLaunchResult],
+    wait_for_app: Callable[[str], ElementList],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    display, kwrite_pid = _start_kwrite(start_session, wait_for_app, tmp_path / "hint.txt")
+    display, kwrite_pid, atspi = _start_kwrite(
+        start_session, launch, wait_for_app, tmp_path / "hint.txt"
+    )
     env = _tool_env(display)
     _seed(env, PRIOR_TEXT.encode())
     prior = _selection(env)
@@ -311,20 +328,23 @@ def test_transient_offer_carries_the_secret_hint_until_the_paste(
             hint = _wl_paste(env, "--no-newline", "--type", HINT_MIME)
             assert (hint.returncode, hint.stdout) == (0, b"secret")
             assert not call.done()
-        assert call.result(timeout=CALL_TIMEOUT_SECONDS) == f"Typed unicode: {SECRET!r}"
+        _assert_pasted(call.result(timeout=CALL_TIMEOUT_SECONDS), SECRET)
 
-    _wait_for_text(engine, SECRET)
+    _wait_for_text(atspi, SECRET)
     assert _selection(env) == prior
 
 
 def test_user_copy_during_transient_ownership_is_never_overwritten(
     engine: AutomationEngine,
-    start_session: Callable[..., str],
-    wait_for_app: Callable[[str], str],
+    start_session: Callable[..., SessionInfo],
+    launch: Callable[..., AppLaunchResult],
+    wait_for_app: Callable[[str], ElementList],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    display, kwrite_pid = _start_kwrite(start_session, wait_for_app, tmp_path / "race.txt")
+    display, kwrite_pid, atspi = _start_kwrite(
+        start_session, launch, wait_for_app, tmp_path / "race.txt"
+    )
     env = _tool_env(display)
     _seed(env, PRIOR_TEXT.encode())
     token = _mark_engine_calls(monkeypatch)
@@ -337,22 +357,24 @@ def test_user_copy_during_transient_ownership_is_never_overwritten(
             # The transient owner ends once it observes its source cancelled;
             # after that nothing spawned by the call remains to restore.
             _wait_until(lambda: owner not in _spawned(display, token), "observed cancellation")
-        with pytest.raises(RuntimeError, match="Failed to type unicode"):
+        with pytest.raises(RuntimeError) as excinfo:
             call.result(timeout=CALL_TIMEOUT_SECONDS)
+        assert str(excinfo.value) == f"Failed to type unicode: {SECRET!r}"
 
     assert not _spawned(display, token)
     assert _wl_paste(env, "--no-newline").stdout == USER_COPY.encode()
-    assert SECRET not in _focused_text(engine)
+    assert SECRET not in _focused_text(atspi)
 
 
 def test_stalled_prior_owner_fails_before_paste_without_leaving_an_owner(
     engine: AutomationEngine,
-    start_session: Callable[..., str],
-    wait_for_app: Callable[[str], str],
+    start_session: Callable[..., SessionInfo],
+    launch: Callable[..., AppLaunchResult],
+    wait_for_app: Callable[[str], ElementList],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    display, _ = _start_kwrite(start_session, wait_for_app, tmp_path / "stalled.txt")
+    display, _, atspi = _start_kwrite(start_session, launch, wait_for_app, tmp_path / "stalled.txt")
     env = _tool_env(display)
     owner = subprocess.Popen(
         ["wl-copy", "--foreground", "--", PRIOR_TEXT],
@@ -369,14 +391,15 @@ def test_stalled_prior_owner_fails_before_paste_without_leaving_an_owner(
         token = _mark_engine_calls(monkeypatch)
         owner.send_signal(signal.SIGSTOP)
         try:
-            with pytest.raises(RuntimeError, match="Failed to type unicode"):
-                engine.keyboard_type_unicode(SECRET)
+            with pytest.raises(RuntimeError) as excinfo:
+                engine.keyboard_type(SECRET, method="unicode")
+            assert str(excinfo.value) == f"Failed to type unicode: {SECRET!r}"
             # The compositor announces types without asking the frozen owner.
             assert _offered_types(env) == prior_types
         finally:
             owner.send_signal(signal.SIGCONT)
 
-        assert _focused_text(engine) == ""
+        assert _focused_text(atspi) == ""
         _wait_until(lambda: not _spawned(display, token), "failed helper to exit")
     finally:
         owner.terminate()
@@ -385,12 +408,13 @@ def test_stalled_prior_owner_fails_before_paste_without_leaving_an_owner(
 
 def test_repeated_calls_hand_the_prior_selection_to_exactly_one_owner(
     engine: AutomationEngine,
-    start_session: Callable[..., str],
-    wait_for_app: Callable[[str], str],
+    start_session: Callable[..., SessionInfo],
+    launch: Callable[..., AppLaunchResult],
+    wait_for_app: Callable[[str], ElementList],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    display, _ = _start_kwrite(start_session, wait_for_app, tmp_path / "repeat.txt")
+    display, _, atspi = _start_kwrite(start_session, launch, wait_for_app, tmp_path / "repeat.txt")
     env = _tool_env(display)
     _seed(env, PRIOR_TEXT.encode())
     prior = _selection(env)
@@ -400,9 +424,9 @@ def test_repeated_calls_hand_the_prior_selection_to_exactly_one_owner(
     retired: frozenset[int] = frozenset()
     for index in range(3):
         text = f"{SECRET}{index}"
-        assert engine.keyboard_type_unicode(text) == f"Typed unicode: {text!r}"
+        _type_unicode(engine, text)
         typed += text
-        _wait_for_text(engine, typed)
+        _wait_for_text(atspi, typed)
         assert _selection(env) == prior
         retired |= {_wait_for_sole_owner(display, token, retired)}
 
@@ -412,31 +436,32 @@ def test_repeated_calls_hand_the_prior_selection_to_exactly_one_owner(
 
 def test_live_session_keeps_the_restored_selection_after_disconnect(
     engine: AutomationEngine,
-    wait_for_app: Callable[[str], str],
+    wait_for_app: Callable[[str], ElementList],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     with live_kwin() as live:
         env = _tool_env(live.wayland_display)
-        output = engine.session_connect(
+        info = engine.session_connect(
             dbus_address=live.dbus_address, wayland_display=live.wayland_display
         )
-        assert output.startswith("Connected to live KWin session."), output
-        assert "Input backend: KWin EIS" in output, output
+        assert info.kind == "live", info
+        assert info.input_backend == "eis", info
+        atspi = AtspiOracle(live.dbus_address)
         document = tmp_path / "live.txt"
-        launch = engine.launch_app(f"kwrite {shlex.quote(str(document))}")
-        assert launch.startswith("App launched:"), launch
+        engine.app_launch(f"kwrite {shlex.quote(str(document))}")
         wait_for_app("kwrite")
-        engine.focus_window("kwrite")
+        engine.window_focus(WindowSelector(app_id="org.kde.kwrite"))
         _seed(env, PRIOR_TEXT.encode())
         prior = _selection(env)
         token = _mark_engine_calls(monkeypatch)
 
-        assert engine.keyboard_type_unicode(SECRET) == f"Typed unicode: {SECRET!r}"
-        _wait_for_text(engine, SECRET)
+        _type_unicode(engine, SECRET)
+        _wait_for_text(atspi, SECRET)
         assert _selection(env) == prior
 
-        assert engine.session_stop() == "Disconnected from live session."
+        stopped = engine.session_stop()
+        assert stopped.render() == "Disconnected from live session.", stopped.render()
         assert live.process.poll() is None
         # The restored selection belongs to the desktop, not to the MCP connection.
         assert _selection(env) == prior

@@ -1,0 +1,117 @@
+{
+ "scenario": "click_hold_300",
+ "captured_from": "kwin-mcp 0.11.0 @ 7a5d781 (AutomationEngine, virtual KWin session)",
+ "call": {
+  "hold_ms": 300,
+  "local": [
+   300,
+   200
+  ],
+  "tool": "mouse_click"
+ },
+ "returned_text": [
+  "Clicked left at (440, 292) held 300ms"
+ ],
+ "probe": {
+  "client_size": [
+   1000,
+   640
+  ],
+  "coordinates": "probe-local logical px (global = client origin + local)"
+ },
+ "repeats": 5,
+ "sequence": [
+  {
+   "kind": "motion",
+   "x": 299,
+   "y": 200,
+   "mods": [],
+   "held": []
+  },
+  {
+   "kind": "motion",
+   "x": 300,
+   "y": 200,
+   "mods": [],
+   "held": []
+  },
+  {
+   "kind": "button_press",
+   "button": "left",
+   "x": 300,
+   "y": 200,
+   "mods": [],
+   "held": []
+  },
+  {
+   "kind": "button_release",
+   "button": "left",
+   "x": 300,
+   "y": 200,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  }
+ ],
+ "gaps_ms": [
+  {
+   "from": 0,
+   "to": 1,
+   "mono": {
+    "min": 0.1,
+    "median": 0.2,
+    "max": 0.23
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 1,
+   "to": 2,
+   "mono": {
+    "min": 20.36,
+    "median": 21.07,
+    "max": 22.78
+   },
+   "event_clock": {
+    "min": 20.0,
+    "median": 21.0,
+    "max": 23.0
+   }
+  },
+  {
+   "from": 2,
+   "to": 3,
+   "mono": {
+    "min": 299.99,
+    "median": 302.64,
+    "max": 305.04
+   },
+   "event_clock": {
+    "min": 300.0,
+    "median": 302.0,
+    "max": 305.0
+   }
+  }
+ ],
+ "call_start_to_first_event_ms": {
+  "min": 0.44,
+  "median": 0.65,
+  "max": 0.8
+ },
+ "last_event_to_call_return_ms": {
+  "min": -0.56,
+  "median": -0.4,
+  "max": 0.19
+ },
+ "first_to_last_event_ms": {
+  "min": 320.63,
+  "median": 324.06,
+  "max": 325.56
+ },
+ "other_variants": []
+}

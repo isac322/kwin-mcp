@@ -1,0 +1,253 @@
+{
+ "scenario": "click_left_triple",
+ "captured_from": "kwin-mcp 0.11.0 @ 7a5d781 (AutomationEngine, virtual KWin session)",
+ "call": {
+  "local": [
+   300,
+   200
+  ],
+  "tool": "mouse_click",
+  "triple": true
+ },
+ "returned_text": [
+  "Clicked left at (440, 292) (triple)"
+ ],
+ "probe": {
+  "client_size": [
+   1000,
+   640
+  ],
+  "coordinates": "probe-local logical px (global = client origin + local)"
+ },
+ "repeats": 5,
+ "sequence": [
+  {
+   "kind": "motion",
+   "x": 299,
+   "y": 200,
+   "mods": [],
+   "held": []
+  },
+  {
+   "kind": "motion",
+   "x": 300,
+   "y": 200,
+   "mods": [],
+   "held": []
+  },
+  {
+   "kind": "button_press",
+   "button": "left",
+   "x": 300,
+   "y": 200,
+   "mods": [],
+   "held": []
+  },
+  {
+   "kind": "button_release",
+   "button": "left",
+   "x": 300,
+   "y": 200,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "button_press",
+   "button": "left",
+   "x": 300,
+   "y": 200,
+   "mods": [],
+   "held": []
+  },
+  {
+   "kind": "gtk_double_press",
+   "button": "left",
+   "x": 300,
+   "y": 200,
+   "mods": [],
+   "held": []
+  },
+  {
+   "kind": "button_release",
+   "button": "left",
+   "x": 300,
+   "y": 200,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "button_press",
+   "button": "left",
+   "x": 300,
+   "y": 200,
+   "mods": [],
+   "held": []
+  },
+  {
+   "kind": "gtk_triple_press",
+   "button": "left",
+   "x": 300,
+   "y": 200,
+   "mods": [],
+   "held": []
+  },
+  {
+   "kind": "button_release",
+   "button": "left",
+   "x": 300,
+   "y": 200,
+   "mods": [],
+   "held": [
+    "left"
+   ]
+  }
+ ],
+ "gaps_ms": [
+  {
+   "from": 0,
+   "to": 1,
+   "mono": {
+    "min": 0.11,
+    "median": 0.19,
+    "max": 0.26
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 1,
+   "to": 2,
+   "mono": {
+    "min": 20.29,
+    "median": 20.82,
+    "max": 22.82
+   },
+   "event_clock": {
+    "min": 20.0,
+    "median": 21.0,
+    "max": 23.0
+   }
+  },
+  {
+   "from": 2,
+   "to": 3,
+   "mono": {
+    "min": 25.24,
+    "median": 25.79,
+    "max": 29.31
+   },
+   "event_clock": {
+    "min": 26.0,
+    "median": 26.0,
+    "max": 29.0
+   }
+  },
+  {
+   "from": 3,
+   "to": 4,
+   "mono": {
+    "min": 61.45,
+    "median": 62.4,
+    "max": 63.24
+   },
+   "event_clock": {
+    "min": 61.0,
+    "median": 63.0,
+    "max": 63.0
+   }
+  },
+  {
+   "from": 4,
+   "to": 5,
+   "mono": {
+    "min": 0.17,
+    "median": 0.21,
+    "max": 0.26
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 0.0
+   }
+  },
+  {
+   "from": 5,
+   "to": 6,
+   "mono": {
+    "min": 25.03,
+    "median": 26.72,
+    "max": 30.66
+   },
+   "event_clock": {
+    "min": 25.0,
+    "median": 26.0,
+    "max": 31.0
+   }
+  },
+  {
+   "from": 6,
+   "to": 7,
+   "mono": {
+    "min": 60.76,
+    "median": 62.31,
+    "max": 64.77
+   },
+   "event_clock": {
+    "min": 61.0,
+    "median": 63.0,
+    "max": 64.0
+   }
+  },
+  {
+   "from": 7,
+   "to": 8,
+   "mono": {
+    "min": 0.18,
+    "median": 0.19,
+    "max": 0.27
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 0.0
+   }
+  },
+  {
+   "from": 8,
+   "to": 9,
+   "mono": {
+    "min": 25.49,
+    "median": 26.05,
+    "max": 29.84
+   },
+   "event_clock": {
+    "min": 26.0,
+    "median": 27.0,
+    "max": 30.0
+   }
+  }
+ ],
+ "call_start_to_first_event_ms": {
+  "min": 0.7,
+  "median": 0.75,
+  "max": 1.24
+ },
+ "last_event_to_call_return_ms": {
+  "min": -0.71,
+  "median": -0.46,
+  "max": 0.15
+ },
+ "first_to_last_event_ms": {
+  "min": 220.21,
+  "median": 224.7,
+  "max": 236.69
+ },
+ "other_variants": []
+}

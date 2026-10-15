@@ -1,9 +1,8 @@
-"""End-to-end coverage for window ids, active_window and window_close.
+"""End-to-end coverage for window ids, the active window and window_close in virtual sessions.
 
-window_close addresses one window by its KWin id, so the tests use two windows
-of the same app and check that only the targeted one goes away. Window ids come
-from the caller and reach a KWin script, so an id that would run as script if
-it were spliced into the source must stay data.
+A virtual session needs no consent (``consent: "not_required"``); live-session
+consent flows are covered by ``test_window_close_consent.py``. Which windows
+exist and which one is active is read through ``kwin_oracle``.
 """
 
 from __future__ import annotations
@@ -13,160 +12,272 @@ import time
 from typing import TYPE_CHECKING
 
 import pytest
-from session_harness import live_kwin
+from kwin_oracle import KWinOracle, OracleWindow
+from window_zoo import MAIN_CAPTION, ZooProcess
+
+from kwin_mcp.models import PartialRect, WindowSelector
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     from kwin_mcp.core import AutomationEngine
+    from kwin_mcp.models import AppLaunchResult, ElementList, SessionInfo
 
-WINDOW_ID = re.compile(r"^    id:\s+(\S+)$", re.MULTILINE)
-ACTIVE_HEADER = re.compile(r'^- (\S+) ".*" \[active\]$', re.MULTILINE)
-STATE_TIMEOUT_SECONDS = 10.0
-POLL_INTERVAL_SECONDS = 0.2
+STATE_TIMEOUT_S = 10.0
+POLL_S = 0.2
 # Closes the active window if the id is ever pasted into the script source
 # instead of being passed as a string literal.
 INJECTED_ID = '"; workspace.activeWindow.closeWindow(); var _x="'
 
 
-def _ids(engine: AutomationEngine, app_name: str) -> list[str]:
-    return WINDOW_ID.findall(engine.window_geometry(app_name=app_name))
+def _info(engine: AutomationEngine) -> SessionInfo:
+    session = engine.session_info().session
+    assert session is not None
+    return session
 
 
-def _await_ids(
-    engine: AutomationEngine, app_name: str, predicate: Callable[[list[str]], bool]
-) -> list[str]:
-    deadline = time.monotonic() + STATE_TIMEOUT_SECONDS
-    ids = _ids(engine, app_name)
+def _of(windows: list[OracleWindow], pid: int) -> list[OracleWindow]:
+    return [w for w in windows if w.pid == pid]
+
+
+def _kcalc_ids(oracle: KWinOracle) -> list[str]:
+    return [w.id for w in oracle.windows() if "kcalc" in w.resource_class.lower()]
+
+
+def _await_kcalc_ids(oracle: KWinOracle, predicate: Callable[[list[str]], bool]) -> list[str]:
+    deadline = time.monotonic() + STATE_TIMEOUT_S
+    ids = _kcalc_ids(oracle)
     while not predicate(ids):
-        assert time.monotonic() < deadline, engine.window_geometry(app_name=app_name)[:1000]
-        time.sleep(POLL_INTERVAL_SECONDS)
-        ids = _ids(engine, app_name)
+        assert time.monotonic() < deadline, oracle.windows()
+        time.sleep(POLL_S)
+        ids = _kcalc_ids(oracle)
     return ids
 
 
-def _active_id(engine: AutomationEngine) -> str:
-    active = engine.active_window()
-    ids = WINDOW_ID.findall(active)
-    assert len(ids) == 1, active[:500]
-    return ids[0]
+def _wait_active(oracle: KWinOracle, window_id: str) -> None:
+    deadline = time.monotonic() + STATE_TIMEOUT_S
+    active = oracle.active_window()
+    while active is None or active.id != window_id:
+        assert time.monotonic() < deadline, (window_id, active)
+        time.sleep(POLL_S)
+        active = oracle.active_window()
 
 
-def _await_active_app(engine: AutomationEngine, app_name: str) -> str:
-    """Wait until active_window reports app_name; return its id."""
-    deadline = time.monotonic() + STATE_TIMEOUT_SECONDS
-    active = engine.active_window()
-    while app_name not in active.lower():
-        assert time.monotonic() < deadline, active[:500]
-        time.sleep(POLL_INTERVAL_SECONDS)
-        active = engine.active_window()
-    return _active_id(engine)
+def _active_id(oracle: KWinOracle) -> str:
+    active = oracle.active_window()
+    assert active is not None
+    return active.id
 
 
-def _two_kcalc_windows(engine: AutomationEngine) -> list[str]:
-    engine.launch_app("kcalc")
-    return _await_ids(engine, "kcalc", lambda ids: len(ids) == 2)
+def _two_kcalc_windows(oracle: KWinOracle, launch: Callable[..., AppLaunchResult]) -> list[str]:
+    launch("kcalc")
+    return _await_kcalc_ids(oracle, lambda ids: len(ids) == 2)
 
 
-def test_focus_window_targets_exact_window_id(
-    kcalc_session: AutomationEngine,
+def _open(oracle: KWinOracle, zoo: ZooProcess, command: str, title: str) -> OracleWindow:
+    before = {w.id for w in _of(oracle.windows(), zoo.pid)}
+    zoo.command(command, f"window: {title}")
+    windows = oracle.wait_for_windows(lambda ws: any(w.id not in before for w in _of(ws, zoo.pid)))
+    added = [w for w in _of(windows, zoo.pid) if w.id not in before]
+    assert len(added) == 1, added
+    return added[0]
+
+
+@pytest.fixture
+def oracle(kcalc_session: AutomationEngine) -> KWinOracle:
+    return KWinOracle(_info(kcalc_session).dbus_address)
+
+
+@pytest.fixture
+def zoo(kcalc_session: AutomationEngine, oracle: KWinOracle) -> Iterator[ZooProcess]:
+    info = _info(kcalc_session)
+    with ZooProcess(wayland_display=info.wayland_socket, dbus_address=info.dbus_address) as app:
+        app.layer_shell()
+        app.expect(f"window: {MAIN_CAPTION}")
+        oracle.wait_for_windows(lambda ws: len(_of(ws, app.pid)) == 1)
+        yield app
+
+
+def test_window_focus_targets_exact_window_id(
+    kcalc_session: AutomationEngine, oracle: KWinOracle, launch: Callable[..., AppLaunchResult]
 ) -> None:
-    first, second = _two_kcalc_windows(kcalc_session)
+    first, second = _two_kcalc_windows(oracle, launch)
 
     for expected in (first, second, first):
-        reply = kcalc_session.focus_window(window_id=expected)
-        assert reply.startswith("Focused:"), reply
-
-        deadline = time.monotonic() + STATE_TIMEOUT_SECONDS
-        while _active_id(kcalc_session) != expected:
-            assert time.monotonic() < deadline, kcalc_session.active_window()
-            time.sleep(POLL_INTERVAL_SECONDS)
-
-        assert kcalc_session.window_geometry(window_id=expected).count("[active]") == 1
+        result = kcalc_session.window_focus(WindowSelector(id=expected))
+        assert result.window_id == expected, result
+        assert result.render().startswith("Focused: "), result.render()
+        _wait_active(oracle, expected)
+        listed = kcalc_session.window_list(WindowSelector(id=expected))
+        assert [w.active for w in listed.windows] == [True], listed
+        assert listed.render().count("[active]") == 1, listed.render()
 
 
-def test_window_close_closes_only_the_targeted_window(kcalc_session: AutomationEngine) -> None:
-    target, survivor = _two_kcalc_windows(kcalc_session)
+@pytest.mark.qa("QA-WIN-031")
+def test_virtual_close_consent_not_required_closes_only_target(
+    kcalc_session: AutomationEngine, oracle: KWinOracle, launch: Callable[..., AppLaunchResult]
+) -> None:
+    target, survivor = _two_kcalc_windows(oracle, launch)
+    expected = oracle.window(target)
+    assert expected is not None
 
-    closed = kcalc_session.window_close(window_id=target)
-    assert closed.startswith("Close requested:"), closed
-    assert target in closed, closed
+    closed = kcalc_session.window_close(WindowSelector(id=target))
 
-    assert _await_ids(kcalc_session, "kcalc", lambda ids: target not in ids) == [survivor]
+    assert closed.model_dump(exclude={"frames", "warnings"}) == {
+        "window_id": target,
+        "app_id": expected.resource_class,
+        "caption": expected.caption,
+        "requested": True,
+        "consent": "not_required",
+        "refusal": None,
+    }, closed
+    assert closed.render() == (
+        f'Close requested: {expected.resource_class} "{expected.caption}" ({target}). '
+        "The app may keep the window open, for example to ask about unsaved changes; "
+        "check window_list."
+    )
+
+    assert _await_kcalc_ids(oracle, lambda ids: target not in ids) == [survivor]
     # The survivor must still be there once the close has fully settled.
     time.sleep(1)
-    assert _ids(kcalc_session, "kcalc") == [survivor]
-    assert kcalc_session.window_geometry(window_id=target) == f"No window with id {target!r}."
+    assert _kcalc_ids(oracle) == [survivor]
+    gone = kcalc_session.window_list(WindowSelector(id=target))
+    assert gone.windows == [], gone
+    assert gone.render() == f"No window with id {target!r}."
 
 
-def test_window_close_reports_an_unknown_id(kcalc_session: AutomationEngine) -> None:
-    before = _ids(kcalc_session, "kcalc")
-    with pytest.raises(RuntimeError, match=re.escape("No window with id '{no-such-window}'.")):
-        kcalc_session.window_close(window_id="{no-such-window}")
+def test_window_close_reports_an_unknown_id(
+    kcalc_session: AutomationEngine, oracle: KWinOracle
+) -> None:
+    before = _kcalc_ids(oracle)
+
+    closed = kcalc_session.window_close(WindowSelector(id="{no-such-window}"))
+
+    # An id that names no window is a refusal, not an error.
+    assert (closed.window_id, closed.requested, closed.refusal) == (
+        "{no-such-window}",
+        False,
+        "no_window",
+    ), closed
+    assert closed.render() == "No window with id '{no-such-window}'."
     time.sleep(1)
-    assert _ids(kcalc_session, "kcalc") == before
+    assert _kcalc_ids(oracle) == before
 
 
 @pytest.mark.parametrize("tool", ["window_close", "window_geometry"])
 def test_window_id_with_a_quote_is_data_not_script(
-    kcalc_session: AutomationEngine, tool: str
+    kcalc_session: AutomationEngine,
+    oracle: KWinOracle,
+    launch: Callable[..., AppLaunchResult],
+    tool: str,
 ) -> None:
-    ids = _two_kcalc_windows(kcalc_session)
+    ids = _two_kcalc_windows(oracle, launch)
     # The injected script would close the active window, so make sure there
     # is one: otherwise a missing close would prove nothing.
-    assert kcalc_session.focus_window(app_name="kcalc").startswith("Focused:")
-    active = _await_active_app(kcalc_session, "kcalc")
-    assert active in ids
+    kcalc_session.window_focus(WindowSelector(id=ids[0]))
+    _wait_active(oracle, ids[0])
 
-    # window_geometry is a query, so an unknown id is an empty answer; for
-    # window_close it is a failed operation and therefore a tool error.
     missing = f"No window with id {INJECTED_ID!r}."
     if tool == "window_close":
-        with pytest.raises(RuntimeError, match=re.escape(missing)):
-            kcalc_session.window_close(window_id=INJECTED_ID)
+        closed = kcalc_session.window_close(WindowSelector(id=INJECTED_ID))
+        assert closed.refusal == "no_window", closed
+        assert closed.render() == missing
     else:
-        assert kcalc_session.window_geometry(window_id=INJECTED_ID) == missing
+        # window_geometry's id lookup is window_list's id filter in 1.0.
+        listed = kcalc_session.window_list(WindowSelector(id=INJECTED_ID))
+        assert listed.windows == [], listed
+        assert listed.render() == missing
 
     time.sleep(2)
-    assert sorted(_ids(kcalc_session, "kcalc")) == sorted(ids)
-    assert _active_id(kcalc_session) == active
+    assert sorted(_kcalc_ids(oracle)) == sorted(ids)
+    assert _active_id(oracle) == ids[0]
 
 
-def test_active_window_follows_focus_window(
-    kcalc_session: AutomationEngine, wait_for_app: Callable[[str], str]
+def test_window_list_active_follows_window_focus(
+    kcalc_session: AutomationEngine,
+    oracle: KWinOracle,
+    launch: Callable[..., AppLaunchResult],
+    wait_for_app: Callable[[str], ElementList],
 ) -> None:
-    kcalc_session.launch_app(command="kwrite")
+    launch("kwrite")
     wait_for_app("kwrite")
-    [kcalc_id] = _ids(kcalc_session, "kcalc")
-    [kwrite_id] = _ids(kcalc_session, "kwrite")
+    windows = oracle.wait_for_windows(lambda ws: any("kwrite" in w.resource_class for w in ws))
+    [kcalc_id] = _kcalc_ids(oracle)
+    [kwrite_id] = [w.id for w in windows if "kwrite" in w.resource_class]
 
-    for app_name, expected in (("kwrite", kwrite_id), ("kcalc", kcalc_id), ("kwrite", kwrite_id)):
-        assert kcalc_session.focus_window(app_name=app_name).startswith("Focused:")
-        assert _await_active_app(kcalc_session, app_name) == expected
-        # window_geometry marks the same window as active, and only that one.
-        report = kcalc_session.window_geometry()
-        marked = ACTIVE_HEADER.findall(report)
-        assert len(marked) == 1 and app_name in marked[0].lower(), report[:1000]
-        assert kcalc_session.window_geometry(window_id=expected).count("[active]") == 1
+    for app_id, expected in (("kwrite", kwrite_id), ("kcalc", kcalc_id), ("kwrite", kwrite_id)):
+        result = kcalc_session.window_focus(WindowSelector(app_id=app_id))
+        assert result.window_id == expected, result
+        _wait_active(oracle, expected)
+        active = kcalc_session.window_list(WindowSelector(active=True))
+        assert [w.id for w in active.windows] == [expected], active
+        assert active.render().startswith("Active window:\n- "), active.render()
+        # The unfiltered list marks the same window as active, and only that one.
+        report = kcalc_session.window_list()
+        assert [w.id for w in report.windows if w.active] == [expected], report
+        assert report.render().count("[active]") == 1, report.render()
 
 
-def test_window_close_is_refused_in_live_sessions(
-    engine: AutomationEngine, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.qa("QA-WIN-032")
+def test_dialog_close_by_id(
+    kcalc_session: AutomationEngine, oracle: KWinOracle, zoo: ZooProcess
 ) -> None:
-    with live_kwin() as live:
-        monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", live.dbus_address)
-        engine.session_connect(dbus_address=live.dbus_address, wayland_display=live.wayland_display)
-        try:
-            engine.launch_app("kcalc")
-            [window_id] = _await_ids(engine, "kcalc", lambda ids: len(ids) == 1)
+    [main] = _of(oracle.windows(), zoo.pid)
+    dialog = _open(oracle, zoo, "dialog", "Zoo Dialog")
+    assert oracle.activate(dialog.id)
+    _wait_active(oracle, dialog.id)
 
-            with pytest.raises(RuntimeError, match="disabled in live sessions"):
-                engine.window_close(window_id=window_id)
+    listed = kcalc_session.window_list(WindowSelector(active=True)).windows
+    assert [w.id for w in listed] == [dialog.id], listed
 
-            # Observation and activation stay available, as with focus_window.
-            assert engine.focus_window(app_name="kcalc").startswith("Focused:")
-            assert _await_active_app(engine, "kcalc") == window_id
-            time.sleep(1)
-            assert _ids(engine, "kcalc") == [window_id]
-        finally:
-            engine.session_stop()
+    placed = kcalc_session.window_place(WindowSelector(id=dialog.id), frame=PartialRect(x=50, y=50))
+    assert placed.window_id == dialog.id, placed
+    deadline = time.monotonic() + STATE_TIMEOUT_S
+    while True:
+        moved = oracle.window(dialog.id)
+        assert moved is not None and moved.frame is not None
+        if moved.frame.as_ints()[:2] == (50, 50):
+            break
+        assert time.monotonic() < deadline, moved
+        time.sleep(POLL_S)
+
+    closed = kcalc_session.window_close(WindowSelector(active=True))
+    assert (closed.window_id, closed.requested, closed.consent) == (
+        dialog.id,
+        True,
+        "not_required",
+    ), closed
+    zoo.expect("closed: Zoo Dialog")
+    oracle.wait_for_windows(lambda ws: dialog.id not in {w.id for w in ws})
+    assert oracle.window(main.id) is not None
+
+
+@pytest.mark.qa("QA-WIN-034")
+def test_app_refuses_close(
+    kcalc_session: AutomationEngine, oracle: KWinOracle, zoo: ZooProcess
+) -> None:
+    refuser = _open(oracle, zoo, "refuser", "Zoo Refuser")
+    start = len(zoo.lines)
+
+    closed = kcalc_session.window_close(WindowSelector(id=refuser.id))
+
+    assert (closed.requested, closed.consent, closed.refusal) == (True, "not_required", None)
+    assert "The app may keep the window open" in closed.render(), closed.render()
+    zoo.expect("refused-close: Zoo Refuser", start=start)
+    time.sleep(1)
+    assert oracle.window(refuser.id) is not None
+
+
+@pytest.mark.qa("QA-WIN-042")
+def test_app_name_no_match_is_tool_error(
+    kcalc_session: AutomationEngine, oracle: KWinOracle
+) -> None:
+    before = {w.id for w in oracle.windows()}
+
+    # A name selector that matches nothing is an error, unlike an unknown id.
+    with pytest.raises(
+        ValueError,
+        match=re.escape("No window matches {app_id='nope'}.\nList windows with window_list."),
+    ):
+        kcalc_session.window_close(WindowSelector(app_id="nope"))
+    assert {w.id for w in oracle.windows()} == before

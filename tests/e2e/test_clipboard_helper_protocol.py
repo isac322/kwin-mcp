@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from session_harness import live_kwin
 
+from kwin_mcp import input as kwin_input
 from kwin_mcp.clipboard import (
     MAX_COPY_BYTES,
     MAX_HEADER_BYTES,
@@ -494,6 +495,114 @@ def test_framing_error_while_owned_restores_and_keeps_serving(
     assert helper.lines_until_eof() == ["CANCELLED"]
     assert helper.wait() == 2
     assert _paste(env) == LATER_COPY.encode()
+
+
+# ---------------------------------------------------------------------------
+# Parent-side phase timeouts (QA-INP-065)
+# ---------------------------------------------------------------------------
+
+# A stand-in for ``python -m kwin_mcp.clipboard``: it speaks the line protocol,
+# answers every phase except the one named in FAKE_HELPER_STALL, and
+# logs each command it reads, so the test sees whether RESTORE was still sent.
+_FAKE_HELPER = r"""
+import os, sys, time
+stall = os.environ["FAKE_HELPER_STALL"]
+log = open(os.environ["FAKE_HELPER_LOG"], "a", buffering=1)
+log.write(f"pid {os.getpid()}\n")
+stdin = sys.stdin.buffer
+def say(event):
+    sys.stdout.write(event + "\n")
+    sys.stdout.flush()
+while True:
+    line = stdin.readline()
+    if not line:
+        log.write("eof\n")
+        time.sleep(30)
+        break
+    command = line.decode().split()
+    log.write(command[0] + "\n")
+    if command[0] == "COPY":
+        stdin.read(int(command[1]))
+        if stall != "READY":
+            say("READY")
+    elif command[0] == "ARM":
+        if stall != "ARMED":
+            say("ARMED")
+            if stall != "TRANSFERRED":
+                say("TRANSFERRED")
+    elif command[0] == "RESTORE":
+        if stall != "RESTORED":
+            say("RESTORED")
+"""
+
+
+@pytest.mark.qa("QA-INP-065")
+@pytest.mark.parametrize(
+    ("stall", "timeout_attr", "sent"),
+    [
+        ("READY", "_CLIPBOARD_READY_TIMEOUT", ["COPY"]),
+        ("ARMED", "_CLIPBOARD_ARM_TIMEOUT", ["COPY", "ARM", "RESTORE"]),
+        ("TRANSFERRED", "_CLIPBOARD_TRANSFER_TIMEOUT", ["COPY", "ARM", "RESTORE"]),
+        ("RESTORED", "_CLIPBOARD_RESTORE_TIMEOUT", ["COPY", "ARM", "RESTORE"]),
+    ],
+    ids=["ready-10s", "armed-2s", "transferred-4s", "restore-5s"],
+)
+def test_helper_phase_timeouts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    stall: str,
+    timeout_attr: str,
+    sent: list[str],
+) -> None:
+    """A helper stalling in one phase fails the paste after that phase's bound.
+
+    The bounds are the 0.11 ones (READY 10 s incl. margin, ARMED 2 s,
+    TRANSFERRED 4 s, RESTORE 5 s). Once the helper owns the text, RESTORE is
+    still sent whatever phase stalled. The failure is the ``None`` route that
+    the engine words as ``Failed to type unicode: ...``.
+    """
+    bound = float(getattr(kwin_input, timeout_attr))
+    expected_bound = {"READY": 10.0, "ARMED": 2.0, "TRANSFERRED": 4.0, "RESTORED": 5.0}[stall]
+    assert bound == pytest.approx(expected_bound, abs=0.5), (timeout_attr, bound)
+
+    package = tmp_path / "fake" / "kwin_mcp"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "clipboard.py").write_text(_FAKE_HELPER, encoding="utf-8")
+    log = tmp_path / "helper.log"
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(tmp_path / "fake"),
+        "FAKE_HELPER_STALL": stall,
+        "FAKE_HELPER_LOG": str(log),
+    }
+
+    chords: list[str] = []
+    backend = object.__new__(kwin_input.InputBackend)
+    monkeypatch.setattr(kwin_input.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(backend, "keyboard_key", chords.append, raising=False)
+
+    started = time.monotonic()
+    route = backend.keyboard_type_unicode("é", env=env, focused_class="org.kde.kwrite")
+    elapsed = time.monotonic() - started
+
+    try:
+        assert route is None
+        # A15: lower bound = stated value minus 10 %, upper bound 3x.
+        assert bound * 0.9 <= elapsed <= bound * 3, (stall, elapsed)
+        commands = log.read_text(encoding="utf-8").splitlines()
+        assert [c for c in commands if c in {"COPY", "ARM", "RESTORE"}] == sent, commands
+        # The chord goes out only after ARMED.
+        assert chords == ([] if stall in {"READY", "ARMED"} else ["ctrl+v"])
+    finally:
+        pids = [
+            int(line.split()[1])
+            for line in log.read_text(encoding="utf-8").splitlines()
+            if line.startswith("pid ")
+        ]
+        for pid in pids:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(pid, signal.SIGKILL)
 
 
 # ---------------------------------------------------------------------------

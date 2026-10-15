@@ -1,4 +1,4 @@
-"""Lazy libei loading and the missing-library input backend path.
+"""Lazy libei loading and the no-input-backend gate.
 
 ``kwin_mcp.input`` used to load libei eagerly at import time
 (``_libei = _load_libei()`` at module level), so importing the module, and with
@@ -6,31 +6,40 @@ it the MCP server and CLI, failed on hosts without ``libei.so.1`` even though no
 EIS input path was touched. Debian and Ubuntu ``kwin-wayland`` depend only on
 ``libeis1``, so such hosts are common. The library is now loaded on first use via
 ``_get_libei()``, and a failed load surfaces as the RuntimeError that
-``AutomationEngine`` already treats as "no input backend".
+``AutomationEngine`` treats as "no input backend": the session starts with
+``input_backend`` null plus a warning, and every input tool names the EIS remedy.
 """
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import importlib.util
 import os
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+import dbus
+import dbus.bus
 import pytest
+from session_harness import live_kwin
 
 import kwin_mcp.input as input_module
+from kwin_mcp.core import NO_INPUT_TEXT
+from kwin_mcp.models import Point
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from types import ModuleType
 
     from kwin_mcp.core import AutomationEngine
+    from kwin_mcp.models import SessionInfo
 
 MISSING_LIBEI = "libei.so.1: cannot open shared object file: No such file or directory"
 KWIN_EXIT_TIMEOUT_SECONDS = 5.0
+EIS_OBJECT_PATH = "/org/kde/KWin/EIS/RemoteDesktop"
 
 
 def _exec_input_module() -> ModuleType:
@@ -140,7 +149,7 @@ def test_missing_libei_raises_runtime_error_with_hint(monkeypatch: pytest.Monkey
 
 def test_session_start_without_libei_reports_no_input_backend(
     engine: AutomationEngine,
-    start_session: Callable[..., str],
+    start_session: Callable[..., SessionInfo],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """session_start completes without libei and leaves nothing behind after session_stop.
@@ -159,22 +168,97 @@ def test_session_start_without_libei_reports_no_input_backend(
     baseline = _live_kwin_pids()
     baseline_sockets = _socket_fds()
 
-    output = start_session()
+    info = start_session()
 
-    assert output.startswith("Session started."), output
-    status = output.splitlines()[-1]
-    assert status.startswith("No input backend available ("), output
-    assert MISSING_LIBEI in status, output
-    assert "libei1" in status, output
+    assert info.kind == "virtual", info
+    assert info.input_backend is None, info
+    backend_warnings = [w for w in info.warnings if w.startswith("No input backend available (")]
+    assert len(backend_warnings) == 1, info.warnings
+    assert MISSING_LIBEI in backend_warnings[0], info.warnings
+    assert "libei1" in backend_warnings[0], info.warnings
+    text = info.render()
+    assert text.startswith("Session started."), text
+    assert "Input backend: none" in text.splitlines(), text
+    assert f"Warning: {backend_warnings[0]}" in text.splitlines(), text
     assert _live_kwin_pids() - baseline, "session_start reported success without a compositor"
 
     with pytest.raises(RuntimeError, match="No input backend"):
-        engine.mouse_click(10, 10)
+        engine.pointer_click(target=Point(x=10, y=10))
 
-    assert engine.session_stop() == "Session stopped."
+    stopped = engine.session_stop()
+    assert stopped.stopped, stopped
+    assert stopped.render() == "Session stopped.", stopped.render()
     deadline = time.monotonic() + KWIN_EXIT_TIMEOUT_SECONDS
     while _live_kwin_pids() - baseline and time.monotonic() < deadline:
         time.sleep(0.05)
     assert not _live_kwin_pids() - baseline, "KWin outlived session_stop"
     leaked = _socket_fds() - baseline_sockets
     assert not leaked, f"socket fds outlived session_stop: {sorted(leaked)}"
+
+
+class _NoEisBusConnection(dbus.bus.BusConnection):
+    """A bus connection on which KWin's EIS object does not exist.
+
+    Requests for the RemoteDesktop object go to an unexported path, so KWin
+    itself answers UnknownObject, exactly as a KWin built without EIS does.
+    """
+
+    def get_object(self, bus_name: str, object_path: str, *args: Any, **kwargs: Any) -> Any:
+        if object_path == EIS_OBJECT_PATH:
+            object_path = "/org/kde/KWin/EIS/NotExported"
+        return super().get_object(bus_name, object_path, *args, **kwargs)
+
+
+@pytest.mark.qa("QA-GATE-002")
+@pytest.mark.parametrize("kind", ["virtual", "live"])
+def test_no_input_backend_gate_names_eis_remedy(
+    engine: AutomationEngine,
+    start_session: Callable[..., SessionInfo],
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+) -> None:
+    """Without KWin EIS the session still starts; every input tool names the EIS remedy."""
+    monkeypatch.setattr(dbus.bus, "BusConnection", _NoEisBusConnection)
+    texts: list[str] = []
+    with contextlib.ExitStack() as stack:
+        if kind == "virtual":
+            info = start_session()
+        else:
+            live = stack.enter_context(live_kwin())
+            info = engine.session_connect(
+                dbus_address=live.dbus_address, wayland_display=live.wayland_display
+            )
+        texts.append(info.render())
+        assert info.kind == kind, info
+        assert info.input_backend is None, info
+        eis_warnings = [w for w in info.warnings if w.startswith("No input backend available (")]
+        assert len(eis_warnings) == 1, info.warnings
+        assert "KWin EIS interface unavailable" in eis_warnings[0], eis_warnings
+        assert f"Warning: {eis_warnings[0]}" in texts[-1].splitlines(), texts[-1]
+
+        status = engine.session_info()
+        texts.append(status.render())
+        assert status.session is not None, status
+        assert status.session.input_backend is None, status
+        assert eis_warnings[0] in status.session.warnings, status
+        assert "Input backend: none" in texts[-1].splitlines(), texts[-1]
+
+        with pytest.raises(RuntimeError) as click_error:
+            engine.pointer_click(target=Point(x=10, y=10))
+        with pytest.raises(RuntimeError) as hold_error:
+            engine.keyboard_hold("press", "a")
+        for error in (click_error.value, hold_error.value):
+            texts.append(str(error))
+            assert str(error) == NO_INPUT_TEXT, str(error)
+            assert str(error).splitlines()[0] == (
+                "No input backend (KWin EIS unavailable); install kwin-common or reconnect."
+            ), str(error)
+
+        stopped = engine.session_stop()
+        texts.append(stopped.render())
+        assert stopped.stopped, stopped
+        assert stopped.released.buttons == [], stopped
+        assert stopped.released.keys == [], stopped
+
+    for text in texts:
+        assert "ydotool" not in text.lower(), text

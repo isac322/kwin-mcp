@@ -1,0 +1,68 @@
+{
+ "scenario": "touch_tap",
+ "captured_from": "kwin-mcp 0.11.0 @ 7a5d781 (AutomationEngine, virtual KWin session)",
+ "call": {
+  "local": [
+   300,
+   200
+  ],
+  "tool": "touch_tap"
+ },
+ "returned_text": [
+  "Touch tap at (440, 292)"
+ ],
+ "probe": {
+  "client_size": [
+   1000,
+   640
+  ],
+  "coordinates": "probe-local logical px (global = client origin + local)"
+ },
+ "repeats": 5,
+ "sequence": [
+  {
+   "kind": "touch_begin",
+   "x": 300,
+   "y": 200,
+   "touch": 0
+  },
+  {
+   "kind": "touch_end",
+   "x": 300,
+   "y": 200,
+   "touch": 0
+  }
+ ],
+ "gaps_ms": [
+  {
+   "from": 0,
+   "to": 1,
+   "mono": {
+    "min": 8.55,
+    "median": 11.36,
+    "max": 14.41
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 12.0,
+    "max": 13.0
+   }
+  }
+ ],
+ "call_start_to_first_event_ms": {
+  "min": 0.57,
+  "median": 0.91,
+  "max": 3.44
+ },
+ "last_event_to_call_return_ms": {
+  "min": -1.96,
+  "median": -0.87,
+  "max": -0.26
+ },
+ "first_to_last_event_ms": {
+  "min": 8.55,
+  "median": 11.36,
+  "max": 14.41
+ },
+ "other_variants": []
+}

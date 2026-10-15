@@ -1,0 +1,259 @@
+{
+ "scenario": "type_text",
+ "captured_from": "kwin-mcp 0.11.0 @ 7a5d781 (AutomationEngine, virtual KWin session)",
+ "call": {
+  "text": "Ab\tc\n",
+  "tool": "keyboard_type"
+ },
+ "returned_text": [
+  "Typed: 'Ab\\tc\\n'"
+ ],
+ "probe": {
+  "client_size": [
+   1000,
+   640
+  ],
+  "coordinates": "probe-local logical px (global = client origin + local)"
+ },
+ "repeats": 5,
+ "sequence": [
+  {
+   "kind": "key_press",
+   "key": "Shift_L",
+   "mods": []
+  },
+  {
+   "kind": "key_press",
+   "key": "A",
+   "mods": [
+    "shift"
+   ]
+  },
+  {
+   "kind": "key_release",
+   "key": "A",
+   "mods": [
+    "shift"
+   ]
+  },
+  {
+   "kind": "key_release",
+   "key": "Shift_L",
+   "mods": [
+    "shift"
+   ]
+  },
+  {
+   "kind": "key_press",
+   "key": "b",
+   "mods": []
+  },
+  {
+   "kind": "key_release",
+   "key": "b",
+   "mods": []
+  },
+  {
+   "kind": "key_press",
+   "key": "Tab",
+   "mods": []
+  },
+  {
+   "kind": "key_release",
+   "key": "Tab",
+   "mods": []
+  },
+  {
+   "kind": "key_press",
+   "key": "c",
+   "mods": []
+  },
+  {
+   "kind": "key_release",
+   "key": "c",
+   "mods": []
+  },
+  {
+   "kind": "key_press",
+   "key": "Return",
+   "mods": []
+  },
+  {
+   "kind": "key_release",
+   "key": "Return",
+   "mods": []
+  }
+ ],
+ "gaps_ms": [
+  {
+   "from": 0,
+   "to": 1,
+   "mono": {
+    "min": 10.96,
+    "median": 12.72,
+    "max": 16.17
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 12.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 1,
+   "to": 2,
+   "mono": {
+    "min": 10.09,
+    "median": 10.64,
+    "max": 16.15
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 12.0,
+    "max": 16.0
+   }
+  },
+  {
+   "from": 2,
+   "to": 3,
+   "mono": {
+    "min": 10.58,
+    "median": 14.01,
+    "max": 15.03
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 14.0,
+    "max": 15.0
+   }
+  },
+  {
+   "from": 3,
+   "to": 4,
+   "mono": {
+    "min": 19.61,
+    "median": 20.76,
+    "max": 25.61
+   },
+   "event_clock": {
+    "min": 19.0,
+    "median": 21.0,
+    "max": 25.0
+   }
+  },
+  {
+   "from": 4,
+   "to": 5,
+   "mono": {
+    "min": 11.1,
+    "median": 12.22,
+    "max": 15.02
+   },
+   "event_clock": {
+    "min": 12.0,
+    "median": 13.0,
+    "max": 16.0
+   }
+  },
+  {
+   "from": 5,
+   "to": 6,
+   "mono": {
+    "min": 20.32,
+    "median": 23.05,
+    "max": 29.7
+   },
+   "event_clock": {
+    "min": 20.0,
+    "median": 23.0,
+    "max": 30.0
+   }
+  },
+  {
+   "from": 6,
+   "to": 7,
+   "mono": {
+    "min": 10.14,
+    "median": 10.83,
+    "max": 12.93
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 13.0
+   }
+  },
+  {
+   "from": 7,
+   "to": 8,
+   "mono": {
+    "min": 20.34,
+    "median": 21.24,
+    "max": 26.4
+   },
+   "event_clock": {
+    "min": 20.0,
+    "median": 21.0,
+    "max": 26.0
+   }
+  },
+  {
+   "from": 8,
+   "to": 9,
+   "mono": {
+    "min": 10.77,
+    "median": 13.05,
+    "max": 16.8
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 13.0,
+    "max": 16.0
+   }
+  },
+  {
+   "from": 9,
+   "to": 10,
+   "mono": {
+    "min": 19.86,
+    "median": 23.28,
+    "max": 29.28
+   },
+   "event_clock": {
+    "min": 20.0,
+    "median": 24.0,
+    "max": 29.0
+   }
+  },
+  {
+   "from": 10,
+   "to": 11,
+   "mono": {
+    "min": 10.2,
+    "median": 11.57,
+    "max": 13.42
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 14.0
+   }
+  }
+ ],
+ "call_start_to_first_event_ms": {
+  "min": 0.77,
+  "median": 0.89,
+  "max": 1.18
+ },
+ "last_event_to_call_return_ms": {
+  "min": 19.86,
+  "median": 21.25,
+  "max": 26.63
+ },
+ "first_to_last_event_ms": {
+  "min": 161.1,
+  "median": 177.19,
+  "max": 191.9
+ },
+ "other_variants": []
+}

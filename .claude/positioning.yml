@@ -10,9 +10,9 @@
 #
 # After editing this file, run the docs-seo agent to propagate changes.
 
-manifest_version: "1.3.0"
-last_updated: "2026-05-02"
-product_version_ref: "0.7.0"  # pyproject.toml version this manifest was written against
+manifest_version: "1.3.1"
+last_updated: "2026-10-12"
+product_version_ref: "1.0.0"  # pyproject.toml version this manifest was written against
 
 # ---------------------------------------------------------------------------
 # Core identity
@@ -28,7 +28,7 @@ product:
     MCP server enabling AI agents to automate Linux desktops on KDE Plasma 6
     Wayland — virtual isolated sessions for CI/CD testing and live session
     connection for real desktop automation.
-  tool_count: 37
+  tool_count: 29
   repo: "https://github.com/isac322/kwin-mcp"
   pypi: "https://pypi.org/project/kwin-mcp/"
 
@@ -248,7 +248,7 @@ drift_detection:
   # Warn if pyproject.toml keywords diverge from pypi_package_keywords by more than this many terms
   pypi_keyword_max_divergence: 3
   # Warn if tool_count in docs differs from this value
-  tool_count_canonical: 37
+  tool_count_canonical: 29
   # Plugin manifests (.claude-plugin/marketplace.json, integrations/claude-code/.claude-plugin/plugin.json,
   # integrations/opencode/plugin/package.json) must include AT LEAST this many of the
   # plugin_manifest_required_keywords terms (subset rule, not exact match — manifests
@@ -265,7 +265,7 @@ drift_detection:
       section: "## Documentation & SEO"
       checks:
         - keyword_coverage     # primary/secondary/long_tail keywords present
-        - tool_count_accuracy  # "37 MCP tools" references are current
+        - tool_count_accuracy  # "29 MCP tools" references are current
 
     - path: ".claude/agents/docs-seo.md"
       section: "## Current Product Positioning"
@@ -324,6 +324,12 @@ drift_detection:
 # Changelog for this manifest
 # ---------------------------------------------------------------------------
 manifest_changelog:
+  - version: "1.3.1"
+    date: "2026-10-12"
+    changes:
+      - "Bumped product_version_ref to 1.0.0 (the tool surface redesign)"
+      - "tool_count and drift_detection.tool_count_canonical 35 -> 29"
+
   - version: "1.3.0"
     date: "2026-05-02"
     changes:

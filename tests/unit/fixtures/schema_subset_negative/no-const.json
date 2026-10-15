@@ -1,0 +1,13 @@
+{
+ "type": "object",
+ "properties": {
+  "a": {
+   "type": "string",
+   "const": "x"
+  }
+ },
+ "required": [
+  "a"
+ ],
+ "additionalProperties": false
+}

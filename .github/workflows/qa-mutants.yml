@@ -1,0 +1,100 @@
+name: QA mutants
+
+# Mutation gate G14 (QA-PKG-012): every mutant in tests/mutants.toml (the QA list's
+# M01-M82 plan) must be killed by its listed tests; scripts/qa_mutants.py exits 1 on a
+# survivor. Not PR-blocking: the workflow runs weekly and on demand, and one green
+# workflow_dispatch run on the release commit is required before the version tag is pushed.
+on:
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Comma-separated mutant ids to run (empty: all)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  mutants:
+    name: Mutants (${{ matrix.tier }} tier)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The unit tier needs no KWin; it runs inside the image for the system
+          # Python bindings (PyGObject, dbus-python) the package imports.
+          - tier: unit
+            timeout: 90
+          # The e2e tier builds the image once and runs each mutant in a fresh
+          # container with the mutated kwin_mcp mounted over the installed one.
+          - tier: e2e
+            timeout: 340
+    runs-on: ubuntu-26.04
+    timeout-minutes: ${{ matrix.timeout }}
+    env:
+      MUTANT_ARTIFACT_DIR: artifacts/mutants/${{ matrix.tier }}
+      MUTANT_IMAGE: kwin-mcp-e2e:mutants
+      MUTANT_ONLY: ${{ inputs.only }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Create the artifact directory
+        run: install -d -m 0777 "$MUTANT_ARTIFACT_DIR"
+
+      - name: Check that every mutant applies to the current source
+        run: python3 scripts/qa_mutants.py --check
+
+      - name: Build the KWin test image
+        run: docker build --file docker/e2e.Dockerfile --tag "$MUTANT_IMAGE" .
+
+      - name: Run unit-tier mutants
+        if: matrix.tier == 'unit'
+        shell: bash
+        run: |
+          set -o pipefail
+          docker run --rm \
+            --volume "$PWD:/workspace:ro" \
+            --volume "$PWD/$MUTANT_ARTIFACT_DIR:/artifacts" \
+            --workdir /workspace \
+            "$MUTANT_IMAGE" \
+            /opt/kwin-mcp-venv/bin/python scripts/qa_mutants.py \
+              --tier unit \
+              --only "$MUTANT_ONLY" \
+              --report /artifacts/report.json \
+            2>&1 | tee "$MUTANT_ARTIFACT_DIR/run.log"
+
+      - name: Run e2e-tier mutants
+        if: matrix.tier == 'e2e'
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 scripts/qa_mutants.py \
+            --tier e2e \
+            --image "$MUTANT_IMAGE" \
+            --no-build \
+            --only "$MUTANT_ONLY" \
+            --report "$MUTANT_ARTIFACT_DIR/report.json" \
+            2>&1 | tee "$MUTANT_ARTIFACT_DIR/run.log"
+
+      - name: Publish the survivor summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f "$MUTANT_ARTIFACT_DIR/report.md" ]]; then
+            cat "$MUTANT_ARTIFACT_DIR/report.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Normalize artifact permissions
+        if: always()
+        run: sudo chmod -R a+rX "$MUTANT_ARTIFACT_DIR"
+
+      - name: Upload mutation reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: qa-mutants-${{ matrix.tier }}
+          path: ${{ env.MUTANT_ARTIFACT_DIR }}
+          if-no-files-found: warn

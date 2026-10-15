@@ -70,8 +70,24 @@ After modifying kwin-mcp code, use the interactive CLI for focused manual checks
 uv run python -m kwin_mcp.cli
 ```
 
-The CLI delegates to the same `AutomationEngine` as the MCP server and lets you exercise tools
-without relying on an MCP process that may have loaded older source code.
+The CLI delegates to the same `AutomationEngine` as the MCP server, exposes the same 29 tools as
+commands, and prints the same text the server returns, so you can exercise tools without relying
+on an MCP process that may have loaded older source code. Object, list and union parameters take
+JSON, for example `pointer_click target='{"x": 100, "y": 200}'`.
+
+### Unit Tests (No KWin)
+
+The KWin-free tests run on any host and gate every pull request:
+
+```bash
+uv run pytest tests/unit
+```
+
+They check the 29 tool schemas against the design (names, parameters, annotations, output
+models), the removed-tool and unknown-argument errors, the text renderers, held-input rules,
+selector matching, and the documentation gates: the README tool tables, the CHANGELOG migration
+table, and the repository-wide scan that keeps removed tool names out of current docs. Mark a test
+that covers a QA item with `@pytest.mark.qa("QA-...")`.
 
 ### Virtual Session Testing (Isolated)
 
@@ -80,6 +96,7 @@ desktop:
 
 ```
 > session_start
+> app_launch command=kcalc
 ```
 
 ### Live Session Testing
@@ -146,8 +163,8 @@ scripts/run-e2e-docker.sh --distro archlinux
 The suite collects every test under `tests/e2e`. Together they prove:
 
 - engine-level behavior in isolated virtual KWin sessions;
-- the installed `kwin-mcp` entry point over real MCP stdio JSON-RPC, including the exact schemas
-  and wrappers for all 37 tools;
+- the installed `kwin-mcp` entry point over real MCP stdio JSON-RPC, including the exact input and
+  output schemas, structured results, resources, and live-consent elicitation of all 29 tools;
 - AT-SPI2 observation and KWin EIS keyboard, pointer, touch, clipboard, window, and D-Bus paths;
 - GUI pixels, cursor capture, repaint changes, and frame bursts in test-owned nested Xvfb/KWin
   sessions using the explicitly selected X11 `scrot` capture mode;
@@ -166,21 +183,7 @@ The suite collects every test under `tests/e2e`. Together they prove:
   signal arriving mid-teardown must not interrupt the launched-app kill loop;
 - accessibility-bus startup: `org.a11y.Bus` must have an owner as soon as `session_start`
   returns, and a failed activation (a `dbus-send` stub on `PATH`) must reach the caller as a
-  `Warning:` line. Only the exact server-environment opt-in value `1` permits direct startup;
-  an application's `env` cannot enable it;
-- direct AT-SPI startup: neither the server nor healthy activation reads the service-file roots.
-  After activation fails, an owned child validates both service commands before executing the
-  launcher, and the registry child revalidates its file at startup. Invalid files trigger rollback.
-  Lookup retains the 128 KiB content limit, file-descriptor guards, and fail-closed acquisition
-  rules; `os.execv` rejects implicit `PATH` lookup, shell builtins/function evaluation, and
-  `ENOEXEC` fallback while supporting explicit interpreter commands and valid `#!` scripts;
-- direct-start lifecycle regressions in real virtual KWin sessions: launcher or registry failures,
-  TERM-ignoring children, controlled lookup stalls and spoofed helper output, asymmetric invalid
-  service pairs, registry invalidation after preflight, session-environment data-root selection,
-  and service-file descriptors closed before execution. Rollback targets owned Bash jobs with
-  shared 3-second TERM and 2-second KILL graces, preserving neighboring processes and allowing
-  KWin/EIS and application launches to continue. The tests do not reproduce live NFS/FUSE
-  uninterruptible I/O or verify SELinux-enforcing Fedora behavior.
+  `Warning:` line.
 
 The image needs no `--privileged`, GPU, `/dev/dri`, or other device flags. Engine tests use
 KWin's exact virtual backend with llvmpipe. Visual tests start Xvfb and a nested KWin compositor
@@ -224,20 +227,18 @@ See `docker/README.md` for backend details and test-by-test coverage.
 
 ```
 src/kwin_mcp/
-├── core.py            # AutomationEngine — MCP-independent automation logic
-├── server.py          # MCP server (thin wrappers around AutomationEngine)
-├── cli.py             # Interactive REPL + pipe mode
+├── models.py          # Shared argument types and result models; one render() per result (server text == CLI output)
+├── core.py            # AutomationEngine: the 29 tool methods, MCP-independent, taking and returning models.py types
+├── server.py          # MCP server: tool registration, schema post-processing, gates, consent, resources, flags
+├── cli.py             # Interactive REPL + pipe mode exposing the same 29 commands
 ├── session.py         # KWin session management (isolated virtual + live) and the owned-process registry for exit cleanup
 ├── screenshot.py      # ScreenShot2, Spectacle, and X11/scrot capture normalized to logical pixels
-├── accessibility.py   # AT-SPI2 accessibility tree inspection
-├── spoken_name.py     # Deterministic spoken accessible-name normalization and matching for invoke_ui_action (no GI)
-├── geometry.py        # Window geometry, activation, and output topology via KWin scripting
-├── clipboard.py       # Private Wayland data-control helper for keyboard_type_unicode paste
+├── accessibility.py   # AT-SPI2 worker: element queries, refs, and actions
+├── geometry.py        # Windows, virtual desktops, activation, and output topology via KWin scripting
+├── clipboard.py       # Private Wayland data-control helper for keyboard_type(method="unicode") paste
 ├── dbus_args.py       # dbus_call argument parser (dbus-send strings and typed JSON)
-├── dbus_service_file.py # D-Bus Exec= parser, guarded lookup, and private stdlib lookup/exec script
 ├── progress.py        # Per-call progress and screenshot-image scope (MCP-free; no-op in the CLI)
-├── results.py         # Typed results (outputSchema/structuredContent) and text of observation tools
-└── input.py           # Input injection via KWin EIS D-Bus + libei
+└── input.py           # Input injection via KWin EIS D-Bus + libei, and the held-input state
 
 docker/
 ├── e2e.Dockerfile          # Reproducible installed-package E2E image (Debian trixie)
@@ -246,77 +247,23 @@ docker/
 ├── e2e-opensuse.Dockerfile # openSUSE Tumbleweed variant of the E2E image
 ├── e2e-entrypoint.sh       # Records environment evidence, then executes the test command
 ├── e2e-environment.py      # Writes allowlisted environment.json provenance
-└── README.md               # Container backends, coverage, and limitations
+└── README.md               # Container backends, coverage, test-file inventory, and limitations
 
 scripts/
-├── run-e2e-docker.sh      # Recommended local Docker E2E runner and artifact collector
-├── check_docs_seo.py      # Documentation/SEO consistency checker
-└── sync_plugin_version.py # Syncs project version and SKILL.md into integrations
+├── run-e2e-docker.sh        # Recommended local Docker E2E runner and artifact collector
+├── check_docs_seo.py        # Documentation/SEO consistency checker (tool count, keywords, SKILL mirror)
+├── check_wheel.py           # Built-wheel gate: file list, version, classifier, and description
+├── sync_plugin_version.py   # Syncs project version and SKILL.md into integrations
+└── update_e2e_durations.py  # Refreshes tests/e2e/durations.json used for E2E sharding
 
 tests/
-└── test_results.py                     # Byte-exact result formatter tests (no KWin; CI runs `pytest tests`)
-
-tests/e2e/
-├── _asserts.py                         # Shared observable-result assertions
-├── conftest.py                         # Engine fixtures and guaranteed teardown
-├── mcp_harness.py                      # Installed MCP stdio client harness
-├── visual_harness.py                   # Nested Xvfb/KWin lifecycle and logs
-├── session_harness.py                  # Test-owned live KWin for live-session and helper tests
-├── gui_probe.py                        # Deterministic visual oracle application
-├── counted_gui_probe.py                # GUI probe with a persistent click counter
-├── interaction_probe.py                # Input and screenshot probe application
-├── transient_probe.py                  # GTK3 parent window with one transient (optionally modal) dialog
-├── test_installed_package.py           # Wheel, dependencies, and entry points
-├── test_environment_evidence.py        # Safe environment.json provenance
-├── test_mcp_protocol.py                # All 37 tool schemas and protocol errors
-├── test_tool_registration.py           # Repeated tool registration replaces each tool with the latest flags (no KWin)
-├── test_mcp_session_observation.py     # Installed stdio session and observation flow
-├── test_mcp_pointer_keyboard.py        # Installed stdio pointer and keyboard flow
-├── test_mcp_touch_clipboard.py         # Installed stdio touch and clipboard flow
-├── test_screenshot_behavior.py         # Capture backends, frames, errors, and cleanup
-├── test_screenshot_reframe.py          # Synthetic crop/downscale mappings, flag parsing, and capture-file cleanup
-├── test_visual_qa.py                   # Pixel-backed nested compositor oracles
-├── test_interaction_probe.py           # Full probe interaction feedback loop
-├── test_input_cleanup.py               # Input state reset across sessions and failures
-├── test_session_lifecycle.py           # Ownership, teardown, retention, and bounded-startup cleanup
-├── test_exit_cleanup.py                # Server/CLI exit stops the session like session_stop (EOF, signals, drain)
-├── test_cli_signal_deferral.py         # CLI shutdown signals deferred mid-teardown, raised once afterwards
-├── test_cli_value_parsing.py           # CLI key=value conversion of Optional parameters
-├── test_cli_errors.py                  # CLI prints tool errors as one `Error:` line, keeps tracebacks for bugs (no KWin)
-├── test_session_input_validation.py    # Screen size and command validation, atomic session_start rollback (no KWin)
-├── test_input_progress.py              # keyboard_type progress always ends at N/N (no KWin)
-├── test_wait_progress.py               # wait_for_element progress never exceeds its total (no KWin)
-├── test_wait_for_element_settle.py     # Bounded re-poll of windows-changed matches (no KWin)
-├── test_frame_burst_names.py           # Frame bursts never reuse or overwrite earlier frames (no KWin)
-├── test_read_app_log_validation.py     # read_app_log last_n_lines validation before the session (no KWin)
-├── test_terminal_unicode_paste.py      # Unicode paste chord and next-key integrity in Konsole
-├── test_text_echo_bounds.py            # Bounded text echo (<= 200 chars or <N characters>) and session-less keyboard_type validation (no KWin)
-├── test_unicode_clipboard_lifecycle.py # Unicode paste clipboard snapshot, restore, and cleanup
-├── test_clipboard_helper_protocol.py   # Private clipboard helper framing, timeouts, and restore
-├── test_virtual_session_smoke.py       # Minimum isolated KWin contract
-├── test_observation_tools.py           # Accessibility, window, log, and Wayland tools
-├── test_accessibility_actions.py       # invoke_ui_action on a background window; ambiguity, app scoping, exact names, spoken names, fallback actions, and incomplete discovery refused
-├── test_spoken_name.py                 # spoken_name normalisation and word-boundary matching (no KWin)
-├── test_accessibility_switch.py        # org.a11y.Status.IsEnabled switch, live opt-in, bounded calls, restore
-├── test_atspi_worker.py                # AT-SPI worker reuse across session changes and crashes
-├── test_window_geometry.py             # Global window geometry and element coordinate space
-├── test_window_close.py                # Window ids, active window, focus and closing one window by id
-├── test_kwin_script_render.py          # Caller values reach KWin scripts only as JSON literals (no KWin)
-├── test_virtual_desktops.py            # Desktop ids, one exact window moved without switching, transient/modal refusals
-├── test_window_control.py              # Focus, scroll, drag, and touch behavior
-├── test_window_match.py                # Chromium/Flatpak AT-SPI top-levels matched to KWin windows via buffer geometry and captions
-├── test_window_set_geometry_validation.py # window_set_geometry input validation and request reporting (no KWin)
-├── test_window_set_desktop_validation.py # virtual_desktops and window_set_desktop errors, refusals, readback and reporting (no KWin)
-├── test_window_tool_errors.py          # focus_window/window_close/window_set_geometry/window_set_desktop argument errors before any session lookup
-├── test_pointer_reconnect.py           # Clicks reach a window mapped under a parked pointer
-├── test_dbus_args.py                   # dbus_call argument parser (no session needed)
-├── test_atspi_service_acquisition.py   # Child lookup guards and real-session activation with inaccessible roots
-├── test_atspi_exec_security.py         # Real-session direct Exec= security, explicit interpreters, and #! scripts
-├── test_dbus_service_file.py           # Exec= parser compared with real dbus-daemon argv (no KWin)
-├── test_dbus_call.py                   # dbus_call arguments as received by a test D-Bus service
-├── test_lazy_libei.py                  # Import without libei and the missing-libei input backend path
-├── test_eis_device_replacement.py      # Input after KWin replaces or drops its EIS devices
-└── test_input_injection.py             # Engine-level EIS input behavior
+├── conftest.py         # Suite policy: markers (qa, slow, visual), strict skips, sharding
+├── tool_surface.py     # The 29 tool names and the 28 removed names, written out independently of the server
+├── unit/               # KWin-free tests: schemas vs the design, unknown arguments, renderers, held input,
+│                       #   selectors, KWin script rendering, CLI parsing, README/CHANGELOG gates
+└── e2e/                # Installed-package Docker tests: one file per tool, cross-cutting files, and
+                        #   test_mcp_* files over stdio; harnesses (mcp_harness.py, session_harness.py,
+                        #   visual_harness.py), oracles (kwin_oracle.py, atspi_oracle.py), and probes
 
 integrations/
 ├── claude-code/
@@ -335,17 +282,6 @@ integrations/
 ```
 
 The exit path is part of `session.py`'s `OwnedProcessRegistry` contract and is worth reading before changing session teardown: the serialized `session_stop` on the tool thread is the primary cleanup when the server exits, and the registry's direct process-group termination and temp-dir removal is the fallback when an in-flight tool still holds the thread after the 2 s drain. The registry signals a group only while its leader is still an unreaped child of the process, so a live-session KWin and pre-existing apps are never reached; `kwin-mcp-cli` reuses the same registry to sweep owned groups that were never attached to a session on exit.
-
-Direct AT-SPI startup is another ownership boundary in `session.py`: only a failed activation
-and `KWIN_MCP_ATSPI_DIRECT_START=1` in the server environment reach it. The wrapper starts the
-installed `dbus_service_file.py` using the server interpreter with `-I -S`; its private
-launcher/registry roles are not user-facing CLI commands or new MCP tools. Lookup and `execv`
-run in an owned child, retaining the private bus, user, process group, environment, and inherited
-server working directory. Child-only lookup bounds the caller's response to stalled filesystem
-I/O without promising immediate reaping of a kernel task in uninterruptible sleep. Launcher
-descendants can remain in the owned session group until `session_stop`, and an executable that
-escapes the group is not sandboxed by this mechanism. Normal D-Bus activation, runtime-directory
-setup, and the 60-second startup watchdog stay unchanged.
 
 ## Pull Request Process
 

@@ -1,0 +1,168 @@
+{
+ "scenario": "scroll_smooth_3_steps_3",
+ "captured_from": "kwin-mcp 0.11.0 @ 7a5d781 (AutomationEngine, virtual KWin session)",
+ "call": {
+  "delta": 3,
+  "local": [
+   300,
+   200
+  ],
+  "steps": 3,
+  "tool": "mouse_scroll"
+ },
+ "returned_text": [
+  "Scrolled vertical (smooth) by 3 at (440, 292) in 3 steps"
+ ],
+ "probe": {
+  "client_size": [
+   1000,
+   640
+  ],
+  "coordinates": "probe-local logical px (global = client origin + local)"
+ },
+ "repeats": 5,
+ "sequence": [
+  {
+   "kind": "motion",
+   "x": 299,
+   "y": 200,
+   "mods": [],
+   "held": []
+  },
+  {
+   "kind": "motion",
+   "x": 300,
+   "y": 200,
+   "mods": [],
+   "held": []
+  },
+  {
+   "kind": "scroll",
+   "x": 300,
+   "y": 200,
+   "mods": [],
+   "direction": "smooth",
+   "dx": 0.0,
+   "dy": 1.5,
+   "is_stop": false
+  },
+  {
+   "kind": "scroll",
+   "x": 300,
+   "y": 200,
+   "mods": [],
+   "direction": "smooth",
+   "dx": 0.0,
+   "dy": 1.5,
+   "is_stop": false
+  },
+  {
+   "kind": "scroll",
+   "x": 300,
+   "y": 200,
+   "mods": [],
+   "direction": "smooth",
+   "dx": 0.0,
+   "dy": 1.5,
+   "is_stop": false
+  },
+  {
+   "kind": "scroll",
+   "x": 300,
+   "y": 200,
+   "mods": [],
+   "direction": "smooth",
+   "dx": 0.0,
+   "dy": 0.0,
+   "is_stop": true
+  }
+ ],
+ "gaps_ms": [
+  {
+   "from": 0,
+   "to": 1,
+   "mono": {
+    "min": 0.09,
+    "median": 0.15,
+    "max": 0.25
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 1,
+   "to": 2,
+   "mono": {
+    "min": 18.19,
+    "median": 20.38,
+    "max": 21.97
+   },
+   "event_clock": {
+    "min": 20.0,
+    "median": 21.0,
+    "max": 22.0
+   }
+  },
+  {
+   "from": 2,
+   "to": 3,
+   "mono": {
+    "min": 10.4,
+    "median": 11.36,
+    "max": 12.07
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 12.0,
+    "max": 12.0
+   }
+  },
+  {
+   "from": 3,
+   "to": 4,
+   "mono": {
+    "min": 10.65,
+    "median": 11.87,
+    "max": 14.19
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 12.0,
+    "max": 14.0
+   }
+  },
+  {
+   "from": 4,
+   "to": 5,
+   "mono": {
+    "min": 10.36,
+    "median": 11.36,
+    "max": 14.42
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 14.0
+   }
+  }
+ ],
+ "call_start_to_first_event_ms": {
+  "min": 0.38,
+  "median": 0.85,
+  "max": 3.3
+ },
+ "last_event_to_call_return_ms": {
+  "min": -0.96,
+  "median": -0.77,
+  "max": 0.1
+ },
+ "first_to_last_event_ms": {
+  "min": 51.85,
+  "median": 55.2,
+  "max": 62.79
+ },
+ "other_variants": []
+}

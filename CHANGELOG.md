@@ -7,30 +7,190 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+## [1.0.0] - 2026-10-12
 
-- `active_window` now publishes a typed MCP `outputSchema` and returns matching `structuredContent`: `window` is the window KWin treats as active, with the same `id`, `app`, `caption`, `active` flag, and `frame` and `client` rectangles as a `window_geometry` entry, or `null` when no window is active. The active window can be one that `window_geometry` does not list, such as a dialog. The text content and the `kwin-mcp-cli` output are unchanged, and a failed KWin query or a missing session is still a tool error without structured content. Clients that ignore `structuredContent` see no change; clients that parsed the previous `{"result": "<text>"}` `structuredContent` of `active_window` now receive the typed object instead and should read the text content or the new field.
-
-## [0.12.0] - 2026-10-15
+kwin-mcp 1.0.0 replaces the 35-tool surface of 0.11 with 29 orthogonal MCP tools: one tool per object and operation (session, app, screen, element, window, desktop, pointer, keyboard, touch, clipboard, D-Bus, Wayland), shared argument types, typed structured output on every tool, and the same lossless text as before. **This is a breaking release.** It is a clean cutover with no aliases: 9 tool names are kept (all with changed parameters or outputs), 28 are removed and 20 are new. Calling a removed tool returns an error that names its 1.0 replacement, and an argument that no longer exists returns an error that names the new argument. The [tool migration table](#tool-migration-table) and the [parameter migration table](#parameter-migration-table) below map every 0.11 call to its 1.0 form.
 
 ### Added
 
-- Added `virtual_desktops` and `window_set_desktop`, bringing the server to 37 tools. `virtual_desktops` (read-only) lists KWin's virtual desktops in order, each with its stable id, name, and whether it is the current desktop. `window_set_desktop` (destructive, idempotent) assigns a window, addressed by the exact KWin id from `window_geometry`, to only the desktop with the exact id from `virtual_desktops`; there is no app-name or position fallback. The operation does not explicitly select the current desktop or activate the window, and a window on all desktops ends up on only the requested one. Preflight refuses requests that would move related windows (transients or modal main windows) KWin scripting can enumerate at request time, and requests while an X11 group transient exists. Linked but unpainted or unlisted children may follow their parent, and KWin may switch the current desktop when they first appear. Both tools return structured content. `window_set_desktop` reports previous desktops (so they can be restored), membership observed by a separate KWin query, and `applied` verifying only the selected window's observed membership. The current desktop ids before and after are point-in-time observations, not future desktop or focus guarantees. Missing or unknown ids, a refused request, a failed `virtual_desktops` query, and a request whose result did not come back are tool errors; a readback that cannot observe the window is reported in `observation_error`, since the window may already have moved.
-- `invoke_ui_action` gains two optional parameters. Omitting both keeps the existing behaviour exactly: the same substring matching, the same per-action-index candidate counting, the same request shape, and the same messages. `exact_name=true` matches the query against element names only, equal after case-folding and collapsing whitespace (punctuation still counts), instead of as a substring of the name, role, or description, so a query can no longer select a different control whose label merely contains it. `fallback_action_names` lists further action names an element may expose instead of `action_name`, for example `["click"]` for GTK buttons next to Qt's `Press`: `action_name` is preferred first, then `fallback_action_names` in order. When either option is used, each element counts as one candidate however many of these actions it exposes, and two distinct matching elements always count as two, so they stay ambiguous even when one exposes `Press` and the other `click`. Name matching, action choice, and invocation happen in one discovery walk with the existing fail-closed rules for ambiguity, unreadable nodes, and the depth limit. Blank queries or action names and invalid option values are tool errors raised before the session lookup, and an empty normalized `exact_name` query never matches unnamed elements.
-- `KWIN_MCP_ATSPI_DIRECT_START=1` adds an opt-in direct AT-SPI2 startup path for virtual sessions when normal D-Bus activation fails, including the denial reported under Fedora's SELinux policy ([fedora-selinux/selinux-policy#3385](https://github.com/fedora-selinux/selinux-policy/issues/3385)). Only the exact value `1` in the server environment enables it; it is never enabled automatically or by an application's `env` argument.
-  - Service-file lookup runs only after activation fails, in an owned private-session child, never in the server or on the healthy activation path. It finds the named services under operator-trusted `XDG_DATA_DIRS` roots (default `/usr/local/share:/usr/share`) and parses `Exec=` as dbus-daemon does; those roots need not mirror every D-Bus activation root.
-  - Both commands are validated before the launcher executes. The registry revalidates its service file at its own startup, and a file that has become invalid triggers rollback. Acquisition retains the 128 KiB content limit and file-descriptor guards. Missing or nonregular candidates and existing invalid-path/link cases are skipped; malformed, unreadable, or oversized regular files and inaccessible metadata, paths, or roots stop direct startup.
-  - Failure reports a `Warning:` and lets KWin continue. Launcher and registry rollback shares a 3-second TERM grace and a 2-second KILL grace, targeting the wrapper's owned Bash jobs. Child-only lookup bounds the caller's wait for stalled NFS/FUSE metadata or reads, not kernel process disappearance during uninterruptible I/O; descendants may remain in the session group until `session_stop`. Normal D-Bus activation and the 60-second session-start watchdog are unchanged.
-  - The internal, standard-library-only helper runs the installed `dbus_service_file.py` with the server's existing `sys.executable -I -S`, then `os.execv`. It rejects implicit `PATH` lookup, shell builtins, function evaluation, and `ENOEXEC` shell fallback while preserving explicit interpreter commands such as `/bin/sh -c` and valid `#!` scripts. No installation step or MCP tool is added.
-  - Direct processes retain the same user, private bus, session process group, environment, and inherited server working directory. They start from the server's SELinux domain rather than through D-Bus service activation, which can mean less confinement. The opt-in does not modify SELinux policy or sandbox programs that escape the session group; SELinux-enforcing Fedora behavior is not verified by simulated activation-denial tests.
-- `invoke_ui_action` gains `spoken_name`, a deterministic accessible-name matching mode for spoken labels. It matches element names only (not role or description): it ignores case (Unicode NFC and case folding, no compatibility normalisation), normalises whitespace, and tolerates a trailing run of `. , ! ? ; : …`, while all other punctuation, including internal and leading punctuation, stays significant. The same normalised words match, and a multi-word query also matches the same words joined into one label (`save as` matches `SaveAs`), but a one-word query is never split to match a multi-word label. Every matching element that exposes a requested action is a candidate, so labels that differ only in case, whitespace, trailing punctuation, or joined spelling are refused as ambiguous instead of told apart. It is not fuzzy matching, cannot be combined with `exact_name`, and a query with no name left after normalisation (for example `...`) is refused before the session lookup. The candidate and action rules are those of `exact_name`, and omitting `spoken_name` leaves default and `exact_name` requests and behaviour unchanged.
+- New tools: `session_info` (the current session, its backends, every launched app and the held input), `app_launch`, `app_log`, `screen_capture`, `element_query`, `element_act`, `window_list`, `desktop_list`, `window_focus`, `window_place`, `pointer_click`, `pointer_move`, `pointer_scroll`, `pointer_drag`, `pointer_hold`, `keyboard_press`, `keyboard_hold`, `clipboard_read`, `clipboard_write` and `wayland_list`. Nineteen of them replace removed tools; `session_info` is new.
+- Element refs: every element that `element_query` returns carries a `ref` such as `e3.17`. Pass it as `target={ref}` to any pointer or touch tool (the pointer goes to the centre of the element's live rectangle plus an optional `dx`/`dy` offset) or as `element={ref}` to `element_act`. A ref stays valid until the AT-SPI worker restarts or the session stops; a stale ref is an error that says to re-run `element_query`.
+- Elements report `app`, `window_id` (the KWin window id, usable as `window={id}`) and `child_count`; windows report `kind` (`normal`, `dialog`, `utility`, `popup`, `shell` or `other`), `closeable`, `moveable`, `resizeable`, `desktops` and `on_all_desktops`.
+- `element_query(wait={until:"absent"})` waits for elements to disappear; `wait={until:"present"}` (the default) waits for them to appear.
+- `pointer_drag(dwell_ms)` pauses at the drop target before releasing, for drop targets that need hover.
+- `capture={delays_ms:[...]}` frame bursts are available on all 15 tools that change what is on screen: the five `pointer_*` tools, the three `keyboard_*` tools, the three `touch_*` tools, `element_act`, `window_focus`, `window_place` and `window_close`. `pointer_scroll`, the hold tools, `element_act` and the window tools are new to it.
+- `wayland_list` returns the parsed protocol globals (`interface`, `version`, `name`) next to the raw `wayland-info` lines.
+- `window_close` works on a live desktop: kwin-mcp asks the user to confirm through MCP form elicitation first (`kwin-mcp wants to close window <id> (<app>) on your desktop. Unsaved work in that window may be lost.`). The result reports the outcome in `consent` and `refusal`. A client without form elicitation gets a non-error refusal. Virtual sessions close without asking.
+- `--live-consent {elicit,refuse}` server flag: `elicit` (the default) asks as above; `refuse` never asks and refuses every live `window_close`, for headless clients.
+- Every tool declares an MCP `outputSchema` and returns `structuredContent`; the text content is the same rendering that `kwin-mcp-cli` prints.
+- `--screenshot-images` attaches an MCP `image` block for every frame of every tool that returns frames: `screen_capture` and all 15 `capture` carriers.
+- MCP resources: `kwin://session`, `kwin://windows`, `kwin://desktops`, `kwin://apps/{pid}/log` (with PID completion) and `kwin://screenshots/{name}` (the PNG named by a frame's `uri`).
+- Server `instructions` describe the session lifecycle, the coordinate space, the preferred order of targeting (`element_act`, then a ref target, then `{x, y}`, then `dbus_call`), held-input rules and the live-desktop untrusted-content warning. The server also publishes an icon.
 
-### Fixed
+### Changed
 
-- Direct AT-SPI service-file parsing rejects embedded NUL bytes anywhere in the file, including ignored comments and localized entries, matching dbus-daemon's rejection.
-- Expanded the bounded CI budget for the full virtual KWin E2E suite to a 30-minute test deadline and a 40-minute job deadline to avoid premature cutoff.
-- `window_set_desktop` no longer rejects an idempotent assignment because a related window is on another desktop, or a move whose propagation stops at a related window already on exactly the target desktop. Requests that would change enumerated related windows remain refused, as do requests while an unsupported X11 group transient exists.
-- `kwin-mcp-cli` turned any unrecognized boolean `key=value` literal into false, so a mistyped `invoke_ui_action` `exact_name=banana` silently fell back to substring matching. Boolean arguments now accept only `true`/`false`, `yes`/`no`, and `1`/`0` (in any case); any other value is a one-line `Error:` before the session is looked up or the tool runs.
+- The 9 kept tools take new parameters or return new outputs:
+  - `session_start` takes `screen_width`, `screen_height`, `enable_clipboard`, `home` and `retention`, and no longer launches an app.
+  - `session_connect` takes `dbus_address`, `wayland_display`, `enable_accessibility` and `retention`.
+  - `session_stop` returns `stopped`, `kind`, `kept` and the input it `released`.
+  - `keyboard_type` takes `text`, `method` (`keys` or `unicode`) and `capture`.
+  - `touch_tap` takes `target` instead of coordinates.
+  - `touch_swipe` takes `from`, `to` and `fingers`, and replaces the multi-finger swipe tool.
+  - `touch_pinch` takes `center` instead of coordinates.
+  - `window_close` takes a `window` selector and returns structured `consent` and `refusal` fields.
+  - `dbus_call` returns a structured `{reply, signature}`.
+- Every coordinate in and out of the server is a global logical pixel. Points are `{x, y}` objects (`target`, `from`, `to`, `center`), rectangles are `{x, y, width, height}` objects (`region`, `frame`), and key combinations are one `"ctrl+shift+t"` string everywhere (`keys`, `modifiers`).
+- Tool errors have two lines: what failed, then a remedy the agent can copy. The text still starts with `Error executing tool <name>: `.
+- Tool annotations are set per tool, with no worst-case merging: 8 tools are read-only, `pointer_move` and `window_focus` are non-destructive and idempotent, and `session_start` is non-destructive.
+- The package version is 1.0.0 and the PyPI classifier is `Development Status :: 5 - Production/Stable`. Later incompatible tool changes will need 2.0.0.
+
+#### Behavior changes
+
+These changes are intentional. Each one keeps the capability; only the call shape or the edge behavior changes.
+
+1. **Tool names: 37 become 29.** The 35 tools of 0.11 plus the two tools proposed in PR #103 (`virtual_desktops`, `window_set_desktop`) are 37 names: 9 kept, 28 removed, 20 new. There are no aliases. A removed tool returns `Unknown tool: <name>. Removed in kwin-mcp 1.0; use <replacement>.`
+2. **`session_start` no longer launches an app.** Call `session_start`, then `app_launch(command, env)`. A failed `app_launch` leaves the session running, and its error says to call `session_stop` to roll back.
+3. **One retention type.** `session_start` and `session_connect` take `retention={artifacts, home}` instead of `keep_screenshots`/`keep_home`, and `session_start(home="isolated")` replaces `isolate_home=true`. `retention.home` requires `home="isolated"`, and `session_connect` rejects it.
+4. **One window pool.** `window_list`, `window_focus`, `window_place` and `window_close` select from every window KWin lists, shell surfaces, dialogs and popups included. A name lookup (`app_id`, `caption`) must match exactly one window instead of taking the first match, and an ambiguous match is an error listing the candidate ids with their `kind`. `window_list()` without a filter lists every window; `window_list(filter={kind:["normal"]})` gives the normal-window list.
+5. **One element query.** `element_query(locator, max_depth, wait)` replaces the tree, search, wait and application-list tools. Every `locator` field (`app`, `query`, `role`, `states`) combines with every other, and the search depth is configurable. Applications without children are listed too (`child_count: 0`).
+6. **Frame failures are warnings.** When a frame capture fails after the action already happened, the result lists it in `warnings` instead of failing the call.
+7. **`capture` on more tools.** `pointer_scroll`, `pointer_hold`, `keyboard_hold`, `element_act` and the window tools accept `capture`.
+8. **One typing tool.** `keyboard_type(text, method="unicode")` replaces the Unicode typing tool; `method="keys"` (the default) keeps US-QWERTY key events.
+9. **Enum parameters instead of booleans.** `pointer_click(count=2|3)` replaces `double`/`triple`, `pointer_scroll(axis="horizontal")` replaces `horizontal`, `pointer_scroll(unit="detent")` replaces `discrete` (`unit="smooth_step"` is 15 px per unit), and modifier lists become one `modifiers="ctrl+shift"` string.
+10. **Additions shipped with the cutover.** Element refs; `window_id`, `child_count` and `app` on elements; `kind`, `closeable` and `desktops` on windows; `wait.until="absent"`; `session_info`; parsed Wayland globals; `pointer_drag(dwell_ms)`; and the list of available actions in the `element_act` error when no element exposes the requested action.
+11. **Window fields and close outcomes.** A window's application is `app_id` (it was `app`). `window_close` reports `consent` (`not_required`, `accepted`, `not_confirmed`, `declined`, `cancelled` or `unsupported`) and `refusal` (`no_window`, `not_closeable` or `no_consent`) next to the same texts as before. A `cancelled` prompt says the confirmation was dismissed or never shown and points to the app's own UI. Headless clients such as `claude -p` cancel every prompt, and in our runs the agent then declined to close the window another way; run them with `--live-consent refuse`, which returns the 0.11 refusal and its pointer to the app's own UI (the agent then closed the window with a shortcut in 4 of 4 runs).
+12. **No ydotool banner.** `session_connect` no longer prints the ydotool fallback note; that fallback was never implemented.
+13. **Held input is idempotent.** `pointer_hold(phase="press")` or `keyboard_hold(phase="press")` on a control that is already held sends no event. `release` always sends the release. A gesture that would press or release a held control is refused before it sends anything, and the error names the release call.
+14. **Hold tools.** `pointer_hold(phase)` and `keyboard_hold(phase)` replace the separate mouse-button and key down/up tools.
+15. **Element text format.** The element list text always uses the tree format (depth indentation, role, name, states, rectangle). A call with an empty locator keeps the `# Accessibility Tree (N elements)` header; a call with filters starts with `Found N elements matching <filters>:`. Search results therefore gain indentation and states.
+16. **Structured outputs replace plain text.** `clipboard_read` returns `{text}`, `window_list(filter={active:true})` returns a typed window, and a desktop-list failure is a tool error instead of an `error` field.
+17. **Bounds.** No numeric parameter gained a lower bound: `hold_ms`, `steps`, `duration_ms`, `timeout_ms`, `poll_interval_ms`, `dwell_ms` and the pinch distances accept the same values as before, and `max_depth <= 0` still means application nodes only.
+18. **`pointer_move` refuses while a mouse button is held.** A manual drag is now `pointer_hold(phase="press")`, then `pointer_hold(phase="move")` for each point, then `pointer_hold(phase="release")`. The refusal says `use pointer_hold(phase='move', button, target) to move a held button`. In exchange, `pointer_move` is a pure hover that clients can auto-approve.
+19. **Window selectors match every window kind by default.** Name lookups also see dialogs, utilities, popups and shell surfaces, so they can become ambiguous while an application shows a menu or a dialog. The ambiguity error lists every candidate with its id, `app_id`, caption and `kind`, and suggests `add kind:["normal"] or use id`.
+20. **Renamed references in close texts.** The `window_close` texts that pointed to the old geometry tool now point to `window_list`. The consent behavior is unchanged.
+21. **Unknown arguments are rejected.** 0.11 silently ignored an argument it did not know. 1.0 returns an error that names the replacement for a removed argument (for example `screenshot_after_ms` → `capture={delays_ms:[...]}`) or the closest valid argument, so an old call fails loudly instead of running with a different effect.
+22. **One no-session text and one no-input text.** Every tool that needs a session says `No session running.` and `Call session_start (virtual) or session_connect (live desktop).`; every input tool without a working KWin EIS backend says `No input backend (KWin EIS unavailable); install kwin-common or reconnect.`
+23. **`keyboard_type` refuses text that needs a held key.** For example, typing `A` while `keyboard_hold` holds `shift` is refused instead of releasing your `shift` in the middle of the text. Release the key with `keyboard_hold(phase="release")` first.
+24. **Held input survives an EIS device replacement.** When KWin replaces its EIS pointer or keyboard device (an output or keyboard-layout change) while kwin-mcp holds a button or key, the app never receives a release for it, so it stays held and the next result warns `KWin replaced the EIS <role> device: held <controls> stays pressed`. A held button keeps dragging; for a held key KWin resets its modifier state, so the warning adds that new keys no longer see it as a modifier. Reporting sends no input, so `session_info` stays read-only. The release from `pointer_hold`/`keyboard_hold(phase="release")`, `session_stop` or server exit goes through the replacement device and reaches the app on KWin 6.3.6 and 6.7.5 alike.
+
+### Removed
+
+- 28 tool names, each replaced by a 1.0 call (see the table below): `screenshot`, `accessibility_tree`, `find_ui_elements`, `wait_for_element`, `list_windows`, `invoke_ui_action`, `mouse_click`, `mouse_move`, `mouse_scroll`, `mouse_drag`, `mouse_button_down`, `mouse_button_up`, `keyboard_type_unicode`, `keyboard_key`, `keyboard_key_down`, `keyboard_key_up`, `touch_multi_swipe`, `clipboard_get`, `clipboard_set`, `launch_app`, `read_app_log`, `focus_window`, `window_geometry`, `active_window`, `window_set_geometry`, `window_set_desktop`, `virtual_desktops` and `wayland_info`.
+- The `results.py` module; result models now live in `models.py`, and every model renders its own text.
+
+#### Tool migration table
+
+Every tool name of 0.11 and of PR #103, with the 1.0 call that does the same thing. `{x,y}` is a point in global logical pixels; any `target` also accepts `{ref, dx, dy}` from `element_query`.
+
+| 0.11 tool | 1.0 call |
+|---|---|
+| `session_start` | `session_start(screen_width, screen_height, enable_clipboard, home, retention)`, then `app_launch(command, env)` |
+| `session_connect` | `session_connect(dbus_address, wayland_display, enable_accessibility, retention)` |
+| `session_stop` | `session_stop()` |
+| `screenshot` | `screen_capture(region, max_edge, include_cursor)` |
+| `accessibility_tree` | `element_query(locator={app, role}, max_depth)` |
+| `find_ui_elements` | `element_query(locator={query, app, states})` |
+| `wait_for_element` | `element_query(locator={query, app, states}, wait={timeout_ms, poll_interval_ms})` |
+| `list_windows` | `element_query(max_depth=1)` |
+| `invoke_ui_action` | `element_act(element={strict:{query, app}}, action)` |
+| `mouse_click` | `pointer_click(target={x,y}, button, count, modifiers, hold_ms, capture)` |
+| `mouse_move` | `pointer_move(target={x,y}, capture)` |
+| `mouse_scroll` | `pointer_scroll(target={x,y}, delta, axis, unit, steps)` |
+| `mouse_drag` | `pointer_drag(from={x,y}, to={x,y}, button, modifiers, waypoints, dwell_ms, capture)` |
+| `mouse_button_down` | `pointer_hold(phase='press', button, target={x,y})` |
+| `mouse_button_up` | `pointer_hold(phase='release', button, target={x,y})` |
+| `keyboard_type` | `keyboard_type(text, method='keys', capture)` |
+| `keyboard_type_unicode` | `keyboard_type(text, method='unicode', capture)` |
+| `keyboard_key` | `keyboard_press(keys, capture)` |
+| `keyboard_key_down` | `keyboard_hold(phase='press', keys)` |
+| `keyboard_key_up` | `keyboard_hold(phase='release', keys)` |
+| `touch_tap` | `touch_tap(target={x,y}, hold_ms, capture)` |
+| `touch_swipe` | `touch_swipe(from={x,y}, to={x,y}, fingers=1, duration_ms, capture)` |
+| `touch_pinch` | `touch_pinch(center={x,y}, start_distance, end_distance, duration_ms, capture)` |
+| `touch_multi_swipe` | `touch_swipe(from={x,y}, to={x,y}, fingers=3, duration_ms, capture)` |
+| `clipboard_get` | `clipboard_read()` |
+| `clipboard_set` | `clipboard_write(text)` |
+| `launch_app` | `app_launch(command, env)` |
+| `read_app_log` | `app_log(pid, last_n_lines)` |
+| `focus_window` | `window_focus(window={id} or {app_id, caption})` |
+| `window_geometry` | `window_list(filter={app_id} or {id})` |
+| `active_window` | `window_list(filter={active:true})` |
+| `window_set_geometry` | `window_place(window={id}, frame={x, y, width, height})` |
+| `window_close` | `window_close(window={id}, capture)` |
+| `virtual_desktops` (PR #103) | `desktop_list()` |
+| `window_set_desktop` (PR #103) | `window_place(window={id}, desktop)` |
+| `dbus_call` | `dbus_call(service, path, interface, method, args)` |
+| `wayland_info` | `wayland_list(filter)` |
+
+#### Parameter migration table
+
+Every 0.11 parameter that was removed or renamed. Parameters not listed keep their name and meaning.
+
+| 0.11 tool | 0.11 parameter | 1.0 replacement |
+|---|---|---|
+| `session_start` | `app_command` | `app_launch(command)` after `session_start` |
+| `session_start` | `env` | `app_launch(command, env)` |
+| `session_start` | `keep_screenshots` | `retention={artifacts:true}` |
+| `session_start` | `isolate_home` | `home='isolated'` |
+| `session_start` | `keep_home` | `home='isolated'` with `retention={home:true}` |
+| `session_connect` | `keep_screenshots` | `retention={artifacts:true}` |
+| `screenshot` | `region` | `region={x, y, width, height}` (was a `[x, y, width, height]` list) |
+| `accessibility_tree` | `app_name` | `locator={app}` |
+| `accessibility_tree` | `role` | `locator={role}` |
+| `find_ui_elements` | `query` | `locator={query}` |
+| `find_ui_elements` | `app_name` | `locator={app}` |
+| `find_ui_elements` | `states` | `locator={states}` |
+| `wait_for_element` | `query` | `locator={query}` |
+| `wait_for_element` | `app_name` | `locator={app}` |
+| `wait_for_element` | `expected_states` | `locator={states}` |
+| `wait_for_element` | `timeout_ms` | `wait={timeout_ms}` |
+| `wait_for_element` | `poll_interval_ms` | `wait={poll_interval_ms}` |
+| `invoke_ui_action` | `query` | `element={strict:{query}}` |
+| `invoke_ui_action` | `app_name` | `element={strict:{app}}` |
+| `invoke_ui_action` | `action_name` | `action` |
+| `mouse_click` | `x`, `y` | `target={x,y}` |
+| `mouse_click` | `double`, `triple` | `count=2` or `count=3` |
+| `mouse_click` | `modifiers` | `modifiers='ctrl+shift'` (was a list) |
+| `mouse_click` | `screenshot_after_ms` | `capture={delays_ms:[...]}` |
+| `mouse_move` | `x`, `y` | `target={x,y}` |
+| `mouse_move` | `screenshot_after_ms` | `capture={delays_ms:[...]}` |
+| `mouse_scroll` | `x`, `y` | `target={x,y}` |
+| `mouse_scroll` | `horizontal` | `axis='horizontal'` |
+| `mouse_scroll` | `discrete` | `unit='detent'` (`false` is `unit='smooth_step'`) |
+| `mouse_drag` | `from_x`, `from_y` | `from={x,y}` |
+| `mouse_drag` | `to_x`, `to_y` | `to={x,y}` |
+| `mouse_drag` | `modifiers` | `modifiers='ctrl'` (was a list) |
+| `mouse_drag` | `waypoints` | `waypoints=[{x, y, dwell_ms}]` (was `[[x, y, dwell_ms]]`) |
+| `mouse_drag` | `screenshot_after_ms` | `capture={delays_ms:[...]}` |
+| `mouse_button_down` | `x`, `y` | `target={x,y}` |
+| `mouse_button_up` | `x`, `y` | `target={x,y}` |
+| `keyboard_type` | `screenshot_after_ms` | `capture={delays_ms:[...]}` |
+| `keyboard_type_unicode` | `screenshot_after_ms` | `capture={delays_ms:[...]}` |
+| `keyboard_key` | `key` | `keys` |
+| `keyboard_key` | `screenshot_after_ms` | `capture={delays_ms:[...]}` |
+| `keyboard_key_down` | `key` | `keys` |
+| `keyboard_key_up` | `key` | `keys` |
+| `touch_tap` | `x`, `y` | `target={x,y}` |
+| `touch_tap` | `screenshot_after_ms` | `capture={delays_ms:[...]}` |
+| `touch_swipe` | `from_x`, `from_y` | `from={x,y}` |
+| `touch_swipe` | `to_x`, `to_y` | `to={x,y}` |
+| `touch_swipe` | `screenshot_after_ms` | `capture={delays_ms:[...]}` |
+| `touch_pinch` | `center_x`, `center_y` | `center={x,y}` |
+| `touch_pinch` | `screenshot_after_ms` | `capture={delays_ms:[...]}` |
+| `touch_multi_swipe` | `from_x`, `from_y` | `from={x,y}` |
+| `touch_multi_swipe` | `to_x`, `to_y` | `to={x,y}` |
+| `touch_multi_swipe` | `fingers` | `fingers` (the default is now 1; pass `fingers=3` for the old default) |
+| `touch_multi_swipe` | `screenshot_after_ms` | `capture={delays_ms:[...]}` |
+| `focus_window` | `window_id` | `window={id}` |
+| `focus_window` | `app_name` | `window={app_id}` (or `window={caption}`) |
+| `window_geometry` | `window_id` | `filter={id}` |
+| `window_geometry` | `app_name` | `filter={app_id}` |
+| `window_set_geometry` | `window_id` | `window={id}` |
+| `window_set_geometry` | `x`, `y`, `width`, `height` | `frame={x, y, width, height}` (omitted fields keep their value) |
+| `window_close` | `window_id` | `window={id}` |
+| `window_set_desktop` (PR #103) | `window_id` | `window={id}` |
+| `window_set_desktop` (PR #103) | `desktop_id` | `desktop=<id from desktop_list>` |
+| `wayland_info` | `filter_protocol` | `filter` |
 
 ## [0.11.0] - 2026-10-12
 
@@ -308,8 +468,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keyboard input: text typing and key combinations via KWin EIS
 - FastMCP-based MCP server with stdio transport
 
-[Unreleased]: https://github.com/isac322/kwin-mcp/compare/v0.12.0...HEAD
-[0.12.0]: https://github.com/isac322/kwin-mcp/compare/v0.11.0...v0.12.0
+[Unreleased]: https://github.com/isac322/kwin-mcp/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/isac322/kwin-mcp/compare/v0.11.0...v1.0.0
 [0.11.0]: https://github.com/isac322/kwin-mcp/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/isac322/kwin-mcp/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/isac322/kwin-mcp/compare/v0.9.0...v0.9.1

@@ -4,9 +4,10 @@ Spectacle before 6.7.90 composes screens of different scales through OpenCV
 ROIs on a canvas anchored at logical (0, 0). A screen outside that canvas
 aborts Spectacle (native QA: Spectacle 6.3.5 / OpenCV 4.10 exits with SIGABRT
 from ``cv::resize`` for Virtual-1 at (-1920, 0) next to a 1.45-scaled
-Virtual-0) or is distorted. These tests drive the public capture chain with
-ScreenShot2 unavailable and a stand-in ``spectacle`` on ``PATH`` that records
-every invocation and produces what the real binary produced for each layout.
+Virtual-0) or is distorted. These tests drive ``screen_capture`` and an action
+tool's ``capture`` option in a virtual session with ScreenShot2 unavailable and
+a stand-in ``spectacle`` on ``PATH`` that records every invocation and
+produces what the real binary produced for each layout.
 
 What is asserted is kwin-mcp's own behavior: whether it starts a Spectacle
 capture at all, and what the caller receives.
@@ -18,17 +19,22 @@ import json
 import os
 import stat
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from _asserts import frame_png
 from PIL import Image
 
 from kwin_mcp import screenshot
+from kwin_mcp.models import Capture, Point
 from kwin_mcp.screenshot import OutputGeometry, WorkspaceTopology
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
+
+    from kwin_mcp.core import AutomationEngine
+    from kwin_mcp.models import Frame, SessionInfo
 
 # Topologies as KWin 6.3.6 reported them in the native QEMU QA.
 NEGATIVE_MIXED = WorkspaceTopology(
@@ -56,6 +62,10 @@ SINGLE = WorkspaceTopology(
     outputs=(OutputGeometry("Virtual-0", 0.0, 0.0, 1920.0, 1080.0, 1.0),),
     virtual=(0, 0, 1920, 1080),
 )
+
+# Where the burst's carrier action (pointer_move) puts the pointer.
+_BURST_TARGET = Point(x=10, y=10)
+_BURST_WARNING_PREFIX = "frame capture failed after the action: "
 
 # Stand-in for the spectacle binary. ``--version`` prints the configured
 # version; a capture either aborts like Spectacle 6.3.5 did on the negative
@@ -124,9 +134,8 @@ class _Spectacle:
         return sum(argv == ["--version"] for argv in self._calls())
 
 
-@pytest.fixture
-def spectacle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Spectacle:
-    """ScreenShot2 unavailable, X11 disabled, and a recording Spectacle stand-in."""
+def _disable_screenshot2(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every ScreenShot2 request fail so the chain falls back to Spectacle."""
     monkeypatch.delenv("KWIN_MCP_X11_SCREENSHOT", raising=False)
 
     def screenshot2_unavailable(*_args: object, **_kwargs: object) -> None:
@@ -135,31 +144,98 @@ def spectacle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Spectacle:
 
     monkeypatch.setattr(screenshot, "capture_screenshot_dbus", screenshot2_unavailable)
     monkeypatch.setattr(screenshot, "_capture_frame_burst_dbus", screenshot2_unavailable)
+
+
+@pytest.fixture
+def spectacle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Spectacle:
+    """ScreenShot2 unavailable, X11 disabled, and a recording Spectacle stand-in."""
+    _disable_screenshot2(monkeypatch)
     return _Spectacle(tmp_path, monkeypatch)
+
+
+@pytest.fixture
+def session(spectacle: _Spectacle, start_session: Callable[..., SessionInfo]) -> SessionInfo:
+    """A virtual session started after the stand-in is first on ``PATH``."""
+    del spectacle
+    return start_session()
 
 
 def _use_topology(monkeypatch: pytest.MonkeyPatch, topology: WorkspaceTopology) -> None:
     monkeypatch.setattr(screenshot, "query_topology", lambda _dbus_address: topology)
 
 
-def _screenshot(output_dir: Path) -> screenshot.FrameMapping:
-    _, mapping = screenshot.capture_screenshot_to_file("", "", output_dir=output_dir)
-    return mapping
+def _pngs(session: SessionInfo) -> list[Path]:
+    """Every PNG in the session's screenshot directory, private attempts included."""
+    return sorted(Path(session.artifacts_dir).rglob("*.png"))
 
 
-def _burst(output_dir: Path) -> screenshot.FrameMapping:
-    frames = screenshot.capture_frame_burst("", output_dir, [0], wayland_socket="")
-    assert len(frames) == 1, frames
-    return frames[0][1]
+def _screen_capture(engine: AutomationEngine) -> Frame:
+    return engine.screen_capture(max_edge=0)
 
 
-CAPTURES: dict[str, Callable[[Path], screenshot.FrameMapping]] = {
-    "screenshot": _screenshot,
+def _burst(engine: AutomationEngine) -> Frame:
+    result = engine.pointer_move(_BURST_TARGET, capture=Capture(delays_ms=[0], max_edge=0))
+    assert result.warnings == [], result.warnings
+    assert len(result.frames) == 1, result.frames
+    assert result.frames[0].delay_ms == 0, result.frames
+    return result.frames[0]
+
+
+def _screen_capture_failure(engine: AutomationEngine) -> str:
+    with pytest.raises(RuntimeError) as failure:
+        engine.screen_capture(max_edge=0)
+    return str(failure.value)
+
+
+def _burst_failure(engine: AutomationEngine) -> str:
+    # The action committed, so a capture failure is a warning, not an error.
+    result = engine.pointer_move(_BURST_TARGET, capture=Capture(delays_ms=[0], max_edge=0))
+    assert result.at == _BURST_TARGET, result
+    assert result.frames == [], result.frames
+    assert len(result.warnings) == 1, result.warnings
+    assert result.warnings[0].startswith(_BURST_WARNING_PREFIX), result.warnings
+    return result.warnings[0]
+
+
+CAPTURES: dict[str, Callable[[AutomationEngine], Frame]] = {
+    "screenshot": _screen_capture,
     "burst": _burst,
+}
+FAILURES: dict[str, Callable[[AutomationEngine], str]] = {
+    "screenshot": _screen_capture_failure,
+    "burst": _burst_failure,
 }
 
 
-@pytest.mark.parametrize("capture", sorted(CAPTURES))
+def _assert_spectacle_frame(
+    frame: Frame,
+    *,
+    origin: tuple[int, int],
+    size: tuple[int, int],
+    coverage: str,
+    captured: tuple[tuple[int, int, int, int], ...],
+) -> None:
+    """The frame is Spectacle's, mapped 1:1 onto ``origin``/``size`` with ``coverage``."""
+    space = frame.coordinate_space
+    expected_space = (
+        f"Coordinate space: logical; origin ({origin[0]}, {origin[1]}); "
+        f"size {size[0]}x{size[1]}; backend spectacle"
+    )
+    assert space.startswith(expected_space), space
+    assert f"; coverage {coverage}" in space, space
+    assert frame.coverage == coverage, frame
+    assert frame.mapping is not None, frame
+    assert (frame.mapping.origin.x, frame.mapping.origin.y) == origin, frame
+    assert frame.mapping.scale == 1.0, frame
+    assert (frame.width, frame.height) == size, frame
+    if coverage == "partial":
+        regions = ", ".join(f"({x}, {y}, {w}x{h})" for x, y, w, h in captured)
+        assert f"(captured {regions}; other pixels are transparent)" in space, space
+    with Image.open(frame_png(frame)) as image:
+        assert image.size == size, image.size
+
+
+@pytest.mark.parametrize("capture", sorted(FAILURES))
 # 24.x are Gear-numbered releases (Spectacle moved to Plasma numbering with 6.3);
 # they all predate the QPainter compositor even though 24 > 6.
 @pytest.mark.parametrize(
@@ -167,8 +243,9 @@ CAPTURES: dict[str, Callable[[Path], screenshot.FrameMapping]] = {
 )
 def test_negative_mixed_scale_layout_is_refused_before_spectacle_starts(
     spectacle: _Spectacle,
+    session: SessionInfo,
+    engine: AutomationEngine,
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
     capture: str,
     version: str,
 ) -> None:
@@ -180,52 +257,57 @@ def test_negative_mixed_scale_layout_is_refused_before_spectacle_starts(
     """
     _use_topology(monkeypatch, NEGATIVE_MIXED)
     spectacle.configure(version, canvas=None)
-    output_dir = tmp_path / "out"
 
-    with pytest.raises(RuntimeError) as failure:
-        CAPTURES[capture](output_dir)
+    message = FAILURES[capture](engine)
 
     assert spectacle.captures() == [], spectacle.captures()
-    message = str(failure.value)
     assert "ScreenShot2" in message, message
     assert "Spectacle" in message, message
     assert "Virtual-1" in message, message
-    assert not list(output_dir.glob("*.png"))
+    assert _pngs(session) == [], _pngs(session)
 
 
 @pytest.mark.parametrize("capture", sorted(CAPTURES))
 def test_qpainter_spectacle_still_captures_negative_mixed_layout(
     spectacle: _Spectacle,
+    session: SessionInfo,
+    engine: AutomationEngine,
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
     capture: str,
 ) -> None:
     """From 6.7.90 Spectacle clips such screens cleanly; the capture proceeds as partial."""
+    del session
     _use_topology(monkeypatch, NEGATIVE_MIXED)
     # canvas = round(3244) * ceil(1.45); Virtual-0 drawn at its logical origin * 2.
     spectacle.configure("6.7.90", canvas=(6488, 2160), drawn=[(0, 0, 2648, 1490)])
 
-    mapping = CAPTURES[capture](tmp_path / "out")
+    frame = CAPTURES[capture](engine)
 
     assert len(spectacle.captures()) == 1, spectacle.captures()
-    assert mapping.backend == "spectacle", mapping
-    assert (mapping.origin, mapping.size) == ((-1920, 0), (3244, 1080)), mapping
-    assert mapping.coverage == "partial", mapping
-    assert mapping.captured == ((0, 0, 1324, 745),), mapping
+    _assert_spectacle_frame(
+        frame,
+        origin=(-1920, 0),
+        size=(3244, 1080),
+        coverage="partial",
+        captured=((0, 0, 1324, 745),),
+    )
 
 
 def test_burst_probes_the_spectacle_version_once(
     spectacle: _Spectacle,
+    session: SessionInfo,
+    engine: AutomationEngine,
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
 ) -> None:
     """A frame burst on a guarded layout reads the version once, not per frame."""
+    del session
     _use_topology(monkeypatch, NEGATIVE_MIXED)
     spectacle.configure("6.7.90", canvas=(6488, 2160), drawn=[(0, 0, 2648, 1490)])
 
-    frames = screenshot.capture_frame_burst("", tmp_path / "out", [0, 10, 20], wayland_socket="")
+    result = engine.pointer_move(_BURST_TARGET, capture=Capture(delays_ms=[0, 10, 20], max_edge=0))
 
-    assert len(frames) == 3, frames
+    assert result.warnings == [], result.warnings
+    assert [frame.delay_ms for frame in result.frames] == [0, 10, 20], result.frames
     assert len(spectacle.captures()) == 3, spectacle.captures()
     assert spectacle.version_probes() == 1, spectacle.version_probes()
 
@@ -262,8 +344,9 @@ def test_burst_probes_the_spectacle_version_once(
 )
 def test_layouts_spectacle_composes_are_still_captured(
     spectacle: _Spectacle,
+    session: SessionInfo,
+    engine: AutomationEngine,
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
     capture: str,
     topology: WorkspaceTopology,
     canvas: tuple[int, int],
@@ -272,17 +355,47 @@ def test_layouts_spectacle_composes_are_still_captured(
     captured: tuple[tuple[int, int, int, int], ...],
 ) -> None:
     """Layouts Spectacle 6.3.5 composes (native QA controls) keep using it unchanged."""
+    del session
     _use_topology(monkeypatch, topology)
     spectacle.configure("6.3.5", canvas=canvas, drawn=drawn)
 
-    mapping = CAPTURES[capture](tmp_path / "out")
+    frame = CAPTURES[capture](engine)
 
     assert len(spectacle.captures()) == 1, spectacle.captures()
-    assert mapping.backend == "spectacle", mapping
-    assert mapping.origin == topology.virtual[:2], mapping
-    assert mapping.size == topology.virtual[2:], mapping
-    assert mapping.coverage == coverage, mapping
-    if coverage == "partial":
-        assert mapping.captured == captured, mapping
-    with Image.open(next((tmp_path / "out").glob("*.png"))) as image:
-        assert image.size == topology.virtual[2:], image.size
+    x, y, width, height = topology.virtual
+    _assert_spectacle_frame(
+        frame, origin=(x, y), size=(width, height), coverage=coverage, captured=captured
+    )
+
+
+@pytest.mark.qa("QA-CAP-005")
+def test_spectacle_fallback_when_screenshot2_fails(
+    spectacle: _Spectacle,
+    session: SessionInfo,
+    engine: AutomationEngine,
+    screen_size: tuple[int, int],
+) -> None:
+    """With ScreenShot2 failing, screen_capture spawns Spectacle and returns its frame.
+
+    The session's real output topology is used: the only stand-ins are the
+    failing ScreenShot2 request and the recording ``spectacle`` binary, whose
+    invocation log is the process-table oracle.
+    """
+    width, height = screen_size
+    spectacle.configure("6.3.5", canvas=(width, height), drawn=[(0, 0, width, height)])
+
+    frame = engine.screen_capture(max_edge=0)
+
+    captures = spectacle.captures()
+    assert len(captures) == 1, captures
+    argv = captures[0]
+    assert argv[:4] == ["-b", "-f", "-n", "-o"], argv
+    # Spectacle writes into a private attempt directory inside the session's
+    # screenshot directory; only the finished capture is published.
+    assert Path(argv[4]).parent.parent == Path(session.artifacts_dir), argv
+    _assert_spectacle_frame(
+        frame, origin=(0, 0), size=(width, height), coverage="full", captured=()
+    )
+    text = frame.render()
+    assert text.splitlines()[0] == f"Screenshot saved: {frame.path} ({frame.size_kb:.1f} KB)", text
+    assert "; backend spectacle" in text, text

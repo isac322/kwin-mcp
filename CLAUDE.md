@@ -50,7 +50,7 @@ See ROADMAP.md. Key modules:
 2. Start from the first incomplete item in the next milestone
 3. After code changes, run `uv run ruff check .` + `uv run ruff format .` + `uv run ty check`
 4. Update ROADMAP.md checklist when a milestone item is completed
-5. **Verify with CLI, not MCP tools**: After modifying any kwin-mcp code, verify via the CLI (`uv run python -m kwin_mcp.cli`), NOT the MCP server tools. The MCP server process is already running with the old code loaded in memory — calling MCP tools after editing source files will NOT reflect the changes. Use the CLI to launch a session and test the modified functionality. Use `keep_screenshots=true` in `session_start` to preserve screenshot files after `session_stop` (they are deleted by default). Files in `/tmp/kwin-mcp-screenshots-*` must be cleaned up manually when this option is used.
+5. **Verify with CLI, not MCP tools**: After modifying any kwin-mcp code, verify via the CLI (`uv run python -m kwin_mcp.cli`), NOT the MCP server tools. The MCP server process is already running with the old code loaded in memory — calling MCP tools after editing source files will NOT reflect the changes. Use the CLI to launch a session and test the modified functionality. Use `retention='{"artifacts": true}'` in `session_start` to preserve screenshot files after `session_stop` (they are deleted by default). Files in `/tmp/kwin-mcp-screenshots-*` must be cleaned up manually when this option is used.
 6. **Invoke docs-seo agent after relevant file changes**: After modifying any of the trigger files below, invoke the `@docs-seo` agent to evaluate whether documentation is stale. A no-op conclusion is acceptable if nothing needs updating.
 
 ### docs-seo Auto-Trigger Files
@@ -60,7 +60,7 @@ See ROADMAP.md. Key modules:
 | `src/kwin_mcp/server.py` | tool-registration, code-general | Check tool count, README tool tables, CONTRIBUTING structure, **integrations/*/skills/*/SKILL.md tool list freshness** |
 | `src/kwin_mcp/session.py` | session-api | Check README arch diagram, CONTRIBUTING session docs |
 | `src/kwin_mcp/core.py` | engine-api, code-general | Check README arch description, CONTRIBUTING structure |
-| `src/kwin_mcp/*.py` (any) | code-general | Check concrete numbers, CONTRIBUTING file listing, **integrations/*/skills/*/SKILL.md "30 capabilities" reference** |
+| `src/kwin_mcp/*.py` (any) | code-general | Check concrete numbers, CONTRIBUTING file listing, **integrations/*/skills/*/SKILL.md "29 capabilities" reference** |
 | `pyproject.toml` | package-metadata | Sync keywords with `.claude/positioning.yml`; check CLAUDE.md keyword tiers; **run `python3 scripts/sync_plugin_version.py` to propagate version to integrations manifests** |
 | `CHANGELOG.md` | changelog-update | Sync docs-seo.md positioning; add new search intents |
 | `README.md` | readme-update | Sync docs-seo.md positioning; update CLAUDE.md keyword tiers |
@@ -115,7 +115,7 @@ When writing or editing any documentation (README.md, CHANGELOG.md, GitHub relea
 
 - Follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format
 - Use Added / Changed / Deprecated / Removed / Fixed / Security categories
-- Name specific tools (e.g. `mouse_click`, `accessibility_tree`) in entries
+- Name specific tools (e.g. `pointer_click`, `element_query`) in entries
 - Include comparison links at the bottom (`[0.x.y]: https://github.com/...`)
 - Maintain an `[Unreleased]` section at the top for in-progress changes
 
@@ -126,7 +126,7 @@ When writing or editing any documentation (README.md, CHANGELOG.md, GitHub relea
 - **Patch releases** structure: What's Changed -> detailed description -> Full Changelog comparison link
 - First sentence must convey the value proposition (what the user gains)
 - Name exact technologies: AT-SPI2, libei, EIS, KWin ScreenShot2, D-Bus, PyGObject, wl-clipboard, wtype
-- Include tool counts when relevant (e.g. "30 MCP tools" or "17 new tools")
+- Include tool counts when relevant (e.g. "29 MCP tools" or "17 new tools")
 
 ### pyproject.toml SEO Rules
 

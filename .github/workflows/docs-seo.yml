@@ -60,26 +60,33 @@ jobs:
             echo "$CHANGED"
           fi
 
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: astral-sh/setup-uv@v10.2.0
         if: steps.changed.outputs.has_changes == 'true'
 
+      # `shell: bash` runs with `-eo pipefail`, so a failing check is not hidden
+      # by `tee`. The report is still written to the step output before the
+      # step exits with the check's status, so the PR comment below can post it.
       - name: Run docs-seo consistency checks
         if: steps.changed.outputs.has_changes == 'true'
         id: check
+        shell: bash
         run: |
-          python3 scripts/check_docs_seo.py 2>&1 | tee /tmp/docs-seo-report.txt
+          status=0
+          python3 scripts/check_docs_seo.py 2>&1 | tee /tmp/docs-seo-report.txt || status=$?
           echo "report<<EOF" >> "$GITHUB_OUTPUT"
           cat /tmp/docs-seo-report.txt >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
+          exit "$status"
 
       - name: Run plugin version + SKILL sync check
-        if: steps.changed.outputs.has_changes == 'true'
+        if: ${{ !cancelled() && steps.changed.outputs.has_changes == 'true' }}
         run: python3 scripts/sync_plugin_version.py --check
 
       - name: Post PR comment with docs-seo findings
         # Fork PRs get a read-only GITHUB_TOKEN, so createComment returns 403;
         # the findings are still in the job log via tee above.
         if: >
+          !cancelled() &&
           github.event_name == 'pull_request' &&
           github.event.pull_request.head.repo.full_name == github.repository &&
           steps.changed.outputs.has_changes == 'true'

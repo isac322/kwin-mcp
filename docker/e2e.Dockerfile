@@ -62,6 +62,8 @@ ENV KWIN_MCP_SYSTEM_PACKAGES="\
         fonts-noto-core \
         gir1.2-atspi-2.0 \
         gir1.2-gtk-3.0 \
+        gir1.2-gtklayershell-0.1 \
+        kate \
         kcalc \
         kde-spectacle \
         konsole \
@@ -151,9 +153,20 @@ ENV PATH="/opt/kwin-mcp-venv/bin:${PATH}" \
 COPY --from=venv-builder /opt/kwin-mcp-venv/ /opt/kwin-mcp-venv/
 COPY --chown=1000:1000 pyproject.toml /app/pyproject.toml
 COPY --chown=1000:1000 tests/ /app/tests/
+COPY --chown=1000:1000 README.md CHANGELOG.md CONTRIBUTING.md ROADMAP.md /app/
+# Read-only references for the docs/listing checks; the package itself is the
+# installed wheel in /opt/kwin-mcp-venv.
+COPY --chown=1000:1000 src/ /app/src/
+COPY --chown=1000:1000 docs/ /app/docs/
+COPY --chown=1000:1000 docker/README.md /app/docker/README.md
+COPY --chown=1000:1000 scripts/ /app/scripts/
+COPY --chown=1000:1000 integrations/ /app/integrations/
+COPY --chown=1000:1000 .claude-plugin/ /app/.claude-plugin/
+COPY --chown=1000:1000 .github/workflows/ /app/.github/workflows/
 COPY --chmod=0755 --chown=1000:1000 \
     docker/e2e-entrypoint.sh \
     docker/e2e-environment.py \
+    docker/kwin-mcp-smoke.py \
     /app/docker/
 
 WORKDIR /app

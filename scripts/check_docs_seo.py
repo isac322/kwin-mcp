@@ -116,8 +116,25 @@ SKILL_MIRRORS: list[str] = [
     "integrations/opencode/plugin/skill/kwin-desktop-automation/SKILL.md",
 ]
 
-TOOL_COUNT_CANONICAL = 37
+TOOL_COUNT_CANONICAL = 29
 SERVER_PY = "src/kwin_mcp/server.py"
+
+# Files that state the tool count, with the phrase each must contain. Every other
+# count phrase in them ("<N> MCP tools", "<N> capabilities", "all <N> tools",
+# "tool_count: <N>") must name TOOL_COUNT_CANONICAL too.
+TOOL_COUNT_REFERENCES: list[tuple[str, str]] = [
+    ("README.md", f"{TOOL_COUNT_CANONICAL} MCP tools"),
+    ("CONTRIBUTING.md", f"all {TOOL_COUNT_CANONICAL} tools"),
+    ("docs/ai-agent-integration.md", f"{TOOL_COUNT_CANONICAL} MCP tools"),
+    ("integrations/claude-code/.claude-plugin/plugin.json", f"{TOOL_COUNT_CANONICAL} MCP tools"),
+    (SKILL_SOURCE, f"{TOOL_COUNT_CANONICAL} capabilities"),
+    (".claude/positioning.yml", f"tool_count_canonical: {TOOL_COUNT_CANONICAL}"),
+]
+TOOL_COUNT_PHRASE = re.compile(
+    r"\b(\d+) (?:MCP tools|capabilities)\b"
+    r"|\ball (\d+) (?:registered )?tools\b"
+    r"|\btool_count(?:_canonical)?: (\d+)\b"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +308,28 @@ def check_tool_count() -> CheckResult:
     return result
 
 
+def check_tool_count_references() -> list[CheckResult]:
+    results: list[CheckResult] = []
+    for rel_path, required in TOOL_COUNT_REFERENCES:
+        result = CheckResult(file=f"{rel_path} (tool count)")
+        path = ROOT / rel_path
+        if not path.exists():
+            result.missing = [f"<file not found: {rel_path}>"]
+            results.append(result)
+            continue
+        content = path.read_text(encoding="utf-8")
+        if required not in content:
+            result.missing.append(f"'{required}' is not stated")
+        for match in TOOL_COUNT_PHRASE.finditer(content):
+            count = int(next(group for group in match.groups() if group is not None))
+            if count != TOOL_COUNT_CANONICAL:
+                result.missing.append(
+                    f"stale count '{match.group(0)}' (canonical is {TOOL_COUNT_CANONICAL})"
+                )
+        results.append(result)
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -311,6 +350,7 @@ def main() -> int:
     results.extend(check_plugin_keywords_sync())
     results.extend(check_skill_identical())
     results.append(check_tool_count())
+    results.extend(check_tool_count_references())
 
     failed = [r for r in results if not r.ok]
     if not failed:

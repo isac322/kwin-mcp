@@ -1,0 +1,12 @@
+{
+ "type": "object",
+ "properties": {
+  "a": {
+   "$ref": "#/$defs/Missing"
+  }
+ },
+ "required": [
+  "a"
+ ],
+ "additionalProperties": false
+}

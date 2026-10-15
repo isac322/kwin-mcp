@@ -89,7 +89,7 @@ kwin-mcp vX.Y.Z <one-line summary of what was fixed/improved>.
 - **Language**: Always English
 - **First sentence**: Must convey the value proposition (what the user gains)
 - **Technology names**: Always use exact names — AT-SPI2, libei, EIS, KWin ScreenShot2, D-Bus, PyGObject, wl-clipboard, wtype
-- **Tool names**: Use backtick code format with bare names (e.g. `mouse_click`, `accessibility_tree`). Hosts add their own prefix (`mcp__kwin-mcp__*` for Claude Code, `kwin-mcp_*` for OpenCode) — never hardcode prefixes in release notes
+- **Tool names**: Use backtick code format with bare names (e.g. `pointer_click`, `element_query`). Hosts add their own prefix (`mcp__kwin-mcp__*` for Claude Code, `kwin-mcp_*` for OpenCode) — never hardcode prefixes in release notes
 - **Tool counts**: Include total tool count when relevant (e.g. "now with 29 MCP tools"). When the count changes, also update `.claude/positioning.yml § product.tool_count`, `.claude/positioning.yml § drift_detection.tool_count_canonical`, `check_docs_seo.py § TOOL_COUNT_CANONICAL`, README tool tables, and the SKILL.md "X capabilities" reference before tagging the release
 - **Plugin sync**: If the release ships new tools, mention that the bundled plugins were updated. Existing users will see the new guidance after a `/plugin update` (Claude Code) or after the OpenCode plugin's next `npm run build` mirrors the SKILL.md
 - **Comparison link**: Always end with a Full Changelog comparison link

@@ -1,0 +1,85 @@
+name: E2E slow
+
+# Tests marked `@pytest.mark.slow` are excluded from the PR shards in e2e.yml.
+# This workflow runs them weekly and on demand; one green dispatch run on the
+# release commit is required before the version tag is pushed.
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  slow-session:
+    name: Slow E2E (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: amd64
+            runner: ubuntu-26.04
+          - label: arm64
+            runner: ubuntu-26.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      E2E_ARTIFACT_DIR: artifacts/e2e-slow/${{ matrix.label }}
+      E2E_CONTAINER_NAME: kwin-mcp-e2e-slow-${{ matrix.label }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Create the artifact directory
+        run: install -d -m 0777 "$E2E_ARTIFACT_DIR"
+
+      - name: Build the KWin test image
+        run: docker build --file docker/e2e.Dockerfile --tag kwin-mcp-e2e .
+
+      - name: Run slow end-to-end tests
+        shell: bash
+        run: |
+          set -o pipefail
+          timeout --signal=INT --kill-after=1m 80m \
+            docker run \
+              --name "$E2E_CONTAINER_NAME" \
+              --env KWIN_MCP_E2E_STRICT_SKIPS=1 \
+              --env KWIN_MCP_E2E_REQUIRE=layer-shell \
+              --volume "$PWD/$E2E_ARTIFACT_DIR:/artifacts" \
+              kwin-mcp-e2e \
+              /opt/kwin-mcp-venv/bin/python -m pytest tests -v \
+                -m slow \
+                --junitxml=/artifacts/junit.xml \
+            2>&1 | tee "$E2E_ARTIFACT_DIR/pytest.log"
+
+      - name: Collect container diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          docker inspect "$E2E_CONTAINER_NAME" \
+            > "$E2E_ARTIFACT_DIR/docker-inspect.json" \
+            2> "$E2E_ARTIFACT_DIR/docker-inspect.stderr" || true
+          docker logs --timestamps "$E2E_CONTAINER_NAME" \
+            > "$E2E_ARTIFACT_DIR/docker.log" 2>&1 || true
+          docker top "$E2E_CONTAINER_NAME" -eo pid,ppid,user,stat,etime,args \
+            > "$E2E_ARTIFACT_DIR/docker-processes.txt" 2>&1 || true
+
+      - name: Remove the test container
+        if: always()
+        run: docker rm --force "$E2E_CONTAINER_NAME" || true
+
+      - name: Normalize artifact permissions
+        if: always()
+        shell: bash
+        run: |
+          if [[ -d "$E2E_ARTIFACT_DIR" ]]; then
+            sudo chmod -R a+rX "$E2E_ARTIFACT_DIR"
+          fi
+
+      - name: Upload slow E2E artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-slow-${{ matrix.label }}
+          path: ${{ env.E2E_ARTIFACT_DIR }}
+          if-no-files-found: warn

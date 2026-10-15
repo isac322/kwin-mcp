@@ -1,0 +1,1943 @@
+# Mutation catalogue M01-M82 (QA list section 8, mutation plan) for scripts/qa_mutants.py
+# (gate G14, QA-PKG-012; weekly + workflow_dispatch in .github/workflows/qa-mutants.yml).
+#
+# Each [[mutant]] is a minimal, plausible bug in the current source:
+#   id, module, mutation, source  the plan row (verbatim)
+#   qa                            the QA ids that must kill it; equals the `mutants` back-references
+#                                 in tests/qa_trace.toml (tests/unit/test_qa_traceability.py)
+#   tier                          unit (pytest on tests/unit, no KWin) | e2e (Debian E2E image)
+#   kill                          the traced test node ids of those QA ids run for the tier
+#   note                          how the patch realises the plan row in the current code
+#   [[mutant.patch]]              file + search/replace, applied in order; each search text must
+#                                 occur exactly once, or `qa_mutants.py --check` fails.
+# A patch that names a pre-1.0 tool is fenced for the stale-name scan
+# (tests/unit/test_schema_forbidden_strings.py).
+
+[[mutant]]
+id = "M01"
+module = "accessibility.py (ref table) + core.py (ref gate)"
+mutation = "Ref key = `n` only; drop the gen check at both resolvers"
+source = "QX §18"
+qa = ["QA-ELEM-022", "QA-ELEM-033", "QA-ELEM-034"]
+tier = "e2e"
+kill = ["tests/e2e/test_atspi_worker.py::test_accessibility_recovers_when_the_a11y_bus_restarts", "tests/e2e/test_element_refs.py::test_refs_have_generation_prefix_and_resolve", "tests/e2e/test_element_refs.py::test_stale_ref_after_worker_restart_is_tool_error_with_rerun_remedy"]
+note = "_RefTable stores entries under the bare counter n and both generation comparisons (core.py _check_ref and _RefTable.resolve) are dropped, so an old-generation ref resolves to whatever the new worker minted at the same n; the restart/session-switch tests expect a 'worker restarted' stale error with nothing invoked. The original worker-only mutation was equivalent: _check_ref rejected old-generation refs with the same text before they reached the worker, so the worker-side check was dead code for every public path."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/accessibility.py"
+search = '''
+        ref = f"e{self.generation}.{self._counter}"
+        self._entries[ref] = entry'''
+replace = '''
+        ref = f"e{self.generation}.{self._counter}"
+        self._entries[str(self._counter)] = entry'''
+
+[[mutant.patch]]
+file = "src/kwin_mcp/accessibility.py"
+search = '''
+        if int(match.group(1)) != self.generation:
+            msg = f"Stale ref {ref} (AT-SPI worker restarted); re-run element_query."
+            raise _StaleRefError(msg)
+        entry = self._entries.get(ref)'''
+replace = '''
+        key = match.group(2)
+        entry = self._entries.get(key)'''
+
+[[mutant.patch]]
+file = "src/kwin_mcp/accessibility.py"
+search = '''
+        self._entries.move_to_end(ref)
+        return entry'''
+replace = '''
+        self._entries.move_to_end(key)
+        return entry'''
+
+[[mutant.patch]]
+file = "src/kwin_mcp/core.py"
+search = '''
+        if int(match.group(1)) != self._atspi_generation:
+            msg = f"Stale ref {ref} (AT-SPI worker restarted); re-run element_query."
+            raise RuntimeError(msg)'''
+replace = '''
+        pass'''
+
+[[mutant]]
+id = "M02"
+module = "core.py"
+mutation = "Do not bump gen on retry-triggered replacement (only on bus change)"
+source = "QX §18"
+qa = ["QA-ELEM-035"]
+tier = "e2e"
+kill = ["tests/e2e/test_element_refs.py::test_retry_replacement_bumps_generation"]
+note = "_run_atspi's retry attempt rolls the generation back before respawning, so the replacement worker reuses the old gen (only bus/dead-worker detection in _ensure_atspi_worker still bumps); refs then keep the pre-hang gen and the pre-hang ref resolves instead of being stale. The teardown clears _atspi_bus, so the fault is placed on the retry path itself."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/core.py"
+search = '''
+                if attempt > 0:
+                    time.sleep(0.5)
+                try:
+                    proc = self._ensure_atspi_worker()'''
+replace = '''
+                if attempt > 0:
+                    time.sleep(0.5)
+                    self._atspi_generation -= 1
+                try:
+                    proc = self._ensure_atspi_worker()'''
+
+[[mutant]]
+id = "M03"
+module = "accessibility.py"
+mutation = "Skip the role re-check on ref resolution"
+source = "QX §18"
+qa = ["QA-ELEM-032"]
+tier = "e2e"
+kill = ["tests/e2e/test_element_refs.py::test_ref_whose_role_changed_in_place_is_rejected"]
+note = "Deletes the 'role changed' stale check in _resolve_refs, so a ref whose accessible changed role in place (window_zoo retag-role: same AT-SPI object, push button -> toggle button) still resolves and acts; the test expects the role-changed stale ToolError with nothing invoked. Swapping the widget (test_ref_whose_role_changed_is_rejected) destroys the old accessible, which the gone-check catches before the role comparison, so it cannot kill this mutant."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/accessibility.py"
+search = '''
+        if info.role != entry.role:
+            error = (
+                f"Stale ref {ref} (role changed from '{entry.role}' to '{info.role}'); "
+                "re-run element_query."
+            )
+            results.append(_Resolved(ref, entry, error=error))
+            continue
+        info.ref, info.app = ref, entry.app'''
+replace = '''
+        info.ref, info.app = ref, entry.app'''
+
+[[mutant]]
+id = "M04"
+module = "accessibility.py"
+mutation = "Compare name on ref resolution"
+source = "QX §18"
+qa = ["QA-ELEM-032"]
+tier = "e2e"
+kill = ["tests/e2e/test_element_refs.py::test_ref_whose_role_changed_is_rejected"]
+note = "_RefEntry gains a mint-time name (filled at all three mint sites) and _resolve_refs also rejects a ref whose name changed; the test's second act on the Play->Pause toggle (name changed, role same) must succeed, so it now fails with a stale error."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/accessibility.py"
+search = '''
+    application: Atspi.Accessible
+    toplevel: Atspi.Accessible | None
+
+
+class _StaleRefError(Exception):'''
+replace = '''
+    application: Atspi.Accessible
+    toplevel: Atspi.Accessible | None
+    name: str = ""
+
+
+class _StaleRefError(Exception):'''
+
+[[mutant.patch]]
+file = "src/kwin_mcp/accessibility.py"
+search = '''
+            entry = _RefEntry(app, app_info.role, app_name, 0, app, None)'''
+replace = '''
+            entry = _RefEntry(app, app_info.role, app_name, 0, app, None, name=app_info.name)'''
+
+[[mutant.patch]]
+file = "src/kwin_mcp/accessibility.py"
+search = '''
+        entry = _RefEntry(element, info.role, scope.app, depth, scope.application, scope.toplevel)'''
+replace = '''
+        entry = _RefEntry(
+            element,
+            info.role,
+            scope.app,
+            depth,
+            scope.application,
+            scope.toplevel,
+            name=info.name,
+        )'''
+
+[[mutant.patch]]
+file = "src/kwin_mcp/accessibility.py"
+search = '''
+                        entry = _RefEntry(element, role, app_name, depth, application, toplevel)'''
+replace = '''
+                        entry = _RefEntry(
+                            element, role, app_name, depth, application, toplevel, name=name
+                        )'''
+
+[[mutant.patch]]
+file = "src/kwin_mcp/accessibility.py"
+search = '''
+        if info.role != entry.role:'''
+replace = '''
+        if info.role != entry.role or info.name != entry.name:'''
+
+[[mutant]]
+id = "M05"
+module = "accessibility.py"
+mutation = "LRU evicts most-recent instead of least-recent"
+source = "QX §18"
+qa = ["QA-ELEM-038", "QA-ELEM-044"]
+tier = "unit"
+kill = ["tests/unit/test_element_refs_table.py::test_lru_evicts_least_recent"]
+note = "_RefTable.mint pops the newest entry (popitem(last=True)) when over capacity; with capacity 4 and five minted refs, e1.1 survives and e1.5 is evicted, so the test's 'e1.1 stale, last ref resolves' assertions fail."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/accessibility.py"
+search = '''
+            self._entries.popitem(last=False)'''
+replace = '''
+            self._entries.popitem(last=True)'''
+
+[[mutant]]
+id = "M06"
+module = "accessibility.py"
+mutation = "`{strict}` counts elements instead of (element, action) pairs"
+source = "QX §18"
+qa = ["QA-ELEM-027"]
+tier = "e2e"
+kill = ["tests/e2e/test_element_act.py::test_zero_candidates_error_lists_exposed_actions"]
+note = "_strict_candidates appends one candidate per matching element regardless of whether it exposes the wanted action; the action-less 'OK?' label becomes a candidate (ambiguous refusal instead of pressing 'OK'), and a no-such-action search no longer yields the zero-candidate exposed-actions error."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/accessibility.py"
+search = '''
+                    if available and available not in exposed:
+                        exposed.append(available)
+                    if available.lower() == wanted:
+                        entry = _RefEntry(element, role, app_name, depth, application, toplevel)
+                        candidates.append(_Candidate(entry, name, available))'''
+replace = '''
+                    if available and available not in exposed:
+                        exposed.append(available)
+            entry = _RefEntry(element, role, app_name, depth, application, toplevel)
+            candidates.append(_Candidate(entry, name, wanted))'''
+
+[[mutant]]
+id = "M07"
+module = "core.py"
+mutation = "`timeout_ms<=0` → no poll at all (returns unsatisfied without checking)"
+source = "QX §18"
+qa = ["QA-ELEM-017"]
+tier = "e2e"
+kill = ["tests/e2e/test_element_query.py::test_timeout_ms_zero_polls_once"]
+note = "element_query with wait short-circuits timeout_ms<=0 to an unsatisfied empty result without asking the worker; the test expects a present element to be satisfied with one poll."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/core.py"
+search = '''
+        timeout_ms = wait.timeout_ms
+        description = f"Waiting for {locator.describe()}"'''
+replace = '''
+        timeout_ms = wait.timeout_ms
+        if timeout_ms <= 0:
+            return ElementList(
+                locator=locator,
+                elements=[],
+                wait=ElementWaitResult(
+                    until=wait.until, timeout_ms=timeout_ms, satisfied=False, elapsed_ms=0
+                ),
+            )
+        description = f"Waiting for {locator.describe()}"'''
+
+[[mutant]]
+id = "M08"
+module = "core.py"
+mutation = "Wait timeout raises ToolError (0.11 isError regression)"
+source = "QX §18"
+qa = ["QA-ELEM-014"]
+tier = "e2e"
+kill = ["tests/e2e/test_element_query.py::test_wait_timeout_is_not_satisfied_data_not_error"]
+note = "An unsatisfied wait raises RuntimeError (surfaced as ToolError/isError) instead of returning satisfied=false data; the test expects isError false with the NOT SATISFIED text."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/core.py"
+search = '''
+        result = self._atspi_result(resp)
+        return ElementList(
+            locator=locator,
+            elements=[UIElement.from_worker(el) for el in result["elements"]],'''
+replace = '''
+        result = self._atspi_result(resp)
+        if not result["satisfied"]:
+            msg = f"Timeout after {timeout_ms} ms waiting for {locator.describe()}"
+            raise RuntimeError(msg)
+        return ElementList(
+            locator=locator,
+            elements=[UIElement.from_worker(el) for el in result["elements"]],'''
+
+[[mutant]]
+id = "M09"
+module = "models.py render"
+mutation = "Drop `NOT SATISFIED:` prefix / put it on line 2"
+source = "QX §18"
+qa = ["QA-CLI-004", "QA-ELEM-012", "QA-ELEM-014"]
+tier = "e2e"
+kill = ["tests/e2e/test_a11y_text_formats.py::test_not_satisfied_first_line", "tests/e2e/test_element_query.py::test_wait_timeout_is_not_satisfied_data_not_error"]
+note = "ElementWaitResult.render drops the 'NOT SATISFIED: ' prefix from the timed-out wait line; the e2e tests assert the first text line of a timed-out element_query starts with it."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/models.py"
+search = '''
+            f"NOT SATISFIED: Timeout after {self.timeout_ms} ms "'''
+replace = '''
+            f"Timeout after {self.timeout_ms} ms "'''
+
+[[mutant]]
+id = "M10"
+module = "models.py"
+mutation = "`Wait.timeout_ms` gets `ge=0` (re-adds bound)"
+source = "QX §18"
+qa = ["QA-ELEM-017", "QA-SURF-007", "QA-SURF-015"]
+tier = "unit"
+kill = ["tests/unit/test_schema_rules.py::test_numeric_bounds_only_where_s_states"]
+note = "Wait.timeout_ms gains Field(ge=0), publishing 'minimum: 0' in element_query.wait; the bounds test rejects any bound S does not state and requires timeout_ms to be unbounded (the equivalence corpus has no negative timeout, so it is not a killer)."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/models.py"
+search = '''
+    timeout_ms: int = 5000
+    poll_interval_ms: int = 200'''
+replace = '''
+    timeout_ms: Annotated[int, Field(ge=0)] = 5000
+    poll_interval_ms: int = 200'''
+
+[[mutant]]
+id = "M11"
+module = "accessibility.py"
+mutation = "`states` compared case-insensitively"
+source = "QX §18"
+qa = ["QA-ELEM-006"]
+tier = "e2e"
+kill = ["tests/e2e/test_element_query.py::test_states_exact_case_sensitive_and_fields_anded"]
+note = "_Criteria.matches_states lowercases both sides, so states ['FOCUSED'] / ['FOCUSABLE'] match lowercase AT-SPI nicks; the test expects [] for upper-case nicks."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/accessibility.py"
+search = '''
+        return all(state in states for state in self.states)'''
+replace = '''
+        present = {nick.lower() for nick in states}
+        return all(state.lower() in present for state in self.states)'''
+
+[[mutant]]
+id = "M12"
+module = "accessibility.py"
+mutation = "`role` substring instead of exact"
+source = "QX §18"
+qa = ["QA-ELEM-004"]
+tier = "e2e"
+kill = ["tests/e2e/test_element_query.py::test_role_exact_not_substring"]
+note = "_Criteria.matches_text accepts any role containing the locator role, so role 'push'/'button' match 'push button'; the test expects [] for those."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/accessibility.py"
+search = '''
+        if self.role and role.lower() != self.role:'''
+replace = '''
+        if self.role and self.role not in role.lower():'''
+
+[[mutant]]
+id = "M13"
+module = "geometry.py"
+mutation = "WindowSelector pool = normal windows only"
+source = "QX §18"
+qa = ["QA-SES-025", "QA-WIN-001", "QA-WIN-005", "QA-WIN-015", "QA-WIN-032"]
+tier = "e2e"
+kill = ["tests/e2e/test_window_close.py::test_dialog_close_by_id", "tests/e2e/test_window_kinds.py::test_app_id_selector_ambiguous_while_menu_open_lists_kinds", "tests/e2e/test_window_kinds.py::test_dialog_popup_tooltip_listed_with_kind", "tests/e2e/test_window_list.py::test_filter_active_true_reports_the_active_window_kind", "tests/e2e/test_window_list.py::test_moveable_resizeable_closeable_match_kwin"]
+note = "geometry.windows() (the pool every selector, window_list and close-by-id draw from) keeps only normal windows; dialogs/popups/shell vanish, so kind listing, dialog close by id, the active-dialog filter and KWin-oracle field comparison all fail."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/geometry.py"
+search = '''
+    return [w for w in collect_windows(timeout) if not w["deleted"]]'''
+replace = '''
+    return [w for w in collect_windows(timeout) if not w["deleted"] and w["normal"]]'''
+
+# stale-name-scan: allow-begin
+[[mutant]]
+id = "M14"
+module = "geometry.py"
+mutation = "Ambiguity → first match (0.11 focus_window)"
+source = "QX §18"
+qa = ["QA-WIN-015", "QA-WIN-016"]
+tier = "e2e"
+kill = ["tests/e2e/test_window_kinds.py::test_app_id_selector_ambiguous_while_menu_open_lists_kinds", "tests/e2e/test_window_kinds.py::test_same_caption_two_normal_windows_ambiguous"]
+note = "select_one returns matches[0] whenever anything matches, so an ambiguous app_id/caption selector silently acts on the first window instead of raising the ambiguity ToolError."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/geometry.py"
+search = '''
+    matches = select_windows(windows, selector)
+    if len(matches) == 1:
+        return matches[0]'''
+replace = '''
+    matches = select_windows(windows, selector)
+    if matches:
+        return matches[0]'''
+# stale-name-scan: allow-end
+
+[[mutant]]
+id = "M15"
+module = "geometry.py"
+mutation = "Ambiguity error omits `kind` / the hint"
+source = "QX §18"
+qa = ["QA-WIN-015"]
+tier = "e2e"
+kill = ["tests/e2e/test_window_kinds.py::test_app_id_selector_ambiguous_while_menu_open_lists_kinds"]
+note = "Ambiguity message drops each candidate's (kind) and the 'add kind:[\"normal\"] or use id' hint; the test asserts both in the ToolError text."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/geometry.py"
+search = '''
+    candidates = "; ".join(f'{w.id} {w.app_id} "{w.caption}" ({w.kind})' for w in matches)
+    msg = (
+        f"{len(matches)} windows match {describe_selector(selector)}: {candidates}"
+        '\nNarrow the selector: add kind:["normal"] or use id.'
+    )'''
+replace = '''
+    candidates = "; ".join(f'{w.id} {w.app_id} "{w.caption}"' for w in matches)
+    msg = f"{len(matches)} windows match {describe_selector(selector)}: {candidates}"'''
+
+[[mutant]]
+id = "M16"
+module = "geometry.py"
+mutation = "`kind` filter ORed with other fields"
+source = "QX §18"
+qa = ["QA-WIN-006", "QA-WIN-015"]
+tier = "e2e"
+kill = ["tests/e2e/test_window_kinds.py::test_app_id_selector_ambiguous_while_menu_open_lists_kinds", "tests/e2e/test_window_list.py::test_filter_active_false"]
+note = "_matches ORs the kind test with the active test (kind unset or matching short-circuits True), so {active:false} returns the active window too and kind:['normal'] retry also admits an active popup."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/geometry.py"
+search = '''
+    if selector.active is not None and window.active != selector.active:
+        return False
+    return selector.kind is None or window.kind in selector.kind'''
+replace = '''
+    if selector.kind is None or window.kind in selector.kind:
+        return True
+    return selector.active is None or window.active == selector.active'''
+
+# stale-name-scan: allow-begin
+[[mutant]]
+id = "M17"
+module = "input.py"
+mutation = "Re-press a held button (0.11 behaviour)"
+source = "QX §18"
+qa = ["QA-INP-028", "QA-INP-041"]
+tier = "e2e"
+kill = ["tests/e2e/test_keyboard_hold.py::test_second_press_sends_no_event", "tests/e2e/test_pointer_hold.py::test_press_on_held_button_is_noop_changed_false_but_moves"]
+note = "Drops the already-held guard in mouse_button_down and keyboard_key_down, so a press on a held button/key re-sends PRESSED (0.11 behaviour) and reports changed=true; both idempotency e2e tests see the extra event."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/input.py"
+search = '''
+        if button in self._held_buttons:
+            self.mouse_move(x, y)
+            return False
+        self.mouse_move(x, y)
+        time.sleep(0.02)'''
+replace = '''
+        self.mouse_move(x, y)
+        time.sleep(0.02)'''
+
+[[mutant.patch]]
+file = "src/kwin_mcp/input.py"
+search = '''
+        for code in chord_keycodes(key):
+            if code in self._held_keys:
+                continue
+            self._client.keyboard_key(code, _PRESSED)'''
+replace = '''
+        for code in chord_keycodes(key):
+            self._client.keyboard_key(code, _PRESSED)'''
+# stale-name-scan: allow-end
+
+# stale-name-scan: allow-begin
+[[mutant]]
+id = "M18"
+module = "input.py"
+mutation = "`release` is a no-op when untracked"
+source = "QX §18"
+qa = ["QA-INP-029", "QA-INP-042"]
+tier = "unit"
+kill = ["tests/unit/test_held_state_machine.py::test_release_always_sent_untracked"]
+note = "mouse_button_up returns early and keyboard_key_up skips keys kwin-mcp does not hold, so untracked releases inject nothing; the unit test expects BTN_LEFT and SHIFT RELEASED events for untracked controls."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/input.py"
+search = '''
+        was_held = button in self._held_buttons
+        self.mouse_move(x, y)'''
+replace = '''
+        was_held = button in self._held_buttons
+        if not was_held:
+            return False
+        self.mouse_move(x, y)'''
+
+[[mutant.patch]]
+file = "src/kwin_mcp/input.py"
+search = '''
+        for code in reversed(codes):
+            self._release_key(code)'''
+replace = '''
+        for code in reversed(codes):
+            if code not in self._held_keys:
+                continue
+            self._release_key(code)'''
+# stale-name-scan: allow-end
+
+# stale-name-scan: allow-begin
+[[mutant]]
+id = "M19"
+module = "core.py"
+mutation = "`pointer_move` allowed while held"
+source = "QX §18"
+qa = ["QA-INP-012"]
+tier = "e2e"
+kill = ["tests/e2e/test_pointer_move.py::test_move_refused_while_button_held_with_literal_remedy"]
+note = "pointer_move drops the check_move_allowed() gate, so a move with a held button succeeds (turns into a drag) instead of raising the pointer_hold(phase='move') remedy."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/core.py"
+search = '''
+        inp.check_move_allowed()
+        inp.mouse_move(point.x, point.y)'''
+replace = '''
+        inp.mouse_move(point.x, point.y)'''
+# stale-name-scan: allow-end
+
+[[mutant]]
+id = "M20"
+module = "core.py"
+mutation = "Held-control conflict check only for buttons, not modifier keys"
+source = "QX §18"
+qa = ["QA-INP-036"]
+tier = "e2e"
+kill = ["tests/e2e/test_held_input.py::test_gesture_modifiers_touching_held_key_refused"]
+note = "pointer_click and pointer_drag pass only their button to check_not_held, not modifier keycodes, so a held ctrl in modifiers is pressed/released instead of refused (keyboard_press, which has no button, keeps its keycode check)."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/core.py"
+search = '''
+        inp.check_not_held("pointer_click", buttons=[btn], keycodes=modifier_codes)'''
+replace = '''
+        inp.check_not_held("pointer_click", buttons=[btn])'''
+
+[[mutant.patch]]
+file = "src/kwin_mcp/core.py"
+search = '''
+        inp.check_not_held("pointer_drag", buttons=[btn], keycodes=modifier_codes)'''
+replace = '''
+        inp.check_not_held("pointer_drag", buttons=[btn])'''
+
+# stale-name-scan: allow-begin
+[[mutant]]
+id = "M21"
+module = "input.py"
+mutation = "Approach nudge applied in `phase:'move'`"
+source = "QX §18"
+qa = ["QA-INP-027", "QA-INP-032"]
+tier = "e2e"
+kill = ["tests/e2e/test_pointer_hold.py::test_move_phase_no_nudge", "tests/e2e/test_pointer_hold.py::test_press_move_release_is_manual_drag"]
+note = "mouse_hold_move (pointer_hold phase='move') visits the adjacent x-1 pixel before the target, so the held drag path goes out-and-back; the probe sees x=699 before 700 and an extra motion in the down/move/up golden."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/input.py"
+search = '''
+            raise HeldControlError(msg)
+        self.mouse_move(x, y)
+
+    def mouse_button_up('''
+replace = '''
+            raise HeldControlError(msg)
+        approach_x = x - 1 if x > 0 else x + 1
+        self._client.pointer_move_absolute(float(approach_x), float(y))
+        self.mouse_move(x, y)
+
+    def mouse_button_up('''
+# stale-name-scan: allow-end
+
+[[mutant]]
+id = "M22"
+module = "core.py"
+mutation = "`session_stop` does not release held input"
+source = "QX §18"
+qa = ["QA-INP-044", "QA-SES-019", "QA-SES-020"]
+tier = "e2e"
+kill = ["tests/e2e/test_held_input.py::test_server_exit_releases_everything", "tests/e2e/test_session_retention.py::test_server_exit_honours_retention", "tests/e2e/test_session_stop.py::test_stop_releases_held_buttons_and_keys_and_reports_them"]
+note = "session_stop closes the EIS client without release_all(), so held buttons/keys get no release event and `released` is empty; stop and server-exit (which runs session_stop) tests see no releases."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/core.py"
+search = '''
+            released = self._input.release_all()
+            self._input.close()'''
+replace = '''
+            self._input.close()'''
+
+[[mutant]]
+id = "M23"
+module = "input.py"
+mutation = "EIS revalidation lazy (only on `_live_device`)"
+source = "QX §18"
+qa = ["QA-INP-033", "QA-INP-045"]
+tier = "e2e"
+kill = ["tests/e2e/test_eis_held_revalidation.py::test_eis_disconnect_clears_held_and_warns"]
+note = "revalidate no longer polls the EIS socket, so a disconnect is only noticed when _live_device drains events; held sets stay populated and no warning appears until an input call, which the eager-clear e2e test detects."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/input.py"
+search = '''
+        self._client.poll()
+        warnings: list[str] = []'''
+replace = '''
+        warnings: list[str] = []'''
+
+[[mutant]]
+id = "M24"
+module = "input.py"
+mutation = "Disconnect clears `_held_buttons` but not held keys"
+source = "QX §18"
+qa = ["QA-INP-045"]
+tier = "e2e"
+kill = ["tests/e2e/test_eis_held_revalidation.py::test_eis_disconnect_clears_held_and_warns"]
+note = "The disconnect branch of revalidate keeps _held_keys, so held keys survive an EIS disconnect; the e2e test asserts held is empty after the disconnect."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/input.py"
+search = '''
+        if self._client.disconnected:
+            self._held_buttons.clear()
+            self._held_keys.clear()'''
+replace = '''
+        if self._client.disconnected:
+            self._held_buttons.clear()'''
+
+# stale-name-scan: allow-begin
+[[mutant]]
+id = "M25"
+module = "screenshot.py / core.py"
+mutation = "`delays_ms` deduplicated"
+source = "QX §18"
+qa = ["QA-CAP-010"]
+tier = "e2e"
+kill = ["tests/e2e/test_capture.py::test_capture_returns_frames_sorted_with_duplicates"]
+note = "AutomationEngine._capture passes sorted(set(delays_ms)) to capture_frame_burst, so duplicate delays yield one frame; the e2e test asserts duplicates are kept as separate frames."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/core.py"
+search = '''
+                list(capture.delays_ms),'''
+replace = '''
+                sorted(set(capture.delays_ms)),'''
+# stale-name-scan: allow-end
+
+# stale-name-scan: allow-begin
+[[mutant]]
+id = "M26"
+module = "screenshot.py"
+mutation = "Delays measured from call start, not burst start"
+source = "QX §18"
+qa = ["QA-CAP-010"]
+tier = "e2e"
+kill = [
+    "tests/e2e/test_capture.py::test_capture_returns_frames_sorted_with_duplicates",
+    "tests/e2e/test_capture.py::test_screenshot2_burst_delays_run_from_burst_start",
+]
+note = "The ScreenShot2 burst loop re-reads its start time at each capture call, so each delay is measured from the previous frame's capture instead of the burst start; delays [0,300,300,1200] land at ~0/300/600/1800 ms instead of ~0/300/300/1200 ms. No container compositor answers ScreenShot2, so the kill test stubs only the loop's I/O boundary and times the real loop via frame mtimes."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/screenshot.py"
+search = '''
+    options = {"include-cursor": dbus.Boolean(include_cursor)}
+
+    frames: list[tuple[Path, FrameMapping]] = []
+    start = time.monotonic()
+    for i, delay_ms in enumerate(sorted_delays):
+        target_time = start + delay_ms / 1000.0'''
+replace = '''
+    options = {"include-cursor": dbus.Boolean(include_cursor)}
+
+    frames: list[tuple[Path, FrameMapping]] = []
+    for i, delay_ms in enumerate(sorted_delays):
+        start = time.monotonic()
+        target_time = start + delay_ms / 1000.0'''
+# stale-name-scan: allow-end
+
+[[mutant]]
+id = "M27"
+module = "models.py"
+mutation = "`Capture.delays_ms` gets `min_length=1`"
+source = "QX §18"
+qa = ["QA-CAP-013", "QA-SURF-015"]
+tier = "unit"
+kill = ["tests/unit/test_schema_equivalence.py::test_raw_and_compact_schemas_accept_the_same_corpus"]
+note = "Capture.delays_ms gains min_length=1 (minItems: 1); the corpus' valid window_focus sample with capture.delays_ms=[] is then rejected by both schemas."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/models.py"
+search = '''
+    delays_ms: list[int]
+    region: Rect | None = None'''
+replace = '''
+    delays_ms: Annotated[list[int], Field(min_length=1)]
+    region: Rect | None = None'''
+
+[[mutant]]
+id = "M28"
+module = "core.py"
+mutation = "Frame failure raises after commit"
+source = "QX §18"
+qa = ["QA-CAP-014"]
+tier = "e2e"
+kill = ["tests/e2e/test_capture.py::test_capture_failure_after_commit_is_warning_not_error"]
+note = "_capture re-raises a frame-burst failure as RuntimeError after the action committed instead of returning a warning, so the tool result is an error inviting a duplicate retry."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/core.py"
+search = '''
+        except Exception as exc:
+            return [], [f"frame capture failed after the action: {exc}"]'''
+replace = '''
+        except Exception as exc:
+            msg = f"frame capture failed after the action: {exc}"
+            raise RuntimeError(msg) from exc'''
+
+# stale-name-scan: allow-begin
+[[mutant]]
+id = "M29"
+module = "core.py"
+mutation = "Burst ignores `region`/`max_edge`/`include_cursor`"
+source = "QX §18"
+qa = ["QA-CAP-012"]
+tier = "e2e"
+kill = ["tests/e2e/test_capture.py::test_capture_options_match_screen_capture"]
+note = "_capture calls capture_frame_burst with fixed include_cursor=False, region=None and the server max_edge, ignoring Capture's options; frames then differ from screen_capture with the same options (width, origin, cursor)."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/core.py"
+search = '''
+                include_cursor=capture.include_cursor,
+                region=_rect_tuple(capture.region),
+                max_edge=max_edge,
+                wayland_socket=info.wayland_socket,'''
+replace = '''
+                include_cursor=False,
+                region=None,
+                max_edge=self._screenshot_max_edge,
+                wayland_socket=info.wayland_socket,'''
+# stale-name-scan: allow-end
+
+[[mutant]]
+id = "M30"
+module = "input.py"
+mutation = "smooth scroll factor 1 instead of 15"
+source = "QX §18"
+qa = ["QA-INP-016"]
+tier = "e2e"
+kill = ["tests/e2e/test_pointer_scroll.py::test_smooth_step_default_15px_per_unit"]
+note = "_SCROLL_STEP_PIXELS becomes 1.0, so smooth scroll sends delta x1 px; the probe's 45 px total for delta 3 becomes 3 px."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/input.py"
+search = '''
+_SCROLL_STEP_PIXELS = 15.0'''
+replace = '''
+_SCROLL_STEP_PIXELS = 1.0'''
+
+# stale-name-scan: allow-begin
+[[mutant]]
+id = "M31"
+module = "input.py"
+mutation = "keys method falls back to unicode silently on non-QWERTY"
+source = "QX §18"
+qa = ["QA-INP-056"]
+tier = "e2e"
+kill = ["tests/e2e/test_keyboard_type.py::test_non_qwerty_rejected_before_send_with_unicode_remedy"]
+note = "Engine skips the up-front check_typeable for method='keys' (core.py) and InputBackend.keyboard_type routes text with non-QWERTY chars to keyboard_type_unicode instead of rejecting; needs the core.py patch too because the rejection lives there. No ToolError is raised, so the e2e rejection test fails."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/core.py"
+search = '''
+        if method == "keys":
+            check_typeable(text)
+        elif "\0" in text:'''
+replace = '''
+        if method == "keys":
+            pass
+        elif "\0" in text:'''
+
+[[mutant.patch]]
+file = "src/kwin_mcp/input.py"
+search = '''
+        check_typeable(text)
+
+        total = len(text)'''
+replace = '''
+        if any(char not in _CHAR_KEY_MAP for char in text):
+            self.keyboard_type_unicode(text)
+            return
+
+        total = len(text)'''
+# stale-name-scan: allow-end
+
+# stale-name-scan: allow-begin
+[[mutant]]
+id = "M32"
+module = "input.py"
+mutation = "`route` hard-coded to `paste:ctrl+v`"
+source = "QX §18"
+qa = ["QA-INP-059"]
+tier = "e2e"
+kill = ["tests/e2e/test_keyboard_type.py::test_unicode_wtype_or_paste_route_reported"]
+note = "keyboard_type_unicode reports TypeRoute(paste, ctrl+v) for both the wtype success and every paste, so route renders 'paste:ctrl+v' for the fake-wtype and konsole (ctrl+shift+v) cases of the e2e test."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/input.py"
+search = '''
+                return TypeRoute(kind="wtype")'''
+replace = '''
+                return TypeRoute(kind="paste", chord="ctrl+v")'''
+
+[[mutant.patch]]
+file = "src/kwin_mcp/input.py"
+search = '''
+        return TypeRoute(kind="paste", chord=chord)'''
+replace = '''
+        return TypeRoute(kind="paste", chord="ctrl+v")'''
+# stale-name-scan: allow-end
+
+[[mutant]]
+id = "M33"
+module = "core.py"
+mutation = "echo threshold `<200` instead of `<=200`"
+source = "QX §18"
+qa = ["QA-MCP-004"]
+tier = "e2e"
+kill = ["tests/e2e/test_structured_output.py::test_echo_and_size_fragments_in_text"]
+note = "The echo threshold lives in models.text_echo (used for keyboard_type/clipboard_write echoes), not core.py; it is made strict so a 200-character text echoes as <200 characters> instead of its repr."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/models.py"
+search = '''
+    if len(text) <= ECHO_MAX_CHARS:'''
+replace = '''
+    if len(text) < ECHO_MAX_CHARS:'''
+
+[[mutant]]
+id = "M34"
+module = "geometry.py"
+mutation = "Readback failure raises"
+source = "QX §18"
+qa = ["QA-WIN-029"]
+tier = "unit"
+kill = ["tests/unit/test_window_place_validation.py::test_readback_failure_paths"]
+note = "Plan names geometry.py but the readback lives in core.AutomationEngine._observe_window: a failed post-action windows query now raises RuntimeError instead of returning observation_error, so window_place raises and test_readback_failure_paths fails."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/core.py"
+search = '''
+        resp = self._run_kwin_query({"op": "windows"})
+        if not resp["ok"]:
+            return None, str(resp["error"])'''
+replace = '''
+        resp = self._run_kwin_query({"op": "windows"})
+        if not resp["ok"]:
+            raise RuntimeError(str(resp["error"]))'''
+
+[[mutant]]
+id = "M35"
+module = "geometry.py"
+mutation = "Drop transient/modal refusal in desktop move"
+source = "QX §18"
+qa = ["QA-WIN-027"]
+tier = "e2e"
+kill = ["tests/e2e/test_window_place_desktop.py::test_transient_parent_child_modal_refusal"]
+note = "set_desktop KWin script skips refusal(): the main window is moved even though its modal transient would follow, so 'nothing was changed' is never reported and desktops change."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/geometry.py"
+search = '''
+        var refused = refusal(w, String(desktop.id), windows);'''
+replace = '''
+        var refused = null;'''
+
+[[mutant]]
+id = "M36"
+module = "geometry.py"
+mutation = "Accept desktop numbers as fallback"
+source = "QX §18"
+qa = ["QA-WIN-026"]
+tier = "e2e"
+kill = ["tests/e2e/test_window_place_desktop.py::test_unknown_window_or_desktop_changes_nothing"]
+note = "set_desktop KWin script falls back to a 1-based positional desktop number when no id matches, so desktop '1'/'2' moves the window instead of raising 'unknown desktop id'."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/geometry.py"
+search = '''
+    if (String(list[i].id) === wanted) {
+        desktop = list[i];
+        break;
+    }
+}'''
+replace = '''
+    if (String(list[i].id) === wanted) {
+        desktop = list[i];
+        break;
+    }
+}
+if (desktop === null && String(parseInt(wanted, 10)) === wanted) {
+    desktop = list[parseInt(wanted, 10) - 1] || null;
+}'''
+
+[[mutant]]
+id = "M37"
+module = "core.py"
+mutation = "`closeable=false` → ToolError"
+source = "QX §18"
+qa = ["QA-WIN-033"]
+tier = "e2e"
+kill = ["tests/e2e/test_window_close_consent.py::test_closeable_false_is_non_error_refusal_not_closeable"]
+note = "_close raises RuntimeError for a non-closeable target instead of returning the non-error refusal='not_closeable' result."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/core.py"
+search = '''
+        if not target.closeable:
+            return WindowCloseResult(
+                window_id=target.window_id,
+                app_id=target.app_id,
+                caption=target.caption,
+                requested=False,
+                consent=effective,
+                refusal="not_closeable",
+            )'''
+replace = '''
+        if not target.closeable:
+            msg = f"Window {target.caption!r} ({target.window_id}) cannot be closed."
+            raise RuntimeError(msg)'''
+
+[[mutant]]
+id = "M38"
+module = "server.py"
+mutation = "Live unknown-id still elicits"
+source = "QX §18"
+qa = ["QA-WIN-035", "QA-WIN-036", "QA-WIN-037", "QA-WIN-038", "QA-WIN-039", "QA-WIN-050"]
+tier = "e2e"
+kill = ["tests/e2e/test_window_close_consent.py::test_live_unknown_id_no_window_without_prompt"]
+note = "close_consent no longer short-circuits a None window_target (unknown id): a live session prompts the user before the body answers no_window; the e2e test asserts no prompt."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/server.py"
+search = '''
+    if (
+        window_target is None
+        or not window_target.closeable
+        or not isinstance(server.engine._session, LiveSession)
+    ):
+        return "not_required"
+    if server.flags.live_consent == "refuse" or not _client_can_elicit_form(ctx):
+        return "unsupported"
+    return Elicit(
+        f"kwin-mcp wants to close window {window_target.window_id} ({window_target.app_id}) "'''
+replace = '''
+    if (
+        (window_target is not None and not window_target.closeable)
+        or not isinstance(server.engine._session, LiveSession)
+    ):
+        return "not_required"
+    if server.flags.live_consent == "refuse" or not _client_can_elicit_form(ctx):
+        return "unsupported"
+    target_id, app_id = (
+        ("", "") if window_target is None else (window_target.window_id, window_target.app_id)
+    )
+    return Elicit(
+        f"kwin-mcp wants to close window {target_id} ({app_id}) "'''
+
+[[mutant]]
+id = "M39"
+module = "server.py"
+mutation = "`close_target` closes by re-resolving selector instead of resolved id"
+source = "QX §18"
+qa = ["QA-WIN-040"]
+tier = "e2e"
+kill = ["tests/e2e/test_window_close_consent.py::test_toctou_recheck_closes_only_resolved_id"]
+note = "window_close passes the original selector to engine._close instead of the consented id, so a window matching the selector after the prompt is closed; the TOCTOU test detects the wrong window closing."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/server.py"
+search = '''
+    selector = window if window_target is None else WindowSelector(id=window_target.window_id)'''
+replace = '''
+    selector = window'''
+
+[[mutant]]
+id = "M40"
+module = "core.py"
+mutation = "`app_launch` failure stops the session (0.11 atomicity re-added)"
+source = "QX §18"
+qa = ["QA-APP-007"]
+tier = "e2e"
+kill = ["tests/e2e/test_app_launch_log.py::test_failed_app_launch_keeps_the_session_and_names_session_stop"]
+note = "app_launch calls session_stop before raising the launch error, so a failed launch tears the session down; the e2e test asserts the session is still running afterwards."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/core.py"
+search = '''
+        except (OSError, RuntimeError) as exc:
+            msg = (
+                f"Failed to launch {command!r}: {exc}\n"'''
+replace = '''
+        except (OSError, RuntimeError) as exc:
+            self.session_stop()
+            msg = (
+                f"Failed to launch {command!r}: {exc}\n"'''
+
+[[mutant]]
+id = "M41"
+module = "server.py"
+mutation = "Retention read at stop (`_exit_cleanup` passes defaults that delete)"
+source = "QX §18"
+qa = ["QA-SES-020", "QA-SES-021"]
+tier = "e2e"
+kill = ["tests/e2e/test_session_retention.py::test_server_exit_honours_retention"]
+note = "The exit path's serialized stop resets the session's retention to NO_RETENTION before session_stop, so server exit deletes retained artifacts/home; only the serialized (non-busy) path is affected, so the busy-exit registry test is not a killer."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/server.py"
+search = '''
+        stop_started.set()
+        engine.session_stop()'''
+replace = '''
+        stop_started.set()
+        session = engine._session
+        if isinstance(session, LiveSession):
+            session._retention = NO_RETENTION
+        elif session is not None and session._config is not None:
+            session._config.retention = NO_RETENTION
+        engine.session_stop()'''
+
+[[mutant]]
+id = "M42"
+module = "server.py"
+mutation = "Remove `_shutdown` check in `run_body`"
+source = "QX §18"
+qa = ["QA-MCP-026"]
+tier = "e2e"
+kill = ["tests/e2e/test_mcp_errors.py::test_shutdown_gate_queued_call_not_executed"]
+note = "The shutdown check lives in _on_tool_thread's run() (no longer in run_body); removing it lets work queued after shutdown begins execute on the tool thread instead of answering the shutdown text."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/server.py"
+search = '''
+        if _shutdown.is_set():
+            return False, None, _SHUTDOWN_TEXT
+        try:
+            return True, fn(), ""'''
+replace = '''
+        try:
+            return True, fn(), ""'''
+
+[[mutant]]
+id = "M43"
+module = "server.py"
+mutation = "Run bodies on the event loop (no single tool thread)"
+source = "QX §18"
+qa = ["QA-MCP-024", "QA-MCP-025"]
+tier = "e2e"
+kill = ["tests/e2e/test_mcp_protocol.py::test_concurrent_tool_calls_are_serialized", "tests/e2e/test_mcp_protocol.py::test_stop_queued_between_calls"]
+note = "Tool bodies run via asyncio.to_thread (the loop's default multi-thread executor) instead of the single tool thread; synchronous bodies directly on the loop would still serialize, so this is the closest observable form: concurrent calls overlap."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/server.py"
+search = '''
+            outcome = await _on_tool_thread(run_body)'''
+replace = '''
+            outcome = await asyncio.to_thread(run_body)'''
+
+[[mutant]]
+id = "M44"
+module = "cli.py"
+mutation = "`_parse_value` returns raw string for BaseModel params"
+source = "QX §18"
+qa = ["QA-CLI-002"]
+tier = "unit"
+kill = ["tests/unit/test_cli_parse_value.py::test_parse_value_model_and_union_params"]
+note = "_parse_value returns the raw string when the (Optional-unwrapped) annotation is a BaseModel class, before the JSON/TypeAdapter path; key=value cases such as window_list filter/window_place window get str instead of WindowSelector."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/cli.py"
+search = '''
+    if _needs_json(annotation):
+        return TypeAdapter[object](annotation).validate_json(value_str)
+    scalar = _scalar_type(annotation)'''
+replace = '''
+    scalar = _scalar_type(annotation)
+    if inspect.isclass(scalar) and issubclass(scalar, BaseModel):
+        return value_str
+    if _needs_json(annotation):
+        return TypeAdapter[object](annotation).validate_json(value_str)'''
+
+[[mutant]]
+id = "M45"
+module = "cli.py"
+mutation = "Catch tuple misses `pydantic.ValidationError`→ prints traceback"
+source = "QX §18"
+qa = ["QA-CLI-005"]
+tier = "e2e"
+kill = ["tests/e2e/test_cli_errors.py::test_one_line_errors", "tests/e2e/test_cli_surface.py::test_cli_errors_pipe_mode_and_cleanup"]
+note = "ValidationError subclasses ValueError, so the miss is realised as an earlier 'except ValidationError: traceback.print_exc()' in KwinMcpShell.default; bad JSON args print a traceback instead of one 'Error:' line. The candidate unit test covers signal deferral only, hence e2e."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/cli.py"
+search = '''
+from pydantic import BaseModel, TypeAdapter
+'''
+replace = '''
+from pydantic import BaseModel, TypeAdapter, ValidationError
+'''
+
+[[mutant.patch]]
+file = "src/kwin_mcp/cli.py"
+search = '''
+        except (ValueError, RuntimeError, OSError, TypeError) as exc:'''
+replace = '''
+        except ValidationError:
+            traceback.print_exc()
+        except (ValueError, RuntimeError, OSError, TypeError) as exc:'''
+
+[[mutant]]
+id = "M46"
+module = "dbus_args.py"
+mutation = "Accept `0`-prefixed octal"
+source = "QX §18"
+qa = ["QA-ESC-002", "QA-ESC-009"]
+tier = "unit"
+kill = ["tests/unit/test_dbus_args.py::test_range_checks"]
+note = "_INT_LITERAL admits 0[0-7]* and _parse_int converts it as strtol octal, so 'int32:0777' becomes 511 instead of a ValueError; test_range_checks (QA-ESC-002 step 'int32:0777' octal refused) detects it."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/dbus_args.py"
+search = '''
+_INT_LITERAL = re.compile(r"[+-]?(0[xX][0-9a-fA-F]+|0|[1-9][0-9]*)\Z")'''
+replace = '''
+_INT_LITERAL = re.compile(r"[+-]?(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)\Z")'''
+
+[[mutant.patch]]
+file = "src/kwin_mcp/dbus_args.py"
+search = '''
+    v = int(value, 0)
+'''
+replace = '''
+    digits = value.lstrip("+-")
+    octal = len(digits) > 1 and digits[0] == "0" and digits[1] not in "xX"
+    v = int(value, 8) if octal else int(value, 0)
+'''
+
+[[mutant]]
+id = "M47"
+module = "KWin script builder"
+mutation = "Caption inserted without JSON escaping"
+source = "QX §18"
+qa = ["QA-ELEM-025", "QA-WIN-047"]
+tier = "e2e"
+kill = ["tests/e2e/test_window_kinds.py::test_kwin_script_injection_inert"]
+note = "Current code never puts a caption or window id into a KWin script (caption and id matching resolve in Python first), so the real path is _render_script: window_place's desktop id reaches _SET_DESKTOP_SCRIPT_TEMPLATE as a string and, pasted between single quotes instead of a JSON literal, breaks out and runs. The injection test feeds the payload as desktop=<id> and uses the unclosed windows as its oracle."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/geometry.py"
+search = '''
+    return re.sub(pattern, lambda match: json.dumps(values[match.group(0)[1:-1]]), template)'''
+replace = '''
+    def _literal(value: object) -> str:
+        return f"'{value}'" if isinstance(value, str) else json.dumps(value)
+
+    return re.sub(pattern, lambda match: _literal(values[match.group(0)[1:-1]]), template)'''
+
+[[mutant]]
+id = "M48"
+module = "server.py list_tools"
+mutation = "Post-processing drops a `required` entry"
+source = "QX §18"
+qa = ["QA-SURF-015"]
+tier = "unit"
+kill = ["tests/unit/test_schema_equivalence.py::test_raw_and_compact_schemas_accept_the_same_corpus"]
+note = "compact_input_schema (the list_tools post-processing) drops the last top-level required name; the equivalence gate compares required lists and validates dropped-key mutations against raw and compact."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/server.py"
+search = '''
+    compact = _inline_single_use_defs(compact)
+    compact["additionalProperties"] = False
+    return compact'''
+replace = '''
+    compact = _inline_single_use_defs(compact)
+    compact["additionalProperties"] = False
+    if compact.get("required"):
+        compact["required"] = compact["required"][:-1]
+    return compact'''
+
+[[mutant]]
+id = "M49"
+module = "descriptions"
+mutation = "A description contains `(input.py:1144)`"
+source = "QX §18"
+qa = ["QA-SURF-019"]
+tier = "unit"
+kill = ["tests/unit/test_schema_forbidden_strings.py::test_no_forbidden_strings_in_shipped_text"]
+note = "keyboard_type's method Field description gains a '(input.py:1144)' source citation, shipped in the inputSchema; the forbidden-strings gate matches '.py:' and file:line."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/server.py"
+search = '''
+            'method="unicode"); unicode = any text, may paste.'
+'''
+replace = '''
+            'method="unicode"); unicode = any text, may paste (input.py:1144).'
+'''
+
+[[mutant]]
+id = "M50"
+module = "core.py"
+mutation = "`retention.home` without isolated home silently ignored"
+source = "QX §18"
+qa = ["QA-GATE-006"]
+tier = "e2e"
+kill = ["tests/e2e/test_session_start.py::test_retention_home_without_isolated_home_is_a_same_call_teaching_error"]
+note = "session_start drops retention.home (model_copy home=False) instead of raising the teaching ValueError when home='host', so the session starts; the e2e test expects a same-call error with nothing spawned."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/core.py"
+search = '''
+        if retention.home and home == "host":
+            msg = (
+                "retention.home=true needs home='isolated'.\n"
+                "Pass home='isolated', or drop retention.home."
+            )
+            raise ValueError(msg)'''
+replace = '''
+        if retention.home and home == "host":
+            retention = retention.model_copy(update={"home": False})'''
+
+[[mutant]]
+id = "M51"
+module = "core.py"
+mutation = "Unconfirmed invoke reported as `confirmed` or as an error"
+source = "QX §18"
+qa = ["QA-ELEM-029"]
+tier = "e2e"
+kill = ["tests/e2e/test_element_act.py::test_dispatch_confirmed_vs_sent_unconfirmed"]
+note = "element_act raises 'the application reported failure' whenever invoked is not truthy, so a sent-but-unconfirmed dispatch (worker error, invoked None) becomes an error instead of dispatch='sent_unconfirmed'; the e2e modal-action case expects a non-error result."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/core.py"
+search = '''
+        if not dispatch_error and not result.get("invoked"):'''
+replace = '''
+        if not result.get("invoked"):'''
+
+[[mutant]]
+id = "M52"
+module = "core.py"
+mutation = "Invoke uses `retry=True` (worker retry re-sends DoAction)"
+source = "QX §18"
+qa = ["QA-ELEM-029", "QA-ELEM-031"]
+tier = "unit"
+kill = ["tests/unit/test_element_refs_table.py::test_invoke_ipc_failure_after_send_not_retried"]
+note = "element_act sends the action request with retry=True; the unit test records _run_atspi calls and asserts exactly [('action', False)]."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/core.py"
+search = '''
+            resp = self._run_atspi("action", retry=False, address=address, action_name=action)'''
+replace = '''
+            resp = self._run_atspi("action", retry=True, address=address, action_name=action)'''
+
+# stale-name-scan: allow-begin
+[[mutant]]
+id = "M53"
+module = "server.py"
+mutation = "Leftover alias registration for a removed tool name"
+source = "QC-001"
+qa = ["QA-GATE-008", "QA-SURF-001"]
+tier = "unit"
+kill = ["tests/unit/test_tool_registration.py::test_list_tools_is_static_29_names"]
+note = "Registers a leftover 'screenshot' alias tool delegating to screen_capture, so tools/list carries 30 names including a removed one; the static-29-names test detects it."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/server.py"
+search = '''
+    return engine.screen_capture(region=region, max_edge=max_edge, include_cursor=include_cursor)
+'''
+replace = '''
+    return engine.screen_capture(region=region, max_edge=max_edge, include_cursor=include_cursor)
+
+
+@_tool(title="Capture screen", annotations=_RO, gate=require_session)
+def screenshot(engine: AutomationEngine) -> Frame:
+    """Alias of screen_capture kept for 0.x clients."""
+    return engine.screen_capture(region=None, max_edge=None, include_cursor=False)
+'''
+# stale-name-scan: allow-end
+
+[[mutant]]
+id = "M54"
+module = "server.py"
+mutation = "Swap any single annotation hint (e.g. element_query loses RO when wait is set)"
+source = "QC-004"
+qa = ["QA-SURF-004"]
+tier = "unit"
+kill = ["tests/unit/test_tool_surface_snapshot.py::test_annotation_counts"]
+note = "Annotations are static per tool, so element_query's profile is swapped from _RO to _NDI (readOnlyHint false); the per-tool annotation snapshot test detects it."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/server.py"
+search = '''
+    title="Query accessibility elements",
+    annotations=_RO,'''
+replace = '''
+    title="Query accessibility elements",
+    annotations=_NDI,'''
+
+[[mutant]]
+id = "M55"
+module = "server.py"
+mutation = "Resolve()/DI parameter leaks into inputSchema (Annotated marker dropped)"
+source = "QC-009"
+qa = ["QA-GATE-011", "QA-SURF-009"]
+tier = "unit"
+kill = ["tests/unit/test_schema_rules.py::test_no_di_params_in_input_schema"]
+note = "_build_tool keeps Resolve() parameters but strips their Annotated metadata, so the SDK treats window_target/consent as ordinary arguments and they appear in window_close's inputSchema."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/server.py"
+search = '''
+                resolved.append(param.replace(annotation=annotation))'''
+replace = '''
+                resolved.append(param.replace(annotation=typing.get_args(annotation)[0]))'''
+
+[[mutant]]
+id = "M56"
+module = "models.py"
+mutation = "Single-value Literal emits const / Field(discriminator) / Target nested in Waypoint"
+source = "QC-011"
+qa = ["QA-SURF-011"]
+tier = "unit"
+kill = ["tests/unit/test_schema_rules.py::test_only_two_new_property_unions"]
+note = "Realises the 'Target nested in Waypoint' variant (const->enum lives in server.py, and no input arm has a tag field for a discriminator): Waypoint's x/y become 'at: Target', adding an anyOf at pointer_drag.waypoints.items.at that the union-pointer allow-list rejects."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/models.py"
+search = '''
+    x: int
+    y: int
+    dwell_ms: int = 0'''
+replace = '''
+    at: Target
+    dwell_ms: int = 0'''
+
+[[mutant]]
+id = "M57"
+module = "models.py"
+mutation = "Output model field added without schema regeneration; null emitted where schema forbids it"
+source = "QC-030"
+qa = ["QA-MCP-001", "QA-SURF-008"]
+tier = "unit"
+kill = ["tests/unit/test_tool_surface_snapshot.py::test_output_schemas_match_s_models"]
+note = "ClipboardText gains an undeclared-in-S 'mime_type: str | None = None' field (emitted as null); clipboard_read's outputSchema properties no longer equal S's output field list."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/models.py"
+search = '''
+    text: str
+
+    def render(self) -> str:
+        return self.text'''
+replace = '''
+    text: str
+    mime_type: str | None = None
+
+    def render(self) -> str:
+        return self.text'''
+
+[[mutant]]
+id = "M58"
+module = "server.py"
+mutation = "Resolver calls _engine.window_list_data() on the event loop"
+source = "QC-050"
+qa = ["QA-MCP-023"]
+tier = "unit"
+kill = ["tests/unit/test_window_close_consent_flow.py::test_close_target_runs_on_tool_thread"]
+note = "The current resolver calls engine._close_target (no window_list_data); the mutant calls it directly on the event loop instead of via _on_tool_thread, which the thread-name spy test detects."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/server.py"
+search = '''
+        return await _on_tool_thread(lambda: engine._close_target(window))
+    except _ToolThreadError as exc:'''
+replace = '''
+        return engine._close_target(window)
+    except Exception as exc:'''
+
+[[mutant]]
+id = "M59"
+module = "server.py"
+mutation = "close_consent: always-form / never-elicit / url-only treated as form (PR #87 set)"
+source = "QC-060"
+qa = ["QA-WIN-035", "QA-WIN-038", "QA-WIN-048"]
+tier = "unit"
+kill = ["tests/unit/test_window_close_consent_flow.py::test_consent_outcome_texts_verbatim"]
+note = "Inverted capability check in close_consent: form-capable clients are never elicited (unsupported) while non-form/url-only clients are sent a form; the verbatim outcome-text test expects a prompt and per-answer texts."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/server.py"
+search = '''
+    if server.flags.live_consent == "refuse" or not _client_can_elicit_form(ctx):'''
+replace = '''
+    if server.flags.live_consent == "refuse" or _client_can_elicit_form(ctx):'''
+
+[[mutant]]
+id = "M60"
+module = "models.py"
+mutation = "Pre-round-5 $defs wording ({unique}, case-insensitive states)"
+source = "QC-014"
+qa = ["QA-SURF-014"]
+tier = "unit"
+kill = ["tests/unit/test_schema_rules.py::test_defs_type_shapes_and_descriptions"]
+note = "Docstrings are the published $defs descriptions: Locator and StrictAddr revert to the pre-round-5 one-liners ('case-insensitive; {} = all. states', '{unique}'); the test asserts the shipped one-liners and the absence of the old wording."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/models.py"
+search = '''
+    """AND-ed filters; app/query/role case-insensitive, states = exact AT-SPI state names; {} = all."""  # noqa: E501'''
+replace = '''
+    """AND-ed filters, case-insensitive; {} = all. states = AT-SPI state names."""'''
+
+[[mutant.patch]]
+file = "src/kwin_mcp/models.py"
+search = '''
+    """Strict: depth 64, fail-closed, exactly one (element, action)."""'''
+replace = '''
+    """Strict: depth 64, fail-closed, {unique} (element, action)."""'''
+
+[[mutant]]
+id = "M61"
+module = "server.py"
+mutation = "Resolver returns ok and the engine gate check is removed"
+source = "QC-046"
+qa = ["QA-GATE-001", "QA-GATE-007"]
+tier = "unit"
+kill = ["tests/unit/test_tool_registration.py::test_no_session_text_constant"]
+note = "require_session no longer raises and engine._require_session only refuses a stopped session (None passes), so a no-session call reaches the engine body; the unit test's spied engine methods record the call and the ToolError text changes."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/server.py"
+search = '''
+    """Gate of every session-bound tool: a session must be running."""
+    if _kwin_server(ctx).engine._session is None:
+        raise ToolError(NO_SESSION_TEXT)'''
+replace = '''
+    """Gate of every session-bound tool: a session must be running."""
+    _kwin_server(ctx)'''
+
+[[mutant.patch]]
+file = "src/kwin_mcp/core.py"
+search = '''
+    def _require_session(self) -> Session | LiveSession:
+        if self._session is None or not self._session.is_running:'''
+replace = '''
+    def _require_session(self) -> Session | LiveSession:
+        if self._session is not None and not self._session.is_running:'''
+
+[[mutant]]
+id = "M62"
+module = "geometry.py"
+mutation = "normalWindow guard re-added to the activate script"
+source = "e2e-plan §7"
+qa = ["QA-WIN-014"]
+tier = "e2e"
+kill = ["tests/e2e/test_window_focus.py::test_focus_dialog_is_allowed_no_normal_window_guard"]
+note = "Activate script only matches w.normalWindow again, so a dialog/popup id is reported not found and never becomes workspace.activeWindow."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/geometry.py"
+search = '''
+    if (String(w.internalId) === target) {
+        workspace.activeWindow = w;'''
+replace = '''
+    if (String(w.internalId) === target && w.normalWindow) {
+        workspace.activeWindow = w;'''
+
+# stale-name-scan: allow-begin
+[[mutant]]
+id = "M63"
+module = "screenshot.py"
+mutation = "Region with unproven mapping returns a frame with scale 1 (F141)"
+source = "QX §19.4"
+qa = ["QA-CAP-008"]
+tier = "unit"
+kill = ["tests/unit/test_screenshot_reframe.py::test_region_with_unproven_mapping_is_error"]
+note = "reframe_screenshot no longer refuses a region on an unproven mapping: it assumes the image is the workspace at (0,0) with scale 1 and crops it, so a frame is returned instead of the error."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/screenshot.py"
+search = '''
+        if mapping.origin is None or mapping.size is None:
+            msg = f"Cannot crop to a region: {mapping.describe()}"
+            raise RuntimeError(msg)'''
+replace = '''
+        if mapping.origin is None or mapping.size is None:
+            mapping = dataclasses.replace(mapping, origin=(0, 0), size=image.size)'''
+# stale-name-scan: allow-end
+
+[[mutant]]
+id = "M64"
+module = "server.py"
+mutation = "Unknown argument keys silently ignored (extra='ignore')"
+source = "R8-1"
+qa = ["QA-GATE-009", "QA-GATE-011"]
+tier = "unit"
+kill = ["tests/unit/test_unknown_args.py::test_remedy_table_and_difflib"]
+note = "KwinServer.call_tool drops unknown keys instead of raising the remedy ToolError (the extra='ignore' behaviour); call_tool() cases then get no error / reach the spied engine."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/server.py"
+search = '''
+            for key in arguments:
+                if key not in properties:
+                    text = unknown_argument_text(name, key, properties)
+                    raise ToolError(f"Error executing tool {name}: {text}")'''
+replace = '''
+            arguments = {key: value for key, value in arguments.items() if key in properties}'''
+
+[[mutant]]
+id = "M65"
+module = "models.py"
+mutation = "Target/ElementAddress arm accepts extra keys ({x,y,ref} matches the point arm)"
+source = "R8-2"
+qa = ["QA-GATE-010", "QA-GATE-013"]
+tier = "unit"
+kill = ["tests/unit/test_schema_rules.py::test_additional_properties_false_everywhere", "tests/unit/test_unknown_args.py::test_union_arm_overlap_rejected"]
+note = "Point derives from BaseModel instead of the extra='forbid' _Input base, so {x,y,ref} validates as a Point and its schema loses additionalProperties:false; both the closed-object check and the arm-overlap rejection fail."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/models.py"
+search = '''
+class Point(_Input):'''
+replace = '''
+class Point(BaseModel, frozen=True):'''
+
+[[mutant]]
+id = "M66"
+module = "server.py"
+mutation = "Removed tool name returns a bare 'Unknown tool' without the migration remedy (or JSON-RPC error)"
+source = "R8-3"
+qa = ["QA-GATE-008"]
+tier = "e2e"
+kill = ["tests/e2e/test_tool_surface_cutover.py::test_old_name_call_is_error_pointing_to_migration_table"]
+note = "removed_tool_text keeps the isError but drops the 'Removed in kwin-mcp 1.0; use ...' remedy; the e2e cutover test asserts the per-name migration remedy."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/server.py"
+search = '''
+    return f"Unknown tool: {name}. Removed in kwin-mcp 1.0; use {replacement}."'''
+replace = '''
+    return f"Unknown tool: {name}"'''
+
+# stale-name-scan: allow-begin
+[[mutant]]
+id = "M67"
+module = "server.py"
+mutation = "PR #87 text still says 'check window_geometry'"
+source = "R8-4"
+qa = ["QA-PKG-009", "QA-WIN-031", "QA-WIN-048"]
+tier = "unit"
+kill = ["tests/unit/test_schema_forbidden_strings.py::test_no_removed_tool_names_outside_history", "tests/unit/test_window_close_consent_flow.py::test_consent_outcome_texts_verbatim"]
+note = "The window_close 'Close requested' text lives in models.py WindowCloseResult.render (not server.py); it reverts to 'check window_geometry.', caught by the repo stale-name scan and the verbatim REQUESTED text."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/models.py"
+search = '''
+                "for example to ask about unsaved changes; check window_list."'''
+replace = '''
+                "for example to ask about unsaved changes; check window_geometry."'''
+# stale-name-scan: allow-end
+
+[[mutant]]
+id = "M68"
+module = "server.py"
+mutation = "--live-consent=refuse still sends elicitation/create (or reports consent 'no_consent')"
+source = "R8-5"
+qa = ["QA-WIN-043", "QA-WIN-048"]
+tier = "e2e"
+kill = ["tests/e2e/test_window_close_consent.py::test_live_consent_refuse_flag_never_asks"]
+note = "close_consent ignores flags.live_consent, so a form-capable client is prompted under --live-consent=refuse; the candidate unit test runs with the default 'elicit' flag and cannot see it, hence e2e."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/server.py"
+search = '''
+    if server.flags.live_consent == "refuse" or not _client_can_elicit_form(ctx):'''
+replace = '''
+    if not _client_can_elicit_form(ctx):'''
+
+[[mutant]]
+id = "M69"
+module = "server.py"
+mutation = "ImageContent attached only on the 10 tools of the old §11 list"
+source = "R8-6"
+qa = ["QA-CAP-018", "QA-MCP-005"]
+tier = "e2e"
+kill = ["tests/e2e/test_mcp_images_flag.py::test_images_flag_attaches_frames_on_every_capture_tool", "tests/e2e/test_mcp_images_flag.py::test_images_on_every_carrier"]
+note = "_frames_of returns frames only for the 10 ActionResult tools other than the holds (pointer_click/move/scroll/drag, keyboard_press/type, touch_*, element_act); screen_capture, window_focus/place/close and pointer_hold/keyboard_hold lose their ImageContent."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/server.py"
+search = '''
+    if isinstance(result, Frame):
+        return [result]
+    if isinstance(result, ActionResult | WindowFocusResult | WindowPlaceResult | WindowCloseResult):
+        return result.frames
+    return []'''
+replace = '''
+    if isinstance(result, ActionResult) and result.tool not in ("pointer_hold", "keyboard_hold"):
+        return result.frames
+    return []'''
+
+[[mutant]]
+id = "M70"
+module = "core.py"
+mutation = "Stricter Q10(b): right click refused while left is held; or the 'moved while left was held' warning missing"
+source = "R8-12/Q10"
+qa = ["QA-INP-037", "QA-INP-050"]
+tier = "unit"
+kill = ["tests/unit/test_held_state_machine.py::test_held_state_machine_table"]
+note = "The refusal predicate core.py calls lives in input.py InputBackend.check_not_held: it now refuses any button gesture while any button is held (not just the touched one); rule other_control_gesture_warns calls check_not_held(pointer_click, [RIGHT]) with left held and expects no refusal."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/input.py"
+search = '''
+        held_buttons = [button for button in self._held_buttons if button in touched_buttons]'''
+replace = '''
+        held_buttons = list(self._held_buttons) if touched_buttons else []'''
+
+[[mutant]]
+id = "M71"
+module = "core.py"
+mutation = "keyboard_type keys path not checked against held shift (0.11 releases user's shift mid-text)"
+source = "R8-13"
+qa = ["QA-INP-038", "QA-INP-050"]
+tier = "unit"
+kill = ["tests/unit/test_held_state_machine.py::test_held_state_machine_table"]
+note = "The keys-path check in core.keyboard_type uses input.py text_keycodes; it now omits the implied shift for shifted characters, so held shift is never checked; rule typing_shift_while_shift_held expects 'A'/'aA!' refused."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/input.py"
+search = '''
+        code, needs_shift = entry
+        codes.add(code)
+        if needs_shift:
+            codes.add(_SHIFT_KEYCODE)'''
+replace = '''
+        code, _needs_shift = entry
+        codes.add(code)'''
+
+# stale-name-scan: allow-begin
+[[mutant]]
+id = "M72"
+module = "core.py"
+mutation = "Unicode paste chord not checked before touching the clipboard"
+source = "R8-13"
+qa = ["QA-INP-039"]
+tier = "e2e"
+kill = ["tests/e2e/test_held_input.py::test_unicode_paste_chord_touching_held_ctrl_refused"]
+note = "keyboard_type(method='unicode') no longer passes the before_paste held-chord check to keyboard_type_unicode, so the clipboard is set and the chord sent despite a held ctrl; the e2e test expects a refusal with the clipboard untouched."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/core.py"
+search = '''
+                focused_class=focused_class,
+                before_paste=before_paste,
+            )'''
+replace = '''
+                focused_class=focused_class,
+            )'''
+# stale-name-scan: allow-end
+
+[[mutant]]
+id = "M73"
+module = "core.py"
+mutation = "session_info skips EIS revalidation (stale held)"
+source = "R8-16"
+qa = ["QA-INP-045"]
+tier = "e2e"
+kill = ["tests/e2e/test_eis_held_revalidation.py::test_eis_disconnect_clears_held_and_warns"]
+note = "session_info reports held input without calling _revalidate, so after an EIS disconnect it shows stale held controls and no warning; test_input_tools_error_after_eis_disconnect never calls session_info, so only the held-revalidation test kills it."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/core.py"
+search = '''
+        if self._input is not None:
+            warnings.extend(self._revalidate(self._input))
+            held = self._input.held()
+        return SessionInfoResult('''
+replace = '''
+        if self._input is not None:
+            held = self._input.held()
+        return SessionInfoResult('''
+
+[[mutant]]
+id = "M74"
+module = "input.py"
+mutation = "EIS device replacement is reported but the replaced controls are not recorded, so their release goes out as a plain release"
+source = "R8-17"
+qa = ["QA-INP-046", "QA-INP-050"]
+tier = "unit"
+kill = ["tests/unit/test_held_state_machine.py::test_held_state_machine_table"]
+note = "revalidate still warns on a lost pointer/keyboard role and keeps the held set, but no longer marks it replaced; the explicit release then sends a bare RELEASED (which KWin 6.7.5 ignores for a replaced device) instead of press-then-release, and the keyboard/pointer replacement rows of the held-state table assert the press-then-release sequence."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/input.py"
+search = '''
+            self._replaced_buttons.update(self._held_buttons)'''
+replace = '''
+            pass'''
+
+[[mutant.patch]]
+file = "src/kwin_mcp/input.py"
+search = '''
+            self._replaced_keys.update(self._held_keys)'''
+replace = '''
+            pass'''
+
+[[mutant]]
+id = "M75"
+module = "pyproject.toml"
+mutation = "Classifier left at '3 - Alpha' / version drift in one manifest"
+source = "Q11"
+qa = ["QA-PKG-005"]
+tier = "e2e"
+kill = ["tests/e2e/test_installed_package.py::test_classifier_production_stable"]
+note = "The Development Status classifier reverts to '3 - Alpha'; the installed-package test reads the wheel metadata classifiers (harness rebuilds the image for this non-src patch)."
+
+[[mutant.patch]]
+file = "pyproject.toml"
+search = '''
+    "Development Status :: 5 - Production/Stable",'''
+replace = '''
+    "Development Status :: 3 - Alpha",'''
+
+[[mutant]]
+id = "M76"
+module = "accessibility.py"
+mutation = "Skip the gone-element check on ref resolution (re-read results used unguarded)"
+source = "Adversarial F7"
+qa = ["QA-ELEM-036", "QA-ELEM-037"]
+tier = "e2e"
+kill = ["tests/e2e/test_element_refs.py::test_destroyed_element_ref_errors_before_input", "tests/e2e/test_element_refs.py::test_ref_after_window_reopen_is_stale"]
+note = "Disables the whole 'element no longer exists' guard in _resolve_refs, so a destroyed element's re-read (None, or an AttributeError downstream) is reported as a worker failure, not the expected stale error. The original mutation (dropping only the defunct-state disjunct) was equivalent: a destroyed widget's proxy raises inside _extract_info (name/action properties are gone; only cached role and the defunct state set remain), so info is always None for gone elements and the defunct disjunct is dead code on this path."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/accessibility.py"
+search = '''
+        if info is None or "defunct" in info.states:'''
+replace = '''
+        if False:'''
+
+[[mutant]]
+id = "M77"
+module = "core.py"
+mutation = "Held-control conflict check only for modifier keys, not buttons"
+source = "Adversarial F7"
+qa = ["QA-INP-035", "QA-INP-050"]
+tier = "unit"
+kill = ["tests/unit/test_held_state_machine.py::test_held_state_machine_table"]
+note = "input.py check_not_held (called by every core gesture) matches held buttons against the touched keycodes, so held buttons never conflict; rules gesture_touching_held_button(_and_keys) expect a refusal naming pointer_hold."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/input.py"
+search = '''
+        held_buttons = [button for button in self._held_buttons if button in touched_buttons]'''
+replace = '''
+        held_buttons = [button for button in self._held_buttons if button in touched_keys]'''
+
+[[mutant]]
+id = "M78"
+module = "models.py render"
+mutation = "'Still held:' derived from text state instead of revalidated held"
+source = "Adversarial F6/F7"
+qa = ["QA-INP-033"]
+tier = "e2e"
+kill = ["tests/e2e/test_held_input.py::test_every_action_result_reports_held_and_still_held_text"]
+note = "Closest render-level fault: ActionResult.render emits 'Still held:' only when the result's own text concerns a hold (tool name *_hold) rather than whenever the revalidated held set is non-empty, so pointer_click etc. after a hold lose the line the e2e test requires."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/models.py"
+search = '''
+        lines.extend(_frame_lines(self.frames))
+        lines.extend(_warning_lines(self.warnings))
+        if not self.held.is_empty():'''
+replace = '''
+        lines.extend(_frame_lines(self.frames))
+        lines.extend(_warning_lines(self.warnings))
+        if self.tool.endswith("_hold") and not self.held.is_empty():'''
+
+# stale-name-scan: allow-begin
+[[mutant]]
+id = "M79"
+module = "screenshot.py"
+mutation = "Burst delays anchored at call start instead of the end of the action"
+source = "Fidelity #1"
+qa = ["QA-CAP-010"]
+tier = "e2e"
+kill = ["tests/e2e/test_capture.py::test_capture_returns_frames_sorted_with_duplicates"]
+note = "The engine stamps the input tool's call start in _input_prologue and capture_frame_burst anchors the ScreenShot2 delays at it instead of at its own (post-action) start; frames land before delay_i after the last action event."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/screenshot.py"
+search = '''
+    wayland_socket: str = "",
+) -> list[tuple[int, Path, FrameMapping]]:'''
+replace = '''
+    wayland_socket: str = "",
+    start_time: float | None = None,
+) -> list[tuple[int, Path, FrameMapping]]:'''
+
+[[mutant.patch]]
+file = "src/kwin_mcp/screenshot.py"
+search = '''
+    burst_start = time.monotonic()'''
+replace = '''
+    burst_start = time.monotonic() if start_time is None else start_time'''
+
+[[mutant.patch]]
+file = "src/kwin_mcp/screenshot.py"
+search = '''
+        return _capture_frame_burst_dbus(
+            dbus_address,
+            attempt_dir(),
+            sorted_delays,
+            include_cursor=include_cursor,
+            on_frame=on_frame,
+        )'''
+replace = '''
+        return _capture_frame_burst_dbus(
+            dbus_address,
+            attempt_dir(),
+            sorted_delays,
+            include_cursor=include_cursor,
+            start_time=start_time,
+            on_frame=on_frame,
+        )'''
+
+[[mutant.patch]]
+file = "src/kwin_mcp/screenshot.py"
+search = '''
+    include_cursor: bool = False,
+    on_frame: Callable[[int, int], None] | None = None,
+) -> list[tuple[Path, FrameMapping]]:
+    """Capture frames into ``private_dir`` using the fast'''
+replace = '''
+    include_cursor: bool = False,
+    start_time: float | None = None,
+    on_frame: Callable[[int, int], None] | None = None,
+) -> list[tuple[Path, FrameMapping]]:
+    """Capture frames into ``private_dir`` using the fast'''
+
+[[mutant.patch]]
+file = "src/kwin_mcp/screenshot.py"
+search = '''
+    options = {"include-cursor": dbus.Boolean(include_cursor)}
+
+    frames: list[tuple[Path, FrameMapping]] = []
+    start = time.monotonic()'''
+replace = '''
+    options = {"include-cursor": dbus.Boolean(include_cursor)}
+
+    frames: list[tuple[Path, FrameMapping]] = []
+    start = time.monotonic() if start_time is None else start_time'''
+
+[[mutant.patch]]
+file = "src/kwin_mcp/core.py"
+search = '''
+                wayland_socket=info.wayland_socket,
+            )
+            frames: list[Frame] = []'''
+replace = '''
+                wayland_socket=info.wayland_socket,
+                start_time=getattr(self, "_call_start", None),
+            )
+            frames: list[Frame] = []'''
+
+[[mutant.patch]]
+file = "src/kwin_mcp/core.py"
+search = '''
+        inp = self._require_input()
+        return inp, self._revalidate(inp)'''
+replace = '''
+        self._call_start = time.monotonic()
+        inp = self._require_input()
+        return inp, self._revalidate(inp)'''
+# stale-name-scan: allow-end
+
+# stale-name-scan: allow-begin
+[[mutant]]
+id = "M80"
+module = "input.py"
+mutation = "pointer_hold phase 'move' releases the button"
+source = "Fidelity #3"
+qa = ["QA-INP-027"]
+tier = "e2e"
+kill = ["tests/e2e/test_pointer_hold.py::test_press_move_release_is_manual_drag"]
+note = "mouse_hold_move releases the held button at the target (mouse_button_up) instead of only moving, so the probe sees button-up after the move and the later release no longer ends a drag."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/input.py"
+search = '''
+            raise HeldControlError(msg)
+        self.mouse_move(x, y)
+
+    def mouse_button_up('''
+replace = '''
+            raise HeldControlError(msg)
+        self.mouse_button_up(x, y, button)
+
+    def mouse_button_up('''
+# stale-name-scan: allow-end
+
+[[mutant]]
+id = "M81"
+module = "accessibility.py"
+mutation = "Strict walk depth limit removed or lowered to 15"
+source = "Fidelity #6"
+qa = ["QA-ELEM-002", "QA-ELEM-042"]
+tier = "unit"
+kill = ["tests/unit/test_element_refs_table.py::test_strict_walk_depth_64_bound"]
+note = "Lowers _ACTION_SEARCH_MAX_DEPTH to 15 (the lenient default); the strict press on a depth-64 button now refuses with incomplete discovery, failing the test's first assertion."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/accessibility.py"
+search = '''
+_ACTION_SEARCH_MAX_DEPTH = 64'''
+replace = '''
+_ACTION_SEARCH_MAX_DEPTH = 15'''
+
+[[mutant]]
+id = "M82"
+module = "server.py"
+mutation = "MRTR: digest comparison dropped (stale/forged accept honoured) or close_target id check bypassed"
+source = "McpCompat G3"
+qa = ["QA-WIN-040", "QA-WIN-050"]
+tier = "e2e"
+kill = ["tests/e2e/test_window_close_consent.py::test_consent_answers_cannot_be_forged_or_replayed", "tests/e2e/test_window_close_consent.py::test_toctou_recheck_closes_only_resolved_id"]
+note = "The MRTR request-state digest check lives in the mcp SDK, not src/kwin_mcp, so the second alternative is realised: window_close's body re-resolves the caller's original selector instead of the consented window_target id, so an answer can close a different (or swapped) window."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/server.py"
+search = '''
+    selector = window if window_target is None else WindowSelector(id=window_target.window_id)'''
+replace = '''
+    selector = window'''

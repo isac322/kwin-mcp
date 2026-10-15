@@ -1,6 +1,6 @@
 [project]
 name = "kwin-mcp"
-version = "0.12.0"
+version = "1.0.0"
 description = "MCP server for Linux desktop GUI automation on KDE Plasma 6 Wayland — virtual testing and live desktop automation"
 readme = "README.md"
 license = "MIT"
@@ -37,7 +37,7 @@ keywords = [
     "embedded-desktop",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux",
@@ -71,17 +71,30 @@ kwin-mcp = "kwin_mcp.server:main"
 kwin-mcp-cli = "kwin_mcp.cli:main"
 
 [build-system]
-requires = ["uv_build>=0.12.19,<0.14.0"]
+requires = ["uv_build>=0.12.19,<0.13.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
-dev = ["ruff>=0.16.9", "ty>=0.0.84", "pytest>=9.1.1"]
+dev = [
+    "ruff>=0.16.9",
+    "ty>=0.0.84",
+    "pytest>=9.1.1",
+    "pytest-timeout>=2.4.0",
+    "jsonschema>=4.26",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # tests/e2e drives a real KWin session; keep failures readable.
-addopts = "-ra"
-markers = ["visual: tests that require the visual QA environment"]
+addopts = "-ra --strict-markers"
+markers = [
+    "visual: tests that require the visual QA environment",
+    "qa(id): QA list id covered by this test",
+    "slow: long-running E2E tests; PR shards run -m 'not slow', e2e-slow.yml runs -m slow",
+]
+# pytest-timeout: a hung test fails alone and the junit output survives.
+# Slow tests raise their own limit with @pytest.mark.timeout(600).
+timeout = 120
 
 [tool.ruff]
 target-version = "py312"
@@ -122,7 +135,7 @@ include = [
     "tests/e2e/interaction_probe.py",
     "tests/e2e/test_dbus_call.py",
     "tests/e2e/test_eis_device_replacement.py",
-    "tests/e2e/transient_probe.py",
+    "tests/e2e/window_zoo.py",
 ]
 [tool.ty.overrides.rules]
 unresolved-import = "ignore"

@@ -4,16 +4,16 @@ Three onboarding paths for `kwin-mcp`. Pick the one that matches your editor.
 
 ## Why use the integrations?
 
-`kwin-mcp` exposes **37 MCP tools**. Without context, an AI agent often calls them in the wrong order — skipping `session_start`, mixing up `keyboard_type` vs `keyboard_type_unicode`, ignoring the AT-SPI2 surface-local coordinate system, and so on.
+`kwin-mcp` exposes **29 MCP tools**. Without context, an AI agent often calls them in the wrong order — skipping `session_start`, typing non-ASCII text with the default `keyboard_type` method, clicking a guessed position instead of an element `ref`, forgetting to release held input, and so on.
 
 Each integration package bundles:
 
 - The MCP server config, so you don't have to edit JSON by hand.
 - The `kwin-desktop-automation` **skill**, which loads operational guidance into the agent only when desktop-automation work is requested. The skill teaches:
   1. **Which session mode to pick** — `session_start` for virtual / isolated testing, `session_connect` for live desktop / container / kiosk.
-  2. **The observe → act → verify loop**, with observation tools ordered by cost (`list_windows` < `accessibility_tree` < `find_ui_elements` < `wait_for_element` < `screenshot`).
-  3. **Pitfalls** — US-QWERTY-only `keyboard_type`, Unicode via `keyboard_type_unicode`, clipboard opt-in on virtual sessions, AT-SPI2 surface-local coordinates, QMenu invisibility, screen-edge triggers ignored by EIS.
-  4. **Cleanup** — always call `session_stop`; `keep_screenshots=true` and `keep_home=true` leak `/tmp` directories.
+  2. **The observe → act → verify loop**, with observation tools ordered by cost (`window_list` < `element_query` < `element_query` with `wait` < `screen_capture`) and actions ordered by robustness (`element_act`, then a `{ref}` target, then `{x, y}`).
+  3. **Pitfalls** — US-QWERTY-only `keyboard_type(method="keys")`, Unicode via `keyboard_type(method="unicode")`, clipboard opt-in on virtual sessions, global logical coordinates, held input, QMenu invisibility, screen-edge triggers ignored by EIS.
+  4. **Cleanup** — always call `session_stop`; `retention={"artifacts": true}` and `retention={"home": true}` keep `/tmp` directories that you must delete.
 
 ## Scenario A — Claude Code only
 
@@ -67,7 +67,7 @@ If the plugin's `config` hook ever fails to inject the MCP server (e.g. OpenCode
 
 Do both Scenario A and Scenario B. Each integration is self-contained — installing one does not affect the other.
 
-**Both plugins ship the same host-agnostic SKILL.md.** The Claude Code plugin keeps its copy under [`integrations/claude-code/skills/kwin-desktop-automation/SKILL.md`](../integrations/claude-code/skills/kwin-desktop-automation/SKILL.md) (the source of truth); the OpenCode plugin's `npm run build` copies that file into [`integrations/opencode/plugin/skill/kwin-desktop-automation/SKILL.md`](../integrations/opencode/plugin/skill/kwin-desktop-automation/SKILL.md) before packaging. The skill body uses bare tool names (`session_start`, `screenshot`, ...) — each host adds its own prefix (`mcp__kwin-mcp__*` in Claude Code, `kwin-mcp_*` in OpenCode) when exposing the tools to the model.
+**Both plugins ship the same host-agnostic SKILL.md.** The Claude Code plugin keeps its copy under [`integrations/claude-code/skills/kwin-desktop-automation/SKILL.md`](../integrations/claude-code/skills/kwin-desktop-automation/SKILL.md) (the source of truth); the OpenCode plugin's `npm run build` copies that file into [`integrations/opencode/plugin/skill/kwin-desktop-automation/SKILL.md`](../integrations/opencode/plugin/skill/kwin-desktop-automation/SKILL.md) before packaging. The skill body uses bare tool names (`session_start`, `screen_capture`, ...) — each host adds its own prefix (`mcp__kwin-mcp__*` in Claude Code, `kwin-mcp_*` in OpenCode) when exposing the tools to the model.
 
 ## Customising the skill
 
@@ -78,11 +78,12 @@ Both plugins ship the same SKILL.md content; the Claude Code plugin's copy is th
 
 ## Server flags
 
-`kwin-mcp` accepts three optional server flags. Pass them after the command in any MCP config:
+`kwin-mcp` accepts four optional server flags. Pass them after the command in any MCP config:
 
-- `--default-live-session` makes `session_connect` (the live desktop) the default session tool instead of `session_start`.
-- `--screenshot-images` attaches every PNG captured by `screenshot` and `screenshot_after_ms` to the tool result as MCP image content, so the agent sees the frames without reading files. Result text is unchanged. It is off by default because each frame costs model context tokens, and in live sessions it sends real-desktop pixels to the model provider.
+- `--default-live-session` tells the client that the server is meant for the live desktop: `session_connect`'s description recommends it and the server instructions say so. Tool behavior is unchanged.
+- `--screenshot-images` attaches every PNG captured by `screen_capture` and by the `capture` option of the action tools to the tool result as MCP image content, so the agent sees the frames without reading files. Result text is unchanged. It is off by default because each frame costs model context tokens, and in live sessions it sends real-desktop pixels to the model provider.
 - `--screenshot-max-edge N` downscales every screenshot and frame so its longer side is at most `N` pixels, and states the pixel-to-logical mapping in the result. Use it when the desktop is larger than the model's image limit, and pick a bound that keeps each image within the provider's pixel and token limits, so the provider does not resize it again behind the coordinate line (according to [Anthropic's vision documentation](https://platform.claude.com/docs/en/build-with-claude/vision#evaluate-image-size), checked 2026-10-10, Claude 4.7 and later take 2576 pixels on the long edge and 4784 visual tokens). See [Screenshot Size](../README.md#screenshot-size---screenshot-max-edge-region-max_edge).
+- `--live-consent {elicit,refuse}` decides how `window_close` on a live desktop asks the user first: `elicit` (the default) shows a confirmation form when the client supports MCP form elicitation; `refuse` never asks and refuses the close, for headless clients. See [Live Window Close Consent](../README.md#live-window-close-consent---live-consent).
 
 Claude Code (`claude mcp add` or `.mcp.json`):
 
@@ -139,19 +140,23 @@ Install the build dependencies for your distribution from the README's [Build Pr
 
 ### Server exits with `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`
 
-This is a Python dependency problem, not a missing system package. kwin-mcp 0.7.0 on PyPI did not declare an upper bound for the `mcp` package, so a fresh install could resolve `mcp` 2.x, which no longer provides `mcp.server.fastmcp`. Releases 0.8.0–0.9.x cap `mcp<2`, and the next release runs on `mcp>=2.2.0,<3`, so upgrading kwin-mcp resolves the error; installing system build dependencies does not.
+This is a Python dependency problem, not a missing system package. kwin-mcp 0.7.0 on PyPI did not declare an upper bound for the `mcp` package, so a fresh install could resolve `mcp` 2.x, which no longer provides `mcp.server.fastmcp`. Releases 0.8.0–0.9.x cap `mcp<2`, and releases from 0.11.0 on run on `mcp>=2.2.0,<3`, so upgrading kwin-mcp resolves the error; installing system build dependencies does not.
 
 ### Plugin installs but the agent ignores it
 
 The skill is only loaded when the agent decides it's relevant. Make your prompt mention desktop / GUI / Wayland / KDE work explicitly (for example, *"using kwin-mcp, launch kcalc and..."*). Both Claude Code and OpenCode index the skill's `description` and `when_to_use` frontmatter for this trigger decision.
 
-### `session_start` works but `accessibility_tree` returns nothing
+### `session_start` works but `element_query` returns nothing
 
-The launched app may not yet have registered with AT-SPI2. Add a `wait_for_element` poll after launch, or set `expected_states=["active"]`. For some Qt apps, set `QT_ACCESSIBILITY=1` via the `env` argument to `session_start` or `launch_app`.
+The launched app may not yet have registered with AT-SPI2. Poll with `element_query(locator={"app": "<app>"}, wait={"timeout_ms": 5000})` after launch, or wait for a state with `locator={"states": ["active"]}`. For some Qt apps, set `QT_ACCESSIBILITY=1` via the `env` argument of `app_launch`.
 
 ### Live session: input lands on the host instead of the target window
 
-Make sure the target window is focused before injecting input. Call `focus_window(window_id=...)` when an exact KWin window ID is available from `window_geometry`; otherwise use `focus_window(app_name=...)`. EIS injects globally into the compositor, so whichever window currently has keyboard focus receives the event.
+Make sure the target window is focused before injecting input. Call `window_focus(window={"id": ...})` with an id from `window_list` (or an element's `window_id`); otherwise use `window_focus(window={"app_id": ..., "kind": ["normal"]})`. EIS injects globally into the compositor, so whichever window currently has keyboard focus receives the event.
+
+### Upgrading from kwin-mcp 0.11
+
+kwin-mcp 1.0 renamed most tools and reshaped their arguments. An agent or prompt that still uses old tool names gets an error naming the 1.0 replacement. Update the plugin (the bundled skill already teaches the 1.0 names) and see the [migration tables in the CHANGELOG](../CHANGELOG.md#100---2026-10-12).
 
 ### Container / kiosk: `session_connect` cannot reach the live KWin
 

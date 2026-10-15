@@ -1,0 +1,7922 @@
+[
+ {
+  "name": "session_start",
+  "title": "Start virtual KWin session",
+  "description": "Start an isolated virtual KWin Wayland session (one at a time). Then launch apps with app_launch.",
+  "inputSchema": {
+   "properties": {
+    "screen_width": {
+     "default": 1920,
+     "description": "Virtual screen width, logical px.",
+     "minimum": 1,
+     "type": "integer"
+    },
+    "screen_height": {
+     "default": 1080,
+     "description": "Virtual screen height, logical px.",
+     "minimum": 1,
+     "type": "integer"
+    },
+    "enable_clipboard": {
+     "default": false,
+     "description": "Serve clipboard_* (off: wl-clipboard may hang).",
+     "type": "boolean"
+    },
+    "home": {
+     "default": "host",
+     "description": "HOME for launched apps: the host HOME, or a temporary isolated XDG HOME. Not a security sandbox.",
+     "enum": [
+      "host",
+      "isolated"
+     ],
+     "type": "string"
+    },
+    "retention": {
+     "additionalProperties": false,
+     "description": "What survives the session end, decided now and honoured by session_stop and server exit. Kept after session end. home needs home='isolated'.",
+     "properties": {
+      "artifacts": {
+       "default": false,
+       "type": "boolean"
+      },
+      "home": {
+       "default": false,
+       "type": "boolean"
+      }
+     },
+     "type": "object",
+     "default": {
+      "artifacts": false,
+      "home": false
+     }
+    }
+   },
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "The running session.",
+   "properties": {
+    "kind": {
+     "enum": [
+      "virtual",
+      "live"
+     ],
+     "type": "string"
+    },
+    "wayland_socket": {
+     "type": "string"
+    },
+    "dbus_address": {
+     "type": "string"
+    },
+    "screen": {
+     "anyOf": [
+      {
+       "description": "Workspace size, logical px.",
+       "properties": {
+        "width": {
+         "type": "integer"
+        },
+        "height": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "width",
+        "height"
+       ],
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "home_dir": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "retention": {
+     "additionalProperties": false,
+     "description": "Kept after session end. home needs home='isolated'.",
+     "properties": {
+      "artifacts": {
+       "default": false,
+       "type": "boolean"
+      },
+      "home": {
+       "default": false,
+       "type": "boolean"
+      }
+     },
+     "type": "object"
+    },
+    "artifacts_dir": {
+     "type": "string"
+    },
+    "input_backend": {
+     "anyOf": [
+      {
+       "type": "string",
+       "enum": [
+        "eis"
+       ]
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "clipboard": {
+     "type": "boolean"
+    },
+    "accessibility": {
+     "enum": [
+      "on",
+      "switched_on",
+      "off",
+      "unavailable"
+     ],
+     "type": "string"
+    },
+    "warnings": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "kind",
+    "wayland_socket",
+    "dbus_address",
+    "screen",
+    "artifacts_dir",
+    "input_backend",
+    "clipboard",
+    "accessibility"
+   ],
+   "type": "object"
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "openWorldHint": false
+  }
+ },
+ {
+  "name": "session_connect",
+  "title": "Attach to live KDE desktop",
+  "description": "Attach to an already running KWin session (the real desktop or a container). Actions then affect real applications; window_close asks the user first.",
+  "inputSchema": {
+   "properties": {
+    "dbus_address": {
+     "default": "",
+     "description": "Session bus address; empty = $DBUS_SESSION_BUS_ADDRESS.",
+     "type": "string"
+    },
+    "wayland_display": {
+     "default": "",
+     "description": "Socket name or path; empty = $WAYLAND_DISPLAY.",
+     "type": "string"
+    },
+    "enable_accessibility": {
+     "default": false,
+     "description": "Set org.a11y.Status.IsEnabled for the session lifetime; restored by session_stop.",
+     "type": "boolean"
+    },
+    "retention": {
+     "additionalProperties": false,
+     "description": "What survives the session end, decided now and honoured by session_stop and server exit. Kept after session end. home needs home='isolated'.",
+     "properties": {
+      "artifacts": {
+       "default": false,
+       "type": "boolean"
+      },
+      "home": {
+       "default": false,
+       "type": "boolean"
+      }
+     },
+     "type": "object",
+     "default": {
+      "artifacts": false,
+      "home": false
+     }
+    }
+   },
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "The running session.",
+   "properties": {
+    "kind": {
+     "enum": [
+      "virtual",
+      "live"
+     ],
+     "type": "string"
+    },
+    "wayland_socket": {
+     "type": "string"
+    },
+    "dbus_address": {
+     "type": "string"
+    },
+    "screen": {
+     "anyOf": [
+      {
+       "description": "Workspace size, logical px.",
+       "properties": {
+        "width": {
+         "type": "integer"
+        },
+        "height": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "width",
+        "height"
+       ],
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "home_dir": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "retention": {
+     "additionalProperties": false,
+     "description": "Kept after session end. home needs home='isolated'.",
+     "properties": {
+      "artifacts": {
+       "default": false,
+       "type": "boolean"
+      },
+      "home": {
+       "default": false,
+       "type": "boolean"
+      }
+     },
+     "type": "object"
+    },
+    "artifacts_dir": {
+     "type": "string"
+    },
+    "input_backend": {
+     "anyOf": [
+      {
+       "type": "string",
+       "enum": [
+        "eis"
+       ]
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "clipboard": {
+     "type": "boolean"
+    },
+    "accessibility": {
+     "enum": [
+      "on",
+      "switched_on",
+      "off",
+      "unavailable"
+     ],
+     "type": "string"
+    },
+    "warnings": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "kind",
+    "wayland_socket",
+    "dbus_address",
+    "screen",
+    "artifacts_dir",
+    "input_backend",
+    "clipboard",
+    "accessibility"
+   ],
+   "type": "object"
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "session_stop",
+  "title": "End session",
+  "description": "End the current session. Virtual: terminate KWin, launched apps and the bus. Live: detach, kill only apps launched through kwin-mcp, restore the a11y switch. Releases held input. Idempotent.",
+  "inputSchema": {
+   "properties": {},
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Result of session_stop.",
+   "properties": {
+    "stopped": {
+     "type": "boolean"
+    },
+    "kind": {
+     "anyOf": [
+      {
+       "enum": [
+        "virtual",
+        "live"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "kept": {
+     "description": "Directories that survive the session end.",
+     "properties": {
+      "artifacts_dir": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null
+      },
+      "home_dir": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null
+      }
+     },
+     "type": "object"
+    },
+    "released": {
+     "description": "Mouse buttons and keys kwin-mcp holds pressed.",
+     "properties": {
+      "buttons": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "keys": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      }
+     },
+     "type": "object"
+    },
+    "warnings": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "stopped"
+   ],
+   "type": "object"
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": true,
+   "openWorldHint": false
+  }
+ },
+ {
+  "name": "session_info",
+  "title": "Session status",
+  "description": "Report the current session (or null), its enabled backends, and every app launched through kwin-mcp.",
+  "inputSchema": {
+   "properties": {},
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Result of session_info.",
+   "properties": {
+    "session": {
+     "anyOf": [
+      {
+       "description": "The running session.",
+       "properties": {
+        "kind": {
+         "enum": [
+          "virtual",
+          "live"
+         ],
+         "type": "string"
+        },
+        "wayland_socket": {
+         "type": "string"
+        },
+        "dbus_address": {
+         "type": "string"
+        },
+        "screen": {
+         "anyOf": [
+          {
+           "description": "Workspace size, logical px.",
+           "properties": {
+            "width": {
+             "type": "integer"
+            },
+            "height": {
+             "type": "integer"
+            }
+           },
+           "required": [
+            "width",
+            "height"
+           ],
+           "type": "object"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "home_dir": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ],
+         "default": null
+        },
+        "retention": {
+         "additionalProperties": false,
+         "description": "Kept after session end. home needs home='isolated'.",
+         "properties": {
+          "artifacts": {
+           "default": false,
+           "type": "boolean"
+          },
+          "home": {
+           "default": false,
+           "type": "boolean"
+          }
+         },
+         "type": "object"
+        },
+        "artifacts_dir": {
+         "type": "string"
+        },
+        "input_backend": {
+         "anyOf": [
+          {
+           "type": "string",
+           "enum": [
+            "eis"
+           ]
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "clipboard": {
+         "type": "boolean"
+        },
+        "accessibility": {
+         "enum": [
+          "on",
+          "switched_on",
+          "off",
+          "unavailable"
+         ],
+         "type": "string"
+        },
+        "warnings": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        }
+       },
+       "required": [
+        "kind",
+        "wayland_socket",
+        "dbus_address",
+        "screen",
+        "artifacts_dir",
+        "input_backend",
+        "clipboard",
+        "accessibility"
+       ],
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "apps": {
+     "items": {
+      "description": "One app launched through kwin-mcp in the current session.",
+      "properties": {
+       "pid": {
+        "type": "integer"
+       },
+       "command": {
+        "type": "string"
+       },
+       "running": {
+        "type": "boolean"
+       },
+       "exit_code": {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "log_path": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "pid",
+       "command",
+       "running",
+       "exit_code",
+       "log_path"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "held": {
+     "description": "Mouse buttons and keys kwin-mcp holds pressed.",
+     "properties": {
+      "buttons": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "keys": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      }
+     },
+     "type": "object"
+    },
+    "warnings": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "session"
+   ],
+   "type": "object"
+  },
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  }
+ },
+ {
+  "name": "app_launch",
+  "title": "Launch app in session",
+  "description": "Launch a program in the session (shlex-split, no shell). stdout/stderr go to a log read with app_log. A failed launch keeps the session.",
+  "inputSchema": {
+   "properties": {
+    "command": {
+     "description": "Command line, e.g. \"kate --new\". Split with shlex; empty or unbalanced quotes is an error.",
+     "type": "string"
+    },
+    "env": {
+     "additionalProperties": {
+      "type": "string"
+     },
+     "type": "object",
+     "description": "Extra environment variables for this process."
+    }
+   },
+   "required": [
+    "command"
+   ],
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Result of app_launch.",
+   "properties": {
+    "pid": {
+     "type": "integer"
+    },
+    "command": {
+     "type": "string"
+    },
+    "log_path": {
+     "type": "string"
+    },
+    "log_uri": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "pid",
+    "command",
+    "log_path",
+    "log_uri"
+   ],
+   "type": "object"
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": false,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "app_log",
+  "title": "Read app output",
+  "description": "Return the tail of the captured stdout/stderr of an app launched with app_launch.",
+  "inputSchema": {
+   "properties": {
+    "pid": {
+     "description": "PID returned by app_launch (session_info lists them).",
+     "type": "integer"
+    },
+    "last_n_lines": {
+     "default": 50,
+     "description": "Trailing lines; 0 = whole log.",
+     "minimum": 0,
+     "type": "integer"
+    }
+   },
+   "required": [
+    "pid"
+   ],
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Result of app_log: the tail of an app's captured stdout/stderr.",
+   "properties": {
+    "pid": {
+     "type": "integer"
+    },
+    "log_path": {
+     "type": "string"
+    },
+    "lines": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "truncated": {
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "pid",
+    "log_path",
+    "lines",
+    "truncated"
+   ],
+   "type": "object"
+  },
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  },
+  "_meta": {
+   "anthropic/maxResultSizeChars": 500000
+  }
+ },
+ {
+  "name": "screen_capture",
+  "title": "Capture screen",
+  "description": "Capture the workspace (or a rectangle of it) as PNG via KWin ScreenShot2 (Spectacle fallback). Returns the path and the image-to-logical coordinate mapping.",
+  "inputSchema": {
+   "properties": {
+    "region": {
+     "additionalProperties": false,
+     "description": "Crop rectangle in global logical px; null = whole workspace. Parts outside the workspace are dropped. Global logical px.",
+     "properties": {
+      "x": {
+       "type": "integer"
+      },
+      "y": {
+       "type": "integer"
+      },
+      "width": {
+       "exclusiveMinimum": 0,
+       "type": "integer"
+      },
+      "height": {
+       "exclusiveMinimum": 0,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "x",
+      "y",
+      "width",
+      "height"
+     ],
+     "type": "object"
+    },
+    "max_edge": {
+     "minimum": 0,
+     "type": "integer",
+     "description": "Downscale so the longer side <= max_edge px; 0 = full resolution; null = server --screenshot-max-edge."
+    },
+    "include_cursor": {
+     "default": false,
+     "description": "Draw the pointer into the image.",
+     "type": "boolean"
+    }
+   },
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "One saved PNG of the workspace (or of a region of it).",
+   "properties": {
+    "delay_ms": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "path": {
+     "type": "string"
+    },
+    "uri": {
+     "type": "string"
+    },
+    "width": {
+     "type": "integer"
+    },
+    "height": {
+     "type": "integer"
+    },
+    "size_kb": {
+     "type": "number"
+    },
+    "mapping": {
+     "anyOf": [
+      {
+       "description": "Image px to logical px: logical = origin + image_px / scale.",
+       "properties": {
+        "scale": {
+         "type": "number"
+        },
+        "origin": {
+         "additionalProperties": false,
+         "description": "Global logical px.",
+         "properties": {
+          "x": {
+           "type": "integer"
+          },
+          "y": {
+           "type": "integer"
+          }
+         },
+         "required": [
+          "x",
+          "y"
+         ],
+         "type": "object"
+        }
+       },
+       "required": [
+        "scale",
+        "origin"
+       ],
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "coverage": {
+     "enum": [
+      "full",
+      "partial"
+     ],
+     "type": "string"
+    },
+    "coordinate_space": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "path",
+    "uri",
+    "width",
+    "height",
+    "size_kb",
+    "mapping",
+    "coverage",
+    "coordinate_space"
+   ],
+   "type": "object"
+  },
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  }
+ },
+ {
+  "name": "element_query",
+  "title": "Query accessibility elements",
+  "description": "Return AT-SPI2 elements matching locator (pre-order) with rects, states, actions, window_id and a ref for targets. With wait, poll until present/absent.",
+  "inputSchema": {
+   "properties": {
+    "locator": {
+     "additionalProperties": false,
+     "description": "AND-ed filters; app/query/role case-insensitive, states = exact AT-SPI state names; {} = all.",
+     "properties": {
+      "app": {
+       "type": "string"
+      },
+      "query": {
+       "type": "string"
+      },
+      "role": {
+       "type": "string"
+      },
+      "states": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      }
+     },
+     "type": "object",
+     "default": {}
+    },
+    "max_depth": {
+     "default": 15,
+     "description": "Depth limit: 0 (or less) = application nodes only, 1 = top-level windows.",
+     "type": "integer"
+    },
+    "wait": {
+     "additionalProperties": false,
+     "description": "Omit = read now; set = poll until the condition holds. Poll until true; timeout returns satisfied=false.",
+     "properties": {
+      "until": {
+       "default": "present",
+       "enum": [
+        "present",
+        "absent"
+       ],
+       "type": "string"
+      },
+      "timeout_ms": {
+       "default": 5000,
+       "type": "integer"
+      },
+      "poll_interval_ms": {
+       "default": 200,
+       "type": "integer"
+      }
+     },
+     "type": "object"
+    }
+   },
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Elements matching the locator, in pre-order.",
+   "properties": {
+    "locator": {
+     "additionalProperties": false,
+     "description": "AND-ed filters; app/query/role case-insensitive, states = exact AT-SPI state names; {} = all.",
+     "properties": {
+      "app": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null
+      },
+      "query": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null
+      },
+      "role": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null
+      },
+      "states": {
+       "anyOf": [
+        {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null
+      }
+     },
+     "type": "object"
+    },
+    "elements": {
+     "items": {
+      "description": "One AT-SPI element; rect is global logical px, or null with the reason.",
+      "properties": {
+       "ref": {
+        "type": "string"
+       },
+       "role": {
+        "type": "string"
+       },
+       "name": {
+        "type": "string"
+       },
+       "description": {
+        "type": "string"
+       },
+       "states": {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       "depth": {
+        "type": "integer"
+       },
+       "app": {
+        "type": "string"
+       },
+       "window_id": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "child_count": {
+        "type": "integer"
+       },
+       "rect": {
+        "anyOf": [
+         {
+          "additionalProperties": false,
+          "description": "Global logical px.",
+          "properties": {
+           "x": {
+            "type": "integer"
+           },
+           "y": {
+            "type": "integer"
+           },
+           "width": {
+            "exclusiveMinimum": 0,
+            "type": "integer"
+           },
+           "height": {
+            "exclusiveMinimum": 0,
+            "type": "integer"
+           }
+          },
+          "required": [
+           "x",
+           "y",
+           "width",
+           "height"
+          ],
+          "type": "object"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "unavailable": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "actions": {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       "text": {
+        "type": "string"
+       },
+       "value": {
+        "anyOf": [
+         {
+          "type": "number"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "value_max": {
+        "anyOf": [
+         {
+          "type": "number"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       }
+      },
+      "required": [
+       "ref",
+       "role",
+       "name",
+       "description",
+       "states",
+       "depth",
+       "app",
+       "window_id",
+       "child_count",
+       "rect",
+       "unavailable",
+       "actions",
+       "text",
+       "value",
+       "value_max"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "wait": {
+     "anyOf": [
+      {
+       "description": "Outcome of an element_query wait.",
+       "properties": {
+        "until": {
+         "enum": [
+          "present",
+          "absent"
+         ],
+         "type": "string"
+        },
+        "timeout_ms": {
+         "type": "integer"
+        },
+        "satisfied": {
+         "type": "boolean"
+        },
+        "elapsed_ms": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "until",
+        "timeout_ms",
+        "satisfied",
+        "elapsed_ms"
+       ],
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    }
+   },
+   "required": [
+    "elements"
+   ],
+   "type": "object"
+  },
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  },
+  "_meta": {
+   "anthropic/maxResultSizeChars": 500000
+  }
+ },
+ {
+  "name": "element_act",
+  "title": "Invoke element action",
+  "description": "Invoke a named AT-SPI action on exactly one element: {ref}, or {strict: Locator} (strict search). Errors list the actions matches expose.",
+  "inputSchema": {
+   "properties": {
+    "element": {
+     "anyOf": [
+      {
+       "additionalProperties": false,
+       "description": "A ref minted by element_query.",
+       "properties": {
+        "ref": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "ref"
+       ],
+       "type": "object"
+      },
+      {
+       "additionalProperties": false,
+       "description": "Strict: depth 64, fail-closed, exactly one (element, action).",
+       "properties": {
+        "strict": {
+         "additionalProperties": false,
+         "description": "AND-ed filters; app/query/role case-insensitive, states = exact AT-SPI state names; {} = all.",
+         "properties": {
+          "app": {
+           "type": "string"
+          },
+          "query": {
+           "type": "string"
+          },
+          "role": {
+           "type": "string"
+          },
+          "states": {
+           "items": {
+            "type": "string"
+           },
+           "type": "array"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "required": [
+        "strict"
+       ],
+       "type": "object"
+      }
+     ],
+     "description": "{ref} from element_query, or {strict: Locator}."
+    },
+    "action": {
+     "description": "AT-SPI action name, case-insensitive, e.g. \"Press\", \"Toggle\", \"Activate\".",
+     "type": "string"
+    },
+    "capture": {
+     "additionalProperties": false,
+     "description": "Frames taken delays_ms after the action ends; same options as screen_capture.",
+     "properties": {
+      "delays_ms": {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      "region": {
+       "additionalProperties": false,
+       "description": "Global logical px.",
+       "properties": {
+        "x": {
+         "type": "integer"
+        },
+        "y": {
+         "type": "integer"
+        },
+        "width": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        },
+        "height": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+       ],
+       "type": "object"
+      },
+      "max_edge": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "include_cursor": {
+       "default": false,
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "delays_ms"
+     ],
+     "type": "object"
+    }
+   },
+   "required": [
+    "element",
+    "action"
+   ],
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Result of element_act.",
+   "properties": {
+    "tool": {
+     "default": "element_act",
+     "type": "string"
+    },
+    "at": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Point"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "element": {
+     "anyOf": [
+      {
+       "description": "One AT-SPI element; rect is global logical px, or null with the reason.",
+       "properties": {
+        "ref": {
+         "type": "string"
+        },
+        "role": {
+         "type": "string"
+        },
+        "name": {
+         "type": "string"
+        },
+        "description": {
+         "type": "string"
+        },
+        "states": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "depth": {
+         "type": "integer"
+        },
+        "app": {
+         "type": "string"
+        },
+        "window_id": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "child_count": {
+         "type": "integer"
+        },
+        "rect": {
+         "anyOf": [
+          {
+           "additionalProperties": false,
+           "description": "Global logical px.",
+           "properties": {
+            "x": {
+             "type": "integer"
+            },
+            "y": {
+             "type": "integer"
+            },
+            "width": {
+             "exclusiveMinimum": 0,
+             "type": "integer"
+            },
+            "height": {
+             "exclusiveMinimum": 0,
+             "type": "integer"
+            }
+           },
+           "required": [
+            "x",
+            "y",
+            "width",
+            "height"
+           ],
+           "type": "object"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "unavailable": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "actions": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "text": {
+         "type": "string"
+        },
+        "value": {
+         "anyOf": [
+          {
+           "type": "number"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "value_max": {
+         "anyOf": [
+          {
+           "type": "number"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        }
+       },
+       "required": [
+        "ref",
+        "role",
+        "name",
+        "description",
+        "states",
+        "depth",
+        "app",
+        "window_id",
+        "child_count",
+        "rect",
+        "unavailable",
+        "actions",
+        "text",
+        "value",
+        "value_max"
+       ],
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "frames": {
+     "items": {
+      "description": "One saved PNG of the workspace (or of a region of it).",
+      "properties": {
+       "delay_ms": {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null
+       },
+       "path": {
+        "type": "string"
+       },
+       "uri": {
+        "type": "string"
+       },
+       "width": {
+        "type": "integer"
+       },
+       "height": {
+        "type": "integer"
+       },
+       "size_kb": {
+        "type": "number"
+       },
+       "mapping": {
+        "anyOf": [
+         {
+          "description": "Image px to logical px: logical = origin + image_px / scale.",
+          "properties": {
+           "scale": {
+            "type": "number"
+           },
+           "origin": {
+            "$ref": "#/$defs/Point"
+           }
+          },
+          "required": [
+           "scale",
+           "origin"
+          ],
+          "type": "object"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "coverage": {
+        "enum": [
+         "full",
+         "partial"
+        ],
+        "type": "string"
+       },
+       "coordinate_space": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "path",
+       "uri",
+       "width",
+       "height",
+       "size_kb",
+       "mapping",
+       "coverage",
+       "coordinate_space"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "held": {
+     "description": "Mouse buttons and keys kwin-mcp holds pressed.",
+     "properties": {
+      "buttons": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "keys": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      }
+     },
+     "type": "object"
+    },
+    "warnings": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "action": {
+     "type": "string"
+    },
+    "dispatch": {
+     "enum": [
+      "confirmed",
+      "sent_unconfirmed"
+     ],
+     "type": "string"
+    },
+    "dispatch_error": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    }
+   },
+   "required": [
+    "action",
+    "dispatch"
+   ],
+   "type": "object",
+   "$defs": {
+    "Point": {
+     "additionalProperties": false,
+     "description": "Global logical px.",
+     "properties": {
+      "x": {
+       "type": "integer"
+      },
+      "y": {
+       "type": "integer"
+      }
+     },
+     "required": [
+      "x",
+      "y"
+     ],
+     "type": "object"
+    }
+   }
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": false,
+   "openWorldHint": false
+  }
+ },
+ {
+  "name": "window_list",
+  "title": "List windows",
+  "description": "List KWin windows (incl. dialogs/popups/shell) with id, kind, frame/client rects, capabilities and desktops. filter fields are AND-ed.",
+  "inputSchema": {
+   "properties": {
+    "filter": {
+     "additionalProperties": false,
+     "description": "Same selector as the window mutators, used as a filter; null = every window. AND-ed filters over all windows; mutators need exactly one match (errors list ids and kinds).",
+     "properties": {
+      "id": {
+       "type": "string"
+      },
+      "app_id": {
+       "type": "string"
+      },
+      "caption": {
+       "type": "string"
+      },
+      "active": {
+       "type": "boolean"
+      },
+      "kind": {
+       "items": {
+        "enum": [
+         "normal",
+         "dialog",
+         "utility",
+         "popup",
+         "shell",
+         "other"
+        ],
+        "type": "string"
+       },
+       "minItems": 1,
+       "type": "array"
+      }
+     },
+     "type": "object"
+    }
+   },
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Windows matching the filter, in KWin's window list order.",
+   "properties": {
+    "filter": {
+     "anyOf": [
+      {
+       "additionalProperties": false,
+       "description": "AND-ed filters over all windows; mutators need exactly one match (errors list ids and kinds).",
+       "properties": {
+        "id": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ],
+         "default": null
+        },
+        "app_id": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ],
+         "default": null
+        },
+        "caption": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ],
+         "default": null
+        },
+        "active": {
+         "anyOf": [
+          {
+           "type": "boolean"
+          },
+          {
+           "type": "null"
+          }
+         ],
+         "default": null
+        },
+        "kind": {
+         "anyOf": [
+          {
+           "items": {
+            "enum": [
+             "normal",
+             "dialog",
+             "utility",
+             "popup",
+             "shell",
+             "other"
+            ],
+            "type": "string"
+           },
+           "minItems": 1,
+           "type": "array"
+          },
+          {
+           "type": "null"
+          }
+         ],
+         "default": null
+        }
+       },
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "windows": {
+     "items": {
+      "description": "One KWin window.",
+      "properties": {
+       "id": {
+        "type": "string"
+       },
+       "app_id": {
+        "type": "string"
+       },
+       "caption": {
+        "type": "string"
+       },
+       "kind": {
+        "enum": [
+         "normal",
+         "dialog",
+         "utility",
+         "popup",
+         "shell",
+         "other"
+        ],
+        "type": "string"
+       },
+       "active": {
+        "type": "boolean"
+       },
+       "frame": {
+        "$ref": "#/$defs/Rect"
+       },
+       "client": {
+        "$ref": "#/$defs/Rect"
+       },
+       "moveable": {
+        "type": "boolean"
+       },
+       "resizeable": {
+        "type": "boolean"
+       },
+       "closeable": {
+        "type": "boolean"
+       },
+       "desktops": {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       "on_all_desktops": {
+        "type": "boolean"
+       }
+      },
+      "required": [
+       "id",
+       "app_id",
+       "caption",
+       "kind",
+       "active",
+       "frame",
+       "client",
+       "moveable",
+       "resizeable",
+       "closeable",
+       "desktops",
+       "on_all_desktops"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    }
+   },
+   "type": "object",
+   "$defs": {
+    "Rect": {
+     "additionalProperties": false,
+     "description": "Global logical px.",
+     "properties": {
+      "x": {
+       "type": "integer"
+      },
+      "y": {
+       "type": "integer"
+      },
+      "width": {
+       "exclusiveMinimum": 0,
+       "type": "integer"
+      },
+      "height": {
+       "exclusiveMinimum": 0,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "x",
+      "y",
+      "width",
+      "height"
+     ],
+     "type": "object"
+    }
+   }
+  },
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  }
+ },
+ {
+  "name": "desktop_list",
+  "title": "List virtual desktops",
+  "description": "List KWin virtual desktops in pager order with the current one marked.",
+  "inputSchema": {
+   "properties": {},
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Virtual desktops in pager order.",
+   "properties": {
+    "desktops": {
+     "items": {
+      "description": "One KWin virtual desktop; id is stable while the desktop exists.",
+      "properties": {
+       "id": {
+        "type": "string"
+       },
+       "name": {
+        "type": "string"
+       },
+       "current": {
+        "type": "boolean"
+       }
+      },
+      "required": [
+       "id",
+       "name",
+       "current"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "current_desktop_id": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    }
+   },
+   "required": [
+    "current_desktop_id"
+   ],
+   "type": "object"
+  },
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  }
+ },
+ {
+  "name": "window_focus",
+  "title": "Activate window",
+  "description": "Raise and activate exactly one window (workspace.activeWindow).",
+  "inputSchema": {
+   "properties": {
+    "window": {
+     "additionalProperties": false,
+     "description": "Must match exactly one window; an ambiguous match is an error listing candidate ids. AND-ed filters over all windows; mutators need exactly one match (errors list ids and kinds).",
+     "properties": {
+      "id": {
+       "type": "string"
+      },
+      "app_id": {
+       "type": "string"
+      },
+      "caption": {
+       "type": "string"
+      },
+      "active": {
+       "type": "boolean"
+      },
+      "kind": {
+       "items": {
+        "enum": [
+         "normal",
+         "dialog",
+         "utility",
+         "popup",
+         "shell",
+         "other"
+        ],
+        "type": "string"
+       },
+       "minItems": 1,
+       "type": "array"
+      }
+     },
+     "type": "object"
+    },
+    "capture": {
+     "additionalProperties": false,
+     "description": "Frames taken delays_ms after the action ends; same options as screen_capture.",
+     "properties": {
+      "delays_ms": {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      "region": {
+       "additionalProperties": false,
+       "description": "Global logical px.",
+       "properties": {
+        "x": {
+         "type": "integer"
+        },
+        "y": {
+         "type": "integer"
+        },
+        "width": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        },
+        "height": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+       ],
+       "type": "object"
+      },
+      "max_edge": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "include_cursor": {
+       "default": false,
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "delays_ms"
+     ],
+     "type": "object"
+    }
+   },
+   "required": [
+    "window"
+   ],
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Result of window_focus; window is observed after the activation.",
+   "properties": {
+    "window_id": {
+     "type": "string"
+    },
+    "window": {
+     "anyOf": [
+      {
+       "description": "One KWin window.",
+       "properties": {
+        "id": {
+         "type": "string"
+        },
+        "app_id": {
+         "type": "string"
+        },
+        "caption": {
+         "type": "string"
+        },
+        "kind": {
+         "enum": [
+          "normal",
+          "dialog",
+          "utility",
+          "popup",
+          "shell",
+          "other"
+         ],
+         "type": "string"
+        },
+        "active": {
+         "type": "boolean"
+        },
+        "frame": {
+         "$ref": "#/$defs/Rect"
+        },
+        "client": {
+         "$ref": "#/$defs/Rect"
+        },
+        "moveable": {
+         "type": "boolean"
+        },
+        "resizeable": {
+         "type": "boolean"
+        },
+        "closeable": {
+         "type": "boolean"
+        },
+        "desktops": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "on_all_desktops": {
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "id",
+        "app_id",
+        "caption",
+        "kind",
+        "active",
+        "frame",
+        "client",
+        "moveable",
+        "resizeable",
+        "closeable",
+        "desktops",
+        "on_all_desktops"
+       ],
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "observation_error": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "frames": {
+     "items": {
+      "description": "One saved PNG of the workspace (or of a region of it).",
+      "properties": {
+       "delay_ms": {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null
+       },
+       "path": {
+        "type": "string"
+       },
+       "uri": {
+        "type": "string"
+       },
+       "width": {
+        "type": "integer"
+       },
+       "height": {
+        "type": "integer"
+       },
+       "size_kb": {
+        "type": "number"
+       },
+       "mapping": {
+        "anyOf": [
+         {
+          "description": "Image px to logical px: logical = origin + image_px / scale.",
+          "properties": {
+           "scale": {
+            "type": "number"
+           },
+           "origin": {
+            "additionalProperties": false,
+            "description": "Global logical px.",
+            "properties": {
+             "x": {
+              "type": "integer"
+             },
+             "y": {
+              "type": "integer"
+             }
+            },
+            "required": [
+             "x",
+             "y"
+            ],
+            "type": "object"
+           }
+          },
+          "required": [
+           "scale",
+           "origin"
+          ],
+          "type": "object"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "coverage": {
+        "enum": [
+         "full",
+         "partial"
+        ],
+        "type": "string"
+       },
+       "coordinate_space": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "path",
+       "uri",
+       "width",
+       "height",
+       "size_kb",
+       "mapping",
+       "coverage",
+       "coordinate_space"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "warnings": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "window_id",
+    "window"
+   ],
+   "type": "object",
+   "$defs": {
+    "Rect": {
+     "additionalProperties": false,
+     "description": "Global logical px.",
+     "properties": {
+      "x": {
+       "type": "integer"
+      },
+      "y": {
+       "type": "integer"
+      },
+      "width": {
+       "exclusiveMinimum": 0,
+       "type": "integer"
+      },
+      "height": {
+       "exclusiveMinimum": 0,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "x",
+      "y",
+      "width",
+      "height"
+     ],
+     "type": "object"
+    }
+   }
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  }
+ },
+ {
+  "name": "window_place",
+  "title": "Move window",
+  "description": "Set frame and/or virtual desktop of exactly one window, then read it back (KWin applies async). Refused with 'nothing was changed' when transients would also move.",
+  "inputSchema": {
+   "properties": {
+    "window": {
+     "additionalProperties": false,
+     "description": "Must match exactly one window; an ambiguous match is an error listing candidate ids. AND-ed filters over all windows; mutators need exactly one match (errors list ids and kinds).",
+     "properties": {
+      "id": {
+       "type": "string"
+      },
+      "app_id": {
+       "type": "string"
+      },
+      "caption": {
+       "type": "string"
+      },
+      "active": {
+       "type": "boolean"
+      },
+      "kind": {
+       "items": {
+        "enum": [
+         "normal",
+         "dialog",
+         "utility",
+         "popup",
+         "shell",
+         "other"
+        ],
+        "type": "string"
+       },
+       "minItems": 1,
+       "type": "array"
+      }
+     },
+     "type": "object"
+    },
+    "frame": {
+     "additionalProperties": false,
+     "description": "New outer frame, global logical px; omitted fields kept; size <= workspace. Omitted fields keep their value.",
+     "properties": {
+      "x": {
+       "type": "integer"
+      },
+      "y": {
+       "type": "integer"
+      },
+      "width": {
+       "exclusiveMinimum": 0,
+       "type": "integer"
+      },
+      "height": {
+       "exclusiveMinimum": 0,
+       "type": "integer"
+      }
+     },
+     "type": "object"
+    },
+    "desktop": {
+     "type": "string",
+     "description": "Move to this virtual desktop id (from desktop_list)."
+    },
+    "capture": {
+     "additionalProperties": false,
+     "description": "Frames taken delays_ms after the action ends; same options as screen_capture.",
+     "properties": {
+      "delays_ms": {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      "region": {
+       "additionalProperties": false,
+       "description": "Global logical px.",
+       "properties": {
+        "x": {
+         "type": "integer"
+        },
+        "y": {
+         "type": "integer"
+        },
+        "width": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        },
+        "height": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+       ],
+       "type": "object"
+      },
+      "max_edge": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "include_cursor": {
+       "default": false,
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "delays_ms"
+     ],
+     "type": "object"
+    }
+   },
+   "required": [
+    "window"
+   ],
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Result of window_place, read back after KWin applied it.",
+   "properties": {
+    "window_id": {
+     "type": "string"
+    },
+    "requested_frame": {
+     "anyOf": [
+      {
+       "additionalProperties": false,
+       "description": "Omitted fields keep their value.",
+       "properties": {
+        "x": {
+         "anyOf": [
+          {
+           "type": "integer"
+          },
+          {
+           "type": "null"
+          }
+         ],
+         "default": null
+        },
+        "y": {
+         "anyOf": [
+          {
+           "type": "integer"
+          },
+          {
+           "type": "null"
+          }
+         ],
+         "default": null
+        },
+        "width": {
+         "anyOf": [
+          {
+           "exclusiveMinimum": 0,
+           "type": "integer"
+          },
+          {
+           "type": "null"
+          }
+         ],
+         "default": null
+        },
+        "height": {
+         "anyOf": [
+          {
+           "exclusiveMinimum": 0,
+           "type": "integer"
+          },
+          {
+           "type": "null"
+          }
+         ],
+         "default": null
+        }
+       },
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "requested_desktop": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "window": {
+     "anyOf": [
+      {
+       "description": "One KWin window.",
+       "properties": {
+        "id": {
+         "type": "string"
+        },
+        "app_id": {
+         "type": "string"
+        },
+        "caption": {
+         "type": "string"
+        },
+        "kind": {
+         "enum": [
+          "normal",
+          "dialog",
+          "utility",
+          "popup",
+          "shell",
+          "other"
+         ],
+         "type": "string"
+        },
+        "active": {
+         "type": "boolean"
+        },
+        "frame": {
+         "$ref": "#/$defs/Rect"
+        },
+        "client": {
+         "$ref": "#/$defs/Rect"
+        },
+        "moveable": {
+         "type": "boolean"
+        },
+        "resizeable": {
+         "type": "boolean"
+        },
+        "closeable": {
+         "type": "boolean"
+        },
+        "desktops": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "on_all_desktops": {
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "id",
+        "app_id",
+        "caption",
+        "kind",
+        "active",
+        "frame",
+        "client",
+        "moveable",
+        "resizeable",
+        "closeable",
+        "desktops",
+        "on_all_desktops"
+       ],
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "observation_error": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "before": {
+     "description": "The window's state when window_place was requested.",
+     "properties": {
+      "app_id": {
+       "type": "string"
+      },
+      "caption": {
+       "type": "string"
+      },
+      "frame": {
+       "$ref": "#/$defs/Rect"
+      },
+      "desktops": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "on_all_desktops": {
+       "type": "boolean"
+      },
+      "moveable": {
+       "type": "boolean"
+      },
+      "resizeable": {
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "app_id",
+      "caption",
+      "frame",
+      "desktops",
+      "on_all_desktops",
+      "moveable",
+      "resizeable"
+     ],
+     "type": "object"
+    },
+    "applied": {
+     "description": "Per requested part: true = observed applied; null = not requested.",
+     "properties": {
+      "frame": {
+       "anyOf": [
+        {
+         "type": "boolean"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null
+      },
+      "desktop": {
+       "anyOf": [
+        {
+         "type": "boolean"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null
+      }
+     },
+     "type": "object"
+    },
+    "pending": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "current_desktop_before": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "current_desktop_after": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "frames": {
+     "items": {
+      "description": "One saved PNG of the workspace (or of a region of it).",
+      "properties": {
+       "delay_ms": {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null
+       },
+       "path": {
+        "type": "string"
+       },
+       "uri": {
+        "type": "string"
+       },
+       "width": {
+        "type": "integer"
+       },
+       "height": {
+        "type": "integer"
+       },
+       "size_kb": {
+        "type": "number"
+       },
+       "mapping": {
+        "anyOf": [
+         {
+          "description": "Image px to logical px: logical = origin + image_px / scale.",
+          "properties": {
+           "scale": {
+            "type": "number"
+           },
+           "origin": {
+            "additionalProperties": false,
+            "description": "Global logical px.",
+            "properties": {
+             "x": {
+              "type": "integer"
+             },
+             "y": {
+              "type": "integer"
+             }
+            },
+            "required": [
+             "x",
+             "y"
+            ],
+            "type": "object"
+           }
+          },
+          "required": [
+           "scale",
+           "origin"
+          ],
+          "type": "object"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "coverage": {
+        "enum": [
+         "full",
+         "partial"
+        ],
+        "type": "string"
+       },
+       "coordinate_space": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "path",
+       "uri",
+       "width",
+       "height",
+       "size_kb",
+       "mapping",
+       "coverage",
+       "coordinate_space"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "warnings": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "window_id",
+    "window",
+    "before",
+    "applied"
+   ],
+   "type": "object",
+   "$defs": {
+    "Rect": {
+     "additionalProperties": false,
+     "description": "Global logical px.",
+     "properties": {
+      "x": {
+       "type": "integer"
+      },
+      "y": {
+       "type": "integer"
+      },
+      "width": {
+       "exclusiveMinimum": 0,
+       "type": "integer"
+      },
+      "height": {
+       "exclusiveMinimum": 0,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "x",
+      "y",
+      "width",
+      "height"
+     ],
+     "type": "object"
+    }
+   }
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": false,
+   "openWorldHint": false
+  }
+ },
+ {
+  "name": "window_close",
+  "title": "Close window",
+  "description": "Ask exactly one window to close (app may refuse). On a live session the user must confirm; unconfirmed, not closeable or unknown = non-error refusal.",
+  "inputSchema": {
+   "properties": {
+    "window": {
+     "additionalProperties": false,
+     "description": "Must match exactly one window; an ambiguous match is an error listing candidate ids. AND-ed filters over all windows; mutators need exactly one match (errors list ids and kinds).",
+     "properties": {
+      "id": {
+       "type": "string"
+      },
+      "app_id": {
+       "type": "string"
+      },
+      "caption": {
+       "type": "string"
+      },
+      "active": {
+       "type": "boolean"
+      },
+      "kind": {
+       "items": {
+        "enum": [
+         "normal",
+         "dialog",
+         "utility",
+         "popup",
+         "shell",
+         "other"
+        ],
+        "type": "string"
+       },
+       "minItems": 1,
+       "type": "array"
+      }
+     },
+     "type": "object"
+    },
+    "capture": {
+     "additionalProperties": false,
+     "description": "Frames taken delays_ms after the action ends; same options as screen_capture.",
+     "properties": {
+      "delays_ms": {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      "region": {
+       "additionalProperties": false,
+       "description": "Global logical px.",
+       "properties": {
+        "x": {
+         "type": "integer"
+        },
+        "y": {
+         "type": "integer"
+        },
+        "width": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        },
+        "height": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+       ],
+       "type": "object"
+      },
+      "max_edge": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "include_cursor": {
+       "default": false,
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "delays_ms"
+     ],
+     "type": "object"
+    }
+   },
+   "required": [
+    "window"
+   ],
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Result of window_close; outcomes other than a request are refusals, not errors.",
+   "properties": {
+    "window_id": {
+     "type": "string"
+    },
+    "app_id": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "caption": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "requested": {
+     "type": "boolean"
+    },
+    "consent": {
+     "anyOf": [
+      {
+       "enum": [
+        "not_required",
+        "accepted",
+        "not_confirmed",
+        "declined",
+        "cancelled",
+        "unsupported"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "refusal": {
+     "anyOf": [
+      {
+       "enum": [
+        "no_window",
+        "not_closeable",
+        "no_consent"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "frames": {
+     "items": {
+      "description": "One saved PNG of the workspace (or of a region of it).",
+      "properties": {
+       "delay_ms": {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null
+       },
+       "path": {
+        "type": "string"
+       },
+       "uri": {
+        "type": "string"
+       },
+       "width": {
+        "type": "integer"
+       },
+       "height": {
+        "type": "integer"
+       },
+       "size_kb": {
+        "type": "number"
+       },
+       "mapping": {
+        "anyOf": [
+         {
+          "description": "Image px to logical px: logical = origin + image_px / scale.",
+          "properties": {
+           "scale": {
+            "type": "number"
+           },
+           "origin": {
+            "additionalProperties": false,
+            "description": "Global logical px.",
+            "properties": {
+             "x": {
+              "type": "integer"
+             },
+             "y": {
+              "type": "integer"
+             }
+            },
+            "required": [
+             "x",
+             "y"
+            ],
+            "type": "object"
+           }
+          },
+          "required": [
+           "scale",
+           "origin"
+          ],
+          "type": "object"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "coverage": {
+        "enum": [
+         "full",
+         "partial"
+        ],
+        "type": "string"
+       },
+       "coordinate_space": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "path",
+       "uri",
+       "width",
+       "height",
+       "size_kb",
+       "mapping",
+       "coverage",
+       "coordinate_space"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "warnings": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "window_id",
+    "requested"
+   ],
+   "type": "object"
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": false,
+   "openWorldHint": false
+  }
+ },
+ {
+  "name": "pointer_click",
+  "title": "Click",
+  "description": "Move the pointer to a target and click 1-3 times, optionally holding modifier keys and holding the last press.",
+  "inputSchema": {
+   "properties": {
+    "target": {
+     "anyOf": [
+      {
+       "additionalProperties": false,
+       "description": "Global logical px.",
+       "properties": {
+        "x": {
+         "type": "integer"
+        },
+        "y": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "x",
+        "y"
+       ],
+       "type": "object"
+      },
+      {
+       "additionalProperties": false,
+       "description": "Centre of a ref's live rect + offset.",
+       "properties": {
+        "ref": {
+         "type": "string"
+        },
+        "dx": {
+         "default": 0,
+         "type": "integer"
+        },
+        "dy": {
+         "default": 0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "ref"
+       ],
+       "type": "object"
+      }
+     ]
+    },
+    "button": {
+     "default": "left",
+     "enum": [
+      "left",
+      "right",
+      "middle"
+     ],
+     "type": "string"
+    },
+    "count": {
+     "default": 1,
+     "description": "1 single, 2 double, 3 triple.",
+     "maximum": 3,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "modifiers": {
+     "type": "string",
+     "description": "Modifier keys held during the click, e.g. \"ctrl+shift\"."
+    },
+    "hold_ms": {
+     "default": 0,
+     "description": "Press duration of the last click (long-press); min 25 ms.",
+     "type": "integer"
+    },
+    "capture": {
+     "additionalProperties": false,
+     "description": "Frames taken delays_ms after the action ends; same options as screen_capture.",
+     "properties": {
+      "delays_ms": {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      "region": {
+       "additionalProperties": false,
+       "description": "Global logical px.",
+       "properties": {
+        "x": {
+         "type": "integer"
+        },
+        "y": {
+         "type": "integer"
+        },
+        "width": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        },
+        "height": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+       ],
+       "type": "object"
+      },
+      "max_edge": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "include_cursor": {
+       "default": false,
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "delays_ms"
+     ],
+     "type": "object"
+    }
+   },
+   "required": [
+    "target"
+   ],
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Result of pointer_click.",
+   "properties": {
+    "tool": {
+     "default": "pointer_click",
+     "type": "string"
+    },
+    "at": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Point"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "element": {
+     "anyOf": [
+      {
+       "description": "One AT-SPI element; rect is global logical px, or null with the reason.",
+       "properties": {
+        "ref": {
+         "type": "string"
+        },
+        "role": {
+         "type": "string"
+        },
+        "name": {
+         "type": "string"
+        },
+        "description": {
+         "type": "string"
+        },
+        "states": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "depth": {
+         "type": "integer"
+        },
+        "app": {
+         "type": "string"
+        },
+        "window_id": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "child_count": {
+         "type": "integer"
+        },
+        "rect": {
+         "anyOf": [
+          {
+           "additionalProperties": false,
+           "description": "Global logical px.",
+           "properties": {
+            "x": {
+             "type": "integer"
+            },
+            "y": {
+             "type": "integer"
+            },
+            "width": {
+             "exclusiveMinimum": 0,
+             "type": "integer"
+            },
+            "height": {
+             "exclusiveMinimum": 0,
+             "type": "integer"
+            }
+           },
+           "required": [
+            "x",
+            "y",
+            "width",
+            "height"
+           ],
+           "type": "object"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "unavailable": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "actions": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "text": {
+         "type": "string"
+        },
+        "value": {
+         "anyOf": [
+          {
+           "type": "number"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "value_max": {
+         "anyOf": [
+          {
+           "type": "number"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        }
+       },
+       "required": [
+        "ref",
+        "role",
+        "name",
+        "description",
+        "states",
+        "depth",
+        "app",
+        "window_id",
+        "child_count",
+        "rect",
+        "unavailable",
+        "actions",
+        "text",
+        "value",
+        "value_max"
+       ],
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "frames": {
+     "items": {
+      "description": "One saved PNG of the workspace (or of a region of it).",
+      "properties": {
+       "delay_ms": {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null
+       },
+       "path": {
+        "type": "string"
+       },
+       "uri": {
+        "type": "string"
+       },
+       "width": {
+        "type": "integer"
+       },
+       "height": {
+        "type": "integer"
+       },
+       "size_kb": {
+        "type": "number"
+       },
+       "mapping": {
+        "anyOf": [
+         {
+          "description": "Image px to logical px: logical = origin + image_px / scale.",
+          "properties": {
+           "scale": {
+            "type": "number"
+           },
+           "origin": {
+            "$ref": "#/$defs/Point"
+           }
+          },
+          "required": [
+           "scale",
+           "origin"
+          ],
+          "type": "object"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "coverage": {
+        "enum": [
+         "full",
+         "partial"
+        ],
+        "type": "string"
+       },
+       "coordinate_space": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "path",
+       "uri",
+       "width",
+       "height",
+       "size_kb",
+       "mapping",
+       "coverage",
+       "coordinate_space"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "held": {
+     "description": "Mouse buttons and keys kwin-mcp holds pressed.",
+     "properties": {
+      "buttons": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "keys": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      }
+     },
+     "type": "object"
+    },
+    "warnings": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "button": {
+     "enum": [
+      "left",
+      "right",
+      "middle"
+     ],
+     "type": "string"
+    },
+    "count": {
+     "type": "integer"
+    },
+    "modifiers": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "hold_ms": {
+     "default": 0,
+     "type": "integer"
+    }
+   },
+   "required": [
+    "button",
+    "count"
+   ],
+   "type": "object",
+   "$defs": {
+    "Point": {
+     "additionalProperties": false,
+     "description": "Global logical px.",
+     "properties": {
+      "x": {
+       "type": "integer"
+      },
+      "y": {
+       "type": "integer"
+      }
+     },
+     "required": [
+      "x",
+      "y"
+     ],
+     "type": "object"
+    }
+   }
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": false,
+   "openWorldHint": false
+  }
+ },
+ {
+  "name": "pointer_move",
+  "title": "Move pointer",
+  "description": "Move the pointer onto a target and leave it there (hover, tooltips).",
+  "inputSchema": {
+   "properties": {
+    "target": {
+     "anyOf": [
+      {
+       "additionalProperties": false,
+       "description": "Global logical px.",
+       "properties": {
+        "x": {
+         "type": "integer"
+        },
+        "y": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "x",
+        "y"
+       ],
+       "type": "object"
+      },
+      {
+       "additionalProperties": false,
+       "description": "Centre of a ref's live rect + offset.",
+       "properties": {
+        "ref": {
+         "type": "string"
+        },
+        "dx": {
+         "default": 0,
+         "type": "integer"
+        },
+        "dy": {
+         "default": 0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "ref"
+       ],
+       "type": "object"
+      }
+     ]
+    },
+    "capture": {
+     "additionalProperties": false,
+     "description": "Frames taken delays_ms after the action ends; same options as screen_capture.",
+     "properties": {
+      "delays_ms": {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      "region": {
+       "additionalProperties": false,
+       "description": "Global logical px.",
+       "properties": {
+        "x": {
+         "type": "integer"
+        },
+        "y": {
+         "type": "integer"
+        },
+        "width": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        },
+        "height": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+       ],
+       "type": "object"
+      },
+      "max_edge": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "include_cursor": {
+       "default": false,
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "delays_ms"
+     ],
+     "type": "object"
+    }
+   },
+   "required": [
+    "target"
+   ],
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Result of pointer_move.",
+   "properties": {
+    "tool": {
+     "default": "pointer_move",
+     "type": "string"
+    },
+    "at": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Point"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "element": {
+     "anyOf": [
+      {
+       "description": "One AT-SPI element; rect is global logical px, or null with the reason.",
+       "properties": {
+        "ref": {
+         "type": "string"
+        },
+        "role": {
+         "type": "string"
+        },
+        "name": {
+         "type": "string"
+        },
+        "description": {
+         "type": "string"
+        },
+        "states": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "depth": {
+         "type": "integer"
+        },
+        "app": {
+         "type": "string"
+        },
+        "window_id": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "child_count": {
+         "type": "integer"
+        },
+        "rect": {
+         "anyOf": [
+          {
+           "additionalProperties": false,
+           "description": "Global logical px.",
+           "properties": {
+            "x": {
+             "type": "integer"
+            },
+            "y": {
+             "type": "integer"
+            },
+            "width": {
+             "exclusiveMinimum": 0,
+             "type": "integer"
+            },
+            "height": {
+             "exclusiveMinimum": 0,
+             "type": "integer"
+            }
+           },
+           "required": [
+            "x",
+            "y",
+            "width",
+            "height"
+           ],
+           "type": "object"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "unavailable": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "actions": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "text": {
+         "type": "string"
+        },
+        "value": {
+         "anyOf": [
+          {
+           "type": "number"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "value_max": {
+         "anyOf": [
+          {
+           "type": "number"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        }
+       },
+       "required": [
+        "ref",
+        "role",
+        "name",
+        "description",
+        "states",
+        "depth",
+        "app",
+        "window_id",
+        "child_count",
+        "rect",
+        "unavailable",
+        "actions",
+        "text",
+        "value",
+        "value_max"
+       ],
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "frames": {
+     "items": {
+      "description": "One saved PNG of the workspace (or of a region of it).",
+      "properties": {
+       "delay_ms": {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null
+       },
+       "path": {
+        "type": "string"
+       },
+       "uri": {
+        "type": "string"
+       },
+       "width": {
+        "type": "integer"
+       },
+       "height": {
+        "type": "integer"
+       },
+       "size_kb": {
+        "type": "number"
+       },
+       "mapping": {
+        "anyOf": [
+         {
+          "description": "Image px to logical px: logical = origin + image_px / scale.",
+          "properties": {
+           "scale": {
+            "type": "number"
+           },
+           "origin": {
+            "$ref": "#/$defs/Point"
+           }
+          },
+          "required": [
+           "scale",
+           "origin"
+          ],
+          "type": "object"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "coverage": {
+        "enum": [
+         "full",
+         "partial"
+        ],
+        "type": "string"
+       },
+       "coordinate_space": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "path",
+       "uri",
+       "width",
+       "height",
+       "size_kb",
+       "mapping",
+       "coverage",
+       "coordinate_space"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "held": {
+     "description": "Mouse buttons and keys kwin-mcp holds pressed.",
+     "properties": {
+      "buttons": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "keys": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      }
+     },
+     "type": "object"
+    },
+    "warnings": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    }
+   },
+   "type": "object",
+   "$defs": {
+    "Point": {
+     "additionalProperties": false,
+     "description": "Global logical px.",
+     "properties": {
+      "x": {
+       "type": "integer"
+      },
+      "y": {
+       "type": "integer"
+      }
+     },
+     "required": [
+      "x",
+      "y"
+     ],
+     "type": "object"
+    }
+   }
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  }
+ },
+ {
+  "name": "pointer_scroll",
+  "title": "Scroll",
+  "description": "Move to a target and scroll the wheel.",
+  "inputSchema": {
+   "properties": {
+    "target": {
+     "anyOf": [
+      {
+       "additionalProperties": false,
+       "description": "Global logical px.",
+       "properties": {
+        "x": {
+         "type": "integer"
+        },
+        "y": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "x",
+        "y"
+       ],
+       "type": "object"
+      },
+      {
+       "additionalProperties": false,
+       "description": "Centre of a ref's live rect + offset.",
+       "properties": {
+        "ref": {
+         "type": "string"
+        },
+        "dx": {
+         "default": 0,
+         "type": "integer"
+        },
+        "dy": {
+         "default": 0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "ref"
+       ],
+       "type": "object"
+      }
+     ]
+    },
+    "delta": {
+     "description": "Amount in `unit`; positive = down/right, negative = up/left.",
+     "type": "integer"
+    },
+    "axis": {
+     "default": "vertical",
+     "enum": [
+      "vertical",
+      "horizontal"
+     ],
+     "type": "string"
+    },
+    "unit": {
+     "default": "smooth_step",
+     "description": "smooth_step = 15 px smooth scroll per unit; detent = one wheel click.",
+     "enum": [
+      "smooth_step",
+      "detent"
+     ],
+     "type": "string"
+    },
+    "steps": {
+     "default": 1,
+     "description": "Split delta into this many increments, 10 ms apart.",
+     "type": "integer"
+    },
+    "capture": {
+     "additionalProperties": false,
+     "description": "Frames taken delays_ms after the action ends; same options as screen_capture.",
+     "properties": {
+      "delays_ms": {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      "region": {
+       "additionalProperties": false,
+       "description": "Global logical px.",
+       "properties": {
+        "x": {
+         "type": "integer"
+        },
+        "y": {
+         "type": "integer"
+        },
+        "width": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        },
+        "height": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+       ],
+       "type": "object"
+      },
+      "max_edge": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "include_cursor": {
+       "default": false,
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "delays_ms"
+     ],
+     "type": "object"
+    }
+   },
+   "required": [
+    "target",
+    "delta"
+   ],
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Result of pointer_scroll.",
+   "properties": {
+    "tool": {
+     "default": "pointer_scroll",
+     "type": "string"
+    },
+    "at": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Point"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "element": {
+     "anyOf": [
+      {
+       "description": "One AT-SPI element; rect is global logical px, or null with the reason.",
+       "properties": {
+        "ref": {
+         "type": "string"
+        },
+        "role": {
+         "type": "string"
+        },
+        "name": {
+         "type": "string"
+        },
+        "description": {
+         "type": "string"
+        },
+        "states": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "depth": {
+         "type": "integer"
+        },
+        "app": {
+         "type": "string"
+        },
+        "window_id": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "child_count": {
+         "type": "integer"
+        },
+        "rect": {
+         "anyOf": [
+          {
+           "additionalProperties": false,
+           "description": "Global logical px.",
+           "properties": {
+            "x": {
+             "type": "integer"
+            },
+            "y": {
+             "type": "integer"
+            },
+            "width": {
+             "exclusiveMinimum": 0,
+             "type": "integer"
+            },
+            "height": {
+             "exclusiveMinimum": 0,
+             "type": "integer"
+            }
+           },
+           "required": [
+            "x",
+            "y",
+            "width",
+            "height"
+           ],
+           "type": "object"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "unavailable": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "actions": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "text": {
+         "type": "string"
+        },
+        "value": {
+         "anyOf": [
+          {
+           "type": "number"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "value_max": {
+         "anyOf": [
+          {
+           "type": "number"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        }
+       },
+       "required": [
+        "ref",
+        "role",
+        "name",
+        "description",
+        "states",
+        "depth",
+        "app",
+        "window_id",
+        "child_count",
+        "rect",
+        "unavailable",
+        "actions",
+        "text",
+        "value",
+        "value_max"
+       ],
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "frames": {
+     "items": {
+      "description": "One saved PNG of the workspace (or of a region of it).",
+      "properties": {
+       "delay_ms": {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null
+       },
+       "path": {
+        "type": "string"
+       },
+       "uri": {
+        "type": "string"
+       },
+       "width": {
+        "type": "integer"
+       },
+       "height": {
+        "type": "integer"
+       },
+       "size_kb": {
+        "type": "number"
+       },
+       "mapping": {
+        "anyOf": [
+         {
+          "description": "Image px to logical px: logical = origin + image_px / scale.",
+          "properties": {
+           "scale": {
+            "type": "number"
+           },
+           "origin": {
+            "$ref": "#/$defs/Point"
+           }
+          },
+          "required": [
+           "scale",
+           "origin"
+          ],
+          "type": "object"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "coverage": {
+        "enum": [
+         "full",
+         "partial"
+        ],
+        "type": "string"
+       },
+       "coordinate_space": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "path",
+       "uri",
+       "width",
+       "height",
+       "size_kb",
+       "mapping",
+       "coverage",
+       "coordinate_space"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "held": {
+     "description": "Mouse buttons and keys kwin-mcp holds pressed.",
+     "properties": {
+      "buttons": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "keys": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      }
+     },
+     "type": "object"
+    },
+    "warnings": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "delta": {
+     "type": "integer"
+    },
+    "axis": {
+     "enum": [
+      "vertical",
+      "horizontal"
+     ],
+     "type": "string"
+    },
+    "unit": {
+     "enum": [
+      "smooth_step",
+      "detent"
+     ],
+     "type": "string"
+    },
+    "steps": {
+     "type": "integer"
+    }
+   },
+   "required": [
+    "delta",
+    "axis",
+    "unit",
+    "steps"
+   ],
+   "type": "object",
+   "$defs": {
+    "Point": {
+     "additionalProperties": false,
+     "description": "Global logical px.",
+     "properties": {
+      "x": {
+       "type": "integer"
+      },
+      "y": {
+       "type": "integer"
+      }
+     },
+     "required": [
+      "x",
+      "y"
+     ],
+     "type": "object"
+    }
+   }
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": false,
+   "openWorldHint": false
+  }
+ },
+ {
+  "name": "pointer_drag",
+  "title": "Drag",
+  "description": "Press a mouse button at one target, move through optional waypoints, release at another. The button and modifiers are always released, even on error.",
+  "inputSchema": {
+   "properties": {
+    "from": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Point"
+      },
+      {
+       "$ref": "#/$defs/ElementPoint"
+      }
+     ],
+     "description": "Start target."
+    },
+    "to": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Point"
+      },
+      {
+       "$ref": "#/$defs/ElementPoint"
+      }
+     ],
+     "description": "End target."
+    },
+    "button": {
+     "default": "left",
+     "enum": [
+      "left",
+      "right",
+      "middle"
+     ],
+     "type": "string"
+    },
+    "modifiers": {
+     "type": "string",
+     "description": "Modifier keys held during the drag."
+    },
+    "waypoints": {
+     "items": {
+      "additionalProperties": false,
+      "description": "Intermediate drag point; the pointer pauses dwell_ms there.",
+      "properties": {
+       "x": {
+        "type": "integer"
+       },
+       "y": {
+        "type": "integer"
+       },
+       "dwell_ms": {
+        "default": 0,
+        "type": "integer"
+       }
+      },
+      "required": [
+       "x",
+       "y"
+      ],
+      "type": "object"
+     },
+     "type": "array",
+     "description": "Intermediate points {x, y, dwell_ms}; the pointer pauses dwell_ms at each."
+    },
+    "dwell_ms": {
+     "default": 0,
+     "description": "Pause at `to` before releasing (drop targets that need hover).",
+     "type": "integer"
+    },
+    "capture": {
+     "additionalProperties": false,
+     "description": "Frames taken delays_ms after the action ends; same options as screen_capture.",
+     "properties": {
+      "delays_ms": {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      "region": {
+       "additionalProperties": false,
+       "description": "Global logical px.",
+       "properties": {
+        "x": {
+         "type": "integer"
+        },
+        "y": {
+         "type": "integer"
+        },
+        "width": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        },
+        "height": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+       ],
+       "type": "object"
+      },
+      "max_edge": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "include_cursor": {
+       "default": false,
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "delays_ms"
+     ],
+     "type": "object"
+    }
+   },
+   "required": [
+    "from",
+    "to"
+   ],
+   "type": "object",
+   "$defs": {
+    "ElementPoint": {
+     "additionalProperties": false,
+     "description": "Centre of a ref's live rect + offset.",
+     "properties": {
+      "ref": {
+       "type": "string"
+      },
+      "dx": {
+       "default": 0,
+       "type": "integer"
+      },
+      "dy": {
+       "default": 0,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "ref"
+     ],
+     "type": "object"
+    },
+    "Point": {
+     "additionalProperties": false,
+     "description": "Global logical px.",
+     "properties": {
+      "x": {
+       "type": "integer"
+      },
+      "y": {
+       "type": "integer"
+      }
+     },
+     "required": [
+      "x",
+      "y"
+     ],
+     "type": "object"
+    }
+   },
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Result of pointer_drag; at is the drop point.",
+   "properties": {
+    "tool": {
+     "default": "pointer_drag",
+     "type": "string"
+    },
+    "at": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Point"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "element": {
+     "anyOf": [
+      {
+       "description": "One AT-SPI element; rect is global logical px, or null with the reason.",
+       "properties": {
+        "ref": {
+         "type": "string"
+        },
+        "role": {
+         "type": "string"
+        },
+        "name": {
+         "type": "string"
+        },
+        "description": {
+         "type": "string"
+        },
+        "states": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "depth": {
+         "type": "integer"
+        },
+        "app": {
+         "type": "string"
+        },
+        "window_id": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "child_count": {
+         "type": "integer"
+        },
+        "rect": {
+         "anyOf": [
+          {
+           "additionalProperties": false,
+           "description": "Global logical px.",
+           "properties": {
+            "x": {
+             "type": "integer"
+            },
+            "y": {
+             "type": "integer"
+            },
+            "width": {
+             "exclusiveMinimum": 0,
+             "type": "integer"
+            },
+            "height": {
+             "exclusiveMinimum": 0,
+             "type": "integer"
+            }
+           },
+           "required": [
+            "x",
+            "y",
+            "width",
+            "height"
+           ],
+           "type": "object"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "unavailable": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "actions": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "text": {
+         "type": "string"
+        },
+        "value": {
+         "anyOf": [
+          {
+           "type": "number"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "value_max": {
+         "anyOf": [
+          {
+           "type": "number"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        }
+       },
+       "required": [
+        "ref",
+        "role",
+        "name",
+        "description",
+        "states",
+        "depth",
+        "app",
+        "window_id",
+        "child_count",
+        "rect",
+        "unavailable",
+        "actions",
+        "text",
+        "value",
+        "value_max"
+       ],
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "frames": {
+     "items": {
+      "description": "One saved PNG of the workspace (or of a region of it).",
+      "properties": {
+       "delay_ms": {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null
+       },
+       "path": {
+        "type": "string"
+       },
+       "uri": {
+        "type": "string"
+       },
+       "width": {
+        "type": "integer"
+       },
+       "height": {
+        "type": "integer"
+       },
+       "size_kb": {
+        "type": "number"
+       },
+       "mapping": {
+        "anyOf": [
+         {
+          "description": "Image px to logical px: logical = origin + image_px / scale.",
+          "properties": {
+           "scale": {
+            "type": "number"
+           },
+           "origin": {
+            "$ref": "#/$defs/Point"
+           }
+          },
+          "required": [
+           "scale",
+           "origin"
+          ],
+          "type": "object"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "coverage": {
+        "enum": [
+         "full",
+         "partial"
+        ],
+        "type": "string"
+       },
+       "coordinate_space": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "path",
+       "uri",
+       "width",
+       "height",
+       "size_kb",
+       "mapping",
+       "coverage",
+       "coordinate_space"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "held": {
+     "description": "Mouse buttons and keys kwin-mcp holds pressed.",
+     "properties": {
+      "buttons": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "keys": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      }
+     },
+     "type": "object"
+    },
+    "warnings": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "start": {
+     "$ref": "#/$defs/Point"
+    },
+    "button": {
+     "enum": [
+      "left",
+      "right",
+      "middle"
+     ],
+     "type": "string"
+    },
+    "modifiers": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "waypoints": {
+     "default": 0,
+     "type": "integer"
+    },
+    "dwell_ms": {
+     "default": 0,
+     "type": "integer"
+    }
+   },
+   "required": [
+    "start",
+    "button"
+   ],
+   "type": "object",
+   "$defs": {
+    "Point": {
+     "additionalProperties": false,
+     "description": "Global logical px.",
+     "properties": {
+      "x": {
+       "type": "integer"
+      },
+      "y": {
+       "type": "integer"
+      }
+     },
+     "required": [
+      "x",
+      "y"
+     ],
+     "type": "object"
+    }
+   }
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": false,
+   "openWorldHint": false
+  }
+ },
+ {
+  "name": "pointer_hold",
+  "title": "Hold or release mouse button",
+  "description": "Press, move or release one mouse button across calls (custom drags). Each phase moves to target first. Held input stays until released, session_stop or exit; every result reports held input. Gestures never touch a held control.",
+  "inputSchema": {
+   "properties": {
+    "phase": {
+     "description": "press (no-op if held); move (button must be held); release (always sent).",
+     "enum": [
+      "press",
+      "move",
+      "release"
+     ],
+     "type": "string"
+    },
+    "target": {
+     "anyOf": [
+      {
+       "additionalProperties": false,
+       "description": "Global logical px.",
+       "properties": {
+        "x": {
+         "type": "integer"
+        },
+        "y": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "x",
+        "y"
+       ],
+       "type": "object"
+      },
+      {
+       "additionalProperties": false,
+       "description": "Centre of a ref's live rect + offset.",
+       "properties": {
+        "ref": {
+         "type": "string"
+        },
+        "dx": {
+         "default": 0,
+         "type": "integer"
+        },
+        "dy": {
+         "default": 0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "ref"
+       ],
+       "type": "object"
+      }
+     ],
+     "description": "the pointer moves here first."
+    },
+    "button": {
+     "default": "left",
+     "enum": [
+      "left",
+      "right",
+      "middle"
+     ],
+     "type": "string"
+    },
+    "capture": {
+     "additionalProperties": false,
+     "description": "Frames taken delays_ms after the action ends; same options as screen_capture.",
+     "properties": {
+      "delays_ms": {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      "region": {
+       "additionalProperties": false,
+       "description": "Global logical px.",
+       "properties": {
+        "x": {
+         "type": "integer"
+        },
+        "y": {
+         "type": "integer"
+        },
+        "width": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        },
+        "height": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+       ],
+       "type": "object"
+      },
+      "max_edge": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "include_cursor": {
+       "default": false,
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "delays_ms"
+     ],
+     "type": "object"
+    }
+   },
+   "required": [
+    "phase",
+    "target"
+   ],
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Result of pointer_hold; changed = whether the held set changed.",
+   "properties": {
+    "tool": {
+     "default": "pointer_hold",
+     "type": "string"
+    },
+    "at": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Point"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "element": {
+     "anyOf": [
+      {
+       "description": "One AT-SPI element; rect is global logical px, or null with the reason.",
+       "properties": {
+        "ref": {
+         "type": "string"
+        },
+        "role": {
+         "type": "string"
+        },
+        "name": {
+         "type": "string"
+        },
+        "description": {
+         "type": "string"
+        },
+        "states": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "depth": {
+         "type": "integer"
+        },
+        "app": {
+         "type": "string"
+        },
+        "window_id": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "child_count": {
+         "type": "integer"
+        },
+        "rect": {
+         "anyOf": [
+          {
+           "additionalProperties": false,
+           "description": "Global logical px.",
+           "properties": {
+            "x": {
+             "type": "integer"
+            },
+            "y": {
+             "type": "integer"
+            },
+            "width": {
+             "exclusiveMinimum": 0,
+             "type": "integer"
+            },
+            "height": {
+             "exclusiveMinimum": 0,
+             "type": "integer"
+            }
+           },
+           "required": [
+            "x",
+            "y",
+            "width",
+            "height"
+           ],
+           "type": "object"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "unavailable": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "actions": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "text": {
+         "type": "string"
+        },
+        "value": {
+         "anyOf": [
+          {
+           "type": "number"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "value_max": {
+         "anyOf": [
+          {
+           "type": "number"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        }
+       },
+       "required": [
+        "ref",
+        "role",
+        "name",
+        "description",
+        "states",
+        "depth",
+        "app",
+        "window_id",
+        "child_count",
+        "rect",
+        "unavailable",
+        "actions",
+        "text",
+        "value",
+        "value_max"
+       ],
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "frames": {
+     "items": {
+      "description": "One saved PNG of the workspace (or of a region of it).",
+      "properties": {
+       "delay_ms": {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null
+       },
+       "path": {
+        "type": "string"
+       },
+       "uri": {
+        "type": "string"
+       },
+       "width": {
+        "type": "integer"
+       },
+       "height": {
+        "type": "integer"
+       },
+       "size_kb": {
+        "type": "number"
+       },
+       "mapping": {
+        "anyOf": [
+         {
+          "description": "Image px to logical px: logical = origin + image_px / scale.",
+          "properties": {
+           "scale": {
+            "type": "number"
+           },
+           "origin": {
+            "$ref": "#/$defs/Point"
+           }
+          },
+          "required": [
+           "scale",
+           "origin"
+          ],
+          "type": "object"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "coverage": {
+        "enum": [
+         "full",
+         "partial"
+        ],
+        "type": "string"
+       },
+       "coordinate_space": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "path",
+       "uri",
+       "width",
+       "height",
+       "size_kb",
+       "mapping",
+       "coverage",
+       "coordinate_space"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "held": {
+     "description": "Mouse buttons and keys kwin-mcp holds pressed.",
+     "properties": {
+      "buttons": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "keys": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      }
+     },
+     "type": "object"
+    },
+    "warnings": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "phase": {
+     "enum": [
+      "press",
+      "move",
+      "release"
+     ],
+     "type": "string"
+    },
+    "button": {
+     "enum": [
+      "left",
+      "right",
+      "middle"
+     ],
+     "type": "string"
+    },
+    "changed": {
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "phase",
+    "button",
+    "changed"
+   ],
+   "type": "object",
+   "$defs": {
+    "Point": {
+     "additionalProperties": false,
+     "description": "Global logical px.",
+     "properties": {
+      "x": {
+       "type": "integer"
+      },
+      "y": {
+       "type": "integer"
+      }
+     },
+     "required": [
+      "x",
+      "y"
+     ],
+     "type": "object"
+    }
+   }
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": true,
+   "openWorldHint": false
+  }
+ },
+ {
+  "name": "keyboard_press",
+  "title": "Press key combo",
+  "description": "Press and release one key or chord at the keyboard focus.",
+  "inputSchema": {
+   "properties": {
+    "keys": {
+     "description": "e.g. \"Return\", \"ctrl+c\", \"alt+F4\", \"shift+ctrl+z\"; unknown key names are an error.",
+     "type": "string"
+    },
+    "capture": {
+     "additionalProperties": false,
+     "description": "Frames taken delays_ms after the action ends; same options as screen_capture.",
+     "properties": {
+      "delays_ms": {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      "region": {
+       "additionalProperties": false,
+       "description": "Global logical px.",
+       "properties": {
+        "x": {
+         "type": "integer"
+        },
+        "y": {
+         "type": "integer"
+        },
+        "width": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        },
+        "height": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+       ],
+       "type": "object"
+      },
+      "max_edge": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "include_cursor": {
+       "default": false,
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "delays_ms"
+     ],
+     "type": "object"
+    }
+   },
+   "required": [
+    "keys"
+   ],
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Result of keyboard_press.",
+   "properties": {
+    "tool": {
+     "default": "keyboard_press",
+     "type": "string"
+    },
+    "at": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Point"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "element": {
+     "anyOf": [
+      {
+       "description": "One AT-SPI element; rect is global logical px, or null with the reason.",
+       "properties": {
+        "ref": {
+         "type": "string"
+        },
+        "role": {
+         "type": "string"
+        },
+        "name": {
+         "type": "string"
+        },
+        "description": {
+         "type": "string"
+        },
+        "states": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "depth": {
+         "type": "integer"
+        },
+        "app": {
+         "type": "string"
+        },
+        "window_id": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "child_count": {
+         "type": "integer"
+        },
+        "rect": {
+         "anyOf": [
+          {
+           "additionalProperties": false,
+           "description": "Global logical px.",
+           "properties": {
+            "x": {
+             "type": "integer"
+            },
+            "y": {
+             "type": "integer"
+            },
+            "width": {
+             "exclusiveMinimum": 0,
+             "type": "integer"
+            },
+            "height": {
+             "exclusiveMinimum": 0,
+             "type": "integer"
+            }
+           },
+           "required": [
+            "x",
+            "y",
+            "width",
+            "height"
+           ],
+           "type": "object"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "unavailable": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "actions": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "text": {
+         "type": "string"
+        },
+        "value": {
+         "anyOf": [
+          {
+           "type": "number"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "value_max": {
+         "anyOf": [
+          {
+           "type": "number"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        }
+       },
+       "required": [
+        "ref",
+        "role",
+        "name",
+        "description",
+        "states",
+        "depth",
+        "app",
+        "window_id",
+        "child_count",
+        "rect",
+        "unavailable",
+        "actions",
+        "text",
+        "value",
+        "value_max"
+       ],
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "frames": {
+     "items": {
+      "description": "One saved PNG of the workspace (or of a region of it).",
+      "properties": {
+       "delay_ms": {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null
+       },
+       "path": {
+        "type": "string"
+       },
+       "uri": {
+        "type": "string"
+       },
+       "width": {
+        "type": "integer"
+       },
+       "height": {
+        "type": "integer"
+       },
+       "size_kb": {
+        "type": "number"
+       },
+       "mapping": {
+        "anyOf": [
+         {
+          "description": "Image px to logical px: logical = origin + image_px / scale.",
+          "properties": {
+           "scale": {
+            "type": "number"
+           },
+           "origin": {
+            "$ref": "#/$defs/Point"
+           }
+          },
+          "required": [
+           "scale",
+           "origin"
+          ],
+          "type": "object"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "coverage": {
+        "enum": [
+         "full",
+         "partial"
+        ],
+        "type": "string"
+       },
+       "coordinate_space": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "path",
+       "uri",
+       "width",
+       "height",
+       "size_kb",
+       "mapping",
+       "coverage",
+       "coordinate_space"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "held": {
+     "description": "Mouse buttons and keys kwin-mcp holds pressed.",
+     "properties": {
+      "buttons": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "keys": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      }
+     },
+     "type": "object"
+    },
+    "warnings": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "keys": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "keys"
+   ],
+   "type": "object",
+   "$defs": {
+    "Point": {
+     "additionalProperties": false,
+     "description": "Global logical px.",
+     "properties": {
+      "x": {
+       "type": "integer"
+      },
+      "y": {
+       "type": "integer"
+      }
+     },
+     "required": [
+      "x",
+      "y"
+     ],
+     "type": "object"
+    }
+   }
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": false,
+   "openWorldHint": false
+  }
+ },
+ {
+  "name": "keyboard_type",
+  "title": "Type text",
+  "description": "Insert text at the keyboard focus. keys = per-key US-QWERTY events (rejects other characters before sending anything); unicode = wtype, else a private clipboard paste that restores the previous selection.",
+  "inputSchema": {
+   "properties": {
+    "text": {
+     "description": "Text to insert.",
+     "type": "string"
+    },
+    "method": {
+     "default": "keys",
+     "description": "keys = per-key events, US-QWERTY only (else error: retry method=\"unicode\"); unicode = any text, may paste.",
+     "enum": [
+      "keys",
+      "unicode"
+     ],
+     "type": "string"
+    },
+    "capture": {
+     "additionalProperties": false,
+     "description": "Frames taken delays_ms after the action ends; same options as screen_capture.",
+     "properties": {
+      "delays_ms": {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      "region": {
+       "additionalProperties": false,
+       "description": "Global logical px.",
+       "properties": {
+        "x": {
+         "type": "integer"
+        },
+        "y": {
+         "type": "integer"
+        },
+        "width": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        },
+        "height": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+       ],
+       "type": "object"
+      },
+      "max_edge": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "include_cursor": {
+       "default": false,
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "delays_ms"
+     ],
+     "type": "object"
+    }
+   },
+   "required": [
+    "text"
+   ],
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Result of keyboard_type.",
+   "properties": {
+    "tool": {
+     "default": "keyboard_type",
+     "type": "string"
+    },
+    "at": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Point"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "element": {
+     "anyOf": [
+      {
+       "description": "One AT-SPI element; rect is global logical px, or null with the reason.",
+       "properties": {
+        "ref": {
+         "type": "string"
+        },
+        "role": {
+         "type": "string"
+        },
+        "name": {
+         "type": "string"
+        },
+        "description": {
+         "type": "string"
+        },
+        "states": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "depth": {
+         "type": "integer"
+        },
+        "app": {
+         "type": "string"
+        },
+        "window_id": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "child_count": {
+         "type": "integer"
+        },
+        "rect": {
+         "anyOf": [
+          {
+           "additionalProperties": false,
+           "description": "Global logical px.",
+           "properties": {
+            "x": {
+             "type": "integer"
+            },
+            "y": {
+             "type": "integer"
+            },
+            "width": {
+             "exclusiveMinimum": 0,
+             "type": "integer"
+            },
+            "height": {
+             "exclusiveMinimum": 0,
+             "type": "integer"
+            }
+           },
+           "required": [
+            "x",
+            "y",
+            "width",
+            "height"
+           ],
+           "type": "object"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "unavailable": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "actions": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "text": {
+         "type": "string"
+        },
+        "value": {
+         "anyOf": [
+          {
+           "type": "number"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "value_max": {
+         "anyOf": [
+          {
+           "type": "number"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        }
+       },
+       "required": [
+        "ref",
+        "role",
+        "name",
+        "description",
+        "states",
+        "depth",
+        "app",
+        "window_id",
+        "child_count",
+        "rect",
+        "unavailable",
+        "actions",
+        "text",
+        "value",
+        "value_max"
+       ],
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "frames": {
+     "items": {
+      "description": "One saved PNG of the workspace (or of a region of it).",
+      "properties": {
+       "delay_ms": {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null
+       },
+       "path": {
+        "type": "string"
+       },
+       "uri": {
+        "type": "string"
+       },
+       "width": {
+        "type": "integer"
+       },
+       "height": {
+        "type": "integer"
+       },
+       "size_kb": {
+        "type": "number"
+       },
+       "mapping": {
+        "anyOf": [
+         {
+          "description": "Image px to logical px: logical = origin + image_px / scale.",
+          "properties": {
+           "scale": {
+            "type": "number"
+           },
+           "origin": {
+            "$ref": "#/$defs/Point"
+           }
+          },
+          "required": [
+           "scale",
+           "origin"
+          ],
+          "type": "object"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "coverage": {
+        "enum": [
+         "full",
+         "partial"
+        ],
+        "type": "string"
+       },
+       "coordinate_space": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "path",
+       "uri",
+       "width",
+       "height",
+       "size_kb",
+       "mapping",
+       "coverage",
+       "coordinate_space"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "held": {
+     "description": "Mouse buttons and keys kwin-mcp holds pressed.",
+     "properties": {
+      "buttons": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "keys": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      }
+     },
+     "type": "object"
+    },
+    "warnings": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "method": {
+     "enum": [
+      "keys",
+      "unicode"
+     ],
+     "type": "string"
+    },
+    "route": {
+     "type": "string"
+    },
+    "chars": {
+     "type": "integer"
+    },
+    "echo": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "method",
+    "route",
+    "chars",
+    "echo"
+   ],
+   "type": "object",
+   "$defs": {
+    "Point": {
+     "additionalProperties": false,
+     "description": "Global logical px.",
+     "properties": {
+      "x": {
+       "type": "integer"
+      },
+      "y": {
+       "type": "integer"
+      }
+     },
+     "required": [
+      "x",
+      "y"
+     ],
+     "type": "object"
+    }
+   }
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": false,
+   "openWorldHint": false
+  }
+ },
+ {
+  "name": "keyboard_hold",
+  "title": "Hold or release keys",
+  "description": "Press or release one key chord across calls (modifiers first on press, reverse on release). Held input stays until released, session_stop or exit; every result reports it.",
+  "inputSchema": {
+   "properties": {
+    "phase": {
+     "enum": [
+      "press",
+      "release"
+     ],
+     "type": "string"
+    },
+    "keys": {
+     "description": "Any key or full chord, modifiers then key, e.g. \"shift\", \"ctrl+shift\", \"a\", \"ctrl+Return\".",
+     "type": "string"
+    },
+    "capture": {
+     "additionalProperties": false,
+     "description": "Frames taken delays_ms after the action ends; same options as screen_capture.",
+     "properties": {
+      "delays_ms": {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      "region": {
+       "additionalProperties": false,
+       "description": "Global logical px.",
+       "properties": {
+        "x": {
+         "type": "integer"
+        },
+        "y": {
+         "type": "integer"
+        },
+        "width": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        },
+        "height": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+       ],
+       "type": "object"
+      },
+      "max_edge": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "include_cursor": {
+       "default": false,
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "delays_ms"
+     ],
+     "type": "object"
+    }
+   },
+   "required": [
+    "phase",
+    "keys"
+   ],
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Result of keyboard_hold; changed = whether the held set changed.",
+   "properties": {
+    "tool": {
+     "default": "keyboard_hold",
+     "type": "string"
+    },
+    "at": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Point"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "element": {
+     "anyOf": [
+      {
+       "description": "One AT-SPI element; rect is global logical px, or null with the reason.",
+       "properties": {
+        "ref": {
+         "type": "string"
+        },
+        "role": {
+         "type": "string"
+        },
+        "name": {
+         "type": "string"
+        },
+        "description": {
+         "type": "string"
+        },
+        "states": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "depth": {
+         "type": "integer"
+        },
+        "app": {
+         "type": "string"
+        },
+        "window_id": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "child_count": {
+         "type": "integer"
+        },
+        "rect": {
+         "anyOf": [
+          {
+           "additionalProperties": false,
+           "description": "Global logical px.",
+           "properties": {
+            "x": {
+             "type": "integer"
+            },
+            "y": {
+             "type": "integer"
+            },
+            "width": {
+             "exclusiveMinimum": 0,
+             "type": "integer"
+            },
+            "height": {
+             "exclusiveMinimum": 0,
+             "type": "integer"
+            }
+           },
+           "required": [
+            "x",
+            "y",
+            "width",
+            "height"
+           ],
+           "type": "object"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "unavailable": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "actions": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "text": {
+         "type": "string"
+        },
+        "value": {
+         "anyOf": [
+          {
+           "type": "number"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "value_max": {
+         "anyOf": [
+          {
+           "type": "number"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        }
+       },
+       "required": [
+        "ref",
+        "role",
+        "name",
+        "description",
+        "states",
+        "depth",
+        "app",
+        "window_id",
+        "child_count",
+        "rect",
+        "unavailable",
+        "actions",
+        "text",
+        "value",
+        "value_max"
+       ],
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "frames": {
+     "items": {
+      "description": "One saved PNG of the workspace (or of a region of it).",
+      "properties": {
+       "delay_ms": {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null
+       },
+       "path": {
+        "type": "string"
+       },
+       "uri": {
+        "type": "string"
+       },
+       "width": {
+        "type": "integer"
+       },
+       "height": {
+        "type": "integer"
+       },
+       "size_kb": {
+        "type": "number"
+       },
+       "mapping": {
+        "anyOf": [
+         {
+          "description": "Image px to logical px: logical = origin + image_px / scale.",
+          "properties": {
+           "scale": {
+            "type": "number"
+           },
+           "origin": {
+            "$ref": "#/$defs/Point"
+           }
+          },
+          "required": [
+           "scale",
+           "origin"
+          ],
+          "type": "object"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "coverage": {
+        "enum": [
+         "full",
+         "partial"
+        ],
+        "type": "string"
+       },
+       "coordinate_space": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "path",
+       "uri",
+       "width",
+       "height",
+       "size_kb",
+       "mapping",
+       "coverage",
+       "coordinate_space"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "held": {
+     "description": "Mouse buttons and keys kwin-mcp holds pressed.",
+     "properties": {
+      "buttons": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "keys": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      }
+     },
+     "type": "object"
+    },
+    "warnings": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "phase": {
+     "enum": [
+      "press",
+      "release"
+     ],
+     "type": "string"
+    },
+    "keys": {
+     "type": "string"
+    },
+    "changed": {
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "phase",
+    "keys",
+    "changed"
+   ],
+   "type": "object",
+   "$defs": {
+    "Point": {
+     "additionalProperties": false,
+     "description": "Global logical px.",
+     "properties": {
+      "x": {
+       "type": "integer"
+      },
+      "y": {
+       "type": "integer"
+      }
+     },
+     "required": [
+      "x",
+      "y"
+     ],
+     "type": "object"
+    }
+   }
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": true,
+   "openWorldHint": false
+  }
+ },
+ {
+  "name": "touch_tap",
+  "title": "Tap",
+  "description": "Tap a target with one touch contact (does not move the pointer).",
+  "inputSchema": {
+   "properties": {
+    "target": {
+     "anyOf": [
+      {
+       "additionalProperties": false,
+       "description": "Global logical px.",
+       "properties": {
+        "x": {
+         "type": "integer"
+        },
+        "y": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "x",
+        "y"
+       ],
+       "type": "object"
+      },
+      {
+       "additionalProperties": false,
+       "description": "Centre of a ref's live rect + offset.",
+       "properties": {
+        "ref": {
+         "type": "string"
+        },
+        "dx": {
+         "default": 0,
+         "type": "integer"
+        },
+        "dy": {
+         "default": 0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "ref"
+       ],
+       "type": "object"
+      }
+     ]
+    },
+    "hold_ms": {
+     "default": 0,
+     "description": "Contact duration, min 10 ms; >500 = long-press.",
+     "type": "integer"
+    },
+    "capture": {
+     "additionalProperties": false,
+     "description": "Frames taken delays_ms after the action ends; same options as screen_capture.",
+     "properties": {
+      "delays_ms": {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      "region": {
+       "additionalProperties": false,
+       "description": "Global logical px.",
+       "properties": {
+        "x": {
+         "type": "integer"
+        },
+        "y": {
+         "type": "integer"
+        },
+        "width": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        },
+        "height": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+       ],
+       "type": "object"
+      },
+      "max_edge": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "include_cursor": {
+       "default": false,
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "delays_ms"
+     ],
+     "type": "object"
+    }
+   },
+   "required": [
+    "target"
+   ],
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Result of touch_tap.",
+   "properties": {
+    "tool": {
+     "default": "touch_tap",
+     "type": "string"
+    },
+    "at": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Point"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "element": {
+     "anyOf": [
+      {
+       "description": "One AT-SPI element; rect is global logical px, or null with the reason.",
+       "properties": {
+        "ref": {
+         "type": "string"
+        },
+        "role": {
+         "type": "string"
+        },
+        "name": {
+         "type": "string"
+        },
+        "description": {
+         "type": "string"
+        },
+        "states": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "depth": {
+         "type": "integer"
+        },
+        "app": {
+         "type": "string"
+        },
+        "window_id": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "child_count": {
+         "type": "integer"
+        },
+        "rect": {
+         "anyOf": [
+          {
+           "additionalProperties": false,
+           "description": "Global logical px.",
+           "properties": {
+            "x": {
+             "type": "integer"
+            },
+            "y": {
+             "type": "integer"
+            },
+            "width": {
+             "exclusiveMinimum": 0,
+             "type": "integer"
+            },
+            "height": {
+             "exclusiveMinimum": 0,
+             "type": "integer"
+            }
+           },
+           "required": [
+            "x",
+            "y",
+            "width",
+            "height"
+           ],
+           "type": "object"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "unavailable": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "actions": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "text": {
+         "type": "string"
+        },
+        "value": {
+         "anyOf": [
+          {
+           "type": "number"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "value_max": {
+         "anyOf": [
+          {
+           "type": "number"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        }
+       },
+       "required": [
+        "ref",
+        "role",
+        "name",
+        "description",
+        "states",
+        "depth",
+        "app",
+        "window_id",
+        "child_count",
+        "rect",
+        "unavailable",
+        "actions",
+        "text",
+        "value",
+        "value_max"
+       ],
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "frames": {
+     "items": {
+      "description": "One saved PNG of the workspace (or of a region of it).",
+      "properties": {
+       "delay_ms": {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null
+       },
+       "path": {
+        "type": "string"
+       },
+       "uri": {
+        "type": "string"
+       },
+       "width": {
+        "type": "integer"
+       },
+       "height": {
+        "type": "integer"
+       },
+       "size_kb": {
+        "type": "number"
+       },
+       "mapping": {
+        "anyOf": [
+         {
+          "description": "Image px to logical px: logical = origin + image_px / scale.",
+          "properties": {
+           "scale": {
+            "type": "number"
+           },
+           "origin": {
+            "$ref": "#/$defs/Point"
+           }
+          },
+          "required": [
+           "scale",
+           "origin"
+          ],
+          "type": "object"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "coverage": {
+        "enum": [
+         "full",
+         "partial"
+        ],
+        "type": "string"
+       },
+       "coordinate_space": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "path",
+       "uri",
+       "width",
+       "height",
+       "size_kb",
+       "mapping",
+       "coverage",
+       "coordinate_space"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "held": {
+     "description": "Mouse buttons and keys kwin-mcp holds pressed.",
+     "properties": {
+      "buttons": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "keys": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      }
+     },
+     "type": "object"
+    },
+    "warnings": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "hold_ms": {
+     "default": 0,
+     "type": "integer"
+    }
+   },
+   "type": "object",
+   "$defs": {
+    "Point": {
+     "additionalProperties": false,
+     "description": "Global logical px.",
+     "properties": {
+      "x": {
+       "type": "integer"
+      },
+      "y": {
+       "type": "integer"
+      }
+     },
+     "required": [
+      "x",
+      "y"
+     ],
+     "type": "object"
+    }
+   }
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": false,
+   "openWorldHint": false
+  }
+ },
+ {
+  "name": "touch_swipe",
+  "title": "Swipe",
+  "description": "Swipe with N parallel contacts from one target to another. Contacts are spread vertically 20 px apart around the path. KWin consumes >=3-finger swipes as global gestures.",
+  "inputSchema": {
+   "properties": {
+    "from": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Point"
+      },
+      {
+       "$ref": "#/$defs/ElementPoint"
+      }
+     ],
+     "description": "Start (centre of the contact group)."
+    },
+    "to": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Point"
+      },
+      {
+       "$ref": "#/$defs/ElementPoint"
+      }
+     ],
+     "description": "End."
+    },
+    "fingers": {
+     "default": 1,
+     "description": "Number of parallel contacts.",
+     "minimum": 1,
+     "type": "integer"
+    },
+    "duration_ms": {
+     "default": 300,
+     "description": "Travel time; 10 ms per step.",
+     "type": "integer"
+    },
+    "capture": {
+     "additionalProperties": false,
+     "description": "Frames taken delays_ms after the action ends; same options as screen_capture.",
+     "properties": {
+      "delays_ms": {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      "region": {
+       "additionalProperties": false,
+       "description": "Global logical px.",
+       "properties": {
+        "x": {
+         "type": "integer"
+        },
+        "y": {
+         "type": "integer"
+        },
+        "width": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        },
+        "height": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+       ],
+       "type": "object"
+      },
+      "max_edge": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "include_cursor": {
+       "default": false,
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "delays_ms"
+     ],
+     "type": "object"
+    }
+   },
+   "required": [
+    "from",
+    "to"
+   ],
+   "type": "object",
+   "$defs": {
+    "ElementPoint": {
+     "additionalProperties": false,
+     "description": "Centre of a ref's live rect + offset.",
+     "properties": {
+      "ref": {
+       "type": "string"
+      },
+      "dx": {
+       "default": 0,
+       "type": "integer"
+      },
+      "dy": {
+       "default": 0,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "ref"
+     ],
+     "type": "object"
+    },
+    "Point": {
+     "additionalProperties": false,
+     "description": "Global logical px.",
+     "properties": {
+      "x": {
+       "type": "integer"
+      },
+      "y": {
+       "type": "integer"
+      }
+     },
+     "required": [
+      "x",
+      "y"
+     ],
+     "type": "object"
+    }
+   },
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Result of touch_swipe; at is the end point.",
+   "properties": {
+    "tool": {
+     "default": "touch_swipe",
+     "type": "string"
+    },
+    "at": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Point"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "element": {
+     "anyOf": [
+      {
+       "description": "One AT-SPI element; rect is global logical px, or null with the reason.",
+       "properties": {
+        "ref": {
+         "type": "string"
+        },
+        "role": {
+         "type": "string"
+        },
+        "name": {
+         "type": "string"
+        },
+        "description": {
+         "type": "string"
+        },
+        "states": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "depth": {
+         "type": "integer"
+        },
+        "app": {
+         "type": "string"
+        },
+        "window_id": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "child_count": {
+         "type": "integer"
+        },
+        "rect": {
+         "anyOf": [
+          {
+           "additionalProperties": false,
+           "description": "Global logical px.",
+           "properties": {
+            "x": {
+             "type": "integer"
+            },
+            "y": {
+             "type": "integer"
+            },
+            "width": {
+             "exclusiveMinimum": 0,
+             "type": "integer"
+            },
+            "height": {
+             "exclusiveMinimum": 0,
+             "type": "integer"
+            }
+           },
+           "required": [
+            "x",
+            "y",
+            "width",
+            "height"
+           ],
+           "type": "object"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "unavailable": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "actions": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "text": {
+         "type": "string"
+        },
+        "value": {
+         "anyOf": [
+          {
+           "type": "number"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "value_max": {
+         "anyOf": [
+          {
+           "type": "number"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        }
+       },
+       "required": [
+        "ref",
+        "role",
+        "name",
+        "description",
+        "states",
+        "depth",
+        "app",
+        "window_id",
+        "child_count",
+        "rect",
+        "unavailable",
+        "actions",
+        "text",
+        "value",
+        "value_max"
+       ],
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "frames": {
+     "items": {
+      "description": "One saved PNG of the workspace (or of a region of it).",
+      "properties": {
+       "delay_ms": {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null
+       },
+       "path": {
+        "type": "string"
+       },
+       "uri": {
+        "type": "string"
+       },
+       "width": {
+        "type": "integer"
+       },
+       "height": {
+        "type": "integer"
+       },
+       "size_kb": {
+        "type": "number"
+       },
+       "mapping": {
+        "anyOf": [
+         {
+          "description": "Image px to logical px: logical = origin + image_px / scale.",
+          "properties": {
+           "scale": {
+            "type": "number"
+           },
+           "origin": {
+            "$ref": "#/$defs/Point"
+           }
+          },
+          "required": [
+           "scale",
+           "origin"
+          ],
+          "type": "object"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "coverage": {
+        "enum": [
+         "full",
+         "partial"
+        ],
+        "type": "string"
+       },
+       "coordinate_space": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "path",
+       "uri",
+       "width",
+       "height",
+       "size_kb",
+       "mapping",
+       "coverage",
+       "coordinate_space"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "held": {
+     "description": "Mouse buttons and keys kwin-mcp holds pressed.",
+     "properties": {
+      "buttons": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "keys": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      }
+     },
+     "type": "object"
+    },
+    "warnings": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "start": {
+     "$ref": "#/$defs/Point"
+    },
+    "fingers": {
+     "type": "integer"
+    },
+    "duration_ms": {
+     "type": "integer"
+    }
+   },
+   "required": [
+    "start",
+    "fingers",
+    "duration_ms"
+   ],
+   "type": "object",
+   "$defs": {
+    "Point": {
+     "additionalProperties": false,
+     "description": "Global logical px.",
+     "properties": {
+      "x": {
+       "type": "integer"
+      },
+      "y": {
+       "type": "integer"
+      }
+     },
+     "required": [
+      "x",
+      "y"
+     ],
+     "type": "object"
+    }
+   }
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": false,
+   "openWorldHint": false
+  }
+ },
+ {
+  "name": "touch_pinch",
+  "title": "Pinch",
+  "description": "Two contacts move symmetrically toward or away from a centre (pinch in / zoom out).",
+  "inputSchema": {
+   "properties": {
+    "center": {
+     "anyOf": [
+      {
+       "additionalProperties": false,
+       "description": "Global logical px.",
+       "properties": {
+        "x": {
+         "type": "integer"
+        },
+        "y": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "x",
+        "y"
+       ],
+       "type": "object"
+      },
+      {
+       "additionalProperties": false,
+       "description": "Centre of a ref's live rect + offset.",
+       "properties": {
+        "ref": {
+         "type": "string"
+        },
+        "dx": {
+         "default": 0,
+         "type": "integer"
+        },
+        "dy": {
+         "default": 0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "ref"
+       ],
+       "type": "object"
+      }
+     ],
+     "description": "Pinch centre."
+    },
+    "start_distance": {
+     "description": "Initial contact distance, px.",
+     "type": "integer"
+    },
+    "end_distance": {
+     "description": "Final distance (< start = pinch in).",
+     "type": "integer"
+    },
+    "duration_ms": {
+     "default": 500,
+     "description": "Gesture duration.",
+     "type": "integer"
+    },
+    "capture": {
+     "additionalProperties": false,
+     "description": "Frames taken delays_ms after the action ends; same options as screen_capture.",
+     "properties": {
+      "delays_ms": {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      "region": {
+       "additionalProperties": false,
+       "description": "Global logical px.",
+       "properties": {
+        "x": {
+         "type": "integer"
+        },
+        "y": {
+         "type": "integer"
+        },
+        "width": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        },
+        "height": {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+       ],
+       "type": "object"
+      },
+      "max_edge": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "include_cursor": {
+       "default": false,
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "delays_ms"
+     ],
+     "type": "object"
+    }
+   },
+   "required": [
+    "center",
+    "start_distance",
+    "end_distance"
+   ],
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Result of touch_pinch; at is the centre.",
+   "properties": {
+    "tool": {
+     "default": "touch_pinch",
+     "type": "string"
+    },
+    "at": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Point"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "element": {
+     "anyOf": [
+      {
+       "description": "One AT-SPI element; rect is global logical px, or null with the reason.",
+       "properties": {
+        "ref": {
+         "type": "string"
+        },
+        "role": {
+         "type": "string"
+        },
+        "name": {
+         "type": "string"
+        },
+        "description": {
+         "type": "string"
+        },
+        "states": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "depth": {
+         "type": "integer"
+        },
+        "app": {
+         "type": "string"
+        },
+        "window_id": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "child_count": {
+         "type": "integer"
+        },
+        "rect": {
+         "anyOf": [
+          {
+           "additionalProperties": false,
+           "description": "Global logical px.",
+           "properties": {
+            "x": {
+             "type": "integer"
+            },
+            "y": {
+             "type": "integer"
+            },
+            "width": {
+             "exclusiveMinimum": 0,
+             "type": "integer"
+            },
+            "height": {
+             "exclusiveMinimum": 0,
+             "type": "integer"
+            }
+           },
+           "required": [
+            "x",
+            "y",
+            "width",
+            "height"
+           ],
+           "type": "object"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "unavailable": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "actions": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "text": {
+         "type": "string"
+        },
+        "value": {
+         "anyOf": [
+          {
+           "type": "number"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "value_max": {
+         "anyOf": [
+          {
+           "type": "number"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        }
+       },
+       "required": [
+        "ref",
+        "role",
+        "name",
+        "description",
+        "states",
+        "depth",
+        "app",
+        "window_id",
+        "child_count",
+        "rect",
+        "unavailable",
+        "actions",
+        "text",
+        "value",
+        "value_max"
+       ],
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "frames": {
+     "items": {
+      "description": "One saved PNG of the workspace (or of a region of it).",
+      "properties": {
+       "delay_ms": {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null
+       },
+       "path": {
+        "type": "string"
+       },
+       "uri": {
+        "type": "string"
+       },
+       "width": {
+        "type": "integer"
+       },
+       "height": {
+        "type": "integer"
+       },
+       "size_kb": {
+        "type": "number"
+       },
+       "mapping": {
+        "anyOf": [
+         {
+          "description": "Image px to logical px: logical = origin + image_px / scale.",
+          "properties": {
+           "scale": {
+            "type": "number"
+           },
+           "origin": {
+            "$ref": "#/$defs/Point"
+           }
+          },
+          "required": [
+           "scale",
+           "origin"
+          ],
+          "type": "object"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "coverage": {
+        "enum": [
+         "full",
+         "partial"
+        ],
+        "type": "string"
+       },
+       "coordinate_space": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "path",
+       "uri",
+       "width",
+       "height",
+       "size_kb",
+       "mapping",
+       "coverage",
+       "coordinate_space"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "held": {
+     "description": "Mouse buttons and keys kwin-mcp holds pressed.",
+     "properties": {
+      "buttons": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "keys": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      }
+     },
+     "type": "object"
+    },
+    "warnings": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "start_distance": {
+     "type": "integer"
+    },
+    "end_distance": {
+     "type": "integer"
+    },
+    "duration_ms": {
+     "type": "integer"
+    }
+   },
+   "required": [
+    "start_distance",
+    "end_distance",
+    "duration_ms"
+   ],
+   "type": "object",
+   "$defs": {
+    "Point": {
+     "additionalProperties": false,
+     "description": "Global logical px.",
+     "properties": {
+      "x": {
+       "type": "integer"
+      },
+      "y": {
+       "type": "integer"
+      }
+     },
+     "required": [
+      "x",
+      "y"
+     ],
+     "type": "object"
+    }
+   }
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": false,
+   "openWorldHint": false
+  }
+ },
+ {
+  "name": "clipboard_read",
+  "title": "Read clipboard",
+  "description": "Return the session clipboard text (wl-paste). Virtual sessions need enable_clipboard.",
+  "inputSchema": {
+   "properties": {},
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Result of clipboard_read.",
+   "properties": {
+    "text": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "text"
+   ],
+   "type": "object"
+  },
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  }
+ },
+ {
+  "name": "clipboard_write",
+  "title": "Write clipboard",
+  "description": "Own the session clipboard with this text (wl-copy, waits up to 5 s for ownership). Virtual sessions need enable_clipboard.",
+  "inputSchema": {
+   "properties": {
+    "text": {
+     "description": "Any text, including NUL.",
+     "type": "string"
+    }
+   },
+   "required": [
+    "text"
+   ],
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Result of clipboard_write.",
+   "properties": {
+    "length": {
+     "type": "integer"
+    },
+    "echo": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "length",
+    "echo"
+   ],
+   "type": "object"
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": true,
+   "openWorldHint": false
+  }
+ },
+ {
+  "name": "dbus_call",
+  "title": "Call D-Bus method",
+  "description": "Escape hatch: call any method on the session bus. The declared signature is introspected (Qt overloads supported). Prefer the dedicated tools.",
+  "inputSchema": {
+   "properties": {
+    "service": {
+     "description": "Bus name, e.g. org.kde.KWin.",
+     "type": "string"
+    },
+    "path": {
+     "description": "Object path.",
+     "type": "string"
+    },
+    "interface": {
+     "type": "string"
+    },
+    "method": {
+     "type": "string"
+    },
+    "args": {
+     "items": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "additionalProperties": false,
+        "description": "Typed D-Bus argument.",
+        "properties": {
+         "type": {
+          "type": "string"
+         },
+         "value": {},
+         "element_type": {
+          "type": "string"
+         },
+         "key_type": {
+          "type": "string"
+         },
+         "value_type": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "type",
+         "value"
+        ],
+        "type": "object"
+       }
+      ]
+     },
+     "type": "array",
+     "description": "dbus-send strings (\"int32:5\") and/or typed JSON {type, value, element_type?}, mixable."
+    }
+   },
+   "required": [
+    "service",
+    "path",
+    "interface",
+    "method"
+   ],
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Result of dbus_call; signature is the reply's D-Bus signature ('' when void).",
+   "properties": {
+    "reply": {},
+    "signature": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "reply",
+    "signature"
+   ],
+   "type": "object"
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": false,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "wayland_list",
+  "title": "List Wayland globals",
+  "description": "Escape hatch: list the Wayland protocol globals the compositor advertises (wayland-info).",
+  "inputSchema": {
+   "properties": {
+    "filter": {
+     "default": "",
+     "description": "Keep raw lines containing this (case-sensitive).",
+     "type": "string"
+    }
+   },
+   "type": "object",
+   "additionalProperties": false
+  },
+  "outputSchema": {
+   "description": "Result of wayland_list: raw wayland-info lines and the parsed globals.",
+   "properties": {
+    "filter": {
+     "default": "",
+     "type": "string"
+    },
+    "lines": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "globals": {
+     "items": {
+      "description": "One global the compositor advertises.",
+      "properties": {
+       "interface": {
+        "type": "string"
+       },
+       "version": {
+        "type": "integer"
+       },
+       "name": {
+        "type": "integer"
+       }
+      },
+      "required": [
+       "interface",
+       "version",
+       "name"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "lines"
+   ],
+   "type": "object"
+  },
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  }
+ }
+]

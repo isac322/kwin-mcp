@@ -1,0 +1,63 @@
+{
+ "scenario": "key_return",
+ "captured_from": "kwin-mcp 0.11.0 @ 7a5d781 (AutomationEngine, virtual KWin session)",
+ "call": {
+  "key": "Return",
+  "tool": "keyboard_key"
+ },
+ "returned_text": [
+  "Pressed: Return"
+ ],
+ "probe": {
+  "client_size": [
+   1000,
+   640
+  ],
+  "coordinates": "probe-local logical px (global = client origin + local)"
+ },
+ "repeats": 5,
+ "sequence": [
+  {
+   "kind": "key_press",
+   "key": "Return",
+   "mods": []
+  },
+  {
+   "kind": "key_release",
+   "key": "Return",
+   "mods": []
+  }
+ ],
+ "gaps_ms": [
+  {
+   "from": 0,
+   "to": 1,
+   "mono": {
+    "min": 9.46,
+    "median": 11.4,
+    "max": 12.47
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 12.0,
+    "max": 16.0
+   }
+  }
+ ],
+ "call_start_to_first_event_ms": {
+  "min": 1.0,
+  "median": 1.29,
+  "max": 8.42
+ },
+ "last_event_to_call_return_ms": {
+  "min": -0.54,
+  "median": 0.19,
+  "max": 0.21
+ },
+ "first_to_last_event_ms": {
+  "min": 9.46,
+  "median": 11.4,
+  "max": 12.47
+ },
+ "other_variants": []
+}

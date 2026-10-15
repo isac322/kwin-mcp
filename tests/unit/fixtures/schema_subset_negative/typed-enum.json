@@ -1,0 +1,15 @@
+{
+ "type": "object",
+ "properties": {
+  "a": {
+   "enum": [
+    "x",
+    "y"
+   ]
+  }
+ },
+ "required": [
+  "a"
+ ],
+ "additionalProperties": false
+}

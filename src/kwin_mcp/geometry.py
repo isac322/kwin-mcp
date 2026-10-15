@@ -1,4 +1,4 @@
-"""Global window geometry via KWin scripting.
+"""Global window geometry, window selection and virtual desktops via KWin scripting.
 
 AT-SPI2 reports surface-local coordinates because a Wayland client cannot know
 where the compositor placed it. KWin does know, and its scripting engine can
@@ -6,21 +6,26 @@ hand the numbers back over D-Bus.
 
 Two entry points share one script round-trip:
 
-- ``query()`` / ``active()`` / ``activate()`` / ``close()`` / ``desktops()``
-  / ``set_desktop()`` / ``outputs()`` / ``active_class()`` run in a subprocess
-  (`python -m kwin_mcp.geometry`) for the public ``window_geometry`` /
-  ``active_window`` / ``focus_window`` / ``window_close`` /
-  ``virtual_desktops`` / ``window_set_desktop`` tools, for screenshot
-  coordinate mapping, and for the
-  paste chord ``keyboard_type_unicode`` chooses.
+- ``windows()`` / ``activate()`` / ``set_geometry()`` / ``desktops()`` /
+  ``set_desktop()`` / ``close()`` / ``active_class()`` / ``outputs()`` run in a
+  subprocess (`python -m kwin_mcp.geometry`) for the ``window_list`` /
+  ``window_focus`` / ``window_place`` / ``window_close`` / ``desktop_list``
+  tools, for screenshot coordinate mapping, and for the paste chord
+  ``keyboard_type(method="unicode")`` chooses.
 - ``collect_windows()`` runs in-process inside the AT-SPI2 query subprocess so
   `accessibility.py` can translate element rectangles into screen coordinates.
+
+``select_windows()`` / ``select_one()`` / ``describe_selector()`` are pure: the
+engine converts the ``windows()`` report with ``window_from_kwin()`` and applies a
+``WindowSelector`` to it with them. The subprocess never imports the pydantic
+models: it starts for every window query and every capture, and importing them
+there made each call about 0.4 s slower.
 
 Replies are always dispatched on the calling thread through the default GLib
 main context. A background GLib loop thread races libatspi's use of the same
 context and was observed to abort the process with heap corruption.
 
-Usage: `echo '{"app_name": "kcalc"}' | python -m kwin_mcp.geometry`
+Usage: `echo '{"op": "windows"}' | python -m kwin_mcp.geometry`
 """
 
 from __future__ import annotations
@@ -35,13 +40,10 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
-import dbus
-import dbus.bus
-import dbus.service
-from dbus.mainloop.glib import DBusGMainLoop
-
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+    from kwin_mcp.models import Rect, Window, WindowKind, WindowSelector
 
 SINK_NAME = "io.github.kwin_mcp.Geometry"
 SINK_PATH = "/geometry"
@@ -55,7 +57,11 @@ class KWinWindow(TypedDict):
     ``frame``/``client``/``buffer`` are ``[x, y, width, height]`` in global
     logical coordinates, rounded once from KWin's qreal values. ``buffer`` is
     the client's whole surface, including the shadow a client-side decorated
-    window (Chromium, for example) draws around itself.
+    window (Chromium, for example) draws around itself. ``desktops`` holds the
+    virtual desktop ids (empty in KWin 6 when ``onAllDesktops``).
+    ``transientFor`` is the id of the window this one is transient for, or
+    None; ``transient`` without ``transientFor`` is an X11 group transient,
+    whose main windows a script cannot see.
     """
 
     pid: int
@@ -63,6 +69,8 @@ class KWinWindow(TypedDict):
     app: str
     caption: str
     normal: bool
+    dialog: bool
+    utility: bool
     popup: bool
     managed: bool
     deleted: bool
@@ -70,6 +78,14 @@ class KWinWindow(TypedDict):
     dock: bool
     notification: bool
     active: bool
+    closeable: bool
+    moveable: bool
+    resizeable: bool
+    desktops: list[str]
+    onAllDesktops: bool
+    transient: bool
+    transientFor: str | None
+    modal: bool
     frame: list[int]
     client: list[int]
     buffer: list[int]
@@ -77,8 +93,8 @@ class KWinWindow(TypedDict):
 
 # KWin scripts run in a sandboxed QJSEngine with no file or socket access, so
 # callDBus back into this process is the only way out. The payload is JSON so
-# that both consumers (the public geometry report and the accessibility
-# coordinate mapper) can pick the fields they need without positional parsing.
+# that both consumers (the window report and the accessibility coordinate
+# mapper) can pick the fields they need without positional parsing.
 # {sink} and {path} are substituted per call: the sink name embeds the pid so a
 # query inside the AT-SPI subprocess cannot collide with a concurrent one.
 _SCRIPT_TEMPLATE = """
@@ -89,13 +105,23 @@ for (var i = 0; i < windows.length; i++) {
     var f = w.frameGeometry;
     var c = w.clientGeometry;
     var b = w.bufferGeometry;
+    var desktopIds = [];
+    for (var k = 0; k < w.desktops.length; k++) {
+        desktopIds.push(String(w.desktops[k].id));
+    }
     out.push({
         pid: w.pid, id: String(w.internalId),
         resourceClass: String(w.resourceClass), caption: w.caption,
-        normal: w.normalWindow, popup: w.popupWindow,
+        normal: w.normalWindow, dialog: w.dialog, utility: w.utility,
+        popup: w.popupWindow,
         managed: w.managed, deleted: w.deleted,
         desktop: w.desktopWindow, dock: w.dock, notification: w.notification,
         active: w === workspace.activeWindow,
+        closeable: w.closeable, moveable: w.moveable, resizeable: w.resizeable,
+        desktops: desktopIds, onAllDesktops: w.onAllDesktops,
+        transient: w.transient,
+        transientFor: w.transientFor ? String(w.transientFor.internalId) : null,
+        modal: w.modal,
         frame: [f.x, f.y, f.width, f.height],
         client: [c.x, c.y, c.width, c.height],
         buffer: [b.x, b.y, b.width, b.height]
@@ -105,28 +131,22 @@ callDBus("{sink}", "{path}", "{sink}", "Report", JSON.stringify(out));
 """
 
 # Activation must go through KWin too: AT-SPI's grab_focus does not raise or
-# activate windows on Wayland, so focus_window used to report success while the
-# previously active window kept both focus and the foreground.
+# activate windows on Wayland. The window is addressed by exact id only (the
+# engine resolves selectors first) and any kind can be activated: a dialog or
+# a utility window is as focusable as a normal one.
 _ACTIVATE_SCRIPT_TEMPLATE = """
-var needle = {needle};
 var target = {window_id};
-var activated = "";
+var found = false;
 var windows = workspace.windowList();
 for (var i = 0; i < windows.length; i++) {
     var w = windows[i];
-    if (!w.normalWindow) {
-        continue;
-    }
-    var haystack = (w.resourceClass + " " + w.caption).toLowerCase();
-    var matchesId = target && String(w.internalId) === target;
-    var matchesName = !target && needle && haystack.indexOf(needle) !== -1;
-    if (matchesId || matchesName) {
+    if (String(w.internalId) === target) {
         workspace.activeWindow = w;
-        activated = w.resourceClass + " " + w.caption;
+        found = true;
         break;
     }
 }
-callDBus("{sink}", "{path}", "{sink}", "Report", activated);
+callDBus("{sink}", "{path}", "{sink}", "Report", JSON.stringify({found: found}));
 """
 
 # Direct geometry change by exact KWin internalId.
@@ -214,20 +234,12 @@ for (var i = 0; i < windows.length; i++) {
 callDBus("{sink}", "{path}", "{sink}", "Report", JSON.stringify(result));
 """
 
-# The active window's resource class (the Wayland app_id, or the X11 WM_CLASS
-# class for Xwayland clients). keyboard_type_unicode picks its paste chord from
-# it before pressing anything. An empty string means no window is active.
-_ACTIVE_CLASS_SCRIPT = """
-var w = workspace.activeWindow;
-callDBus("{sink}", "{path}", "{sink}", "Report", w ? String(w.resourceClass) : "");
-"""
-
 # Virtual desktops in KWin's order, with the current one, addressed by their
 # stable id (a UUID string), never by position. When {window_id} is not empty the
 # report also carries that window's desktop ids, read in this separate script so
-# window_set_desktop observes the state KWin committed after its own script ran.
-# The window population is the one window_geometry reports (normal windows).
-# In KWin 6 a window on all desktops has an empty desktops list.
+# window_place observes the state KWin committed after its own script ran.
+# Every window kind is looked up. In KWin 6 a window on all desktops has an empty
+# desktops list.
 _DESKTOPS_SCRIPT_TEMPLATE = """
 var target = {window_id};
 var current = workspace.currentDesktop;
@@ -243,7 +255,7 @@ if (target) {
     var windows = workspace.windowList();
     for (var j = 0; j < windows.length; j++) {
         var w = windows[j];
-        if (!w.normalWindow || String(w.internalId) !== target) {
+        if (String(w.internalId) !== target) {
             continue;
         }
         var ids = [];
@@ -259,25 +271,23 @@ callDBus("{sink}", "{path}", "{sink}", "Report", JSON.stringify({
 }));
 """
 
-# Assign the requested window, by exact internalId, to exactly one virtual desktop,
-# by exact id. Nothing is assigned unless both are found. The script does not
-# write currentDesktop or activate or raise the window.
+# Assign exactly one window, by exact internalId, to exactly one virtual desktop,
+# by exact id. Nothing is assigned unless both are found. currentDesktop is only
+# read, never written, and the window is not activated or raised.
 #
 # KWin's Window::setDesktops (checked at v6.3.6 and unchanged through 6.7) also
 # sets the desktops of every transient of the window, recursively, and, when the
-# window is modal, of its main windows. An equal desktop list returns before
-# propagation, including at related windows. Preflight follows those boundaries
-# and refuses if an enumerated related window would change membership.
-#
-# Preflight refusal covers only relationships KWin scripting can enumerate.
-# Linked but unpainted or unlisted children may follow their parent; when they
-# first appear, KWin may switch the current desktop. Scripts see transientFor
-# and modal but not transients() or mainWindows(); an X11 group transient
-# (transient, no transientFor) links to main windows scripts cannot see, so while
-# one exists the request is refused too. Nothing is moved back afterwards.
+# window is modal, of its main windows. To move only the requested window, the
+# script follows those relationships first and refuses, without assigning
+# anything, when a related window is not already on exactly the requested
+# desktop. Scripts see transientFor and modal but not transients() or
+# mainWindows(); an X11 group transient (transient, no transientFor) belongs to
+# main windows a script cannot see, so while one exists the outcome cannot be
+# known and the request is refused too. Nothing is ever moved back afterwards.
 _SET_DESKTOP_SCRIPT_TEMPLATE = """
 var target = {window_id};
 var wanted = {desktop_id};
+var checkOnly = {check_only};
 var current = workspace.currentDesktop;
 var result = {
     windowFound: false, desktopFound: false,
@@ -293,16 +303,16 @@ function desktopIds(w) {
 }
 
 function refusal(start, desktopId, windows) {
+    for (var u = 0; u < windows.length; u++) {
+        if (windows[u].transient && !windows[u].transientFor) {
+            return {refused: "unsupported"};
+        }
+    }
     var closure = [start];
     var seen = {};
     seen[String(start.internalId)] = true;
     for (var c = 0; c < closure.length; c++) {
         var w = closure[c];
-        // Selected equality is handled before refusal; related equality stops traversal.
-        var memberships = desktopIds(w);
-        if (c > 0 && memberships.length === 1 && memberships[0] === desktopId) {
-            continue;
-        }
         var id = String(w.internalId);
         for (var t = 0; t < windows.length; t++) {
             var other = windows[t];
@@ -345,39 +355,34 @@ result.desktopFound = desktop !== null;
 var windows = workspace.windowList();
 for (var j = 0; j < windows.length; j++) {
     var w = windows[j];
-    if (!w.normalWindow || String(w.internalId) !== target) {
+    if (String(w.internalId) !== target) {
         continue;
     }
     result.windowFound = true;
     result.before = desktopIds(w);
     result.beforeOnAllDesktops = w.onAllDesktops;
     if (desktop !== null) {
-        // Keep the global X11 group-transient guard, even for a selected no-op.
-        var unsupported = false;
-        for (var u = 0; u < windows.length; u++) {
-            if (windows[u].transient && !windows[u].transientFor) {
-                unsupported = true;
-                break;
+        var refused = refusal(w, String(desktop.id), windows);
+        if (refused !== null) {
+            result.refused = refused.refused;
+            if (refused.related) {
+                result.related = refused.related;
             }
-        }
-        if (unsupported) {
-            result.refused = "unsupported";
-        } else if (result.before.length !== 1 || result.before[0] !== String(desktop.id)) {
-            // Native equality returns before transient or modal propagation.
-            var refused = refusal(w, String(desktop.id), windows);
-            if (refused !== null) {
-                result.refused = refused.refused;
-                if (refused.related) {
-                    result.related = refused.related;
-                }
-            } else {
-                w.desktops = [desktop];
-            }
+        } else if (!checkOnly) {
+            w.desktops = [desktop];
         }
     }
     break;
 }
 callDBus("{sink}", "{path}", "{sink}", "Report", JSON.stringify(result));
+"""
+
+# The active window's resource class (the Wayland app_id, or the X11 WM_CLASS
+# class for Xwayland clients). keyboard_type(method="unicode") picks its paste chord from
+# it before pressing anything. An empty string means no window is active.
+_ACTIVE_CLASS_SCRIPT = """
+var w = workspace.activeWindow;
+callDBus("{sink}", "{path}", "{sink}", "Report", w ? String(w.resourceClass) : "");
 """
 
 # Output topology for screenshot coordinate mapping. Geometry is logical (the
@@ -423,6 +428,7 @@ def _parse_windows(payload: str) -> list[KWinWindow]:
     windows: list[KWinWindow] = []
     for record in raw:
         try:
+            transient_for = record["transientFor"]
             windows.append(
                 KWinWindow(
                     pid=int(record["pid"]),
@@ -430,6 +436,8 @@ def _parse_windows(payload: str) -> list[KWinWindow]:
                     app=str(record["resourceClass"]),
                     caption=str(record["caption"]),
                     normal=bool(record["normal"]),
+                    dialog=bool(record["dialog"]),
+                    utility=bool(record["utility"]),
                     popup=bool(record["popup"]),
                     managed=bool(record["managed"]),
                     deleted=bool(record["deleted"]),
@@ -437,6 +445,14 @@ def _parse_windows(payload: str) -> list[KWinWindow]:
                     dock=bool(record["dock"]),
                     notification=bool(record["notification"]),
                     active=bool(record["active"]),
+                    closeable=bool(record["closeable"]),
+                    moveable=bool(record["moveable"]),
+                    resizeable=bool(record["resizeable"]),
+                    desktops=[str(d) for d in record["desktops"]],
+                    onAllDesktops=bool(record["onAllDesktops"]),
+                    transient=bool(record["transient"]),
+                    transientFor=None if transient_for is None else str(transient_for),
+                    modal=bool(record["modal"]),
                     # KWin geometry is qreal (e.g. 325.5 for a centred dialog);
                     # round once here so every consumer sees integers.
                     frame=[round(float(v)) for v in record["frame"]],
@@ -457,6 +473,12 @@ def run_kwin_script(js_source: str, timeout: float = 5.0) -> str:
     default GLib main context: running a GLib loop on a background thread races
     libatspi's use of the same context and was observed to abort the process.
     """
+    # Imported here so the pure helpers (window kinds, selector matching) load
+    # without dbus-python or PyGObject, e.g. in the engine and in unit tests.
+    import dbus
+    import dbus.bus
+    import dbus.service
+    from dbus.mainloop.glib import DBusGMainLoop
     from gi.repository import GLib
 
     DBusGMainLoop(set_as_default=True)
@@ -506,70 +528,162 @@ def run_kwin_script(js_source: str, timeout: float = 5.0) -> str:
 
 
 def collect_windows(timeout: float = 5.0) -> list[KWinWindow]:
-    """Ask KWin for every window in-process, for the accessibility mapper.
+    """Ask KWin for every window in-process.
 
-    Unlike ``query()`` this keeps popups, unmanaged and non-normal windows:
-    the mapper needs the full list to prove that an AT-SPI top-level matches
+    Keeps popups, unmanaged, deleted and every other kind: the accessibility
+    mapper needs the full list to prove that an AT-SPI top-level matches
     exactly one compositor window.
     """
     return _parse_windows(run_kwin_script(_SCRIPT_TEMPLATE, timeout))
 
 
-def _report(window: KWinWindow) -> dict[str, object]:
-    """Shape one window for the public geometry report."""
-    return {
-        "id": window["id"],
-        "app": window["app"],
-        "caption": window["caption"],
-        "active": window["active"],
-        "frame": {
-            "x": window["frame"][0],
-            "y": window["frame"][1],
-            "width": window["frame"][2],
-            "height": window["frame"][3],
-        },
-        "client": {
-            "x": window["client"][0],
-            "y": window["client"][1],
-            "width": window["client"][2],
-            "height": window["client"][3],
-        },
-    }
+def window_kind(window: KWinWindow) -> WindowKind:
+    """The kind of a KWin window, from the first matching KWin window type.
 
-
-def query(app_name: str = "", window_id: str = "", timeout: float = 5.0) -> list[dict[str, object]]:
-    """Ask KWin for the geometry of every normal window.
-
-    ``app_name`` is a case-insensitive substring of the app name; ``window_id``
-    must equal a window id exactly. Both filters apply when both are given.
+    normal, dialog, utility (tool palettes, toolbars, menus torn off), popup
+    (menus, tooltips, combo lists), shell (desktop background, panels/docks,
+    notifications) and other (anything else, e.g. splash screens).
     """
-    windows = [w for w in collect_windows(timeout) if w["normal"]]
-    if app_name:
-        needle = app_name.lower()
-        windows = [w for w in windows if needle in w["app"].lower()]
-    if window_id:
-        windows = [w for w in windows if w["id"] == window_id]
-    return [_report(w) for w in windows]
+    if window["normal"]:
+        return "normal"
+    if window["dialog"]:
+        return "dialog"
+    if window["utility"]:
+        return "utility"
+    if window["popup"]:
+        return "popup"
+    if window["desktop"] or window["dock"] or window["notification"]:
+        return "shell"
+    return "other"
 
 
-def active(timeout: float = 5.0) -> dict[str, object] | None:
-    """Return the window KWin currently treats as active, or None."""
-    for window in collect_windows(timeout):
-        if window["active"]:
-            return _report(window)
-    return None
+def _rect(box: list[int]) -> Rect:
+    from kwin_mcp.models import Rect  # in the server only: kept out of the helper subprocess
+
+    # Rect requires a positive size, but KWin can report a zero-sized frame or
+    # client (e.g. a window that is still mapping). Clamp to 1 so such a window
+    # stays listable and addressable instead of failing the whole report.
+    return Rect(x=box[0], y=box[1], width=max(1, box[2]), height=max(1, box[3]))
 
 
-def activate(
-    app_name: str = "",
-    window_id: str = "",
-    timeout: float = 5.0,
-) -> str:
-    """Activate one window by exact id, or by app name/caption."""
-    script = _render_script(
-        _ACTIVATE_SCRIPT_TEMPLATE, {"needle": app_name.lower(), "window_id": window_id}
+def window_from_kwin(window: KWinWindow) -> Window:
+    """The public ``Window`` of one KWin window (in the server, not the helper)."""
+    from kwin_mcp.models import Window  # in the server only: kept out of the helper subprocess
+
+    return Window(
+        id=window["id"],
+        app_id=window["app"],
+        caption=window["caption"],
+        kind=window_kind(window),
+        active=window["active"],
+        frame=_rect(window["frame"]),
+        client=_rect(window["client"]),
+        moveable=window["moveable"],
+        resizeable=window["resizeable"],
+        closeable=window["closeable"],
+        desktops=list(window["desktops"]),
+        on_all_desktops=window["onAllDesktops"],
     )
-    return run_kwin_script(script, timeout)
+
+
+def windows(timeout: float = 5.0) -> list[KWinWindow]:
+    """Every window KWin lists, of every kind, as raw KWin records in KWin's order.
+
+    Deleted windows (closed, still animating out) are left out: they can no
+    longer be focused, placed or closed. The records stay plain JSON so this
+    subprocess needs no models; the engine converts them with ``window_from_kwin``.
+    """
+    return [w for w in collect_windows(timeout) if not w["deleted"]]
+
+
+_EMPTY_KIND = (
+    "kind must name at least one window kind (normal, dialog, utility, popup, shell, other)."
+    "\nOmit kind to match every kind."
+)
+_EMPTY_SELECTOR = (
+    "window needs at least one field (id, app_id, caption, active or kind)."
+    "\nUse window_list to find a window id."
+)
+
+
+def describe_selector(selector: WindowSelector) -> str:
+    """The set fields of a selector, e.g. ``{app_id='kate', kind=['normal']}``."""
+    fields: list[tuple[str, object]] = [
+        ("id", selector.id),
+        ("app_id", selector.app_id),
+        ("caption", selector.caption),
+        ("active", selector.active),
+        ("kind", selector.kind),
+    ]
+    return "{" + ", ".join(f"{name}={value!r}" for name, value in fields if value is not None) + "}"
+
+
+def _matches(window: Window, selector: WindowSelector) -> bool:
+    if selector.id is not None and window.id != selector.id:
+        return False
+    if selector.app_id is not None and selector.app_id.lower() not in window.app_id.lower():
+        return False
+    if selector.caption is not None and selector.caption.lower() not in window.caption.lower():
+        return False
+    if selector.active is not None and window.active != selector.active:
+        return False
+    return selector.kind is None or window.kind in selector.kind
+
+
+def select_windows(windows: list[Window], selector: WindowSelector | None) -> list[Window]:
+    """The windows matching every set field of ``selector``, in their original order.
+
+    ``id`` is exact; ``app_id`` (the resource class) and ``caption`` are
+    case-insensitive substrings; ``active`` is equality; ``kind`` is
+    membership. An unset field, or no selector, matches every window of every
+    kind. ``kind=[]`` (only constructible without validation, e.g. from the
+    CLI) raises ``ValueError``.
+    """
+    if selector is None:
+        return list(windows)
+    if selector.kind is not None and not selector.kind:
+        raise ValueError(_EMPTY_KIND)
+    return [window for window in windows if _matches(window, selector)]
+
+
+def select_one(windows: list[Window], selector: WindowSelector) -> Window:
+    """The single window a mutator's selector names; ``ValueError`` otherwise.
+
+    The messages teach the next step: an empty selector, no match (an id-only
+    selector names the id), or the ambiguous candidates with their ids and
+    kinds and how to narrow the selector.
+    """
+    if selector.is_empty():
+        raise ValueError(_EMPTY_SELECTOR)
+    matches = select_windows(windows, selector)
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        if selector.id is not None and selector.model_copy(update={"id": None}).is_empty():
+            msg = f"No window with id {selector.id!r}.\nList windows with window_list."
+        else:
+            described = describe_selector(selector)
+            msg = f"No window matches {described}.\nList windows with window_list."
+        raise ValueError(msg)
+    candidates = "; ".join(f'{w.id} {w.app_id} "{w.caption}" ({w.kind})' for w in matches)
+    msg = (
+        f"{len(matches)} windows match {describe_selector(selector)}: {candidates}"
+        '\nNarrow the selector: add kind:["normal"] or use id.'
+    )
+    raise ValueError(msg)
+
+
+def activate(window_id: str, timeout: float = 5.0) -> dict[str, object]:
+    """Activate the window with exactly this id, of any kind.
+
+    Returns ``{"found": bool}``; nothing is activated when no window has the id.
+    """
+    script = _render_script(_ACTIVATE_SCRIPT_TEMPLATE, {"window_id": window_id})
+    payload = json.loads(run_kwin_script(script, timeout))
+    if not isinstance(payload, dict) or not isinstance(payload.get("found"), bool):
+        msg = f"KWin returned a malformed activation result: {payload!r}"
+        raise RuntimeError(msg)
+    return payload
 
 
 def set_geometry(
@@ -684,7 +798,7 @@ def desktops(window_id: str = "", timeout: float = 5.0) -> dict[str, object]:
 
     Returns ``{"desktops": [{"id", "name", "current"}], "current": id,
     "window": {"desktops": [id], "onAllDesktops": bool} | None}``; ``window`` is
-    None when ``window_id`` is empty or no window has exactly that id.
+    None when ``window_id`` is empty or no window (of any kind) has exactly that id.
     """
     script = _render_script(_DESKTOPS_SCRIPT_TEMPLATE, {"window_id": window_id})
     payload = json.loads(run_kwin_script(script, timeout))
@@ -694,22 +808,23 @@ def desktops(window_id: str = "", timeout: float = 5.0) -> dict[str, object]:
     return payload
 
 
-def set_desktop(window_id: str, desktop_id: str, timeout: float = 5.0) -> dict[str, object]:
+def set_desktop(
+    window_id: str, desktop_id: str, timeout: float = 5.0, *, check_only: bool = False
+) -> dict[str, object]:
     """Assign the window with exactly this id to exactly the desktop with this id.
 
     Returns ``{"windowFound", "desktopFound", "current"}`` and, when the window
     was found, its ``before`` desktop ids and ``beforeOnAllDesktops``. The
-    assignment happens only when both were found and no enumerated related window
-    would move; otherwise ``refused`` is ``"related"`` (with the ``related`` windows
+    assignment happens only when both were found and KWin would move no other
+    window; otherwise ``refused`` is ``"related"`` (with the ``related`` windows
     that would also move) or ``"unsupported"`` (an X11 group transient exists)
-    and nothing is assigned. Preflight refusal covers only relationships KWin
-    scripting can enumerate at request time. Linked but unpainted or unlisted
-    children may follow their parent, and KWin may switch the current desktop
-    when they first appear. Read the selected window's membership back with
-    ``desktops(window_id)``; the reported current desktop is a point-in-time observation.
+    and nothing is assigned. Read an assignment back with ``desktops(window_id)``.
+    ``check_only`` runs every check and reports the same fields without assigning,
+    so a caller can refuse before changing anything else about the window.
     """
     script = _render_script(
-        _SET_DESKTOP_SCRIPT_TEMPLATE, {"window_id": window_id, "desktop_id": desktop_id}
+        _SET_DESKTOP_SCRIPT_TEMPLATE,
+        {"window_id": window_id, "desktop_id": desktop_id, "check_only": check_only},
     )
     payload = json.loads(run_kwin_script(script, timeout))
     if not _valid_set_desktop(payload):
@@ -737,80 +852,62 @@ def outputs(timeout: float = 5.0) -> dict[str, object]:
     return payload
 
 
+def _optional_int(request: Mapping[str, object], key: str) -> int | None:
+    value = request.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        msg = f"{key} must be an integer or null, got {value!r}"
+        raise ValueError(msg)
+    return value
+
+
+def _dispatch(request: Mapping[str, object]) -> object:
+    """Run the operation named by ``request["op"]`` and return its result."""
+    op = request.get("op")
+    window_id = str(request.get("window_id", ""))
+    if op == "windows":
+        return windows()
+    if op == "activate":
+        return activate(window_id)
+    if op == "set_geometry":
+        return set_geometry(
+            window_id=window_id,
+            x=_optional_int(request, "x"),
+            y=_optional_int(request, "y"),
+            width=_optional_int(request, "width"),
+            height=_optional_int(request, "height"),
+        )
+    if op == "desktops":
+        return desktops(window_id=window_id)
+    if op == "set_desktop":
+        return set_desktop(
+            window_id=window_id,
+            desktop_id=str(request.get("desktop_id", "")),
+            check_only=request.get("check_only") is True,
+        )
+    if op == "close":
+        return close(window_id)
+    if op == "active_class":
+        return active_class()
+    if op == "outputs":
+        return outputs()
+    msg = f"Unknown geometry op: {op!r}"
+    raise ValueError(msg)
+
+
 def main() -> None:
-    """Entry point for `python -m kwin_mcp.geometry`."""
+    """Entry point for `python -m kwin_mcp.geometry`: one JSON request on stdin."""
+    import dbus
+
     try:
         request = json.loads(sys.stdin.read() or "{}")
     except json.JSONDecodeError:
         request = {}
+    if not isinstance(request, dict):
+        request = {}
     try:
-        op = request.get("op")
-        if op == "activate":
-            print(
-                json.dumps(
-                    {
-                        "ok": True,
-                        "result": activate(
-                            app_name=str(request.get("app_name", "")),
-                            window_id=str(request.get("window_id", "")),
-                        ),
-                    }
-                )
-            )
-            return
-        if op == "outputs":
-            print(json.dumps({"ok": True, "result": outputs()}))
-            return
-        if op == "active":
-            print(json.dumps({"ok": True, "result": active()}))
-            return
-        if op == "active_class":
-            print(json.dumps({"ok": True, "result": active_class()}))
-            return
-        if op == "set_geometry":
-            print(
-                json.dumps(
-                    {
-                        "ok": True,
-                        "result": set_geometry(
-                            window_id=str(request.get("window_id", "")),
-                            x=request.get("x"),
-                            y=request.get("y"),
-                            width=request.get("width"),
-                            height=request.get("height"),
-                        ),
-                    }
-                )
-            )
-            return
-        if op == "desktops":
-            print(
-                json.dumps(
-                    {"ok": True, "result": desktops(window_id=str(request.get("window_id", "")))}
-                )
-            )
-            return
-        if op == "set_desktop":
-            print(
-                json.dumps(
-                    {
-                        "ok": True,
-                        "result": set_desktop(
-                            window_id=str(request.get("window_id", "")),
-                            desktop_id=str(request.get("desktop_id", "")),
-                        ),
-                    }
-                )
-            )
-            return
-        if op == "close":
-            print(json.dumps({"ok": True, "result": close(str(request.get("window_id", "")))}))
-            return
-        result = query(
-            app_name=str(request.get("app_name", "")),
-            window_id=str(request.get("window_id", "")),
-        )
-        print(json.dumps({"ok": True, "result": result}))
+        print(json.dumps({"ok": True, "result": _dispatch(request)}))
     except (RuntimeError, ValueError, dbus.DBusException) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}))
 

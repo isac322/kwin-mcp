@@ -31,9 +31,10 @@ from kwin_mcp import progress
 
 # Protocol constants only; importing the helper module loads no C library.
 from kwin_mcp.clipboard import MAX_COPY_BYTES, READY_BUDGET_S, RESTORE_ROUNDTRIP_S
+from kwin_mcp.models import HeldInput, TypeRoute
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
 
 # Longest uninterrupted sleep while holding a button or touch point, so a
 # long-press can report progress; the total hold duration is unchanged.
@@ -43,12 +44,34 @@ _HOLD_SLICE_S = 0.5
 _TYPE_REPORT_INTERVAL_S = 0.5
 
 
+# Set once the server is exiting: every long wait inside a gesture (holds,
+# dwells, swipe and pinch steps) then stops at once, and the gesture's own
+# cleanup releases what it pressed, so the exit path can run session_stop.
+_ABORT = threading.Event()
+
+
+class InputAbortedError(RuntimeError):
+    """A gesture stopped early because kwin-mcp is shutting down."""
+
+
+def abort_waits() -> None:
+    """Make every current and later gesture wait end at once (server exit only)."""
+    _ABORT.set()
+
+
+def _wait(seconds: float) -> None:
+    """Sleep ``seconds`` inside a gesture; raise InputAbortedError once exiting."""
+    if _ABORT.wait(max(seconds, 0.0)):
+        msg = "kwin-mcp is shutting down; the gesture stopped and released its input"
+        raise InputAbortedError(msg)
+
+
 def _hold(seconds: float, message: str) -> None:
     """Sleep for ``seconds`` in slices of at most ``_HOLD_SLICE_S``, reporting progress."""
     start = time.monotonic()
     deadline = start + seconds
     while (remaining := deadline - time.monotonic()) > 0:
-        time.sleep(min(remaining, _HOLD_SLICE_S))
+        _wait(min(remaining, _HOLD_SLICE_S))
         progress.report(min(time.monotonic() - start, seconds), seconds, message)
 
 
@@ -158,9 +181,124 @@ def check_typeable(text: str) -> None:
     unsupported = dict.fromkeys(char for char in text if char not in _CHAR_KEY_MAP)
     if unsupported:
         chars = ", ".join(repr(char) for char in unsupported)
-        msg = f"keyboard_type cannot type {chars}; use keyboard_type_unicode"
+        msg = f'keyboard_type cannot type {chars}.\nRetry with method="unicode".'
         raise ValueError(msg)
 
+
+class HeldControlError(RuntimeError):
+    """A call conflicts with a mouse button or key kwin-mcp holds pressed."""
+
+
+# Canonical name of every keycode a KeyChord or typed text can produce: the
+# modifier names, then the first special-key name, then the unshifted character.
+_KEY_NAMES: dict[int, str] = {42: "shift", 29: "ctrl", 56: "alt", 125: "super"}
+for _name, _code in _EVDEV_KEY_MAP.items():
+    _KEY_NAMES.setdefault(_code, _name)
+for _char, (_code, _shifted) in _CHAR_KEY_MAP.items():
+    if not _shifted:
+        _KEY_NAMES.setdefault(_code, _char)
+
+_SHIFT_KEYCODE = _MODIFIER_KEYS["shift"]
+
+
+def key_name(keycode: int) -> str:
+    """Return the canonical lowercase name of an evdev keycode (``shift``, ``return``, ``a``)."""
+    return _KEY_NAMES.get(keycode, f"keycode {keycode}")
+
+
+def _key_name_to_evdev(name: str) -> int | None:
+    """Convert a key name to its Linux evdev keycode."""
+    lower = name.lower()
+
+    if lower in _EVDEV_KEY_MAP:
+        return _EVDEV_KEY_MAP[lower]
+
+    # Single character → look up in character map
+    if len(name) == 1:
+        entry = _CHAR_KEY_MAP.get(name)
+        if entry:
+            return entry[0]
+
+    return None
+
+
+def _resolve_modifiers(modifiers: list[str] | None) -> list[int]:
+    """Resolve modifier key names to evdev keycodes.
+
+    Raises ValueError for an unknown or empty name, before any input is sent.
+    """
+    if not modifiers:
+        return []
+    codes: list[int] = []
+    for mod in modifiers:
+        code = _MODIFIER_KEYS.get(mod.lower())
+        if code is None:
+            msg = f"Unknown modifier: {mod!r}"
+            raise ValueError(msg)
+        codes.append(code)
+    return codes
+
+
+def chord_keycodes(chord: str) -> list[int]:
+    """Parse a KeyChord into evdev keycodes: modifiers in chord order, then the main key.
+
+    Names are ``+``-joined and case-insensitive (``ctrl``/``control``,
+    ``super``/``meta``, ``return``, ``f4``, ``a``). A chord of modifiers only
+    uses its last modifier as the main key (``ctrl+shift``). When several
+    non-modifier names are given, the last one is the main key, as before.
+    Raises ValueError ``Unknown key: <chord>`` for any unknown or empty name,
+    before any input is sent.
+    """
+    modifiers: list[int] = []
+    keycode: int | None = None
+    for part in chord.split("+"):
+        name = part.strip()
+        modifier = _MODIFIER_KEYS.get(name.lower())
+        if modifier is not None:
+            modifiers.append(modifier)
+            continue
+        keycode = _key_name_to_evdev(name)
+        if keycode is None:
+            msg = f"Unknown key: {chord}"
+            raise ValueError(msg)
+    if keycode is None:
+        # Every name was a modifier (split always yields at least one part).
+        keycode = modifiers.pop()
+    return [*modifiers, keycode]
+
+
+def modifier_keycodes(chord: str | None) -> list[int]:
+    """Resolve the ``modifiers`` KeyChord of a pointer gesture to evdev keycodes.
+
+    Raises ValueError ``Unknown modifier: '<m>'`` for a name that is not a modifier.
+    """
+    if chord is None:
+        return []
+    return _resolve_modifiers(chord.split("+"))
+
+
+def text_keycodes(text: str) -> set[int]:
+    """Return every keycode ``keyboard_type`` presses for ``text``, incl. shift when needed.
+
+    Characters the key map cannot produce are skipped; ``check_typeable`` rejects them.
+    """
+    codes: set[int] = set()
+    for char in text:
+        entry = _CHAR_KEY_MAP.get(char)
+        if entry is None:
+            continue
+        code, needs_shift = entry
+        codes.add(code)
+        if needs_shift:
+            codes.add(_SHIFT_KEYCODE)
+    return codes
+
+
+# InputBackend.revalidate() reports this once the EIS connection is gone. kwin-mcp can
+# no longer release anything, and KWin 6.3.6 and 6.7.5 keep an emulated button down.
+EIS_DISCONNECTED_WARNING = (
+    "EIS disconnected: held input is no longer tracked; KWin may keep it pressed"
+)
 
 # Button states
 _PRESSED = 1
@@ -182,6 +320,10 @@ _EI_EVENT_DEVICE_ADDED = 5
 _EI_EVENT_DEVICE_REMOVED = 6
 _EI_EVENT_DEVICE_PAUSED = 7
 _EI_EVENT_DEVICE_RESUMED = 8
+_EI_EVENT_PONG = 90
+
+# How long sync() waits for KWin to answer a ping before giving up.
+_SYNC_TIMEOUT = 1.0
 
 # How long a sender waits for KWin to replace a removed or paused device. KWin
 # removes the old device, adds the replacement, and resumes it synchronously
@@ -288,6 +430,19 @@ def _load_libei() -> ctypes.CDLL:
     lib.ei_unref.argtypes = [ctypes.c_void_p]
     lib.ei_get_fd.restype = ctypes.c_int
     lib.ei_get_fd.argtypes = [ctypes.c_void_p]
+
+    # Round trips: ei_ping() is answered by EI_EVENT_PONG once KWin has handled
+    # every request sent before it.
+    lib.ei_new_ping.restype = ctypes.c_void_p
+    lib.ei_new_ping.argtypes = [ctypes.c_void_p]
+    lib.ei_ping.restype = None
+    lib.ei_ping.argtypes = [ctypes.c_void_p]
+    lib.ei_ping_get_id.restype = ctypes.c_uint64
+    lib.ei_ping_get_id.argtypes = [ctypes.c_void_p]
+    lib.ei_ping_unref.restype = ctypes.c_void_p
+    lib.ei_ping_unref.argtypes = [ctypes.c_void_p]
+    lib.ei_event_pong_get_ping.restype = ctypes.c_void_p
+    lib.ei_event_pong_get_ping.argtypes = [ctypes.c_void_p]
 
     # Seat functions
     lib.ei_event_get_seat.restype = ctypes.c_void_p
@@ -413,7 +568,11 @@ class EISClient:
         self._lost_at: dict[str, float] = {}
         # Devices this client has called ei_device_start_emulating() on.
         self._emulating: set[int] = set()
+        # Roles whose device saw REMOVED or PAUSED since the last take_lost_roles().
+        self._lost_roles: set[str] = set()
         self._disconnected: bool = False
+        # Ids of the pings KWin has answered (see sync()).
+        self._pongs: set[int] = set()
         self._setup()
 
     def _setup(self) -> None:
@@ -514,6 +673,8 @@ class EISClient:
             if device and device not in self._emulating:
                 _get_libei().ei_device_start_emulating(device, 0)
                 self._emulating.add(device)
+        # Replacements during the handshake cannot have dropped held input.
+        self._lost_roles.clear()
 
     def _process_queued_events(self) -> None:
         """Handle every event libei has already queued."""
@@ -548,9 +709,43 @@ class EISClient:
                 device = int(lib.ei_event_get_device(event) or 0)
                 if device:
                     self._update_device_state(etype, device)
-            # Everything else (modifiers, ping, sync, seat removal) needs no action.
+            elif etype == _EI_EVENT_PONG:
+                ping = lib.ei_event_pong_get_ping(event)
+                if ping:
+                    self._pongs.add(int(lib.ei_ping_get_id(ping)))
+            # Everything else (modifiers, sync, seat removal) needs no action.
         finally:
             lib.ei_event_unref(event)
+
+    def sync(self, timeout: float = _SYNC_TIMEOUT) -> bool:
+        """Wait until KWin has handled every request sent so far (a ping round trip).
+
+        Returns False when the connection is gone or KWin did not answer within
+        ``timeout``; never raises. Used before teardown, so the last releases are
+        not left in libei's send buffer when the context is freed.
+        """
+        if not self._ei or self._disconnected:
+            return False
+        lib = _get_libei()
+        ping = lib.ei_new_ping(self._ei)
+        if not ping:
+            return False
+        try:
+            ping_id = int(lib.ei_ping_get_id(ping))
+            lib.ei_ping(ping)
+            self._flush()
+            deadline = time.monotonic() + timeout
+            while ping_id not in self._pongs and not self._disconnected:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                with contextlib.suppress(OSError, ValueError):
+                    self._drain_events(remaining)
+            answered = ping_id in self._pongs
+            self._pongs.discard(ping_id)
+            return answered
+        finally:
+            lib.ei_ping_unref(ping)
 
     def _update_device_state(self, etype: int, device: int) -> None:
         """Apply a REMOVED, PAUSED, or RESUMED event for ``device``."""
@@ -570,6 +765,7 @@ class EISClient:
         now = time.monotonic()
         for role in roles:
             self._lost_at.setdefault(role, now)
+            self._lost_roles.add(role)
         self._emulating.discard(device)
         if etype == _EI_EVENT_DEVICE_PAUSED:
             return  # keep the slot and its ref until KWin resumes the device
@@ -610,6 +806,22 @@ class EISClient:
             if self._disconnected:
                 return
             wait = 0.0
+
+    @property
+    def disconnected(self) -> bool:
+        """Whether KWin closed the EIS connection (as of the last handled event)."""
+        return self._disconnected
+
+    def poll(self) -> None:
+        """Handle every EIS event already available, without waiting."""
+        if not self._ei:
+            return  # closed (or never set up): nothing left to read
+        self._drain_events(0.0)
+
+    def take_lost_roles(self) -> set[str]:
+        """Return the roles whose device was removed or paused since the last call, and reset."""
+        lost, self._lost_roles = self._lost_roles, set()
+        return lost
 
     def _live_device(self, role: str) -> int:
         """Return the usable device for ``role``, waiting briefly for a replacement.
@@ -869,7 +1081,7 @@ _CTRL_SHIFT_V_TERMINALS = frozenset(
 _UNPASTEABLE_TERMINAL_MARKERS = ("term", "rxvt")
 
 
-def _paste_chord(resource_class: str | None) -> str | None:
+def paste_chord(resource_class: str | None) -> str | None:
     """Return the clipboard paste chord for the focused window, or None to skip.
 
     ``resource_class`` is KWin's resource class of the active window ("" when
@@ -1007,19 +1219,204 @@ class _ClipboardHelper:
         return settled
 
 
+def _is_are(count: int) -> str:
+    return "is" if count == 1 else "are"
+
+
+def _lift_after_failure(client: EISClient, touch_ids: Iterable[int]) -> None:
+    """Lift touch points a failed gesture left down, keeping the original error."""
+    for touch_id in touch_ids:
+        with contextlib.suppress(RuntimeError, ValueError, OSError):
+            client.touch_up(touch_id)
+
+
 class InputBackend:
     """High-level input injection for an isolated KWin session.
 
     Wraps EISClient with convenient methods for mouse and keyboard
-    operations including click, drag, scroll, and key combos.
+    operations including click, drag, scroll, and key combos, and tracks the
+    buttons and keys the raw hold calls leave pressed.
     """
 
     def __init__(self, dbus_address: str) -> None:
         self._dbus_address = dbus_address
         self._client = EISClient(dbus_address)
-        # Buttons pressed by mouse_button_down and not yet released. While any
-        # is held, pointer motion is part of a drag path the client records.
-        self._held_buttons: set[int] = set()
+        # Buttons pressed by mouse_button_down and not yet released, in press
+        # order. While any is held, pointer motion is part of a drag path the
+        # client records.
+        self._held_buttons: dict[MouseButton, None] = {}
+        # Keys pressed by keyboard_key_down and not yet released, in press order.
+        self._held_keys: dict[int, None] = {}
+        # The disconnect warning is reported once, by the first revalidation that sees it.
+        self._disconnect_reported = False
+        # Held controls whose EIS device KWin replaced: KWin keeps them pressed, and
+        # their release must go through the replacement device (see _release_replaced).
+        self._replaced_buttons: set[MouseButton] = set()
+        self._replaced_keys: set[int] = set()
+
+    # -- Held state -------------------------------------------------------
+
+    def held(self) -> HeldInput:
+        """The buttons and keys kwin-mcp holds pressed, each in press order."""
+        return HeldInput(
+            buttons=[button.value for button in self._held_buttons],
+            keys=[key_name(code) for code in self._held_keys],
+        )
+
+    def revalidate(self) -> list[str]:
+        """Apply EIS events KWin already sent to the held state, without sending input.
+
+        A closed EIS connection clears both held sets. When KWin replaces the
+        pointer or keyboard device, the app never receives a release for that
+        device's pressed controls (checked on KWin 6.3.6 and 6.7.5): a held button
+        stays pressed, and a held key stays down in the app although KWin resets
+        its modifier state. They stay held here too and are released on an explicit
+        release, ``session_stop`` or server exit. Returns one warning per such event
+        (each reported once). Read-only: reporting never presses or releases anything.
+        """
+        self._client.poll()
+        warnings: list[str] = []
+        if self._client.disconnected:
+            self._held_buttons.clear()
+            self._held_keys.clear()
+            self._replaced_buttons.clear()
+            self._replaced_keys.clear()
+            if not self._disconnect_reported:
+                self._disconnect_reported = True
+                warnings.append(EIS_DISCONNECTED_WARNING)
+            return warnings
+        lost = self._client.take_lost_roles()
+        if "pointer" in lost and self._held_buttons:
+            self._replaced_buttons.update(self._held_buttons)
+            names = ", ".join(button.value for button in self._held_buttons)
+            verb = "stays" if len(self._held_buttons) == 1 else "stay"
+            warnings.append(f"KWin replaced the EIS pointer device: held {names} {verb} pressed")
+        if "keyboard" in lost and self._held_keys:
+            # The app got the press and no release, so the key stays down there until
+            # released; KWin itself resets its modifier state, so new keys from the
+            # replacement device are not modified by it (KWin 6.3.6 and 6.7.5).
+            self._replaced_keys.update(self._held_keys)
+            names = ", ".join(key_name(code) for code in self._held_keys)
+            many = len(self._held_keys) > 1
+            warnings.append(
+                f"KWin replaced the EIS keyboard device: held {names} "
+                f"{'stay' if many else 'stays'} pressed until released, but new keys no "
+                f"longer see {'them as modifiers' if many else 'it as a modifier'}"
+            )
+        return warnings
+
+    @staticmethod
+    def _release_replaced(send: Callable[[int], None]) -> None:
+        """Release a control KWin kept pressed after replacing the device that pressed it.
+
+        Newer KWin (6.7.5) ignores a release from the new device for a control that
+        device never pressed. A press first is absorbed (the control is already
+        down, so no event reaches the app) and makes the following release count
+        on every version.
+        """
+        send(_PRESSED)
+        time.sleep(0.01)
+        send(_RELEASED)
+
+    def _release_button(self, button: MouseButton) -> None:
+        """Send the release of ``button``, through the replacement device if needed."""
+        code = _BTN_CODES[button]
+        if button in self._replaced_buttons:
+            self._release_replaced(lambda state: self._client.pointer_button(code, state))
+        else:
+            self._client.pointer_button(code, _RELEASED)
+
+    def _release_key(self, code: int) -> None:
+        """Send the release of key ``code``, through the replacement device if needed."""
+        if code in self._replaced_keys:
+            self._release_replaced(lambda state: self._client.keyboard_key(code, state))
+        else:
+            self._client.keyboard_key(code, _RELEASED)
+
+    def check_not_held(
+        self,
+        tool: str,
+        *,
+        buttons: Iterable[MouseButton] = (),
+        keycodes: Iterable[int] = (),
+    ) -> None:
+        """Refuse a gesture that would press or release a control kwin-mcp holds.
+
+        Raises HeldControlError naming the held controls and the hold call that
+        releases them, before any event is sent.
+        """
+        touched_buttons = set(buttons)
+        touched_keys = set(keycodes)
+        held_buttons = [button for button in self._held_buttons if button in touched_buttons]
+        held_keys = [code for code in self._held_keys if code in touched_keys]
+        if not held_buttons and not held_keys:
+            return
+        clauses: list[str] = []
+        remedies: list[str] = []
+        if held_buttons:
+            names = ", ".join(button.value for button in held_buttons)
+            clauses.append(f"{names} {_is_are(len(held_buttons))} held by pointer_hold")
+            remedies.extend(
+                f"pointer_hold(phase='release', button='{button.value}', target={{x, y}})"
+                for button in held_buttons
+            )
+        if held_keys:
+            names = ", ".join(key_name(code) for code in held_keys)
+            chord = "+".join(key_name(code) for code in held_keys)
+            clauses.append(f"{names} {_is_are(len(held_keys))} held by keyboard_hold")
+            remedies.append(f"keyboard_hold(phase='release', keys='{chord}')")
+        msg = (
+            f"{tool} refused: {' and '.join(clauses)}; release it first.\n"
+            f"Release with {'; '.join(remedies)}, then retry."
+        )
+        raise HeldControlError(msg)
+
+    def check_move_allowed(self) -> None:
+        """Refuse pointer_move while a button is held: the hover would become a drag."""
+        if not self._held_buttons:
+            return
+        names = ", ".join(button.value for button in self._held_buttons)
+        msg = (
+            f"pointer_move refused: {names} {_is_are(len(self._held_buttons))} held by "
+            "pointer_hold.\nTo continue: use pointer_hold(phase='move', button, target) "
+            "to move a held button."
+        )
+        raise HeldControlError(msg)
+
+    def moved_while_held(self, button: MouseButton | None) -> str | None:
+        """Warning for a gesture that moves the pointer while another button is held."""
+        others = [held for held in self._held_buttons if held is not button]
+        if not others:
+            return None
+        verb = "was" if len(others) == 1 else "were"
+        return f"moved while {', '.join(held.value for held in others)} {verb} held"
+
+    def release_all(self) -> HeldInput:
+        """Release every held key (reverse press order), then every held button.
+
+        Buttons are released where the pointer is. Never raises: a release EIS
+        refuses is skipped, and the result names everything that was attempted.
+        When anything was released, the call waits for KWin to acknowledge it, so
+        a teardown right after it cannot drop the last release.
+        """
+        released = self.held()
+        for code in reversed(list(self._held_keys)):
+            with contextlib.suppress(RuntimeError, OSError):
+                self._release_key(code)
+            time.sleep(0.01)
+        for button in reversed(list(self._held_buttons)):
+            with contextlib.suppress(RuntimeError, OSError):
+                self._release_button(button)
+            time.sleep(0.01)
+        self._held_keys.clear()
+        self._held_buttons.clear()
+        self._replaced_keys.clear()
+        self._replaced_buttons.clear()
+        if released.buttons or released.keys:
+            self._client.sync()
+        return released
+
+    # -- Pointer ----------------------------------------------------------
 
     def mouse_move(self, x: int, y: int) -> None:
         """Move mouse to absolute coordinates (hover).
@@ -1077,26 +1474,32 @@ class InputBackend:
         self.mouse_move(x, y)
         time.sleep(0.02)
 
-        # Press modifier keys
-        for mod in mod_codes:
-            self._client.keyboard_key(mod, _PRESSED)
-            time.sleep(0.01)
+        # Press modifier keys; everything pressed is released even when a
+        # later event fails.
+        pressed_mods: list[int] = []
+        try:
+            for mod in mod_codes:
+                self._client.keyboard_key(mod, _PRESSED)
+                pressed_mods.append(mod)
+                time.sleep(0.01)
 
-        for i in range(click_count):
-            if i > 0:
-                time.sleep(_MULTI_CLICK_GAP_SECONDS)
-            self._client.pointer_button(btn_code, _PRESSED)
-            if hold_ms > 0 and i == click_count - 1:
-                hold_s = max(_CLICK_PRESS_SECONDS, hold_ms / 1000.0)
-                _hold(hold_s, f"Holding {button.value} button")
-            else:
-                time.sleep(_CLICK_PRESS_SECONDS)
-            self._client.pointer_button(btn_code, _RELEASED)
-
-        # Release modifier keys in reverse order
-        for mod in reversed(mod_codes):
-            time.sleep(0.01)
-            self._client.keyboard_key(mod, _RELEASED)
+            for i in range(click_count):
+                if i > 0:
+                    time.sleep(_MULTI_CLICK_GAP_SECONDS)
+                self._client.pointer_button(btn_code, _PRESSED)
+                try:
+                    if hold_ms > 0 and i == click_count - 1:
+                        hold_s = max(_CLICK_PRESS_SECONDS, hold_ms / 1000.0)
+                        _hold(hold_s, f"Holding {button.value} button")
+                    else:
+                        time.sleep(_CLICK_PRESS_SECONDS)
+                finally:
+                    self._client.pointer_button(btn_code, _RELEASED)
+        finally:
+            # Release modifier keys in reverse order
+            for mod in reversed(pressed_mods):
+                time.sleep(0.01)
+                self._client.keyboard_key(mod, _RELEASED)
 
     def mouse_scroll(
         self,
@@ -1163,6 +1566,7 @@ class InputBackend:
         button: MouseButton = MouseButton.LEFT,
         modifiers: list[str] | None = None,
         waypoints: list[tuple[int, int, int]] | None = None,
+        dwell_ms: int = 0,
     ) -> None:
         """Drag from one point to another.
 
@@ -1172,6 +1576,8 @@ class InputBackend:
             button: Mouse button to use for dragging.
             modifiers: Modifier keys to hold during drag (e.g. ["alt"], ["ctrl"]).
             waypoints: Intermediate points as (x, y, dwell_ms) tuples.
+            dwell_ms: Pause at ``(to_x, to_y)`` before the release (<= 0: none),
+                for drop targets that need a hover.
         """
         btn_code = _BTN_CODES[button]
         mod_codes = _resolve_modifiers(modifiers)
@@ -1196,12 +1602,12 @@ class InputBackend:
             segments: list[tuple[int, int, int, int, int]] = []  # (fx, fy, tx, ty, dwell_ms)
             prev_x, prev_y = from_x, from_y
             if waypoints:
-                for wx, wy, dwell_ms in waypoints:
-                    segments.append((prev_x, prev_y, wx, wy, dwell_ms))
+                for wx, wy, waypoint_dwell_ms in waypoints:
+                    segments.append((prev_x, prev_y, wx, wy, waypoint_dwell_ms))
                     prev_x, prev_y = wx, wy
             segments.append((prev_x, prev_y, to_x, to_y, 0))
 
-            for seg_index, (seg_fx, seg_fy, seg_tx, seg_ty, dwell_ms) in enumerate(segments, 1):
+            for seg_index, (seg_fx, seg_fy, seg_tx, seg_ty, seg_dwell_ms) in enumerate(segments, 1):
                 dx = seg_tx - seg_fx
                 dy = seg_ty - seg_fy
                 steps = max(10, int((dx**2 + dy**2) ** 0.5 / 10))
@@ -1210,12 +1616,14 @@ class InputBackend:
                     cx = seg_fx + dx * frac
                     cy = seg_fy + dy * frac
                     self._client.pointer_move_absolute(cx, cy)
-                    time.sleep(0.01)
-                if dwell_ms > 0:
-                    time.sleep(dwell_ms / 1000.0)
+                    _wait(0.01)
+                if seg_dwell_ms > 0:
+                    _wait(seg_dwell_ms / 1000.0)
                 progress.report(
                     seg_index, len(segments), f"Drag segment {seg_index}/{len(segments)}"
                 )
+            if dwell_ms > 0:
+                _hold(dwell_ms / 1000.0, "Dwelling at the drop target")
         finally:
             try:
                 if button_pressed:
@@ -1229,34 +1637,53 @@ class InputBackend:
 
         _mirror_x11_pointer(self._dbus_address, to_x, to_y)
 
-    def mouse_button_down(self, x: int, y: int, button: MouseButton = MouseButton.LEFT) -> None:
+    def mouse_button_down(self, x: int, y: int, button: MouseButton = MouseButton.LEFT) -> bool:
         """Move to coordinates and press a mouse button without releasing.
 
-        Args:
-            x, y: Coordinates.
-            button: Mouse button to press.
+        Idempotent: when kwin-mcp already holds ``button`` the pointer still
+        moves to ``(x, y)`` (straight, as a drag segment) but no button event
+        is sent. Returns whether the button was newly pressed.
         """
-        btn_code = _BTN_CODES[button]
+        if button in self._held_buttons:
+            self.mouse_move(x, y)
+            return False
         self.mouse_move(x, y)
         time.sleep(0.02)
-        self._client.pointer_button(btn_code, _PRESSED)
-        self._held_buttons.add(btn_code)
+        self._client.pointer_button(_BTN_CODES[button], _PRESSED)
+        self._held_buttons[button] = None
+        return True
 
-    def mouse_button_up(self, x: int, y: int, button: MouseButton = MouseButton.LEFT) -> None:
+    def mouse_hold_move(self, x: int, y: int, button: MouseButton = MouseButton.LEFT) -> None:
+        """Move straight to ``(x, y)`` with ``button`` held, as one drag segment.
+
+        Raises HeldControlError when kwin-mcp does not hold ``button``.
+        """
+        if button not in self._held_buttons:
+            msg = (
+                f"pointer_hold(phase='move') refused: {button.value} is not held.\n"
+                f"Press it first with pointer_hold(phase='press', button='{button.value}', "
+                "target={x, y})."
+            )
+            raise HeldControlError(msg)
+        self.mouse_move(x, y)
+
+    def mouse_button_up(self, x: int, y: int, button: MouseButton = MouseButton.LEFT) -> bool:
         """Move to coordinates and release a mouse button.
 
-        Args:
-            x, y: Coordinates.
-            button: Mouse button to release.
+        The release is always injected, also for a button kwin-mcp did not
+        press (e.g. one stuck by another client). Returns whether kwin-mcp
+        held the button. The button leaves the held set only once its release
+        was sent: an interrupted or failed release (a shutdown signal between
+        the replacement device's press and release) stays held, so a retry or
+        ``release_all`` at ``session_stop``/exit still sends it.
         """
-        btn_code = _BTN_CODES[button]
-        try:
-            self.mouse_move(x, y)
-            time.sleep(0.02)
-            self._client.pointer_button(btn_code, _RELEASED)
-        finally:
-            # A failed release must not leave mouse_move in held (drag) mode.
-            self._held_buttons.discard(btn_code)
+        was_held = button in self._held_buttons
+        self.mouse_move(x, y)
+        time.sleep(0.02)
+        self._release_button(button)
+        self._held_buttons.pop(button, None)
+        self._replaced_buttons.discard(button)
+        return was_held
 
     def keyboard_type(self, text: str) -> None:
         """Type a string of text character by character.
@@ -1272,16 +1699,17 @@ class InputBackend:
         for index, char in enumerate(text, 1):
             keycode, needs_shift = _CHAR_KEY_MAP[char]
             if needs_shift:
-                self._client.keyboard_key(_MODIFIER_KEYS["shift"], _PRESSED)
+                self._client.keyboard_key(_SHIFT_KEYCODE, _PRESSED)
                 time.sleep(0.01)
 
-            self._client.keyboard_key(keycode, _PRESSED)
-            time.sleep(0.01)
-            self._client.keyboard_key(keycode, _RELEASED)
-
-            if needs_shift:
+            try:
+                self._client.keyboard_key(keycode, _PRESSED)
                 time.sleep(0.01)
-                self._client.keyboard_key(_MODIFIER_KEYS["shift"], _RELEASED)
+                self._client.keyboard_key(keycode, _RELEASED)
+            finally:
+                if needs_shift:
+                    time.sleep(0.01)
+                    self._client.keyboard_key(_SHIFT_KEYCODE, _RELEASED)
 
             time.sleep(0.02)
 
@@ -1298,67 +1726,63 @@ class InputBackend:
     def keyboard_key(self, key: str) -> None:
         """Press a key combination (e.g., 'ctrl+c', 'Return', 'alt+F4').
 
-        Supports modifier combinations with '+' separator.
+        Supports modifier combinations with '+' separator. Raises ValueError
+        ``Unknown key: <key>`` before any input; modifiers pressed are released
+        even when a later event fails.
         """
-        modifiers, keycode = _parse_key_combo(key)
-        if keycode is None:
-            msg = f"Unknown key: {key}"
-            raise ValueError(msg)
+        *modifiers, keycode = chord_keycodes(key)
 
-        # Press modifiers
-        for mod in modifiers:
-            self._client.keyboard_key(mod, _PRESSED)
+        pressed: list[int] = []
+        try:
+            # Press modifiers
+            for mod in modifiers:
+                self._client.keyboard_key(mod, _PRESSED)
+                pressed.append(mod)
+                time.sleep(0.01)
+
+            # Press and release main key
+            self._client.keyboard_key(keycode, _PRESSED)
             time.sleep(0.01)
+            self._client.keyboard_key(keycode, _RELEASED)
+        finally:
+            # Release modifiers in reverse order
+            for mod in reversed(pressed):
+                time.sleep(0.01)
+                self._client.keyboard_key(mod, _RELEASED)
 
-        # Press and release main key
-        self._client.keyboard_key(keycode, _PRESSED)
-        time.sleep(0.01)
-        self._client.keyboard_key(keycode, _RELEASED)
+    def keyboard_key_down(self, key: str) -> bool:
+        """Press (and hold) the keys of a chord that kwin-mcp does not hold yet.
 
-        # Release modifiers in reverse order
-        for mod in reversed(modifiers):
-            time.sleep(0.01)
-            self._client.keyboard_key(mod, _RELEASED)
-
-    def keyboard_key_down(self, key: str) -> None:
-        """Press (and hold) a key combination without releasing.
-
-        Useful for holding modifier keys across multiple actions.
-
-        Args:
-            key: Key to press (e.g., "ctrl", "shift+a", "alt").
+        Modifiers go first, 10 ms apart; already-held keys send no event.
+        Returns whether any key was newly pressed. Raises ValueError for an
+        unknown key before any input.
         """
-        modifiers, keycode = _parse_key_combo(key)
-        if keycode is None:
-            msg = f"Unknown key: {key}"
-            raise ValueError(msg)
-
-        for mod in modifiers:
-            self._client.keyboard_key(mod, _PRESSED)
+        changed = False
+        for code in chord_keycodes(key):
+            if code in self._held_keys:
+                continue
+            self._client.keyboard_key(code, _PRESSED)
+            self._held_keys[code] = None
+            changed = True
             time.sleep(0.01)
+        return changed
 
-        self._client.keyboard_key(keycode, _PRESSED)
-        time.sleep(0.01)
+    def keyboard_key_up(self, key: str) -> bool:
+        """Release every key of a chord in reverse order (main key first).
 
-    def keyboard_key_up(self, key: str) -> None:
-        """Release a previously pressed key combination.
-
-        Releases in reverse order (main key first, then modifiers).
-
-        Args:
-            key: Key to release (e.g., "ctrl", "shift+a", "alt").
+        The release is always injected, also for keys kwin-mcp did not press.
+        Returns whether kwin-mcp held any of them. Raises ValueError for an
+        unknown key before any input. Like ``mouse_button_up``, a key leaves the
+        held set only once its release was sent.
         """
-        modifiers, keycode = _parse_key_combo(key)
-        if keycode is None:
-            msg = f"Unknown key: {key}"
-            raise ValueError(msg)
-
-        self._client.keyboard_key(keycode, _RELEASED)
-        time.sleep(0.01)
-
-        for mod in reversed(modifiers):
-            self._client.keyboard_key(mod, _RELEASED)
+        codes = list(dict.fromkeys(chord_keycodes(key)))
+        was_held = any(code in self._held_keys for code in codes)
+        for code in reversed(codes):
+            self._release_key(code)
+            self._held_keys.pop(code, None)
+            self._replaced_keys.discard(code)
             time.sleep(0.01)
+        return was_held
 
     def touch_tap(self, x: int, y: int, hold_ms: int = 0) -> None:
         """Tap at the given coordinates.
@@ -1368,10 +1792,14 @@ class InputBackend:
             hold_ms: Duration to hold before lifting (for long-press).
         """
         tid = self._client.touch_down(float(x), float(y))
-        if hold_ms > 0:
-            _hold(max(0.01, hold_ms / 1000.0), "Holding touch")
-        else:
-            time.sleep(0.01)
+        try:
+            if hold_ms > 0:
+                _hold(max(0.01, hold_ms / 1000.0), "Holding touch")
+            else:
+                time.sleep(0.01)
+        except BaseException:
+            _lift_after_failure(self._client, [tid])
+            raise
         self._client.touch_up(tid)
 
     def touch_swipe(
@@ -1396,13 +1824,17 @@ class InputBackend:
         tid = self._client.touch_down(float(from_x), float(from_y))
         step_delay = max(0.001, duration_ms / 1000.0 / steps)
 
-        for i in range(1, steps + 1):
-            frac = i / steps
-            cx = from_x + dx * frac
-            cy = from_y + dy * frac
-            self._client.touch_move(tid, cx, cy)
-            time.sleep(step_delay)
-            _report_step(i, steps, "Swiping")
+        try:
+            for i in range(1, steps + 1):
+                frac = i / steps
+                cx = from_x + dx * frac
+                cy = from_y + dy * frac
+                self._client.touch_move(tid, cx, cy)
+                _wait(step_delay)
+                _report_step(i, steps, "Swiping")
+        except BaseException:
+            _lift_after_failure(self._client, [tid])
+            raise
 
         self._client.touch_up(tid)
 
@@ -1427,19 +1859,25 @@ class InputBackend:
 
         # Two fingers start symmetrically on the x-axis
         half_start = start_distance / 2.0
-        tid1 = self._client.touch_down(float(center_x - half_start), float(center_y))
-        tid2 = self._client.touch_down(float(center_x + half_start), float(center_y))
+        tids: list[int] = []
+        try:
+            tids.append(self._client.touch_down(float(center_x - half_start), float(center_y)))
+            tids.append(self._client.touch_down(float(center_x + half_start), float(center_y)))
+            tid1, tid2 = tids
 
-        for i in range(1, steps + 1):
-            frac = i / steps
-            half = half_start + (end_distance / 2.0 - half_start) * frac
-            self._client.touch_move(tid1, float(center_x - half), float(center_y))
-            self._client.touch_move(tid2, float(center_x + half), float(center_y))
-            time.sleep(step_delay)
-            _report_step(i, steps, "Pinching")
+            for i in range(1, steps + 1):
+                frac = i / steps
+                half = half_start + (end_distance / 2.0 - half_start) * frac
+                self._client.touch_move(tid1, float(center_x - half), float(center_y))
+                self._client.touch_move(tid2, float(center_x + half), float(center_y))
+                _wait(step_delay)
+                _report_step(i, steps, "Pinching")
+        except BaseException:
+            _lift_after_failure(self._client, tids)
+            raise
 
-        self._client.touch_up(tid1)
-        self._client.touch_up(tid2)
+        for tid in tids:
+            self._client.touch_up(tid)
 
     def touch_multi_swipe(
         self,
@@ -1466,20 +1904,24 @@ class InputBackend:
 
         # Start touches spread vertically around center
         tids: list[int] = []
-        for f in range(fingers):
-            offset = (f - (fingers - 1) / 2.0) * finger_spacing
-            tid = self._client.touch_down(float(from_x), float(from_y + offset))
-            tids.append(tid)
-
-        for i in range(1, steps + 1):
-            frac = i / steps
-            cx = from_x + dx * frac
-            cy = from_y + dy * frac
-            for f, tid in enumerate(tids):
+        try:
+            for f in range(fingers):
                 offset = (f - (fingers - 1) / 2.0) * finger_spacing
-                self._client.touch_move(tid, cx, cy + offset)
-            time.sleep(step_delay)
-            _report_step(i, steps, f"{fingers}-finger swipe")
+                tid = self._client.touch_down(float(from_x), float(from_y + offset))
+                tids.append(tid)
+
+            for i in range(1, steps + 1):
+                frac = i / steps
+                cx = from_x + dx * frac
+                cy = from_y + dy * frac
+                for f, tid in enumerate(tids):
+                    offset = (f - (fingers - 1) / 2.0) * finger_spacing
+                    self._client.touch_move(tid, cx, cy + offset)
+                _wait(step_delay)
+                _report_step(i, steps, f"{fingers}-finger swipe")
+        except BaseException:
+            _lift_after_failure(self._client, tids)
+            raise
 
         for tid in tids:
             self._client.touch_up(tid)
@@ -1489,7 +1931,9 @@ class InputBackend:
         text: str,
         env: dict[str, str] | None = None,
         focused_class: str | Callable[[], str | None] | None = None,
-    ) -> bool:
+        *,
+        before_paste: Callable[[str], None] | None = None,
+    ) -> TypeRoute | None:
         """Type arbitrary Unicode text using wtype or a temporary clipboard paste.
 
         The clipboard route hands the text to ``kwin_mcp.clipboard``, which
@@ -1499,7 +1943,7 @@ class InputBackend:
         has armed transfer counting, so a failed or slow copy never pastes
         stale content. The chord follows the focused window's class: Ctrl+Shift+V
         for terminals known to paste on it, none for other terminals or an
-        unknown target, and Ctrl+V otherwise (see ``_paste_chord``).
+        unknown target, and Ctrl+V otherwise (see ``paste_chord``).
 
         Args:
             text: Text to type (supports non-ASCII, e.g. Korean, CJK).
@@ -1510,15 +1954,20 @@ class InputBackend:
                 zero-argument callable returning one of those. A callable is
                 resolved only when the clipboard path is reached, so a session
                 where wtype succeeds never pays for the window query.
+            before_paste: Called with the paste chord once the clipboard route
+                is chosen, before the clipboard is touched; an exception it
+                raises (e.g. HeldControlError for a held chord key) propagates
+                with nothing touched.
 
         Returns:
-            True if wtype succeeded, or if the text was transferred to a
-            client that requested it after the paste chord and the helper then
-            confirmed that the prior selection was restored or replaced by a
-            newer copy. False without touching the clipboard or pressing any
-            key for text over the helper's 1 MiB limit and for a target with
-            no safe paste chord; False when any step or the restoration fails
-            or times out.
+            ``TypeRoute(kind="wtype")`` if wtype succeeded;
+            ``TypeRoute(kind="paste", chord=<chord>)`` if the text was
+            transferred to a client that requested it after the paste chord and
+            the helper then confirmed that the prior selection was restored or
+            replaced by a newer copy. None without touching the clipboard or
+            pressing any key for a target with no safe paste chord and for text
+            over the helper's 1 MiB limit; None when any step or the
+            restoration fails or times out.
         """
         env = {**os.environ, **(env or {})}
 
@@ -1538,17 +1987,22 @@ class InputBackend:
             except OSError:
                 result = None
             if result is not None and result.returncode == 0:
-                return True
+                return TypeRoute(kind="wtype")
 
         if focused_class is None or isinstance(focused_class, str):
             cls = focused_class
         else:
             cls = focused_class()
-        return self._paste_via_clipboard(text, env, _paste_chord(cls))
-
-    def _paste_via_clipboard(self, text: str, env: dict[str, str], chord: str | None) -> bool:
+        chord = paste_chord(cls)
         if chord is None:
-            return False  # no chord this target is known to paste on; touch nothing
+            return None  # no chord this target is known to paste on; touch nothing
+        if before_paste is not None:
+            before_paste(chord)
+        if not self._paste_via_clipboard(text, env, chord):
+            return None
+        return TypeRoute(kind="paste", chord=chord)
+
+    def _paste_via_clipboard(self, text: str, env: dict[str, str], chord: str) -> bool:
         try:
             payload = text.encode()
         except UnicodeEncodeError:
@@ -1584,62 +2038,3 @@ class InputBackend:
     def close(self) -> None:
         """Close the EIS connection."""
         self._client.close()
-
-
-def _key_name_to_evdev(name: str) -> int | None:
-    """Convert a key name to its Linux evdev keycode."""
-    lower = name.lower()
-
-    if lower in _EVDEV_KEY_MAP:
-        return _EVDEV_KEY_MAP[lower]
-
-    # Single character → look up in character map
-    if len(name) == 1:
-        entry = _CHAR_KEY_MAP.get(name)
-        if entry:
-            return entry[0]
-
-    return None
-
-
-def _resolve_modifiers(modifiers: list[str] | None) -> list[int]:
-    """Resolve modifier key names to evdev keycodes.
-
-    Raises ValueError for an unknown or empty name, before any input is sent.
-    """
-    if not modifiers:
-        return []
-    codes: list[int] = []
-    for mod in modifiers:
-        code = _MODIFIER_KEYS.get(mod.lower())
-        if code is None:
-            msg = f"Unknown modifier: {mod!r}"
-            raise ValueError(msg)
-        codes.append(code)
-    return codes
-
-
-def _parse_key_combo(key: str) -> tuple[list[int], int | None]:
-    """Parse a key combo string into (modifier_codes, main_keycode).
-
-    Returns a tuple of (list of modifier evdev keycodes, main key evdev keycode or None).
-    """
-    parts = key.split("+")
-    modifiers: list[int] = []
-    keycode: int | None = None
-
-    for part in parts:
-        key_name = part.strip()
-        modifier_code = _MODIFIER_KEYS.get(key_name.lower())
-        if modifier_code is not None:
-            modifiers.append(modifier_code)
-            continue
-
-        keycode = _key_name_to_evdev(key_name)
-        if keycode is None:
-            return modifiers, None
-
-    if keycode is None and modifiers:
-        keycode = modifiers.pop()
-
-    return modifiers, keycode

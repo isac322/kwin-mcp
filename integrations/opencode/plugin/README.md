@@ -58,12 +58,12 @@ A copy of this snippet ships at [`opencode.json.example`](https://github.com/isa
 
 ## What the skill teaches
 
-`kwin-desktop-automation` is a host-agnostic `SKILL.md` shipped inside this npm package. It uses bare tool names (`session_start`, `screenshot`, etc.) — OpenCode adds its own `kwin-mcp_` prefix when exposing the tools to the model, so the agent learns the actual tool symbols from OpenCode's tool list rather than from the skill body. (The same SKILL.md content is shared with the [Claude Code plugin](https://github.com/isac322/kwin-mcp/tree/main/integrations/claude-code); `npm run build` copies the source from `../../claude-code/skills/...` into this package's `skill/` directory before packaging.) The skill covers:
+`kwin-desktop-automation` is a host-agnostic `SKILL.md` shipped inside this npm package. It uses bare tool names (`session_start`, `screen_capture`, etc.) — OpenCode adds its own `kwin-mcp_` prefix when exposing the tools to the model, so the agent learns the actual tool symbols from OpenCode's tool list rather than from the skill body. (The same SKILL.md content is shared with the [Claude Code plugin](https://github.com/isac322/kwin-mcp/tree/main/integrations/claude-code); `npm run build` copies the source from `../../claude-code/skills/...` into this package's `skill/` directory before packaging.) The skill covers:
 
 1. **Session mode selection** — when to call `session_start` (virtual / isolated) vs `session_connect` (live / real desktop / container / kiosk).
-2. **The observe → act → verify loop** — observation tools ordered by cost (`list_windows` < `accessibility_tree` < `find_ui_elements` < `wait_for_element` < `screenshot`).
-3. **Pitfalls** — `keyboard_type` is US-QWERTY only (use `keyboard_type_unicode` for CJK), clipboard is opt-in on virtual sessions, AT-SPI2 coordinates are surface-local, QMenu can be invisible to AT-SPI2, screen-edge triggers ignore EIS pointer events, container live sessions need Wayland/D-Bus mounts.
-4. **Cleanup** — always `session_stop`; `keep_screenshots=true` and `keep_home=true` leak `/tmp` directories.
+2. **The observe → act → verify loop** — observation tools ordered by cost (`window_list` < `element_query` < `element_query` with `wait` < `screen_capture`), and actions ordered by robustness (`element_act` on a ref, then a gesture with a `{ref}` target, then `{x, y}` coordinates).
+3. **Pitfalls** — `keyboard_type` is US-QWERTY only by default (use `method="unicode"` for CJK), clipboard is opt-in on virtual sessions, every coordinate is a global logical pixel, held input must be released, QMenu can be invisible to AT-SPI2, screen-edge triggers ignore EIS pointer events, container live sessions need Wayland/D-Bus mounts.
+4. **Cleanup** — always `session_stop`; `retention={"artifacts": true}` and `retention={"home": true}` keep `/tmp` directories that you must delete.
 
 ## Customising the skill
 

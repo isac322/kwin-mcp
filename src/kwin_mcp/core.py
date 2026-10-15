@@ -1,17 +1,16 @@
 """Core automation engine for KDE Wayland GUI automation.
 
-Contains all tool logic independent of the MCP transport layer.
-Can be used directly from the CLI or wrapped by the MCP server.
+Contains all tool logic independent of the MCP transport layer: one public
+method per tool, taking and returning the ``kwin_mcp.models`` types. The CLI
+calls these methods directly; the MCP server wraps them.
 """
-
-from __future__ import annotations
 
 import contextlib
 import json
 import os
+import re
 import selectors
 import shlex
-import shutil
 import signal
 import socket
 import stat
@@ -20,36 +19,95 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from xml.etree import ElementTree
 
 from kwin_mcp import progress
-from kwin_mcp.input import InputBackend, MouseButton, check_typeable
-from kwin_mcp.results import (
-    AccessibilityTreeResult,
-    ActiveWindowResult,
-    FindUIElementsResult,
-    ListWindowsResult,
+from kwin_mcp.geometry import select_one, select_windows, window_from_kwin
+from kwin_mcp.input import (
+    EIS_DISCONNECTED_WARNING,
+    InputBackend,
+    MouseButton,
+    check_typeable,
+    chord_keycodes,
+    modifier_keycodes,
+    text_keycodes,
+)
+from kwin_mcp.models import (
+    ANY_ELEMENT,
+    NO_RETENTION,
+    AccessibilityState,
+    AppLaunchResult,
+    AppLogResult,
+    Capture,
+    ClipboardText,
+    ClipboardWriteResult,
+    CloseConsent,
+    DbusReply,
+    Desktop,
+    DesktopList,
+    ElementActResult,
+    ElementAddress,
+    ElementList,
+    ElementPoint,
+    ElementWaitResult,
+    Frame,
+    HeldInput,
+    HomeMode,
+    KeyboardHoldPhase,
+    KeyboardHoldResult,
+    KeyboardPressResult,
+    KeyboardTypeResult,
+    KeyChord,
+    Locator,
+    MouseButtonName,
+    PartialRect,
+    PlaceApplied,
+    PlaceBefore,
+    Point,
+    PointerClickResult,
+    PointerDragResult,
+    PointerHoldPhase,
+    PointerHoldResult,
+    PointerMoveResult,
+    PointerScrollResult,
+    Rect,
+    RefAddr,
+    Retention,
+    ScreenSize,
+    ScrollAxis,
+    ScrollUnit,
+    SessionInfo,
+    SessionInfoResult,
+    SessionKind,
+    SessionStopResult,
+    Target,
+    TouchPinchResult,
+    TouchSwipeResult,
+    TouchTapResult,
+    TypedArg,
+    TypeMethod,
     UIElement,
-    VirtualDesktopsResult,
-    WindowGeometry,
-    WindowGeometryResult,
-    WindowSetDesktopResult,
-    format_active_window,
-    format_find,
-    format_found,
-    format_list_windows,
-    format_tree,
-    format_virtual_desktops,
-    format_window_geometry,
-    format_window_set_desktop,
-    search_description,
+    Wait,
+    WaylandGlobal,
+    WaylandGlobals,
+    Waypoint,
+    Window,
+    WindowCloseResult,
+    WindowFocusResult,
+    WindowList,
+    WindowPlaceResult,
+    WindowSelector,
+    text_echo,
 )
 from kwin_mcp.screenshot import (
     capture_frame_burst,
     capture_screenshot_to_file,
     reframe_screenshot,
+    to_frame,
 )
 from kwin_mcp.session import (
     AccessibilityError,
@@ -59,13 +117,25 @@ from kwin_mcp.session import (
     accessibility_enabled,
     process_registry,
 )
-from kwin_mcp.spoken_name import normalize_spoken_name
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
+# ── Gate texts (the server's resolvers import these, so both layers agree) ──
+
+SESSION_RUNNING_TEXT = "Session already running.\nCall session_stop first."
+NO_SESSION_TEXT = (
+    "No session running.\nCall session_start (virtual) or session_connect (live desktop)."
+)
+NO_INPUT_TEXT = (
+    "No input backend (KWin EIS unavailable); install kwin-common or reconnect.\n"
+    "Call session_stop, then session_start or session_connect again."
+)
+NO_CLIPBOARD_TEXT = (
+    "Clipboard not enabled.\n"
+    "Pass enable_clipboard=true to session_start, or use session_connect "
+    "(clipboard is always enabled for live sessions)."
+)
 
 # Longest single wait inside an AT-SPI exchange, so a heartbeat can run while
-# the worker is busy (e.g. a long wait_for_element).
+# the worker is busy (e.g. a long element_query wait).
 _ATSPI_HEARTBEAT_S = 0.25
 
 # Per-attempt bound for one AT-SPI2 request, and how long a worker may take to
@@ -73,8 +143,22 @@ _ATSPI_HEARTBEAT_S = 0.25
 _ATSPI_TIMEOUT_S = 30.0
 _ATSPI_EXIT_GRACE_S = 2.0
 
+# Upper bound for one KWin scripting query subprocess.
+_KWIN_QUERY_TIMEOUT_S = 30
 
-class AtspiRequestNotSentError(RuntimeError):
+# Refs minted by the AT-SPI worker: e<generation>.<n>.
+_REF_PATTERN = re.compile(r"e(\d+)\.(\d+)")
+
+# One global in wayland-info's output.
+_WAYLAND_GLOBAL_PATTERN = re.compile(r"interface: '([^']+)',\s*version:\s*(\d+),\s*name:\s*(\d+)")
+
+# KWin geometry is a QRectF; bounding every frame field to the signed 32-bit
+# range keeps the value exact on its way through JSON and the script's JS numbers.
+_INT32_MIN = -(2**31)
+_INT32_MAX = 2**31 - 1
+
+
+class _AtspiRequestNotSentError(RuntimeError):
     """An AT-SPI2 request failed before any attempt reached the worker.
 
     The worker could not be started (e.g. the process registry refused the
@@ -87,6 +171,16 @@ class _RequestNotSentError(EOFError):
     """The worker's stdin was gone before the request line was written."""
 
 
+@dataclass(frozen=True)
+class CloseTarget:
+    """The one window a window_close selector names, as the consent prompt shows it."""
+
+    window_id: str
+    app_id: str
+    caption: str
+    closeable: bool
+
+
 # Install hints for external binaries
 _INSTALL_HINTS: dict[str, str] = {
     "wl-paste": (
@@ -96,14 +190,6 @@ _INSTALL_HINTS: dict[str, str] = {
     "wl-copy": (
         "wl-copy not found. Install wl-clipboard "
         "(e.g. 'sudo pacman -S wl-clipboard' or 'sudo apt install wl-clipboard')."
-    ),
-    "wtype": (
-        "wtype not found. Install wtype "
-        "(e.g. 'sudo pacman -S wtype' or build from https://github.com/atx/wtype)."
-    ),
-    "spectacle": (
-        "spectacle not found. Install spectacle "
-        "(e.g. 'sudo pacman -S spectacle' or 'sudo apt install kde-spectacle')."
     ),
     "wayland-info": (
         "wayland-info not found. Install wayland-utils "
@@ -149,14 +235,14 @@ def _introspected_in_signatures(xml_data: str, interface: str, method: str) -> l
 
 
 def _arg_signature(arg: object) -> str:
-    """Return the complete D-Bus signature of one parsed argument.
+    """Return the complete D-Bus signature of one D-Bus value.
 
     ``parse_arg`` returns values with ``variant_level=1`` for an explicit
-    ``variant`` argument; those marshal as ``v``. Everything else has a
-    fixed signature. Parsed args are always dbus types, so the final raise
-    is unreachable but keeps the checker honest if that changes.
+    ``variant`` argument, and dbus-python unwraps variants in replies the same
+    way; those marshal as ``v``. Everything else has a fixed signature.
     """
     import dbus
+    import dbus.types
 
     if getattr(arg, "variant_level", 0) > 0:
         return "v"
@@ -184,10 +270,14 @@ def _arg_signature(arg: object) -> str:
         return "g"
     if isinstance(arg, dbus.String):
         return "s"
+    if isinstance(arg, dbus.types.UnixFd):
+        return "h"
     if isinstance(arg, dbus.Array):
         return "a" + str(arg.signature)
     if isinstance(arg, dbus.Dictionary):
         return "a{" + str(arg.signature) + "}"
+    if isinstance(arg, dbus.Struct):
+        return "(" + "".join(_arg_signature(item) for item in arg) + ")"
     raise TypeError(f"unsupported argument type {type(arg).__name__}")
 
 
@@ -210,9 +300,11 @@ def _select_signature(parsed_args: list[object], candidates: list[str]) -> str |
     return None
 
 
-def _dbus_to_json(value: object) -> object:
+def _dbus_to_json(value: object) -> Any:
     import dbus
 
+    if value is None:
+        return None
     if isinstance(value, dbus.Boolean):
         return bool(value)
     if isinstance(value, dbus.ObjectPath | dbus.Signature | dbus.String):
@@ -227,7 +319,7 @@ def _dbus_to_json(value: object) -> object:
     if isinstance(value, dbus.Array):
         return [_dbus_to_json(x) for x in value]
     if isinstance(value, dbus.Dictionary | dict):
-        return {_dbus_to_json(k): _dbus_to_json(v) for k, v in value.items()}
+        return {str(_dbus_to_json(k)): _dbus_to_json(v) for k, v in value.items()}
     if isinstance(value, list | tuple):
         return [_dbus_to_json(x) for x in value]
     if isinstance(value, bool | int | float | str):
@@ -235,40 +327,70 @@ def _dbus_to_json(value: object) -> object:
     return str(value)
 
 
-def _format_dbus_result(result: object) -> str:
-    """Render a D-Bus reply for MCP clients.
+def _reply_signature(reply: object) -> str:
+    """The D-Bus signature of a method reply: ``""`` for void.
 
-    Returns the empty string for void replies, the bare value for single
-    primitives (so ``GetId`` returns just the UUID), and JSON for
-    containers and multi-value tuples.
+    dbus-python returns a plain tuple for several out arguments and the bare
+    value for one (a ``dbus.Struct`` is one value, not several).
     """
-    import dbus
-
-    if result is None:
+    if reply is None:
         return ""
-    if isinstance(result, dbus.Boolean):
-        return "true" if bool(result) else "false"
-    if isinstance(result, dbus.ObjectPath | dbus.Signature | dbus.String | str):
-        return str(result)
-    if isinstance(
-        result,
-        dbus.Byte | dbus.Int16 | dbus.UInt16 | dbus.Int32 | dbus.UInt32 | dbus.Int64 | dbus.UInt64,
-    ):
-        return str(int(result))
-    if isinstance(result, dbus.Double | float):
-        return str(float(result))
-    return json.dumps(_dbus_to_json(result))
+    values = reply if type(reply) is tuple else (reply,)
+    return "".join(_arg_signature(value) for value in values)
+
+
+def _split_command(text: str, field: str) -> list[str]:
+    """Split a shell-style command line, rejecting empty and malformed ones.
+
+    ``field`` names the argument in the ValueError, so the caller sees
+    which input to fix.
+    """
+    try:
+        argv = shlex.split(text)
+    except ValueError as exc:
+        msg = f"Invalid {field}: {exc}"
+        raise ValueError(msg) from exc
+    if not argv:
+        msg = f"{field} must contain a command to launch"
+        raise ValueError(msg)
+    return argv
+
+
+def _check_selector(window: WindowSelector) -> None:
+    """Refuse an empty or ``kind=[]`` selector before any session lookup.
+
+    Argument errors are decided before the session is consulted, so a caller
+    without a session still learns how to fix the selector. ``select_one`` on
+    no windows raises exactly the selector's teaching error for those cases.
+    """
+    if window.is_empty() or (window.kind is not None and not window.kind):
+        select_one([], window)
+
+
+def _rect_tuple(rect: Rect | None) -> tuple[int, int, int, int] | None:
+    return None if rect is None else (rect.x, rect.y, rect.width, rect.height)
+
+
+def _rect_from(values: list[float]) -> Rect:
+    """Rect from a raw KWin [x, y, w, h] list: KWin may report fractional
+    geometry and zero sizes, so round and clamp like ``geometry._rect``."""
+    return Rect(
+        x=round(float(values[0])),
+        y=round(float(values[1])),
+        width=max(1, round(float(values[2]))),
+        height=max(1, round(float(values[3]))),
+    )
 
 
 class AutomationEngine:
-    """Core automation engine encapsulating all tool logic.
+    """One method per kwin-mcp tool; every other attribute is private.
 
     Manages session lifecycle, input injection, screenshot capture,
     accessibility queries, and clipboard operations.
 
     ``screenshot_max_edge`` bounds the long edge of every saved screenshot and
-    frame in pixels; ``0`` keeps full resolution. A ``screenshot`` call can
-    override it.
+    frame in pixels; ``0`` keeps full resolution. A ``screen_capture`` call or
+    a ``capture`` option can override it.
     """
 
     def __init__(self, screenshot_max_edge: int = 0) -> None:
@@ -279,47 +401,70 @@ class AutomationEngine:
         self._session: Session | LiveSession | None = None
         self._input: InputBackend | None = None
         self._clipboard_enabled: bool = False
-        self._keep_screenshots: bool = False
+        # What session_start/session_connect decided, reported by session_info.
+        self._retention: Retention = NO_RETENTION
+        self._screen: ScreenSize | None = None
+        self._accessibility: AccessibilityState = "on"
+        self._session_warnings: list[str] = []
+        self._eis_lost: bool = False
         self._atspi_proc: subprocess.Popen[bytes] | None = None
         self._atspi_bus: str = ""
         self._atspi_buffer: bytes = b""
         self._atspi_a11y: str = ""
+        # Generation of the current AT-SPI worker; refs embed it (e<gen>.<n>).
+        # Incremented on every spawn, so 0 means no worker was started yet.
+        self._atspi_generation: int = 0
         self._atspi_lock = threading.Lock()
 
     def __del__(self) -> None:
         with contextlib.suppress(Exception):
             self._teardown_atspi_worker()
 
-    # ── Private helpers ───────────────────────────────────────────────────
+    # ── Gates ─────────────────────────────────────────────────────────────
 
-    def _get_session(self) -> Session | LiveSession:
+    def _require_session(self) -> Session | LiveSession:
         if self._session is None or not self._session.is_running:
-            msg = "No active session. Call session_start or session_connect first."
-            raise RuntimeError(msg)
+            raise RuntimeError(NO_SESSION_TEXT)
         return self._session
 
-    def _get_input(self) -> InputBackend:
+    def _require_no_session(self) -> None:
+        if self._session is not None and self._session.is_running:
+            raise RuntimeError(SESSION_RUNNING_TEXT)
+
+    def _require_input(self) -> InputBackend:
+        self._require_session()
         if self._input is None:
-            msg = "No input backend. Call session_start or session_connect first."
-            raise RuntimeError(msg)
+            raise RuntimeError(NO_INPUT_TEXT)
         return self._input
 
+    def _require_clipboard(self) -> None:
+        self._require_session()
+        if not self._clipboard_enabled:
+            raise RuntimeError(NO_CLIPBOARD_TEXT)
+
+    def _require_info(self) -> Any:
+        """The running session's ``session.SessionInfo``."""
+        info = self._require_session().info
+        if info is None:
+            raise RuntimeError(NO_SESSION_TEXT)
+        return info
+
+    # ── Private helpers ───────────────────────────────────────────────────
+
     def _session_env(self) -> dict[str, str]:
-        """Build environment dict for tools that need the isolated session."""
-        session = self._get_session()
+        """Build environment dict for tools that need the session."""
+        info = self._require_info()
         env = {**os.environ}
-        info = session.info
-        if info:
-            if info.dbus_address:
-                env["DBUS_SESSION_BUS_ADDRESS"] = info.dbus_address
-            env["WAYLAND_DISPLAY"] = info.wayland_socket
-            if info.home_dir:
-                home = str(info.home_dir)
-                env["HOME"] = home
-                env["XDG_CONFIG_HOME"] = str(info.home_dir / ".config")
-                env["XDG_DATA_HOME"] = str(info.home_dir / ".local" / "share")
-                env["XDG_CACHE_HOME"] = str(info.home_dir / ".cache")
-                env["XDG_STATE_HOME"] = str(info.home_dir / ".local" / "state")
+        if info.dbus_address:
+            env["DBUS_SESSION_BUS_ADDRESS"] = info.dbus_address
+        env["WAYLAND_DISPLAY"] = info.wayland_socket
+        if info.home_dir:
+            home = str(info.home_dir)
+            env["HOME"] = home
+            env["XDG_CONFIG_HOME"] = str(info.home_dir / ".config")
+            env["XDG_DATA_HOME"] = str(info.home_dir / ".local" / "share")
+            env["XDG_CACHE_HOME"] = str(info.home_dir / ".cache")
+            env["XDG_STATE_HOME"] = str(info.home_dir / ".local" / "state")
         env["QT_QPA_PLATFORM"] = "wayland"
         env.pop("DISPLAY", None)
         return env
@@ -332,8 +477,8 @@ class AutomationEngine:
         ``org.a11y.Bus.GetAddress`` on the session bus. The reply embeds the
         bus's guid, so it changes when the a11y bus restarts even though its
         socket path stays the same. A worker that bound the old identity keeps
-        answering ``(no accessible applications found)`` from its dead
-        connection forever, so this is probed on every call.
+        answering with no applications from its dead connection forever, so
+        this is probed on every call.
         """
         explicit = env.get("AT_SPI_BUS_ADDRESS", "")
         if explicit:
@@ -362,7 +507,8 @@ class AutomationEngine:
         ``gi.repository.Atspi`` binds its D-Bus connections once per process, so
         the worker is keyed to the bus identities it was started with. A
         different session bus, a restarted a11y bus, or a dead worker means the
-        old process would answer from the wrong or a dead bus: replace it.
+        old process would answer from the wrong or a dead bus: replace it. Each
+        spawn starts a new ref generation, so refs of the old worker go stale.
 
         The worker is an owned process group in ``process_registry``: it runs in
         its own session, so a terminal Ctrl-C aimed at kwin-mcp-cli does not reach
@@ -381,13 +527,22 @@ class AutomationEngine:
             self._teardown_atspi_worker()
             proc = None
         if proc is None:
+            generation = self._atspi_generation + 1
             proc = process_registry.spawn(
-                [sys.executable, "-m", "kwin_mcp.accessibility", "--serve"],
+                [
+                    sys.executable,
+                    "-m",
+                    "kwin_mcp.accessibility",
+                    "--serve",
+                    "--generation",
+                    str(generation),
+                ],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 env=env,
                 start_new_session=True,
             )
+            self._atspi_generation = generation
             self._atspi_proc = proc
             self._atspi_bus = bus
             self._atspi_a11y = a11y
@@ -400,23 +555,25 @@ class AutomationEngine:
         line: bytes,
         heartbeat: Callable[[], None] | None = None,
         timeout_s: float = _ATSPI_TIMEOUT_S,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Send one request line to the worker and read one response line.
 
         Raises ``TimeoutError`` after ``timeout_s`` and ``EOFError`` if the
         worker exits or closes its pipes. ``heartbeat`` runs at least every
         ``_ATSPI_HEARTBEAT_S`` while waiting for the response.
         """
-        assert proc.stdin is not None
-        assert proc.stdout is not None
+        stdin = proc.stdin
+        stdout = proc.stdout
+        if stdin is None or stdout is None:
+            raise _RequestNotSentError("AT-SPI2 worker has no pipes")
         try:
-            proc.stdin.write(line)
-            proc.stdin.flush()
+            stdin.write(line)
+            stdin.flush()
         except (BrokenPipeError, ConnectionResetError) as exc:
             raise _RequestNotSentError("AT-SPI2 worker exited before the request was sent") from exc
 
         deadline = time.monotonic() + timeout_s
-        fd = proc.stdout.fileno()
+        fd = stdout.fileno()
         with selectors.DefaultSelector() as selector:
             selector.register(fd, selectors.EVENT_READ)
             while b"\n" not in self._atspi_buffer:
@@ -442,8 +599,8 @@ class AutomationEngine:
         retry: bool = True,
         timeout_s: float = _ATSPI_TIMEOUT_S,
         **kwargs: object,
-    ) -> dict:
-        """Run an AT-SPI2 query in the long-lived worker bound to the session bus.
+    ) -> dict[str, Any]:
+        """Run an AT-SPI2 request in the long-lived worker bound to the session bus.
 
         The worker (``python -m kwin_mcp.accessibility --serve``) is started once
         per session bus and reused, so each call skips interpreter startup and the
@@ -452,7 +609,7 @@ class AutomationEngine:
         called periodically while a response is awaited. ``timeout_s`` bounds
         each attempt; requests that wait inside the worker pass a longer one.
 
-        Raises :class:`AtspiRequestNotSentError` when no attempt wrote the
+        Raises :class:`_AtspiRequestNotSentError` when no attempt wrote the
         request to a worker (so it cannot have run), ``RuntimeError`` otherwise.
         """
         line = json.dumps({"op": op, **kwargs}).encode() + b"\n"
@@ -468,7 +625,7 @@ class AutomationEngine:
                 except RuntimeError as exc:
                     if sent:
                         raise
-                    raise AtspiRequestNotSentError(str(exc)) from exc
+                    raise _AtspiRequestNotSentError(str(exc)) from exc
                 try:
                     resp = self._atspi_exchange(proc, line, heartbeat, timeout_s)
                 except _RequestNotSentError as exc:
@@ -493,7 +650,14 @@ class AutomationEngine:
             msg = f"{last_error}. Retried once but still failed — the AT-SPI2 bus may be unstable."
         else:
             msg = last_error
-        raise (RuntimeError if sent else AtspiRequestNotSentError)(msg)
+        raise (RuntimeError if sent else _AtspiRequestNotSentError)(msg)
+
+    @staticmethod
+    def _atspi_result(resp: dict[str, Any]) -> Any:
+        """The ``result`` of a worker reply; a refusal (``ok: false``) raises its text."""
+        if resp.get("ok") is False:
+            raise RuntimeError(str(resp.get("error", "AT-SPI2 request failed")))
+        return resp["result"]
 
     def _teardown_atspi_worker(self) -> None:
         """Stop the AT-SPI worker with bounded latency.
@@ -520,67 +684,185 @@ class AutomationEngine:
         if proc.stdout is not None:
             proc.stdout.close()
 
-    def _with_frame_capture(
-        self,
-        action_result: str,
-        screenshot_after_ms: list[int] | None,
-    ) -> str:
-        """Append frame captures to an action result if requested."""
-        if not screenshot_after_ms:
-            return action_result
+    def _check_ref(self, ref: str) -> None:
+        """Reject a malformed ref, or one minted by another worker generation."""
+        match = _REF_PATTERN.fullmatch(ref)
+        if match is None:
+            msg = (
+                f"Malformed ref {ref!r}: refs look like e<generation>.<n>, as element_query "
+                "returns them.\nRe-run element_query and copy a ref."
+            )
+            raise ValueError(msg)
+        if int(match.group(1)) != self._atspi_generation:
+            msg = f"Stale ref {ref} (AT-SPI worker restarted); re-run element_query."
+            raise RuntimeError(msg)
 
-        session = self._get_session()
-        info = session.info
-        if info is None:
-            return action_result
+    def _resolve_targets(self, *targets: Target) -> list[tuple[Point, UIElement | None]]:
+        """Turn targets into global points; every ElementPoint in one worker request.
 
-        frames = capture_frame_burst(
-            dbus_address=info.dbus_address,
-            output_dir=info.screenshot_dir,
-            delays_ms=screenshot_after_ms,
+        A ``Point`` passes through. An ``ElementPoint`` re-reads its element's
+        live rect and aims at its centre plus ``(dx, dy)``; an element without a
+        screen rect is an error that quotes why.
+        """
+        refs = [target.ref for target in targets if isinstance(target, ElementPoint)]
+        elements: dict[str, UIElement] = {}
+        if refs:
+            for ref in refs:
+                self._check_ref(ref)
+            resp = self._run_atspi("resolve", refs=list(dict.fromkeys(refs)))
+            for entry in self._atspi_result(resp):
+                if not entry.get("ok"):
+                    raise RuntimeError(str(entry["error"]))
+                elements[str(entry["ref"])] = UIElement.from_worker(entry["element"])
+        resolved: list[tuple[Point, UIElement | None]] = []
+        for target in targets:
+            if isinstance(target, Point):
+                resolved.append((target, None))
+                continue
+            element = elements.get(target.ref)
+            if element is None:
+                msg = f"Stale ref {target.ref} (element no longer exists); re-run element_query."
+                raise RuntimeError(msg)
+            if element.rect is None:
+                msg = (
+                    f"Element {target.ref} has no screen position (unavailable: "
+                    f"{element.unavailable}).\nUse element_act(element={{ref}}, action) "
+                    "or pick another element."
+                )
+                raise RuntimeError(msg)
+            rect = element.rect
+            point = Point(
+                x=rect.x + rect.width // 2 + target.dx,
+                y=rect.y + rect.height // 2 + target.dy,
+            )
+            resolved.append((point, element))
+        return resolved
+
+    def _capture(self, capture: Capture | None) -> tuple[list[Frame], list[str]]:
+        """Frames ``capture`` asks for, taken after the action committed.
+
+        A capture failure cannot undo the action, so it becomes a warning
+        instead of an error that would invite a duplicate retry.
+        """
+        if capture is None or not capture.delays_ms:
+            return [], []
+        try:
+            info = self._require_info()
+            max_edge = self._screenshot_max_edge if capture.max_edge is None else capture.max_edge
+            burst = capture_frame_burst(
+                info.dbus_address,
+                info.screenshot_dir,
+                list(capture.delays_ms),
+                include_cursor=capture.include_cursor,
+                region=_rect_tuple(capture.region),
+                max_edge=max_edge,
+                wayland_socket=info.wayland_socket,
+            )
+            frames: list[Frame] = []
+            for delay_ms, path, mapping in burst:
+                progress.record_image(path)
+                frames.append(to_frame(path, mapping, delay_ms=delay_ms))
+        except Exception as exc:
+            return [], [f"frame capture failed after the action: {exc}"]
+        return frames, []
+
+    def _revalidate(self, inp: InputBackend) -> list[str]:
+        """Dispatch pending EIS events; warnings for held input KWin dropped."""
+        warnings = inp.revalidate()
+        if EIS_DISCONNECTED_WARNING in warnings:
+            self._eis_lost = True
+        return warnings
+
+    def _input_prologue(self) -> tuple[InputBackend, list[str]]:
+        """Gate an input tool and revalidate held state before it sends anything."""
+        inp = self._require_input()
+        return inp, self._revalidate(inp)
+
+    def _input_epilogue(
+        self, inp: InputBackend, warnings: list[str], capture: Capture | None
+    ) -> tuple[list[Frame], HeldInput]:
+        """Capture frames, then report held input as it is after the action."""
+        frames, capture_warnings = self._capture(capture)
+        warnings.extend(capture_warnings)
+        warnings.extend(self._revalidate(inp))
+        return frames, inp.held()
+
+    def _run_kwin_query(self, request: dict[str, object]) -> dict[str, Any]:
+        """Run a KWin scripting query in a subprocess bound to the session bus."""
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "kwin_mcp.geometry"],
+                input=json.dumps(request),
+                env=self._session_env(),
+                capture_output=True,
+                text=True,
+                timeout=_KWIN_QUERY_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": f"KWin query timed out after {_KWIN_QUERY_TIMEOUT_S}s"}
+        if result.returncode != 0:
+            return {"ok": False, "error": f"exit {result.returncode}: {result.stderr[:200]}"}
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return {"ok": False, "error": f"invalid JSON: {result.stdout[:200]}"}
+
+    def _windows(self) -> list[Window]:
+        """Every KWin window, in KWin's order."""
+        resp = self._run_kwin_query({"op": "windows"})
+        if not resp["ok"]:
+            msg = f"Window list unavailable: {resp['error']}"
+            raise RuntimeError(msg)
+        return [window_from_kwin(raw) for raw in resp["result"]]
+
+    def _observe_window(self, window_id: str) -> tuple[Window | None, str | None]:
+        """Read one window back after a request: (window or None if gone, error)."""
+        resp = self._run_kwin_query({"op": "windows"})
+        if not resp["ok"]:
+            return None, str(resp["error"])
+        for raw in resp["result"]:
+            if raw.get("id") == window_id:
+                return window_from_kwin(raw), None
+        return None, None
+
+    def _session_info_model(self) -> SessionInfo:
+        """The current session as session_start/session_connect/session_info report it."""
+        info = self._require_info()
+        return SessionInfo(
+            kind="live" if isinstance(self._session, LiveSession) else "virtual",
             wayland_socket=info.wayland_socket,
+            dbus_address=info.dbus_address,
+            screen=self._screen,
+            home_dir=None if info.home_dir is None else str(info.home_dir),
+            retention=self._retention,
+            artifacts_dir=str(info.screenshot_dir),
+            input_backend="eis" if self._input is not None and not self._eis_lost else None,
+            clipboard=self._clipboard_enabled,
+            accessibility=self._accessibility,
+            warnings=list(self._session_warnings),
         )
 
-        lines = [action_result, f"Captured {len(frames)} frames:"]
-        for delay_ms, (path, captured) in zip(sorted(screenshot_after_ms), frames, strict=True):
-            mapping = reframe_screenshot(path, captured, max_edge=self._screenshot_max_edge)
-            progress.record_image(path)
-            size_kb = path.stat().st_size / 1024
-            lines.append(f"  {delay_ms}ms: {path} ({size_kb:.1f} KB)")
-            lines.append(f"    {mapping.describe()}")
-        return "\n".join(lines)
+    def _reset_session_state(self) -> None:
+        self._session = None
+        self._input = None
+        self._clipboard_enabled = False
+        self._retention = NO_RETENTION
+        self._screen = None
+        self._accessibility = "on"
+        self._session_warnings = []
+        self._eis_lost = False
 
-    # ── Session management ────────────────────────────────────────────────
-
-    @staticmethod
-    def _split_command(text: str, field: str) -> list[str]:
-        """Split a shell-style command line, rejecting empty and malformed ones.
-
-        ``field`` names the argument in the ValueError, so the caller sees
-        which input to fix.
-        """
-        try:
-            argv = shlex.split(text)
-        except ValueError as exc:
-            msg = f"Invalid {field}: {exc}"
-            raise ValueError(msg) from exc
-        if not argv:
-            msg = f"{field} must contain a command to launch"
-            raise ValueError(msg)
-        return argv
+    # ── Session ───────────────────────────────────────────────────────────
 
     def session_start(
         self,
-        app_command: str = "",
         screen_width: int = 1920,
         screen_height: int = 1080,
         enable_clipboard: bool = False,
-        keep_screenshots: bool = False,
-        isolate_home: bool = False,
-        keep_home: bool = False,
-        env: dict[str, str] | None = None,
-    ) -> str:
-        """Start an isolated KWin Wayland session, optionally launching an app.
+        home: HomeMode = "host",
+        retention: Retention = NO_RETENTION,
+    ) -> SessionInfo:
+        """Start an isolated virtual KWin Wayland session (one at a time).
 
         Startup is atomic: when any step after argument validation fails, the
         partly started session is stopped (with the usual retention rules) and
@@ -590,51 +872,52 @@ class AutomationEngine:
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 msg = f"{name} must be a positive integer, got {value!r}"
                 raise ValueError(msg)
-        cmd = self._split_command(app_command, "app_command") if app_command else None
-
-        if self._session is not None and self._session.is_running:
-            msg = "Session already running. Call session_stop first."
-            raise RuntimeError(msg)
+        if retention.home and home == "host":
+            msg = (
+                "retention.home=true needs home='isolated'.\n"
+                "Pass home='isolated', or drop retention.home."
+            )
+            raise ValueError(msg)
+        self._require_no_session()
 
         # Any worker left over from an earlier session (crashed or never stopped)
         # is bound to that session's bus.
         self._teardown_atspi_worker()
 
-        total_steps = 5 if cmd else 4
+        total_steps = 4
+        warnings: list[str] = []
+        accessibility: AccessibilityState = "on"
         try:
-            self._session = Session()
+            session = Session()
+            self._session = session
             self._clipboard_enabled = enable_clipboard
             config = SessionConfig(
                 screen_width=screen_width,
                 screen_height=screen_height,
                 enable_clipboard=enable_clipboard,
-                keep_screenshots=keep_screenshots,
-                isolate_home=isolate_home,
-                keep_home=keep_home,
+                home=home,
+                retention=retention,
             )
-            info = self._session.start(config, progress_total=total_steps)
+            info = session.start(config, progress_total=total_steps)
+            warnings.extend(info.startup_warnings)
 
-            result = f"Session started. Wayland socket: {info.wayland_socket}"
-            if info.home_dir:
-                result += f"\nIsolated home: {info.home_dir}"
-            for warning in info.startup_warnings:
-                result += f"\nWarning: {warning}"
-
-            if cmd:
-                app_info = self._session.launch_app(cmd, extra_env=env)
-                result += f"\nApp launched: {app_command} (PID={app_info.pid})"
-                progress.report(4, total_steps, "App launched")
-                result += f"\nApp log: {app_info.log_path}"
-
-            # Set up input backend via KWin's EIS D-Bus interface. start() returned
-            # only after KWin took org.kde.KWin, so the EIS object is reachable.
+            # start() returned only after KWin took org.kde.KWin, so the EIS
+            # object is reachable.
             try:
                 self._input = InputBackend(info.dbus_address)
             except RuntimeError as exc:
                 self._input = None
-                result += f"\nNo input backend available ({exc})"
-            else:
-                result += "\nInput backend: KWin EIS"
+                warnings.append(f"No input backend available ({exc})")
+
+            # The startup wrapper switches IsEnabled on; report what the bus
+            # actually says, so a failed switch is not claimed as "on" (the
+            # wrapper's own warning is already in the startup warnings).
+            try:
+                if not accessibility_enabled(info.dbus_address):
+                    accessibility = "off"
+            except AccessibilityError as exc:
+                accessibility = "unavailable"
+                warnings.append(f"org.a11y.Status unavailable ({exc})")
         except Exception as exc:
             # Roll back everything started so far. Exception, not BaseException:
             # CLI interrupts are cleaned up by its own exit path.
@@ -644,24 +927,33 @@ class AutomationEngine:
                 exc.add_note(f"Rolling back the failed session_start also failed: {teardown_exc}")
             raise
 
+        self._retention = retention
+        self._screen = ScreenSize(width=screen_width, height=screen_height)
+        self._accessibility = accessibility
+        self._session_warnings = warnings
+        self._eis_lost = False
         progress.report(total_steps, total_steps, "Input backend ready")
-        return result
+        return self._session_info_model()
 
     def session_connect(
         self,
         dbus_address: str = "",
         wayland_display: str = "",
-        keep_screenshots: bool = False,
         enable_accessibility: bool = False,
-    ) -> str:
-        """Connect to an existing KWin session (e.g. the real desktop).
+        retention: Retention = NO_RETENTION,
+    ) -> SessionInfo:
+        """Attach to an already running KWin session (the real desktop or a container).
 
         ``enable_accessibility`` switches ``org.a11y.Status.IsEnabled`` on for the
         connection when it is off; ``session_stop`` switches it back off.
         """
-        if self._session is not None and self._session.is_running:
-            msg = "Session already running. Call session_stop first."
-            raise RuntimeError(msg)
+        if retention.home:
+            msg = (
+                "retention.home is not available on session_connect: live sessions use "
+                "the host HOME.\nDrop retention.home."
+            )
+            raise ValueError(msg)
+        self._require_no_session()
 
         # Any worker left over from an earlier session (crashed or never stopped)
         # is bound to that session's bus.
@@ -727,119 +1019,164 @@ class AutomationEngine:
         screenshot_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-screenshots-"))
         # Record the removable screenshot dir so the exit path (when it cannot
         # run session_stop) mirrors session_stop's retention semantics: a
-        # keep_screenshots=False live session's dir is removed; a
-        # keep_screenshots=True one is the caller's to retain, so it is not
-        # recorded.
-        if not keep_screenshots:
+        # retained dir is the caller's to keep, so it is not recorded.
+        if not retention.artifacts:
             process_registry.register_temp_dir(screenshot_dir)
 
-        session = LiveSession(dbus_addr, wayland_disp, screenshot_dir)
-        session._keep_screenshots = keep_screenshots
+        session = LiveSession(dbus_addr, wayland_disp, screenshot_dir, retention=retention)
         self._session = session
-        self._keep_screenshots = keep_screenshots
-
+        self._retention = retention
+        self._eis_lost = False
         # Clipboard is always available on live sessions
         self._clipboard_enabled = True
 
-        result = f"Connected to live KWin session. D-Bus: {dbus_addr}, Wayland: {wayland_disp}"
-
-        # Set up input backend — EIS first, ydotool fallback. The check above
-        # already found org.kde.KWin owned, so no settle delay is needed.
+        warnings: list[str] = []
+        # The check above already found org.kde.KWin owned, so no settle delay
+        # is needed before the EIS connection.
         try:
             self._input = InputBackend(dbus_addr)
-            result += "\nInput backend: KWin EIS"
         except RuntimeError as exc:
             self._input = None
-            if shutil.which("ydotool"):
-                result += "\nInput backend: ydotool (EIS unavailable)"
-            else:
-                result += (
-                    f"\nNo input backend available ({exc}; ydotool not found). "
-                    "Screenshot and accessibility tools still work."
-                )
+            warnings.append(f"No input backend available ({exc})")
 
-        result += "\n" + self._live_accessibility(session, dbus_addr, enable=enable_accessibility)
+        self._accessibility = self._live_accessibility(
+            session, dbus_addr, enable=enable_accessibility, warnings=warnings
+        )
+
+        outputs = self._run_kwin_query({"op": "outputs"})
+        if not outputs["ok"]:
+            self._screen = None
+            warnings.append(f"workspace size unavailable ({outputs['error']})")
+        else:
+            workspace = outputs["result"].get("virtual")
+            self._screen = (
+                None
+                if workspace is None
+                else ScreenSize(width=round(workspace[2]), height=round(workspace[3]))
+            )
+        self._session_warnings = warnings
 
         progress.report(3, 3, "Input backend ready")
-        return result
+        return self._session_info_model()
 
     @staticmethod
-    def _live_accessibility(session: LiveSession, dbus_addr: str, *, enable: bool) -> str:
-        """Apply ``enable_accessibility`` and describe the desktop's accessibility switch."""
+    def _live_accessibility(
+        session: LiveSession, dbus_addr: str, *, enable: bool, warnings: list[str]
+    ) -> AccessibilityState:
+        """Apply ``enable_accessibility`` and read the desktop's accessibility switch."""
         try:
             if enable:
                 if not session.enable_accessibility():
-                    return "Accessibility: on (org.a11y.Status.IsEnabled)"
-                return (
-                    "Accessibility: switched on for this connection "
-                    "(org.a11y.Status.IsEnabled); session_stop switches it back off. "
-                    "Firefox follows it at once; an app that reads it only at startup "
-                    "must be restarted."
+                    return "on"
+                warnings.append(
+                    "switched on for this connection; an app that reads it only at startup "
+                    "must be restarted"
                 )
+                return "switched_on"
             if accessibility_enabled(dbus_addr):
-                return "Accessibility: on (org.a11y.Status.IsEnabled)"
+                return "on"
         except AccessibilityError as exc:
-            return f"Accessibility: org.a11y.Status unavailable ({exc})"
-        return (
-            "Accessibility: off (org.a11y.Status.IsEnabled is false), so apps that check it, "
-            "such as Firefox, expose no accessibility tree. Reconnect with "
-            "enable_accessibility=true to switch it on until session_stop."
-        )
+            warnings.append(f"org.a11y.Status unavailable ({exc})")
+            return "unavailable"
+        warnings.append("Reconnect with enable_accessibility=true")
+        return "off"
 
-    def session_stop(self) -> str:
-        """Stop the current session and clean up."""
-        if self._session is None:
-            return "No session running."
+    def session_stop(self) -> SessionStopResult:
+        """End the current session, releasing held input. Idempotent."""
+        session = self._session
+        if session is None:
+            return SessionStopResult(stopped=False)
+        kind: SessionKind = "live" if isinstance(session, LiveSession) else "virtual"
 
         self._clipboard_enabled = False
-
+        warnings: list[str] = []
+        released = HeldInput()
         if self._input is not None:
+            warnings.extend(self._revalidate(self._input))
+            if self._eis_lost and EIS_DISCONNECTED_WARNING not in warnings:
+                # revalidate() reports the loss once; the stop still states it.
+                warnings.append(EIS_DISCONNECTED_WARNING)
+            released = self._input.release_all()
             self._input.close()
 
         # The AT-SPI worker is bound to this session's bus; stop it before the bus goes away.
         self._teardown_atspi_worker()
 
-        is_live = isinstance(self._session, LiveSession)
-        if isinstance(self._session, LiveSession):
-            self._session.stop(keep_screenshots=self._keep_screenshots)
-        else:
-            self._session.stop()
-        self._session = None
-        self._input = None
-        self._keep_screenshots = False
+        kept = session.stop()
+        self._reset_session_state()
+        return SessionStopResult(
+            stopped=True,
+            kind=kind,
+            kept=kept,
+            released=released,
+            warnings=warnings,
+        )
 
-        return "Disconnected from live session." if is_live else "Session stopped."
+    def session_info(self) -> SessionInfoResult:
+        """Report the current session (or none), its backends, launched apps and held input."""
+        session = self._session
+        if session is None or not session.is_running or session.info is None:
+            return SessionInfoResult(session=None)
+        warnings: list[str] = []
+        held = HeldInput()
+        if self._input is not None:
+            warnings.extend(self._revalidate(self._input))
+            held = self._input.held()
+        return SessionInfoResult(
+            session=self._session_info_model(),
+            apps=session.apps(),
+            held=held,
+            warnings=warnings,
+        )
 
-    # ── Screenshot / Accessibility ────────────────────────────────────────
+    # ── Apps ──────────────────────────────────────────────────────────────
 
-    def screenshot(
+    def app_launch(self, command: str, env: dict[str, str] | None = None) -> AppLaunchResult:
+        """Launch a program in the session (shlex-split, no shell); output goes to a log."""
+        argv = _split_command(command, "command")
+        session = self._require_session()
+        try:
+            app = session.launch_app(argv, extra_env=env)
+        except (OSError, RuntimeError) as exc:
+            msg = (
+                f"Failed to launch {command!r}: {exc}\n"
+                "The session is still running; call session_stop to roll back."
+            )
+            raise RuntimeError(msg) from exc
+        return AppLaunchResult(
+            pid=app.pid,
+            command=command,
+            log_path=str(app.log_path),
+            log_uri=f"kwin://apps/{app.pid}/log",
+        )
+
+    def app_log(self, pid: int, last_n_lines: int = 50) -> AppLogResult:
+        """Return the tail of the captured stdout/stderr of a launched app (0 = whole log)."""
+        if isinstance(last_n_lines, bool) or not isinstance(last_n_lines, int) or last_n_lines < 0:
+            msg = f"last_n_lines must be 0 (all) or a positive integer, got {last_n_lines!r}"
+            raise ValueError(msg)
+        session = self._require_session()
+        return session.read_app_log(pid, last_n_lines=last_n_lines)
+
+    # ── Screen and elements ───────────────────────────────────────────────
+
+    def screen_capture(
         self,
-        include_cursor: bool = False,
-        region: list[int] | None = None,
+        region: Rect | None = None,
         max_edge: int | None = None,
-    ) -> str:
-        """Capture a screenshot of the isolated session.
+        include_cursor: bool = False,
+    ) -> Frame:
+        """Capture the workspace (or a rectangle of it) as a PNG with its coordinate mapping.
 
-        ``region`` is ``[x, y, width, height]`` in global logical coordinates.
         ``max_edge`` bounds the image's long edge in pixels (``0`` keeps full
         resolution); ``None`` uses the engine's ``screenshot_max_edge``.
         """
-        crop: tuple[int, int, int, int] | None = None
-        if region is not None:
-            if len(region) != 4 or region[2] <= 0 or region[3] <= 0:
-                msg = f"region must be [x, y, width, height] with a positive size, got {region}"
-                raise ValueError(msg)
-            crop = (region[0], region[1], region[2], region[3])
         if max_edge is None:
             max_edge = self._screenshot_max_edge
         elif max_edge < 0:
             msg = f"max_edge must be 0 or positive, got {max_edge}"
             raise ValueError(msg)
-        session = self._get_session()
-        info = session.info
-        if info is None:
-            msg = "No session info available"
-            raise RuntimeError(msg)
+        info = self._require_info()
 
         path, captured = capture_screenshot_to_file(
             dbus_address=info.dbus_address,
@@ -848,446 +1185,829 @@ class AutomationEngine:
             output_dir=info.screenshot_dir,
         )
         try:
-            mapping = reframe_screenshot(path, captured, region=crop, max_edge=max_edge)
+            mapping = reframe_screenshot(
+                path, captured, region=_rect_tuple(region), max_edge=max_edge
+            )
         except Exception:
             # The caller gets no path for this capture, so do not leave it behind.
             path.unlink(missing_ok=True)
             raise
         progress.record_image(path)
-        size_kb = path.stat().st_size / 1024
-        return f"Screenshot saved: {path} ({size_kb:.1f} KB)\n{mapping.describe()}"
+        return to_frame(path, mapping, delay_ms=None)
 
-    def accessibility_tree_data(
-        self, app_name: str = "", max_depth: int = 15, role: str = ""
-    ) -> AccessibilityTreeResult:
-        """Get the accessibility tree of apps in the isolated session as data."""
-        self._get_session()
-        resp = self._run_atspi("tree", app_name=app_name, max_depth=max_depth, role=role)
-        return AccessibilityTreeResult(
-            elements=[UIElement.from_worker(el) for el in resp["result"]]
-        )
-
-    def accessibility_tree(self, app_name: str = "", max_depth: int = 15, role: str = "") -> str:
-        """Get the accessibility tree of apps in the isolated session."""
-        return format_tree(self.accessibility_tree_data(app_name, max_depth, role))
-
-    def find_ui_elements_data(
-        self, query: str, app_name: str = "", states: list[str] | None = None
-    ) -> FindUIElementsResult:
-        """Find UI elements matching a search query and/or required states, as data."""
-        self._get_session()
-        resp = self._run_atspi("find", query=query, app_name=app_name, states=states)
-        return FindUIElementsResult(
-            query=query,
-            states=states,
-            elements=[UIElement.from_worker(el) for el in resp["result"]],
-        )
-
-    def find_ui_elements(
-        self, query: str, app_name: str = "", states: list[str] | None = None
-    ) -> str:
-        """Find UI elements matching a search query and/or required states."""
-        return format_find(self.find_ui_elements_data(query, app_name, states))
-
-    # ── Mouse tools ───────────────────────────────────────────────────────
-
-    def invoke_ui_action(
+    def element_query(
         self,
-        query: str,
-        action_name: str,
-        app_name: str = "",
-        exact_name: bool = False,
-        fallback_action_names: list[str] | None = None,
-        spoken_name: bool = False,
-    ) -> str:
-        """Invoke one AT-SPI action without pointer coordinates.
+        locator: Locator = ANY_ELEMENT,
+        max_depth: int = 15,
+        wait: Wait | None = None,
+    ) -> ElementList:
+        """Return AT-SPI2 elements matching locator, in pre-order; with wait, poll first."""
+        self._require_session()
+        if wait is None:
+            resp = self._run_atspi("query", locator=locator.model_dump(), max_depth=max_depth)
+            elements = [UIElement.from_worker(el) for el in self._atspi_result(resp)]
+            return ElementList(locator=locator, elements=elements)
 
-        ``exact_name`` matches the query against element names only, after
-        case-folding and collapsing whitespace, instead of as a substring of
-        name, role or description. ``spoken_name`` matches element names only
-        with deterministic spoken-label normalisation (see
-        :mod:`kwin_mcp.spoken_name`); it cannot be combined with
-        ``exact_name``. ``fallback_action_names`` lists further actions an
-        element may expose instead of ``action_name``, which is preferred
-        first, then the fallbacks in order. With any of these options each
-        element counts once; without them the original per-action-index
-        matching applies unchanged.
+        timeout_ms = wait.timeout_ms
+        description = f"Waiting for {locator.describe()}"
+        wait_start = time.monotonic()
+        last_reported = 0.0
 
-        Missing targets, ambiguous matches, incomplete discovery and failed
-        requests raise. A matched action whose dispatch the application did not
-        confirm is reported as sent, since it may still have run.
+        def heartbeat() -> None:
+            # The worker answers only after its deadline, so heartbeats can run
+            # past timeout_ms. Clamp to the total and skip non-advancing values:
+            # progress.report() would treat an equal value as a new phase.
+            nonlocal last_reported
+            if timeout_ms <= 0:
+                return
+            elapsed_ms = min((time.monotonic() - wait_start) * 1000, timeout_ms)
+            if elapsed_ms <= last_reported:
+                return
+            last_reported = elapsed_ms
+            progress.report(elapsed_ms, timeout_ms, description)
+
+        resp = self._run_atspi(
+            "wait",
+            heartbeat=heartbeat,
+            timeout_s=max(timeout_ms, 0) / 1000 + _ATSPI_TIMEOUT_S,
+            locator=locator.model_dump(),
+            max_depth=max_depth,
+            until=wait.until,
+            timeout_ms=timeout_ms,
+            poll_interval_ms=max(wait.poll_interval_ms, 0),
+        )
+        result = self._atspi_result(resp)
+        return ElementList(
+            locator=locator,
+            elements=[UIElement.from_worker(el) for el in result["elements"]],
+            wait=ElementWaitResult(
+                until=wait.until,
+                timeout_ms=timeout_ms,
+                satisfied=bool(result["satisfied"]),
+                elapsed_ms=int(result["elapsed_ms"]),
+            ),
+        )
+
+    def element_act(
+        self, element: ElementAddress, action: str, capture: Capture | None = None
+    ) -> ElementActResult:
+        """Invoke a named AT-SPI action on exactly one element ({ref} or {strict: Locator}).
+
+        Refusals (stale ref, missing action, no or several candidates,
+        incomplete discovery) raise. A matched action whose dispatch the
+        application did not confirm is reported as sent, since it may have run.
         """
-        # The CLI forwards raw JSON values without MCP schema validation.
-        if not isinstance(query, str) or not query.strip():
-            raise ValueError("invoke_ui_action needs a query.")
-        if not isinstance(action_name, str) or not action_name.strip():
-            raise ValueError("invoke_ui_action needs an action_name.")
-        if not isinstance(app_name, str):
-            raise ValueError("invoke_ui_action app_name must be a string.")
-        if not isinstance(exact_name, bool):
-            raise ValueError("invoke_ui_action exact_name must be true or false.")
-        if not isinstance(spoken_name, bool):
-            raise ValueError("invoke_ui_action spoken_name must be true or false.")
-        if exact_name and spoken_name:
-            raise ValueError("invoke_ui_action exact_name and spoken_name cannot both be true.")
-        fallbacks = [] if fallback_action_names is None else fallback_action_names
-        if not isinstance(fallbacks, list) or not all(
-            isinstance(name, str) and name.strip() for name in fallbacks
-        ):
-            raise ValueError(
-                "invoke_ui_action fallback_action_names must be a list of non-empty action names."
-            )
-        if spoken_name and not normalize_spoken_name(query).words:
-            raise ValueError(
-                "invoke_ui_action spoken_name query has no name left after ignoring case, "
-                "whitespace and trailing punctuation."
-            )
-
-        self._get_session()
-
-        # The new options travel only when used, so default requests are unchanged.
-        options: dict[str, Any] = {}
-        if exact_name:
-            options["exact_name"] = True
-        if fallbacks:
-            options["fallback_action_names"] = fallbacks
-        if spoken_name:
-            options["spoken_name"] = True
+        if not action:
+            raise ValueError('element_act needs an action name, e.g. "Press".')
+        self._require_session()
+        address: dict[str, object]
+        if isinstance(element, RefAddr):
+            self._check_ref(element.ref)
+            address = {"ref": element.ref}
+        else:
+            address = {"strict": element.strict.model_dump()}
 
         # Once the request reached the worker, the worker may finish the walk and
         # invoke the action even after this request timed out or the worker was
         # torn down. A request that never reached a worker cannot have run.
         try:
-            resp = self._run_atspi(
-                "action",
-                retry=False,
-                query=query,
-                action_name=action_name,
-                app_name=app_name,
-                **options,
-            )
-        except AtspiRequestNotSentError:
+            resp = self._run_atspi("action", retry=False, address=address, action_name=action)
+        except _AtspiRequestNotSentError:
             raise
         except RuntimeError as exc:
-            raise RuntimeError(
-                f"{exc}. The action may still have run; check the UI before retrying."
-            ) from exc
+            msg = f"{exc}. The action may still have run; check the UI before retrying."
+            raise RuntimeError(msg) from exc
+        result = self._atspi_result(resp)
 
-        if not resp.get("ok"):
-            raise RuntimeError(f"AT-SPI action failed: {resp.get('error', 'unknown error')}")
-
-        result = resp["result"]
-        matches = int(result.get("matches", 0))
-        # Without the new options these texts are exactly the original ones.
-        if spoken_name:
-            target = f"named {query!r} (spoken-name match)"
-        elif exact_name:
-            target = f"named {query!r}"
-        else:
-            target = f"matching {query!r}"
-        actions = " or ".join(repr(name) for name in [action_name, *fallbacks])
-
-        if matches == 0:
-            raise RuntimeError(f"No element {target} exposes AT-SPI action {actions}.")
-
-        if matches > 1:
-            raise RuntimeError(
-                f"Refused ambiguous AT-SPI action: {matches} elements {target} expose {actions}."
-            )
-
-        if result.get("error"):
-            return (
-                f"Sent AT-SPI action {result['action']!r} to "
-                f'[{result["role"]}] "{result["name"]}" in {result["app"]}, '
-                f"but the application did not confirm ({result['error']}); "
-                "the action may have run — check the UI before retrying."
-            )
-
-        if not result.get("invoked"):
-            # With fallbacks, name the action actually chosen for the element.
-            chosen = result.get("action", action_name) if fallbacks else action_name
-            raise RuntimeError(
-                f"AT-SPI action {chosen!r} matched one element but "
+        dispatch_error = result.get("error")
+        if not dispatch_error and not result.get("invoked"):
+            msg = (
+                f"AT-SPI action {action!r} matched one element but "
                 "the application reported failure."
             )
+            raise RuntimeError(msg)
 
-        return (
-            f"Invoked AT-SPI action: {result['action']} on "
-            f'[{result["role"]}] "{result["name"]}" '
-            f"in {result['app']}"
+        warnings: list[str] = []
+        frames, capture_warnings = self._capture(capture)
+        warnings.extend(capture_warnings)
+        held = HeldInput()
+        if self._input is not None:
+            warnings.extend(self._revalidate(self._input))
+            held = self._input.held()
+        return ElementActResult(
+            element=UIElement.from_worker(result["element"]),
+            action=str(result.get("action") or action),
+            dispatch="sent_unconfirmed" if dispatch_error else "confirmed",
+            dispatch_error=str(dispatch_error) if dispatch_error else None,
+            frames=frames,
+            held=held,
+            warnings=warnings,
         )
 
-    def mouse_click(
+    # ── Windows and desktops ──────────────────────────────────────────────
+
+    def window_list(self, filter: WindowSelector | None = None) -> WindowList:  # noqa: A002
+        """List KWin windows (every kind) with id, kind, rects, capabilities and desktops."""
+        self._require_session()
+        return WindowList(filter=filter, windows=select_windows(self._windows(), filter))
+
+    def desktop_list(self) -> DesktopList:
+        """List KWin virtual desktops in pager order with the current one marked."""
+        self._require_session()
+        resp = self._run_kwin_query({"op": "desktops"})
+        if not resp["ok"]:
+            msg = f"Virtual desktops unavailable: {resp['error']}"
+            raise RuntimeError(msg)
+        result = resp["result"]
+        return DesktopList(
+            desktops=[Desktop.model_validate(desktop) for desktop in result["desktops"]],
+            current_desktop_id=result.get("current"),
+        )
+
+    def window_focus(
+        self, window: WindowSelector, capture: Capture | None = None
+    ) -> WindowFocusResult:
+        """Raise and activate exactly one window, then read it back."""
+        _check_selector(window)
+        self._require_session()
+        target = select_one(self._windows(), window)
+        resp = self._run_kwin_query({"op": "activate", "window_id": target.id})
+        if not resp["ok"]:
+            msg = f"Failed to focus {target.id!r}: {resp['error']}"
+            raise RuntimeError(msg)
+        observed, observation_error = self._observe_window(target.id)
+        frames, warnings = self._capture(capture)
+        return WindowFocusResult(
+            window_id=target.id,
+            window=observed,
+            observation_error=observation_error,
+            frames=frames,
+            warnings=warnings,
+        )
+
+    def window_place(
         self,
-        x: int,
-        y: int,
-        button: str = "left",
-        double: bool = False,
-        triple: bool = False,
-        modifiers: list[str] | None = None,
-        hold_ms: int = 0,
-        screenshot_after_ms: list[int] | None = None,
-    ) -> str:
-        """Click at coordinates in the isolated session."""
-        inp = self._get_input()
-        btn = MouseButton(button)
-        click_count = 3 if triple else (2 if double else 1)
-        inp.mouse_click(x, y, btn, click_count=click_count, modifiers=modifiers, hold_ms=hold_ms)
+        window: WindowSelector,
+        frame: PartialRect | None = None,
+        desktop: str | None = None,
+        capture: Capture | None = None,
+    ) -> WindowPlaceResult:
+        """Set the frame and/or virtual desktop of exactly one window, then read it back.
 
-        desc = f"Clicked {button} at ({x}, {y})"
-        if triple:
-            desc += " (triple)"
-        elif double:
-            desc += " (double)"
-        if modifiers:
-            desc += f" with {'+'.join(modifiers)}"
-        if hold_ms > 0:
-            desc += f" held {hold_ms}ms"
-
-        return self._with_frame_capture(desc, screenshot_after_ms)
-
-    def mouse_move(
-        self,
-        x: int,
-        y: int,
-        screenshot_after_ms: list[int] | None = None,
-    ) -> str:
-        """Move the mouse cursor to coordinates without clicking."""
-        inp = self._get_input()
-        inp.mouse_move(x, y)
-        result = f"Mouse moved to ({x}, {y})"
-        return self._with_frame_capture(result, screenshot_after_ms)
-
-    def mouse_scroll(
-        self,
-        x: int,
-        y: int,
-        delta: int,
-        horizontal: bool = False,
-        discrete: bool = False,
-        steps: int = 1,
-    ) -> str:
-        """Scroll at coordinates in the isolated session."""
-        inp = self._get_input()
-        inp.mouse_scroll(x, y, delta, horizontal=horizontal, discrete=discrete, steps=steps)
-        direction = "horizontal" if horizontal else "vertical"
-        mode = "discrete" if discrete else "smooth"
-        desc = f"Scrolled {direction} ({mode}) by {delta} at ({x}, {y})"
-        if steps > 1:
-            desc += f" in {steps} steps"
-        return desc
-
-    def mouse_drag(
-        self,
-        from_x: int,
-        from_y: int,
-        to_x: int,
-        to_y: int,
-        button: str = "left",
-        modifiers: list[str] | None = None,
-        waypoints: list[list[int]] | None = None,
-        screenshot_after_ms: list[int] | None = None,
-    ) -> str:
-        """Drag from one point to another in the isolated session."""
-        wp: list[tuple[int, int, int]] | None = None
-        if waypoints:
-            wp = []
-            for index, waypoint in enumerate(waypoints):
-                if len(waypoint) != 3:
-                    msg = f"waypoints[{index}] must be [x, y, dwell_ms], got {waypoint}"
+        The desktop part runs first, then the frame part (the order KWin
+        applies them). A desktop move KWin would carry over to related windows
+        is refused before anything is assigned. The readback is post-action
+        compositor state, not proof that every requested field was applied.
+        """
+        if frame is None and desktop is None:
+            msg = (
+                "window_place needs at least one of frame/desktop.\n"
+                "Pass frame={x, y, width, height} and/or desktop=<id from desktop_list>."
+            )
+            raise ValueError(msg)
+        requested: list[tuple[str, int]] = []
+        if frame is not None:
+            for field in ("x", "y", "width", "height"):
+                value = getattr(frame, field)
+                if value is None:
+                    continue
+                if not _INT32_MIN <= value <= _INT32_MAX:
+                    msg = (
+                        f"window_place frame.{field} must be within the signed 32-bit "
+                        f"range, got {value}."
+                    )
                     raise ValueError(msg)
-                wx, wy, dwell_ms = waypoint
-                wp.append((wx, wy, dwell_ms))
-        inp = self._get_input()
+                requested.append((field, value))
+
+        _check_selector(window)
+        self._require_session()
+        target = select_one(self._windows(), window)
+        window_id = target.id
+
+        before_desktops = list(target.desktops)
+        before_on_all = target.on_all_desktops
+        before_frame = target.frame
+        app_id = target.app_id
+        caption = target.caption
+        moveable = target.moveable
+        resizeable = target.resizeable
+        current_before: str | None = None
+
+        if desktop is not None:
+            # Every desktop refusal must leave the window untouched, so the checks
+            # run before the frame changes; the assignment itself comes last.
+            self._set_desktop(window_id, desktop, check_only=True)
+        if frame is not None:
+            # KWin does not apply frameGeometry to a window on a non-current
+            # (hidden) desktop, so the frame is set before the desktop move.
+            reply = self._set_geometry(window_id, frame)
+            before_frame = _rect_from(reply["before"])
+            app_id = str(reply.get("app", app_id))
+            caption = str(reply.get("caption", caption))
+            moveable = bool(reply.get("moveable", moveable))
+            resizeable = bool(reply.get("resizeable", resizeable))
+        if desktop is not None:
+            assigned = self._set_desktop(window_id, desktop)
+            before_desktops = list(assigned["before"])
+            before_on_all = bool(assigned["beforeOnAllDesktops"])
+            current_before = assigned.get("current")
+
+        before = PlaceBefore(
+            app_id=app_id,
+            caption=caption,
+            frame=before_frame,
+            desktops=before_desktops,
+            on_all_desktops=before_on_all,
+            moveable=moveable,
+            resizeable=resizeable,
+        )
+
+        # frameGeometry changes are committed asynchronously by KWin, so a
+        # separate query reads the post-action state.
+        observed, observation_error = self._observe_window(window_id)
+        current_after: str | None = None
+        if desktop is not None:
+            readback = self._run_kwin_query({"op": "desktops", "window_id": window_id})
+            if readback["ok"]:
+                current_after = readback["result"].get("current")
+
+        pending: list[str] = []
+        applied = PlaceApplied()
+        if frame is not None:
+            if observed is None:
+                if observation_error is not None:
+                    pending = [field for field, _ in requested]
+                applied_frame = False
+            else:
+                pending = [
+                    field for field, value in requested if getattr(observed.frame, field) != value
+                ]
+                applied_frame = not pending
+            applied = applied.model_copy(update={"frame": applied_frame})
+        if desktop is not None:
+            applied_desktop = (
+                observed is not None
+                and observed.desktops == [desktop]
+                and not observed.on_all_desktops
+            )
+            applied = applied.model_copy(update={"desktop": applied_desktop})
+
+        frames, warnings = self._capture(capture)
+        return WindowPlaceResult(
+            window_id=window_id,
+            requested_frame=frame,
+            requested_desktop=desktop,
+            window=observed,
+            observation_error=observation_error,
+            before=before,
+            applied=applied,
+            pending=pending,
+            current_desktop_before=current_before,
+            current_desktop_after=current_after,
+            frames=frames,
+            warnings=warnings,
+        )
+
+    def _set_desktop(
+        self, window_id: str, desktop_id: str, *, check_only: bool = False
+    ) -> dict[str, Any]:
+        """Put one window on exactly one desktop; refusals and failures raise.
+
+        ``check_only`` runs the same checks (and raises the same refusals) without
+        assigning anything.
+        """
+        resp = self._run_kwin_query(
+            {
+                "op": "set_desktop",
+                "window_id": window_id,
+                "desktop_id": desktop_id,
+                "check_only": check_only,
+            }
+        )
+        if not resp["ok"]:
+            if check_only:
+                msg = (
+                    f"Failed to check the desktop move of {window_id!r}: {resp['error']}; "
+                    "nothing was changed."
+                )
+                raise RuntimeError(msg)
+            # The script may have assigned the window before its reply was lost.
+            msg = (
+                f"Failed to confirm the desktop of {window_id!r}: {resp['error']}. "
+                "The window may already have moved."
+            )
+            raise RuntimeError(msg)
+        assigned: dict[str, Any] = resp["result"]
+        # The script assigns nothing unless both the window and the desktop exist.
+        if not assigned["windowFound"]:
+            msg = f"No window with id {window_id!r}."
+            raise RuntimeError(msg)
+        if not assigned["desktopFound"]:
+            known = self._run_kwin_query({"op": "desktops"})
+            if known["ok"]:
+                ids = ", ".join(repr(str(d["id"])) for d in known["result"]["desktops"])
+                remedy = f"Use an id from desktop_list: {ids}."
+            else:
+                remedy = "Use an id from desktop_list."
+            msg = (
+                f"No virtual desktop with id {desktop_id!r} (unknown desktop id); "
+                f"nothing was changed.\n{remedy}"
+            )
+            raise RuntimeError(msg)
+        if assigned.get("refused") == "unsupported":
+            msg = (
+                "Refused: a window with an unresolvable transient relationship "
+                f"(X11 group transient) exists, so KWin could move windows besides {window_id!r}; "
+                "nothing was changed."
+            )
+            raise RuntimeError(msg)
+        if assigned.get("refused") == "related":
+            related = assigned["related"]
+            listed = "; ".join(f'{w["id"]} {w["app"]} "{w["caption"]}"' for w in related)
+            msg = (
+                f"Refused: KWin would also move {len(related)} related window(s) of "
+                f"{window_id!r} (transient or modal relationships): {listed}; "
+                "nothing was changed."
+            )
+            raise RuntimeError(msg)
+        return assigned
+
+    def _set_geometry(self, window_id: str, frame: PartialRect) -> dict[str, Any]:
+        """Request a new frame for one window; failures and oversize sizes raise."""
+        resp = self._run_kwin_query(
+            {
+                "op": "set_geometry",
+                "window_id": window_id,
+                "x": frame.x,
+                "y": frame.y,
+                "width": frame.width,
+                "height": frame.height,
+            }
+        )
+        if not resp["ok"]:
+            msg = f"Failed to set geometry for {window_id!r}: {resp['error']}"
+            raise RuntimeError(msg)
+        result: dict[str, Any] = resp["result"]
+        if not result["found"]:
+            msg = f"No window with id {window_id!r}."
+            raise RuntimeError(msg)
+        # The script refuses sizes beyond the live workspace without assigning
+        # anything, so there is no post-action state to observe.
+        rejected = result.get("rejected")
+        if rejected is not None:
+            oversized = frame.width if rejected == "width" else frame.height
+            msg = (
+                f"window_place frame.{rejected} must be at most {result['limit']} "
+                f"(the KWin workspace {rejected}; start the session with a larger screen "
+                f"for bigger windows), got {oversized}."
+            )
+            raise ValueError(msg)
+        return result
+
+    def window_close(
+        self, window: WindowSelector, capture: Capture | None = None
+    ) -> WindowCloseResult:
+        """Ask exactly one window to close (the app may refuse); refused on a live desktop.
+
+        Without a consent step (the CLI), a live session refuses: closing can
+        discard unsaved work on the real desktop. The MCP server asks the user
+        first and passes the outcome to the same implementation.
+        """
+        return self._close(window, capture, None)
+
+    def _close_target(self, window: WindowSelector) -> CloseTarget | None:
+        """The one window ``window`` names, or None when an id-only selector matches nothing.
+
+        Other selectors that match no window or several raise, as every
+        window mutator does.
+        """
+        _check_selector(window)
+        self._require_session()
+        windows = self._windows()
+        if window.id is not None and window.model_copy(update={"id": None}).is_empty():
+            matches = [w for w in windows if w.id == window.id]
+            if not matches:
+                return None
+            target = matches[0]
+        else:
+            target = select_one(windows, window)
+        return CloseTarget(
+            window_id=target.id,
+            app_id=target.app_id,
+            caption=target.caption,
+            closeable=target.closeable,
+        )
+
+    def _close(
+        self,
+        window: WindowSelector,
+        capture: Capture | None,
+        consent: CloseConsent | None,
+    ) -> WindowCloseResult:
+        """Close the window ``window`` names, honouring the consent outcome.
+
+        ``consent`` is what the caller's consent step concluded, or None when
+        there was none. The session kind is re-checked here on the tool thread:
+        a live session needs ``accepted``, so a session that turned live after
+        the caller decided no consent was needed refuses. The window is
+        re-resolved, so one that vanished meanwhile is reported, not closed.
+        """
+        _check_selector(window)
+        session = self._require_session()
+        live = isinstance(session, LiveSession)
+        if live:
+            effective: CloseConsent = (
+                "unsupported" if consent is None or consent == "not_required" else consent
+            )
+        else:
+            effective = "not_required" if consent is None else consent
+
+        target = self._close_target(window)
+        if target is None:
+            # Nothing was asked or attempted: consent reports null.
+            return WindowCloseResult(
+                window_id=window.id or "",
+                requested=False,
+                consent=None,
+                refusal="no_window",
+            )
+        if not target.closeable:
+            return WindowCloseResult(
+                window_id=target.window_id,
+                app_id=target.app_id,
+                caption=target.caption,
+                requested=False,
+                consent=effective,
+                refusal="not_closeable",
+            )
+        if effective not in ("not_required", "accepted"):
+            return WindowCloseResult(
+                window_id=target.window_id,
+                app_id=target.app_id,
+                caption=target.caption,
+                requested=False,
+                consent=effective,
+                refusal="no_consent",
+            )
+
+        resp = self._run_kwin_query({"op": "close", "window_id": target.window_id})
+        if not resp["ok"]:
+            msg = f"Failed to close window {target.window_id!r}: {resp['error']}"
+            raise RuntimeError(msg)
+        result = resp["result"]
+        if not result["found"]:
+            return WindowCloseResult(
+                window_id=target.window_id,
+                requested=False,
+                consent=None,
+                refusal="no_window",
+            )
+        app_id = str(result.get("app", target.app_id))
+        caption = str(result.get("caption", target.caption))
+        if not result["closeable"]:
+            return WindowCloseResult(
+                window_id=target.window_id,
+                app_id=app_id,
+                caption=caption,
+                requested=False,
+                consent=effective,
+                refusal="not_closeable",
+            )
+        frames, warnings = self._capture(capture)
+        return WindowCloseResult(
+            window_id=target.window_id,
+            app_id=app_id,
+            caption=caption,
+            requested=True,
+            consent=effective,
+            frames=frames,
+            warnings=warnings,
+        )
+
+    # ── Pointer ───────────────────────────────────────────────────────────
+
+    def pointer_click(
+        self,
+        target: Target,
+        button: MouseButtonName = "left",
+        count: int = 1,
+        modifiers: KeyChord | None = None,
+        hold_ms: int = 0,
+        capture: Capture | None = None,
+    ) -> PointerClickResult:
+        """Move the pointer to a target and click 1-3 times, optionally with modifiers held."""
+        if isinstance(count, bool) or count not in (1, 2, 3):
+            msg = f"count must be 1, 2 or 3, got {count}."
+            raise ValueError(msg)
+        modifier_codes = modifier_keycodes(modifiers)
         btn = MouseButton(button)
-        inp.mouse_drag(from_x, from_y, to_x, to_y, button=btn, modifiers=modifiers, waypoints=wp)
+        inp, warnings = self._input_prologue()
+        ((point, element),) = self._resolve_targets(target)
+        inp.check_not_held("pointer_click", buttons=[btn], keycodes=modifier_codes)
+        moved = inp.moved_while_held(btn)
+        if moved is not None:
+            warnings.append(moved)
+        inp.mouse_click(
+            point.x,
+            point.y,
+            btn,
+            click_count=count,
+            modifiers=modifiers.split("+") if modifiers else None,
+            hold_ms=hold_ms,
+        )
+        frames, held = self._input_epilogue(inp, warnings, capture)
+        return PointerClickResult(
+            at=point,
+            element=element,
+            button=button,
+            count=count,
+            modifiers=modifiers,
+            hold_ms=hold_ms,
+            frames=frames,
+            held=held,
+            warnings=warnings,
+        )
 
-        desc = f"Dragged from ({from_x}, {from_y}) to ({to_x}, {to_y})"
-        if modifiers:
-            desc += f" with {'+'.join(modifiers)}"
-        if waypoints:
-            desc += f" via {len(waypoints)} waypoints"
-        return self._with_frame_capture(desc, screenshot_after_ms)
+    def pointer_move(self, target: Target, capture: Capture | None = None) -> PointerMoveResult:
+        """Move the pointer onto a target and leave it there (hover, tooltips)."""
+        inp, warnings = self._input_prologue()
+        ((point, element),) = self._resolve_targets(target)
+        inp.check_move_allowed()
+        inp.mouse_move(point.x, point.y)
+        frames, held = self._input_epilogue(inp, warnings, capture)
+        return PointerMoveResult(
+            at=point, element=element, frames=frames, held=held, warnings=warnings
+        )
 
-    def mouse_button_down(
+    def pointer_scroll(
         self,
-        x: int,
-        y: int,
-        button: str = "left",
-    ) -> str:
-        """Press a mouse button at coordinates without releasing."""
-        inp = self._get_input()
-        inp.mouse_button_down(x, y, MouseButton(button))
-        return f"Button {button} pressed at ({x}, {y})"
+        target: Target,
+        delta: int,
+        axis: ScrollAxis = "vertical",
+        unit: ScrollUnit = "smooth_step",
+        steps: int = 1,
+        capture: Capture | None = None,
+    ) -> PointerScrollResult:
+        """Move to a target and scroll the wheel (positive delta = down/right)."""
+        steps = max(steps, 1)
+        inp, warnings = self._input_prologue()
+        ((point, element),) = self._resolve_targets(target)
+        moved = inp.moved_while_held(None)
+        if moved is not None:
+            warnings.append(moved)
+        if delta != 0:
+            inp.mouse_scroll(
+                point.x,
+                point.y,
+                delta,
+                horizontal=axis == "horizontal",
+                discrete=unit == "detent",
+                steps=steps,
+            )
+        frames, held = self._input_epilogue(inp, warnings, capture)
+        return PointerScrollResult(
+            at=point,
+            element=element,
+            delta=delta,
+            axis=axis,
+            unit=unit,
+            steps=steps,
+            frames=frames,
+            held=held,
+            warnings=warnings,
+        )
 
-    def mouse_button_up(
+    def pointer_drag(
         self,
-        x: int,
-        y: int,
-        button: str = "left",
-    ) -> str:
-        """Release a mouse button at coordinates."""
-        inp = self._get_input()
-        inp.mouse_button_up(x, y, MouseButton(button))
-        return f"Button {button} released at ({x}, {y})"
+        from_: Target,
+        to: Target,
+        button: MouseButtonName = "left",
+        modifiers: KeyChord | None = None,
+        waypoints: list[Waypoint] | None = None,
+        dwell_ms: int = 0,
+        capture: Capture | None = None,
+    ) -> PointerDragResult:
+        """Press a button at one target, move through waypoints, release at another."""
+        modifier_codes = modifier_keycodes(modifiers)
+        btn = MouseButton(button)
+        inp, warnings = self._input_prologue()
+        (start, _), (end, element) = self._resolve_targets(from_, to)
+        inp.check_not_held("pointer_drag", buttons=[btn], keycodes=modifier_codes)
+        moved = inp.moved_while_held(btn)
+        if moved is not None:
+            warnings.append(moved)
+        inp.mouse_drag(
+            start.x,
+            start.y,
+            end.x,
+            end.y,
+            button=btn,
+            modifiers=modifiers.split("+") if modifiers else None,
+            waypoints=[(w.x, w.y, w.dwell_ms) for w in waypoints] if waypoints else None,
+            dwell_ms=dwell_ms,
+        )
+        frames, held = self._input_epilogue(inp, warnings, capture)
+        return PointerDragResult(
+            at=end,
+            element=element,
+            start=start,
+            button=button,
+            modifiers=modifiers,
+            waypoints=len(waypoints) if waypoints else 0,
+            dwell_ms=dwell_ms,
+            frames=frames,
+            held=held,
+            warnings=warnings,
+        )
 
-    # ── Keyboard tools ────────────────────────────────────────────────────
+    def pointer_hold(
+        self,
+        phase: PointerHoldPhase,
+        target: Target,
+        button: MouseButtonName = "left",
+        capture: Capture | None = None,
+    ) -> PointerHoldResult:
+        """Press, move or release one mouse button across calls; each phase moves to target."""
+        btn = MouseButton(button)
+        inp, warnings = self._input_prologue()
+        ((point, element),) = self._resolve_targets(target)
+        if phase == "press":
+            changed = inp.mouse_button_down(point.x, point.y, btn)
+        elif phase == "move":
+            inp.mouse_hold_move(point.x, point.y, btn)
+            changed = False
+        else:
+            changed = inp.mouse_button_up(point.x, point.y, btn)
+        frames, held = self._input_epilogue(inp, warnings, capture)
+        return PointerHoldResult(
+            at=point,
+            element=element,
+            phase=phase,
+            button=button,
+            changed=changed,
+            frames=frames,
+            held=held,
+            warnings=warnings,
+        )
 
-    # Caller text longer than this is echoed as its length only, so a large
-    # payload does not come back into the client's context.
-    _ECHO_MAX_CHARS = 200
+    # ── Keyboard ──────────────────────────────────────────────────────────
 
-    def _echo(self, text: str) -> str:
-        """Render caller text for a result: its repr, or ``<N characters>`` when long."""
-        if len(text) <= self._ECHO_MAX_CHARS:
-            return repr(text)
-        return f"<{len(text)} characters>"
+    def keyboard_press(self, keys: KeyChord, capture: Capture | None = None) -> KeyboardPressResult:
+        """Press and release one key or chord, e.g. "Return" or "ctrl+shift+t"."""
+        keycodes = chord_keycodes(keys)
+        inp, warnings = self._input_prologue()
+        inp.check_not_held("keyboard_press", keycodes=keycodes)
+        inp.keyboard_key(keys)
+        frames, held = self._input_epilogue(inp, warnings, capture)
+        return KeyboardPressResult(keys=keys, frames=frames, held=held, warnings=warnings)
 
     def keyboard_type(
-        self,
-        text: str,
-        screenshot_after_ms: list[int] | None = None,
-    ) -> str:
-        """Type text the US QWERTY key map can produce into the focused element."""
-        check_typeable(text)
-        inp = self._get_input()
-        inp.keyboard_type(text)
-        result = f"Typed: {self._echo(text)}"
-        return self._with_frame_capture(result, screenshot_after_ms)
-
-    def keyboard_type_unicode(
-        self,
-        text: str,
-        screenshot_after_ms: list[int] | None = None,
-    ) -> str:
-        """Type arbitrary Unicode text including non-ASCII characters."""
-        # NUL can neither travel in wtype's argv nor be typed meaningfully.
-        if "\0" in text:
+        self, text: str, method: TypeMethod = "keys", capture: Capture | None = None
+    ) -> KeyboardTypeResult:
+        """Insert text at the keyboard focus: per-key US-QWERTY events, or unicode text."""
+        if method == "keys":
+            check_typeable(text)
+        elif "\0" in text:
+            # NUL can neither travel in wtype's argv nor be typed meaningfully.
             msg = "text must not contain NUL characters"
             raise ValueError(msg)
-        inp = self._get_input()
+        inp, warnings = self._input_prologue()
 
-        # Both routes are Wayland clients: without the session's WAYLAND_DISPLAY
-        # they would act on whatever compositor the server inherited.
-        # The paste chord depends on the focused app: an unbound Ctrl+V in a
-        # terminal reaches the pty as ^V and alters the next keystroke. Passing
-        # the query as a callable keeps it off the wtype path, where the class
-        # is never used.
-        def focused_class() -> str | None:
-            focus = self._run_kwin_query({"op": "active_class"})
-            return str(focus["result"]) if focus["ok"] else None
+        if method == "keys":
+            inp.check_not_held("keyboard_type", keycodes=text_keycodes(text))
+            inp.keyboard_type(text)
+            route = "keys"
+        elif not text:
+            # Nothing to insert: the paste route would still send the chord.
+            route = "wtype"
+        else:
+            # The paste chord depends on the focused app: an unbound Ctrl+V in a
+            # terminal reaches the pty as ^V and alters the next keystroke.
+            # Passing the query as a callable keeps it off the wtype path.
+            def focused_class() -> str | None:
+                focus = self._run_kwin_query({"op": "active_class"})
+                return str(focus["result"]) if focus["ok"] else None
 
-        ok = inp.keyboard_type_unicode(text, env=self._session_env(), focused_class=focused_class)
-        if not ok:
-            msg = f"Failed to type unicode: {self._echo(text)}"
-            raise RuntimeError(msg)
-        result = f"Typed unicode: {self._echo(text)}"
-        return self._with_frame_capture(result, screenshot_after_ms)
+            def before_paste(chord: str) -> None:
+                inp.check_not_held("keyboard_type", keycodes=chord_keycodes(chord))
 
-    def keyboard_key(
-        self,
-        key: str,
-        screenshot_after_ms: list[int] | None = None,
-    ) -> str:
-        """Press and release a key or key combination."""
-        inp = self._get_input()
-        inp.keyboard_key(key)
-        result = f"Pressed: {key}"
-        return self._with_frame_capture(result, screenshot_after_ms)
+            # Both routes are Wayland clients: without the session's
+            # WAYLAND_DISPLAY they would act on whatever compositor the
+            # server inherited.
+            typed = inp.keyboard_type_unicode(
+                text,
+                env=self._session_env(),
+                focused_class=focused_class,
+                before_paste=before_paste,
+            )
+            if typed is None:
+                msg = f"Failed to type unicode: {text_echo(text)}"
+                raise RuntimeError(msg)
+            route = typed.render()
 
-    def keyboard_key_down(self, key: str) -> str:
-        """Press and hold a key without releasing."""
-        inp = self._get_input()
-        inp.keyboard_key_down(key)
-        return f"Key down: {key}"
+        frames, held = self._input_epilogue(inp, warnings, capture)
+        return KeyboardTypeResult(
+            method=method,
+            route=route,
+            chars=len(text),
+            echo=text_echo(text),
+            frames=frames,
+            held=held,
+            warnings=warnings,
+        )
 
-    def keyboard_key_up(self, key: str) -> str:
-        """Release a previously held key."""
-        inp = self._get_input()
-        inp.keyboard_key_up(key)
-        return f"Key up: {key}"
+    def keyboard_hold(
+        self, phase: KeyboardHoldPhase, keys: KeyChord, capture: Capture | None = None
+    ) -> KeyboardHoldResult:
+        """Press or release one key chord across calls (modifiers first on press)."""
+        chord_keycodes(keys)
+        inp, warnings = self._input_prologue()
+        changed = inp.keyboard_key_down(keys) if phase == "press" else inp.keyboard_key_up(keys)
+        frames, held = self._input_epilogue(inp, warnings, capture)
+        return KeyboardHoldResult(
+            phase=phase, keys=keys, changed=changed, frames=frames, held=held, warnings=warnings
+        )
 
-    # ── Touch tools ───────────────────────────────────────────────────────
+    # ── Touch ─────────────────────────────────────────────────────────────
 
     def touch_tap(
-        self,
-        x: int,
-        y: int,
-        hold_ms: int = 0,
-        screenshot_after_ms: list[int] | None = None,
-    ) -> str:
-        """Tap at coordinates using touch input."""
-        inp = self._get_input()
-        inp.touch_tap(x, y, hold_ms=hold_ms)
-        desc = f"Touch tap at ({x}, {y})"
-        if hold_ms > 0:
-            desc += f" held {hold_ms}ms"
-        return self._with_frame_capture(desc, screenshot_after_ms)
+        self, target: Target, hold_ms: int = 0, capture: Capture | None = None
+    ) -> TouchTapResult:
+        """Tap a target with one touch contact (does not move the pointer)."""
+        inp, warnings = self._input_prologue()
+        ((point, element),) = self._resolve_targets(target)
+        inp.touch_tap(point.x, point.y, hold_ms=hold_ms)
+        frames, held = self._input_epilogue(inp, warnings, capture)
+        return TouchTapResult(
+            at=point,
+            element=element,
+            hold_ms=hold_ms,
+            frames=frames,
+            held=held,
+            warnings=warnings,
+        )
 
     def touch_swipe(
         self,
-        from_x: int,
-        from_y: int,
-        to_x: int,
-        to_y: int,
+        from_: Target,
+        to: Target,
+        fingers: int = 1,
         duration_ms: int = 300,
-        screenshot_after_ms: list[int] | None = None,
-    ) -> str:
-        """Swipe from one point to another using single-finger touch input."""
-        inp = self._get_input()
-        inp.touch_swipe(from_x, from_y, to_x, to_y, duration_ms=duration_ms)
-        desc = f"Touch swipe from ({from_x}, {from_y}) to ({to_x}, {to_y}) in {duration_ms}ms"
-        return self._with_frame_capture(desc, screenshot_after_ms)
+        capture: Capture | None = None,
+    ) -> TouchSwipeResult:
+        """Swipe with N parallel contacts from one target to another."""
+        if fingers < 1:
+            msg = f"touch_swipe fingers must be at least 1, got {fingers}"
+            raise ValueError(msg)
+        inp, warnings = self._input_prologue()
+        (start, _), (end, element) = self._resolve_targets(from_, to)
+        if fingers == 1:
+            inp.touch_swipe(start.x, start.y, end.x, end.y, duration_ms=duration_ms)
+        else:
+            inp.touch_multi_swipe(
+                start.x, start.y, end.x, end.y, fingers=fingers, duration_ms=duration_ms
+            )
+        frames, held = self._input_epilogue(inp, warnings, capture)
+        return TouchSwipeResult(
+            at=end,
+            element=element,
+            start=start,
+            fingers=fingers,
+            duration_ms=duration_ms,
+            frames=frames,
+            held=held,
+            warnings=warnings,
+        )
 
     def touch_pinch(
         self,
-        center_x: int,
-        center_y: int,
+        center: Target,
         start_distance: int,
         end_distance: int,
         duration_ms: int = 500,
-        screenshot_after_ms: list[int] | None = None,
-    ) -> str:
-        """Perform a two-finger pinch gesture."""
-        inp = self._get_input()
-        inp.touch_pinch(center_x, center_y, start_distance, end_distance, duration_ms=duration_ms)
-        direction = "in" if end_distance < start_distance else "out"
-        desc = f"Pinch {direction} at ({center_x}, {center_y}): {start_distance}→{end_distance}px"
-        return self._with_frame_capture(desc, screenshot_after_ms)
-
-    def touch_multi_swipe(
-        self,
-        from_x: int,
-        from_y: int,
-        to_x: int,
-        to_y: int,
-        fingers: int = 3,
-        duration_ms: int = 300,
-        screenshot_after_ms: list[int] | None = None,
-    ) -> str:
-        """Perform a multi-finger swipe gesture."""
-        if fingers < 1:
-            msg = f"touch_multi_swipe fingers must be at least 1, got {fingers}"
-            raise ValueError(msg)
-        inp = self._get_input()
-        inp.touch_multi_swipe(from_x, from_y, to_x, to_y, fingers=fingers, duration_ms=duration_ms)
-        desc = (
-            f"{fingers}-finger swipe from ({from_x}, {from_y}) "
-            f"to ({to_x}, {to_y}) in {duration_ms}ms"
+        capture: Capture | None = None,
+    ) -> TouchPinchResult:
+        """Move two contacts symmetrically toward or away from a centre."""
+        inp, warnings = self._input_prologue()
+        ((point, element),) = self._resolve_targets(center)
+        inp.touch_pinch(point.x, point.y, start_distance, end_distance, duration_ms=duration_ms)
+        frames, held = self._input_epilogue(inp, warnings, capture)
+        return TouchPinchResult(
+            at=point,
+            element=element,
+            start_distance=start_distance,
+            end_distance=end_distance,
+            duration_ms=duration_ms,
+            frames=frames,
+            held=held,
+            warnings=warnings,
         )
-        return self._with_frame_capture(desc, screenshot_after_ms)
 
-    # ── Clipboard tools ───────────────────────────────────────────────────
+    # ── Clipboard ─────────────────────────────────────────────────────────
 
-    def clipboard_get(self) -> str:
-        """Read the current clipboard content in the isolated session."""
-        if not self._clipboard_enabled:
-            msg = (
-                "Clipboard not enabled. Pass enable_clipboard=True to session_start, "
-                "or use session_connect (clipboard is always enabled for live sessions)."
-            )
-            raise RuntimeError(msg)
-
+    def clipboard_read(self) -> ClipboardText:
+        """Return the session clipboard text (wl-paste)."""
+        self._require_clipboard()
         env = self._session_env()
         try:
             result = subprocess.run(
@@ -1301,17 +2021,11 @@ class AutomationEngine:
         if result.returncode != 0:
             msg = f"Failed to read clipboard: {result.stderr.decode(errors='replace')}"
             raise RuntimeError(msg)
-        return result.stdout.decode(errors="replace")
+        return ClipboardText(text=result.stdout.decode(errors="replace"))
 
-    def clipboard_set(self, text: str) -> str:
-        """Set the clipboard content in the isolated session."""
-        if not self._clipboard_enabled:
-            msg = (
-                "Clipboard not enabled. Pass enable_clipboard=True to session_start, "
-                "or use session_connect (clipboard is always enabled for live sessions)."
-            )
-            raise RuntimeError(msg)
-
+    def clipboard_write(self, text: str) -> ClipboardWriteResult:
+        """Own the session clipboard with this text (wl-copy, waits up to 5 s)."""
+        self._require_clipboard()
         env = self._session_env()
         # The text goes through stdin: argv is size-limited (E2BIG) and cannot
         # carry NUL. Output stays on DEVNULL because the forked owner inherits it.
@@ -1342,428 +2056,9 @@ class AutomationEngine:
         if proc.returncode != 0:
             msg = f"Failed to set clipboard: wl-copy exited with status {proc.returncode}"
             raise RuntimeError(msg)
-        return f"Clipboard set: {self._echo(text)}"
+        return ClipboardWriteResult(length=len(text), echo=text_echo(text))
 
-    # ── Wait-for-UI tools ─────────────────────────────────────────────────
-
-    def wait_for_element(
-        self,
-        query: str,
-        app_name: str = "",
-        timeout_ms: int = 5000,
-        poll_interval_ms: int = 200,
-        expected_states: list[str] | None = None,
-    ) -> str:
-        """Wait for a UI element to appear in the accessibility tree."""
-        self._get_session()
-        wait_start = time.monotonic()
-        last_reported = 0.0
-
-        def heartbeat() -> None:
-            # The worker answers only after its deadline, so heartbeats can run
-            # past timeout_ms. Clamp to the total and skip non-advancing values:
-            # progress.report() would treat an equal value as a new phase.
-            nonlocal last_reported
-            elapsed_ms = min((time.monotonic() - wait_start) * 1000, timeout_ms)
-            if elapsed_ms <= last_reported:
-                return
-            last_reported = elapsed_ms
-            progress.report(elapsed_ms, timeout_ms, f"Waiting for {query}")
-
-        resp = self._run_atspi(
-            "wait",
-            heartbeat=heartbeat,
-            timeout_s=timeout_ms / 1000 + _ATSPI_TIMEOUT_S,
-            query=query,
-            app_name=app_name,
-            timeout_ms=timeout_ms,
-            poll_interval_ms=poll_interval_ms,
-            states=expected_states,
-        )
-        if not resp["ok"]:
-            return resp["error"]
-
-        elements = [UIElement.from_worker(el) for el in resp["result"]]
-        return format_found(elements, search_description(query, expected_states))
-
-    # ── Window management tools ───────────────────────────────────────────
-
-    def launch_app(self, command: str, env: dict[str, str] | None = None) -> str:
-        """Launch an application inside the running isolated session."""
-        cmd = self._split_command(command, "command")
-        session = self._get_session()
-        app_info = session.launch_app(cmd, extra_env=env)
-        return f"App launched: {command} (PID={app_info.pid})\nApp log: {app_info.log_path}"
-
-    def list_windows_data(self) -> ListWindowsResult:
-        """List accessible application windows in the isolated session, as data."""
-        self._get_session()
-        resp = self._run_atspi("list_windows")
-        return ListWindowsResult.model_validate({"applications": resp["result"]})
-
-    def list_windows(self) -> str:
-        """List accessible application windows in the isolated session."""
-        return format_list_windows(self.list_windows_data())
-
-    def _run_kwin_query(self, request: dict[str, object]) -> dict:
-        """Run a KWin scripting query in a subprocess bound to the session bus."""
-        try:
-            result = subprocess.run(
-                [sys.executable, "-m", "kwin_mcp.geometry"],
-                input=json.dumps(request),
-                env=self._session_env(),
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-        except subprocess.TimeoutExpired:
-            return {"ok": False, "error": "KWin query timed out after 30s"}
-        if result.returncode != 0:
-            return {"ok": False, "error": f"exit {result.returncode}: {result.stderr[:200]}"}
-        try:
-            return json.loads(result.stdout)
-        except json.JSONDecodeError:
-            return {"ok": False, "error": f"invalid JSON: {result.stdout[:200]}"}
-
-    def focus_window(self, app_name: str = "", window_id: str = "") -> str:
-        """Activate a window by exact KWin id or application name.
-
-        ``window_id`` takes precedence when supplied. Activation goes through
-        KWin because AT-SPI2's grab_focus neither raises nor activates windows
-        reliably on Wayland.
-        """
-        if not app_name and not window_id:
-            msg = "focus_window needs app_name or window_id (see window_geometry)."
-            raise ValueError(msg)
-        self._get_session()
-
-        resp = self._run_kwin_query(
-            {"op": "activate", "app_name": app_name, "window_id": window_id}
-        )
-        if not resp["ok"]:
-            target = window_id or app_name
-            msg = f"Failed to focus {target!r}: {resp['error']}"
-            raise RuntimeError(msg)
-
-        activated = str(resp["result"]).strip()
-        if activated:
-            return f"Focused: {activated}"
-        if window_id:
-            msg = f"No window with id {window_id!r}."
-        else:
-            msg = f"No window matches '{app_name}'."
-        raise RuntimeError(msg)
-
-    def window_geometry_data(self, app_name: str = "", window_id: str = "") -> WindowGeometryResult:
-        """Report window positions in global screen coordinates, as data.
-
-        Raises RuntimeError when KWin cannot be queried; an empty ``windows``
-        list means the query succeeded and nothing matched.
-        """
-        self._get_session()
-        resp = self._run_kwin_query({"app_name": app_name, "window_id": window_id})
-        if not resp["ok"]:
-            msg = f"Window geometry unavailable: {resp['error']}"
-            raise RuntimeError(msg)
-        return WindowGeometryResult.model_validate({"windows": resp["result"]})
-
-    def window_geometry(self, app_name: str = "", window_id: str = "") -> str:
-        """Report window positions in global screen coordinates.
-
-        Element rectangles from find_ui_elements and accessibility_tree are
-        already translated to this same coordinate space; this tool remains
-        useful for locating whole windows and diagnosing placement. Each window
-        carries its KWin id, which window_id filters on and which
-        focus_window(window_id=), window_set_geometry and window_close take.
-        """
-        return format_window_geometry(
-            self.window_geometry_data(app_name, window_id), app_name, window_id
-        )
-
-    def active_window_data(self) -> ActiveWindowResult:
-        """Report the window KWin currently treats as active, as data (``window`` may be None).
-
-        Raises RuntimeError when KWin cannot be queried, as window_geometry_data does.
-        """
-        self._get_session()
-        resp = self._run_kwin_query({"op": "active"})
-        if not resp["ok"]:
-            msg = f"Active window unavailable: {resp['error']}"
-            raise RuntimeError(msg)
-        window = resp["result"]
-        return ActiveWindowResult(
-            window=None if window is None else WindowGeometry.model_validate(window)
-        )
-
-    def active_window(self) -> str:
-        """Report the window KWin currently treats as active (the one focus_window sets)."""
-        return format_active_window(self.active_window_data())
-
-    def window_set_geometry(
-        self,
-        window_id: str,
-        x: int | None = None,
-        y: int | None = None,
-        width: int | None = None,
-        height: int | None = None,
-    ) -> str:
-        """Move and/or resize one window by exact KWin id."""
-        if not window_id:
-            msg = "window_set_geometry needs a window_id (see window_geometry)."
-            raise ValueError(msg)
-
-        if all(value is None for value in (x, y, width, height)):
-            msg = "window_set_geometry needs at least one of x, y, width or height."
-            raise ValueError(msg)
-
-        supplied = (("x", x), ("y", y), ("width", width), ("height", height))
-
-        # The CLI forwards raw JSON without MCP schema validation, so a field
-        # can arrive as a bool, float or string; KWin only understands real
-        # ints. Reject anything else before touching the compositor.
-        for field, value in supplied:
-            if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
-                msg = f"window_set_geometry {field} must be an integer, got {value!r}."
-                raise ValueError(msg)
-
-        if width is not None and width <= 0:
-            msg = "window_set_geometry width must be greater than zero."
-            raise ValueError(msg)
-        if height is not None and height <= 0:
-            msg = "window_set_geometry height must be greater than zero."
-            raise ValueError(msg)
-
-        # KWin geometry is a QRectF; bounding every field to the signed 32-bit
-        # range keeps the value exact on its way through JSON and the script's
-        # JS numbers.
-        for field, value in supplied:
-            if value is not None and not -(2**31) <= value <= 2**31 - 1:
-                msg = (
-                    f"window_set_geometry {field} must be within the signed 32-bit "
-                    f"range, got {value}."
-                )
-                raise ValueError(msg)
-
-        self._get_session()
-        resp = self._run_kwin_query(
-            {
-                "op": "set_geometry",
-                "window_id": window_id,
-                "x": x,
-                "y": y,
-                "width": width,
-                "height": height,
-            }
-        )
-        if not resp["ok"]:
-            msg = f"Failed to set geometry for {window_id!r}: {resp['error']}"
-            raise RuntimeError(msg)
-
-        result = resp["result"]
-        if not result["found"]:
-            msg = f"No window with id {window_id!r}."
-            raise RuntimeError(msg)
-
-        # The script refuses sizes beyond the live workspace without assigning
-        # anything, so there is no post-action state to observe.
-        rejected = result.get("rejected")
-        if rejected is not None:
-            oversized = width if rejected == "width" else height
-            msg = (
-                f"window_set_geometry {rejected} must be at most {result['limit']} "
-                f"(the KWin workspace {rejected}; start the session with a larger screen "
-                f"for bigger windows), got {oversized}."
-            )
-            raise ValueError(msg)
-
-        # frameGeometry changes are committed asynchronously by KWin.  Reading
-        # the property again inside the same script can therefore return the
-        # old rectangle.  Use a separate compositor query for authoritative
-        # post-action state.
-        observed_resp = self._run_kwin_query({"window_id": window_id})
-
-        before = result["before"]
-        requested = f"x={x!r}, y={y!r}, width={width!r}, height={height!r}"
-        name = f'{result["app"]} "{result["caption"]}"'
-
-        # frameGeometry changes are committed asynchronously: the observed
-        # rectangle is post-action compositor state, not proof that every
-        # requested field was applied.
-        lines = [
-            f"Geometry update requested: {name} ({window_id})",
-            f"before:    ({before[0]}, {before[1]}, {before[2]}x{before[3]})",
-            f"requested: {requested}",
-        ]
-
-        if not observed_resp["ok"]:
-            lines.append(f"observation failed: {observed_resp['error']}")
-        elif not observed_resp["result"]:
-            # The request was dispatched; the window went away before the readback.
-            lines.append("observed: window no longer exists (it closed or its client exited)")
-        else:
-            frame = observed_resp["result"][0]["frame"]
-            lines.append(
-                f"observed:  ({frame['x']}, {frame['y']}, {frame['width']}x{frame['height']})"
-            )
-            pending = [
-                field for field, value in supplied if value is not None and frame[field] != value
-            ]
-            if pending:
-                lines.append(
-                    f"not yet applied: {', '.join(pending)} "
-                    "(the client may still be applying the change; verify with window_geometry)"
-                )
-
-        lines.append(f"moveable: {result['moveable']}, resizeable: {result['resizeable']}")
-        return "\n".join(lines)
-
-    def virtual_desktops_data(self) -> VirtualDesktopsResult:
-        """Report KWin's virtual desktops, with stable ids and the current one, as data.
-
-        Raises RuntimeError when KWin cannot be queried, as window_geometry_data does.
-        """
-        self._get_session()
-        resp = self._run_kwin_query({"op": "desktops"})
-        if not resp["ok"]:
-            msg = f"Virtual desktops unavailable: {resp['error']}"
-            raise RuntimeError(msg)
-        return VirtualDesktopsResult.model_validate({"desktops": resp["result"]["desktops"]})
-
-    def virtual_desktops(self) -> str:
-        """Report KWin's virtual desktops, with stable ids and the current one."""
-        return format_virtual_desktops(self.virtual_desktops_data())
-
-    def window_set_desktop_data(self, window_id: str, desktop_id: str) -> WindowSetDesktopResult:
-        """Put one window, by exact KWin id, on exactly one virtual desktop, by exact id.
-
-        Missing ids, unknown windows or desktops, and a request whose result did
-        not come back raise. The script also refuses before assignment if a
-        related window (transients or modal main windows) enumerated by KWin
-        scripting at request time would move, or if an X11 group transient exists.
-        Linked but unpainted or unlisted children may follow their parent, and
-        KWin may switch the current desktop when they first appear.
-
-        The operation does not write ``workspace.currentDesktop`` or activate the
-        window. A separate KWin readback verifies only the selected window:
-        ``applied`` is true when it observes exactly ``[desktop_id]``. The current
-        desktop before and after is reported independently as point-in-time
-        observations, not future desktop or focus guarantees.
-        """
-        # The CLI forwards raw values without MCP schema validation.
-        for field, value, source in (
-            ("window_id", window_id, "window_geometry"),
-            ("desktop_id", desktop_id, "virtual_desktops"),
-        ):
-            if not isinstance(value, str) or not value:
-                msg = f"window_set_desktop needs a {field} (see {source})."
-                raise ValueError(msg)
-
-        self._get_session()
-        resp = self._run_kwin_query(
-            {"op": "set_desktop", "window_id": window_id, "desktop_id": desktop_id}
-        )
-        if not resp["ok"]:
-            # The script may have assigned the window before its reply was lost.
-            msg = (
-                f"Failed to confirm the desktop of {window_id!r}: {resp['error']}. "
-                "The window may already have moved."
-            )
-            raise RuntimeError(msg)
-        assigned = resp["result"]
-        # The script assigns nothing unless both the window and the desktop exist.
-        if not assigned["windowFound"]:
-            msg = f"No window with id {window_id!r}."
-            raise RuntimeError(msg)
-        if not assigned["desktopFound"]:
-            msg = f"No virtual desktop with id {desktop_id!r}."
-            raise RuntimeError(msg)
-        # KWin scripting detected enumerated related windows that would move,
-        # or an unresolvable group transient; refused before assignment.
-        if assigned.get("refused") == "unsupported":
-            msg = (
-                "Refused: a window with an unresolvable transient relationship "
-                f"(X11 group transient) exists, so KWin could move windows besides {window_id!r}; "
-                "nothing was changed."
-            )
-            raise RuntimeError(msg)
-        if assigned.get("refused") == "related":
-            related = "; ".join(
-                f'{window["id"]} {window["app"]} "{window["caption"]}"'
-                for window in assigned["related"]
-            )
-            msg = (
-                f"Refused: KWin would also move {len(assigned['related'])} related window(s) of "
-                f"{window_id!r} (transient or modal relationships): {related}; "
-                "nothing was changed."
-            )
-            raise RuntimeError(msg)
-
-        observed: list[str] | None = None
-        current_after: str | None = None
-        observation_error: str | None = None
-        observed_resp = self._run_kwin_query({"op": "desktops", "window_id": window_id})
-        if not observed_resp["ok"]:
-            observation_error = str(observed_resp["error"])
-        else:
-            readback = observed_resp["result"]
-            current_after = readback["current"]
-            if readback["window"] is None:
-                # The request was dispatched; the window went away before the readback.
-                observation_error = "window no longer exists (it closed or its client exited)"
-            else:
-                observed = list(readback["window"]["desktops"])
-
-        return WindowSetDesktopResult(
-            window_id=window_id,
-            desktop_id=desktop_id,
-            applied=observed == [desktop_id],
-            before=list(assigned["before"]),
-            before_on_all_desktops=assigned["beforeOnAllDesktops"],
-            observed=observed,
-            current_desktop_id_before=assigned["current"],
-            current_desktop_id_after=current_after,
-            observation_error=observation_error,
-        )
-
-    def window_set_desktop(self, window_id: str, desktop_id: str) -> str:
-        """Put one window, by exact KWin id, on exactly one virtual desktop, by exact id."""
-        return format_window_set_desktop(self.window_set_desktop_data(window_id, desktop_id))
-
-    def window_close(self, window_id: str) -> str:
-        """Ask KWin to close one window, addressed by the id window_geometry reports.
-
-        Refused in live sessions: closing can discard unsaved work in the user's
-        own applications, and unlike input actions it cannot be watched and
-        interrupted step by step.
-        """
-        if not window_id:
-            msg = "window_close needs a window_id (see window_geometry)."
-            raise ValueError(msg)
-        session = self._get_session()
-        if isinstance(session, LiveSession):
-            msg = (
-                "window_close is disabled in live sessions: it could discard unsaved work "
-                "on the real desktop. Close the window through the app's own UI instead."
-            )
-            raise RuntimeError(msg)
-        resp = self._run_kwin_query({"op": "close", "window_id": window_id})
-        if not resp["ok"]:
-            msg = f"Failed to close window {window_id!r}: {resp['error']}"
-            raise RuntimeError(msg)
-        result = resp["result"]
-        if not result["found"]:
-            msg = f"No window with id {window_id!r}."
-            raise RuntimeError(msg)
-        name = f'{result["app"]} "{result["caption"]}"'
-        if not result["closeable"]:
-            msg = f"Window {name} ({window_id}) cannot be closed."
-            raise RuntimeError(msg)
-        return (
-            f"Close requested: {name} ({window_id}). The app may keep the window open, "
-            "for example to ask about unsaved changes; check window_geometry."
-        )
-
-    # ── D-Bus tools ───────────────────────────────────────────────────────
+    # ── Escape hatches ────────────────────────────────────────────────────
 
     def dbus_call(
         self,
@@ -1771,38 +2066,37 @@ class AutomationEngine:
         path: str,
         interface: str,
         method: str,
-        args: list[str | dict] | None = None,
-    ) -> str:
-        """Call a D-Bus method in the isolated session.
+        args: list[str | TypedArg] | None = None,
+    ) -> DbusReply:
+        """Call any D-Bus method on the session bus; the declared signature is introspected.
 
-        ``args`` accepts dbus-send strings (``"type:value"``) and/or
-        typed-JSON dicts (``{"type": ..., "value": ...}``); both shapes
-        may mix in one call. When the object is introspectable, the
-        arguments must match one of the method's declared input
-        signatures: argument types may differ only where the signature
+        ``args`` accepts dbus-send strings (``"type:value"``) and/or typed
+        arguments; both shapes may mix in one call. When the object is
+        introspectable, the arguments must match one of the method's declared
+        input signatures: argument types may differ only where the signature
         expects a variant, so e.g. ``int32`` does not silently become
         ``int64``. Qt overloads and slots with default arguments declare
-        several signatures; the first one that fits is used. Argument
-        errors raise ``ValueError("D-Bus call failed: ...")`` and nothing
-        is sent. When the object does not introspect, the call is sent with
-        each argument's own signature (an explicit ``variant`` argument
-        stays a variant) and the remote side validates it; a remote error
-        reply raises ``RuntimeError("D-Bus error: <name>: <message>")``. The
-        reply is rendered via :func:`_format_dbus_result` (single primitives
-        become bare strings, containers and tuples become JSON).
+        several signatures; the first one that fits is used. Argument errors
+        raise ``ValueError("D-Bus call failed: ...")`` and nothing is sent.
+        When the object does not introspect, the call is sent with each
+        argument's own signature and the remote side validates it; a remote
+        error reply raises ``RuntimeError("D-Bus error: <name>: <message>")``.
         """
         import dbus
         import dbus.bus
 
         from kwin_mcp.dbus_args import parse_arg
 
-        info = self._get_session().info
-        if info is None or not info.dbus_address:
+        info = self._require_info()
+        if not info.dbus_address:
             msg = "D-Bus call failed: session has no D-Bus address"
             raise RuntimeError(msg)
 
         try:
-            parsed_args = [parse_arg(a) for a in (args or [])]
+            parsed_args = [
+                parse_arg(a if isinstance(a, str) else a.model_dump(exclude_none=True))
+                for a in (args or [])
+            ]
         except ValueError as exc:
             msg = f"D-Bus call failed: {exc}"
             raise ValueError(msg) from exc
@@ -1855,23 +2149,10 @@ class AutomationEngine:
             raise ValueError(msg) from exc
         if mismatch:
             raise ValueError(mismatch)
-        return _format_dbus_result(result)
+        return DbusReply(reply=_dbus_to_json(result), signature=_reply_signature(result))
 
-    def read_app_log(self, pid: int, last_n_lines: int = 50) -> str:
-        """Read stdout/stderr output of a launched app.
-
-        ``last_n_lines`` is the number of trailing lines to return; 0 returns
-        the whole log. Anything else raises ``ValueError`` before the session
-        is touched.
-        """
-        if isinstance(last_n_lines, bool) or not isinstance(last_n_lines, int) or last_n_lines < 0:
-            msg = f"last_n_lines must be 0 (all) or a positive integer, got {last_n_lines!r}"
-            raise ValueError(msg)
-        session = self._get_session()
-        return session.read_app_log(pid, last_n_lines=last_n_lines)
-
-    def wayland_info(self, filter_protocol: str = "") -> str:
-        """List Wayland protocols available in the isolated session."""
+    def wayland_list(self, filter: str = "") -> WaylandGlobals:  # noqa: A002
+        """List the Wayland protocol globals the compositor advertises (wayland-info)."""
         env = self._session_env()
         try:
             result = subprocess.run(
@@ -1886,10 +2167,18 @@ class AutomationEngine:
             msg = f"wayland-info failed: {result.stderr.decode(errors='replace')}"
             raise RuntimeError(msg)
 
-        output = result.stdout.decode(errors="replace")
-        if filter_protocol:
-            lines = [line for line in output.splitlines() if filter_protocol in line]
-            if not lines:
-                return f"No protocols matching '{filter_protocol}' found."
-            return "\n".join(lines)
-        return output
+        lines = result.stdout.decode(errors="replace").splitlines()
+        if filter:
+            lines = [line for line in lines if filter in line]
+        globals_: list[WaylandGlobal] = []
+        for line in lines:
+            match = _WAYLAND_GLOBAL_PATTERN.search(line)
+            if match is not None:
+                globals_.append(
+                    WaylandGlobal(
+                        interface=match.group(1),
+                        version=int(match.group(2)),
+                        name=int(match.group(3)),
+                    )
+                )
+        return WaylandGlobals(filter=filter, lines=lines, globals=globals_)

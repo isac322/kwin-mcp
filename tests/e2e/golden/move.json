@@ -1,0 +1,70 @@
+{
+ "scenario": "move",
+ "captured_from": "kwin-mcp 0.11.0 @ 7a5d781 (AutomationEngine, virtual KWin session)",
+ "call": {
+  "local": [
+   300,
+   200
+  ],
+  "tool": "mouse_move"
+ },
+ "returned_text": [
+  "Mouse moved to (440, 292)"
+ ],
+ "probe": {
+  "client_size": [
+   1000,
+   640
+  ],
+  "coordinates": "probe-local logical px (global = client origin + local)"
+ },
+ "repeats": 5,
+ "sequence": [
+  {
+   "kind": "motion",
+   "x": 299,
+   "y": 200,
+   "mods": [],
+   "held": []
+  },
+  {
+   "kind": "motion",
+   "x": 300,
+   "y": 200,
+   "mods": [],
+   "held": []
+  }
+ ],
+ "gaps_ms": [
+  {
+   "from": 0,
+   "to": 1,
+   "mono": {
+    "min": 0.09,
+    "median": 0.15,
+    "max": 0.3
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 1.0,
+    "max": 1.0
+   }
+  }
+ ],
+ "call_start_to_first_event_ms": {
+  "min": 0.44,
+  "median": 0.76,
+  "max": 2.69
+ },
+ "last_event_to_call_return_ms": {
+  "min": -2.73,
+  "median": -0.8,
+  "max": -0.46
+ },
+ "first_to_last_event_ms": {
+  "min": 0.09,
+  "median": 0.15,
+  "max": 0.3
+ },
+ "other_variants": []
+}

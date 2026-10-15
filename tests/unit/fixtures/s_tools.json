@@ -1,0 +1,1110 @@
+{
+ "source": "Proposal S section 11 (params, annotations, title) and section 2 ('Description (shipped)', output models with the implementation contract's section 0.2 additions). Parameter descriptions are the shipped short forms: '($defs/<Type>)' pointers dropped, and null where S has none or where the text only restated the type (element_query.locator, pointer_click.target).",
+ "tools": [
+  {
+   "name": "session_start",
+   "title": "Start virtual KWin session",
+   "description": "Start an isolated virtual KWin Wayland session (one at a time). Then launch apps with app_launch.",
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "idempotentHint": false,
+    "openWorldHint": false
+   },
+   "params": [
+    {
+     "name": "screen_width",
+     "required": false,
+     "default": 1920,
+     "description": "Virtual screen width, logical px."
+    },
+    {
+     "name": "screen_height",
+     "required": false,
+     "default": 1080,
+     "description": "Virtual screen height, logical px."
+    },
+    {
+     "name": "enable_clipboard",
+     "required": false,
+     "default": false,
+     "description": "Serve clipboard_* (off: wl-clipboard may hang)."
+    },
+    {
+     "name": "home",
+     "required": false,
+     "default": "host",
+     "description": "HOME for launched apps: the host HOME, or a temporary isolated XDG HOME. Not a security sandbox."
+    },
+    {
+     "name": "retention",
+     "required": false,
+     "default": {
+      "artifacts": false,
+      "home": false
+     },
+     "description": "What survives the session end, decided now and honoured by session_stop and server exit."
+    }
+   ],
+   "output": [
+    "kind",
+    "wayland_socket",
+    "dbus_address",
+    "screen",
+    "home_dir",
+    "retention",
+    "artifacts_dir",
+    "input_backend",
+    "clipboard",
+    "accessibility",
+    "warnings"
+   ]
+  },
+  {
+   "name": "session_connect",
+   "title": "Attach to live KDE desktop",
+   "description": "Attach to an already running KWin session (the real desktop or a container). Actions then affect real applications; window_close asks the user first.",
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "idempotentHint": false,
+    "openWorldHint": true
+   },
+   "params": [
+    {
+     "name": "dbus_address",
+     "required": false,
+     "default": "",
+     "description": "Session bus address; empty = $DBUS_SESSION_BUS_ADDRESS."
+    },
+    {
+     "name": "wayland_display",
+     "required": false,
+     "default": "",
+     "description": "Socket name or path; empty = $WAYLAND_DISPLAY."
+    },
+    {
+     "name": "enable_accessibility",
+     "required": false,
+     "default": false,
+     "description": "Set org.a11y.Status.IsEnabled for the session lifetime; restored by session_stop."
+    },
+    {
+     "name": "retention",
+     "required": false,
+     "default": {
+      "artifacts": false,
+      "home": false
+     },
+     "description": "What survives the session end, decided now and honoured by session_stop and server exit."
+    }
+   ],
+   "output": [
+    "kind",
+    "wayland_socket",
+    "dbus_address",
+    "screen",
+    "home_dir",
+    "retention",
+    "artifacts_dir",
+    "input_backend",
+    "clipboard",
+    "accessibility",
+    "warnings"
+   ]
+  },
+  {
+   "name": "session_stop",
+   "title": "End session",
+   "description": "End the current session. Virtual: terminate KWin, launched apps and the bus. Live: detach, kill only apps launched through kwin-mcp, restore the a11y switch. Releases held input. Idempotent.",
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": true,
+    "openWorldHint": false
+   },
+   "params": [],
+   "output": [
+    "stopped",
+    "kind",
+    "kept",
+    "released",
+    "warnings"
+   ]
+  },
+  {
+   "name": "session_info",
+   "title": "Session status",
+   "description": "Report the current session (or null), its enabled backends, and every app launched through kwin-mcp.",
+   "annotations": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false
+   },
+   "params": [],
+   "output": [
+    "session",
+    "apps",
+    "held",
+    "warnings"
+   ]
+  },
+  {
+   "name": "app_launch",
+   "title": "Launch app in session",
+   "description": "Launch a program in the session (shlex-split, no shell). stdout/stderr go to a log read with app_log. A failed launch keeps the session.",
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false,
+    "openWorldHint": true
+   },
+   "params": [
+    {
+     "name": "command",
+     "required": true,
+     "description": "Command line, e.g. \"kate --new\". Split with shlex; empty or unbalanced quotes is an error."
+    },
+    {
+     "name": "env",
+     "required": false,
+     "default": null,
+     "description": "Extra environment variables for this process."
+    }
+   ],
+   "output": [
+    "pid",
+    "command",
+    "log_path",
+    "log_uri"
+   ]
+  },
+  {
+   "name": "app_log",
+   "title": "Read app output",
+   "description": "Return the tail of the captured stdout/stderr of an app launched with app_launch.",
+   "annotations": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false
+   },
+   "params": [
+    {
+     "name": "pid",
+     "required": true,
+     "description": "PID returned by app_launch (session_info lists them)."
+    },
+    {
+     "name": "last_n_lines",
+     "required": false,
+     "default": 50,
+     "description": "Trailing lines; 0 = whole log."
+    }
+   ],
+   "output": [
+    "pid",
+    "log_path",
+    "lines",
+    "truncated"
+   ]
+  },
+  {
+   "name": "screen_capture",
+   "title": "Capture screen",
+   "description": "Capture the workspace (or a rectangle of it) as PNG via KWin ScreenShot2 (Spectacle fallback). Returns the path and the image-to-logical coordinate mapping.",
+   "annotations": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false
+   },
+   "params": [
+    {
+     "name": "region",
+     "required": false,
+     "default": null,
+     "description": "Crop rectangle in global logical px; null = whole workspace. Parts outside the workspace are dropped."
+    },
+    {
+     "name": "max_edge",
+     "required": false,
+     "default": null,
+     "description": "Downscale so the longer side <= max_edge px; 0 = full resolution; null = server --screenshot-max-edge."
+    },
+    {
+     "name": "include_cursor",
+     "required": false,
+     "default": false,
+     "description": "Draw the pointer into the image."
+    }
+   ],
+   "output": [
+    "delay_ms",
+    "path",
+    "uri",
+    "width",
+    "height",
+    "size_kb",
+    "mapping",
+    "coverage",
+    "coordinate_space"
+   ]
+  },
+  {
+   "name": "element_query",
+   "title": "Query accessibility elements",
+   "description": "Return AT-SPI2 elements matching locator (pre-order) with rects, states, actions, window_id and a ref for targets. With wait, poll until present/absent.",
+   "annotations": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false
+   },
+   "params": [
+    {
+     "name": "locator",
+     "required": false,
+     "default": {},
+     "description": null
+    },
+    {
+     "name": "max_depth",
+     "required": false,
+     "default": 15,
+     "description": "Depth limit: 0 (or less) = application nodes only, 1 = top-level windows."
+    },
+    {
+     "name": "wait",
+     "required": false,
+     "default": null,
+     "description": "Omit = read now; set = poll until the condition holds."
+    }
+   ],
+   "output": [
+    "locator",
+    "elements",
+    "wait"
+   ]
+  },
+  {
+   "name": "element_act",
+   "title": "Invoke element action",
+   "description": "Invoke a named AT-SPI action on exactly one element: {ref}, or {strict: Locator} (strict search). Errors list the actions matches expose.",
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false,
+    "openWorldHint": false
+   },
+   "params": [
+    {
+     "name": "element",
+     "required": true,
+     "description": "{ref} from element_query, or {strict: Locator}."
+    },
+    {
+     "name": "action",
+     "required": true,
+     "description": "AT-SPI action name, case-insensitive, e.g. \"Press\", \"Toggle\", \"Activate\"."
+    },
+    {
+     "name": "capture",
+     "required": false,
+     "default": null,
+     "description": null
+    }
+   ],
+   "output": [
+    "tool",
+    "at",
+    "element",
+    "frames",
+    "held",
+    "warnings",
+    "action",
+    "dispatch",
+    "dispatch_error"
+   ]
+  },
+  {
+   "name": "window_list",
+   "title": "List windows",
+   "description": "List KWin windows (incl. dialogs/popups/shell) with id, kind, frame/client rects, capabilities and desktops. filter fields are AND-ed.",
+   "annotations": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false
+   },
+   "params": [
+    {
+     "name": "filter",
+     "required": false,
+     "default": null,
+     "description": "Same selector as the window mutators, used as a filter; null = every window."
+    }
+   ],
+   "output": [
+    "filter",
+    "windows"
+   ]
+  },
+  {
+   "name": "desktop_list",
+   "title": "List virtual desktops",
+   "description": "List KWin virtual desktops in pager order with the current one marked.",
+   "annotations": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false
+   },
+   "params": [],
+   "output": [
+    "desktops",
+    "current_desktop_id"
+   ]
+  },
+  {
+   "name": "window_focus",
+   "title": "Activate window",
+   "description": "Raise and activate exactly one window (workspace.activeWindow).",
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false
+   },
+   "params": [
+    {
+     "name": "window",
+     "required": true,
+     "description": "Must match exactly one window; an ambiguous match is an error listing candidate ids."
+    },
+    {
+     "name": "capture",
+     "required": false,
+     "default": null,
+     "description": null
+    }
+   ],
+   "output": [
+    "window_id",
+    "window",
+    "observation_error",
+    "frames",
+    "warnings"
+   ]
+  },
+  {
+   "name": "window_place",
+   "title": "Move window",
+   "description": "Set frame and/or virtual desktop of exactly one window, then read it back (KWin applies async). Refused with 'nothing was changed' when transients would also move.",
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false,
+    "openWorldHint": false
+   },
+   "params": [
+    {
+     "name": "window",
+     "required": true,
+     "description": "Must match exactly one window; an ambiguous match is an error listing candidate ids."
+    },
+    {
+     "name": "frame",
+     "required": false,
+     "default": null,
+     "description": "New outer frame, global logical px; omitted fields kept; size <= workspace."
+    },
+    {
+     "name": "desktop",
+     "required": false,
+     "default": null,
+     "description": "Move to this virtual desktop id (from desktop_list)."
+    },
+    {
+     "name": "capture",
+     "required": false,
+     "default": null,
+     "description": null
+    }
+   ],
+   "output": [
+    "window_id",
+    "requested_frame",
+    "requested_desktop",
+    "window",
+    "observation_error",
+    "before",
+    "applied",
+    "pending",
+    "current_desktop_before",
+    "current_desktop_after",
+    "frames",
+    "warnings"
+   ]
+  },
+  {
+   "name": "window_close",
+   "title": "Close window",
+   "description": "Ask exactly one window to close (app may refuse). On a live session the user must confirm; unconfirmed, not closeable or unknown = non-error refusal.",
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false,
+    "openWorldHint": false
+   },
+   "params": [
+    {
+     "name": "window",
+     "required": true,
+     "description": "Must match exactly one window; an ambiguous match is an error listing candidate ids."
+    },
+    {
+     "name": "capture",
+     "required": false,
+     "default": null,
+     "description": null
+    }
+   ],
+   "output": [
+    "window_id",
+    "app_id",
+    "caption",
+    "requested",
+    "consent",
+    "refusal",
+    "frames",
+    "warnings"
+   ]
+  },
+  {
+   "name": "pointer_click",
+   "title": "Click",
+   "description": "Move the pointer to a target and click 1-3 times, optionally holding modifier keys and holding the last press.",
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false,
+    "openWorldHint": false
+   },
+   "params": [
+    {
+     "name": "target",
+     "required": true,
+     "description": null
+    },
+    {
+     "name": "button",
+     "required": false,
+     "default": "left",
+     "description": null
+    },
+    {
+     "name": "count",
+     "required": false,
+     "default": 1,
+     "description": "1 single, 2 double, 3 triple."
+    },
+    {
+     "name": "modifiers",
+     "required": false,
+     "default": null,
+     "description": "Modifier keys held during the click, e.g. \"ctrl+shift\"."
+    },
+    {
+     "name": "hold_ms",
+     "required": false,
+     "default": 0,
+     "description": "Press duration of the last click (long-press); min 25 ms."
+    },
+    {
+     "name": "capture",
+     "required": false,
+     "default": null,
+     "description": null
+    }
+   ],
+   "output": [
+    "tool",
+    "at",
+    "element",
+    "frames",
+    "held",
+    "warnings",
+    "button",
+    "count",
+    "modifiers",
+    "hold_ms"
+   ]
+  },
+  {
+   "name": "pointer_move",
+   "title": "Move pointer",
+   "description": "Move the pointer onto a target and leave it there (hover, tooltips).",
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false
+   },
+   "params": [
+    {
+     "name": "target",
+     "required": true,
+     "description": null
+    },
+    {
+     "name": "capture",
+     "required": false,
+     "default": null,
+     "description": null
+    }
+   ],
+   "output": [
+    "tool",
+    "at",
+    "element",
+    "frames",
+    "held",
+    "warnings"
+   ]
+  },
+  {
+   "name": "pointer_scroll",
+   "title": "Scroll",
+   "description": "Move to a target and scroll the wheel.",
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false,
+    "openWorldHint": false
+   },
+   "params": [
+    {
+     "name": "target",
+     "required": true,
+     "description": null
+    },
+    {
+     "name": "delta",
+     "required": true,
+     "description": "Amount in `unit`; positive = down/right, negative = up/left."
+    },
+    {
+     "name": "axis",
+     "required": false,
+     "default": "vertical",
+     "description": null
+    },
+    {
+     "name": "unit",
+     "required": false,
+     "default": "smooth_step",
+     "description": "smooth_step = 15 px smooth scroll per unit; detent = one wheel click."
+    },
+    {
+     "name": "steps",
+     "required": false,
+     "default": 1,
+     "description": "Split delta into this many increments, 10 ms apart."
+    },
+    {
+     "name": "capture",
+     "required": false,
+     "default": null,
+     "description": null
+    }
+   ],
+   "output": [
+    "tool",
+    "at",
+    "element",
+    "frames",
+    "held",
+    "warnings",
+    "delta",
+    "axis",
+    "unit",
+    "steps"
+   ]
+  },
+  {
+   "name": "pointer_drag",
+   "title": "Drag",
+   "description": "Press a mouse button at one target, move through optional waypoints, release at another. The button and modifiers are always released, even on error.",
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false,
+    "openWorldHint": false
+   },
+   "params": [
+    {
+     "name": "from",
+     "required": true,
+     "description": "Start target."
+    },
+    {
+     "name": "to",
+     "required": true,
+     "description": "End target."
+    },
+    {
+     "name": "button",
+     "required": false,
+     "default": "left",
+     "description": null
+    },
+    {
+     "name": "modifiers",
+     "required": false,
+     "default": null,
+     "description": "Modifier keys held during the drag."
+    },
+    {
+     "name": "waypoints",
+     "required": false,
+     "default": null,
+     "description": "Intermediate points {x, y, dwell_ms}; the pointer pauses dwell_ms at each."
+    },
+    {
+     "name": "dwell_ms",
+     "required": false,
+     "default": 0,
+     "description": "Pause at `to` before releasing (drop targets that need hover)."
+    },
+    {
+     "name": "capture",
+     "required": false,
+     "default": null,
+     "description": null
+    }
+   ],
+   "output": [
+    "tool",
+    "at",
+    "element",
+    "frames",
+    "held",
+    "warnings",
+    "start",
+    "button",
+    "modifiers",
+    "waypoints",
+    "dwell_ms"
+   ]
+  },
+  {
+   "name": "pointer_hold",
+   "title": "Hold or release mouse button",
+   "description": "Press, move or release one mouse button across calls (custom drags). Each phase moves to target first. Held input stays until released, session_stop or exit; every result reports held input. Gestures never touch a held control.",
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": true,
+    "openWorldHint": false
+   },
+   "params": [
+    {
+     "name": "phase",
+     "required": true,
+     "description": "press (no-op if held); move (button must be held); release (always sent)."
+    },
+    {
+     "name": "button",
+     "required": false,
+     "default": "left",
+     "description": null
+    },
+    {
+     "name": "target",
+     "required": true,
+     "description": "the pointer moves here first."
+    },
+    {
+     "name": "capture",
+     "required": false,
+     "default": null,
+     "description": null
+    }
+   ],
+   "output": [
+    "tool",
+    "at",
+    "element",
+    "frames",
+    "held",
+    "warnings",
+    "phase",
+    "button",
+    "changed"
+   ]
+  },
+  {
+   "name": "keyboard_press",
+   "title": "Press key combo",
+   "description": "Press and release one key or chord at the keyboard focus.",
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false,
+    "openWorldHint": false
+   },
+   "params": [
+    {
+     "name": "keys",
+     "required": true,
+     "description": "e.g. \"Return\", \"ctrl+c\", \"alt+F4\", \"shift+ctrl+z\"; unknown key names are an error."
+    },
+    {
+     "name": "capture",
+     "required": false,
+     "default": null,
+     "description": null
+    }
+   ],
+   "output": [
+    "tool",
+    "at",
+    "element",
+    "frames",
+    "held",
+    "warnings",
+    "keys"
+   ]
+  },
+  {
+   "name": "keyboard_type",
+   "title": "Type text",
+   "description": "Insert text at the keyboard focus. keys = per-key US-QWERTY events (rejects other characters before sending anything); unicode = wtype, else a private clipboard paste that restores the previous selection.",
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false,
+    "openWorldHint": false
+   },
+   "params": [
+    {
+     "name": "text",
+     "required": true,
+     "description": "Text to insert."
+    },
+    {
+     "name": "method",
+     "required": false,
+     "default": "keys",
+     "description": "keys = per-key events, US-QWERTY only (else error: retry method=\"unicode\"); unicode = any text, may paste."
+    },
+    {
+     "name": "capture",
+     "required": false,
+     "default": null,
+     "description": null
+    }
+   ],
+   "output": [
+    "tool",
+    "at",
+    "element",
+    "frames",
+    "held",
+    "warnings",
+    "method",
+    "route",
+    "chars",
+    "echo"
+   ]
+  },
+  {
+   "name": "keyboard_hold",
+   "title": "Hold or release keys",
+   "description": "Press or release one key chord across calls (modifiers first on press, reverse on release). Held input stays until released, session_stop or exit; every result reports it.",
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": true,
+    "openWorldHint": false
+   },
+   "params": [
+    {
+     "name": "phase",
+     "required": true,
+     "description": null
+    },
+    {
+     "name": "keys",
+     "required": true,
+     "description": "Any key or full chord, modifiers then key, e.g. \"shift\", \"ctrl+shift\", \"a\", \"ctrl+Return\"."
+    },
+    {
+     "name": "capture",
+     "required": false,
+     "default": null,
+     "description": null
+    }
+   ],
+   "output": [
+    "tool",
+    "at",
+    "element",
+    "frames",
+    "held",
+    "warnings",
+    "phase",
+    "keys",
+    "changed"
+   ]
+  },
+  {
+   "name": "touch_tap",
+   "title": "Tap",
+   "description": "Tap a target with one touch contact (does not move the pointer).",
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false,
+    "openWorldHint": false
+   },
+   "params": [
+    {
+     "name": "target",
+     "required": true,
+     "description": null
+    },
+    {
+     "name": "hold_ms",
+     "required": false,
+     "default": 0,
+     "description": "Contact duration, min 10 ms; >500 = long-press."
+    },
+    {
+     "name": "capture",
+     "required": false,
+     "default": null,
+     "description": null
+    }
+   ],
+   "output": [
+    "tool",
+    "at",
+    "element",
+    "frames",
+    "held",
+    "warnings",
+    "hold_ms"
+   ]
+  },
+  {
+   "name": "touch_swipe",
+   "title": "Swipe",
+   "description": "Swipe with N parallel contacts from one target to another. Contacts are spread vertically 20 px apart around the path. KWin consumes >=3-finger swipes as global gestures.",
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false,
+    "openWorldHint": false
+   },
+   "params": [
+    {
+     "name": "from",
+     "required": true,
+     "description": "Start (centre of the contact group)."
+    },
+    {
+     "name": "to",
+     "required": true,
+     "description": "End."
+    },
+    {
+     "name": "fingers",
+     "required": false,
+     "default": 1,
+     "description": "Number of parallel contacts."
+    },
+    {
+     "name": "duration_ms",
+     "required": false,
+     "default": 300,
+     "description": "Travel time; 10 ms per step."
+    },
+    {
+     "name": "capture",
+     "required": false,
+     "default": null,
+     "description": null
+    }
+   ],
+   "output": [
+    "tool",
+    "at",
+    "element",
+    "frames",
+    "held",
+    "warnings",
+    "start",
+    "fingers",
+    "duration_ms"
+   ]
+  },
+  {
+   "name": "touch_pinch",
+   "title": "Pinch",
+   "description": "Two contacts move symmetrically toward or away from a centre (pinch in / zoom out).",
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false,
+    "openWorldHint": false
+   },
+   "params": [
+    {
+     "name": "center",
+     "required": true,
+     "description": "Pinch centre."
+    },
+    {
+     "name": "start_distance",
+     "required": true,
+     "description": "Initial contact distance, px."
+    },
+    {
+     "name": "end_distance",
+     "required": true,
+     "description": "Final distance (< start = pinch in)."
+    },
+    {
+     "name": "duration_ms",
+     "required": false,
+     "default": 500,
+     "description": "Gesture duration."
+    },
+    {
+     "name": "capture",
+     "required": false,
+     "default": null,
+     "description": null
+    }
+   ],
+   "output": [
+    "tool",
+    "at",
+    "element",
+    "frames",
+    "held",
+    "warnings",
+    "start_distance",
+    "end_distance",
+    "duration_ms"
+   ]
+  },
+  {
+   "name": "clipboard_read",
+   "title": "Read clipboard",
+   "description": "Return the session clipboard text (wl-paste). Virtual sessions need enable_clipboard.",
+   "annotations": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false
+   },
+   "params": [],
+   "output": [
+    "text"
+   ]
+  },
+  {
+   "name": "clipboard_write",
+   "title": "Write clipboard",
+   "description": "Own the session clipboard with this text (wl-copy, waits up to 5 s for ownership). Virtual sessions need enable_clipboard.",
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": true,
+    "openWorldHint": false
+   },
+   "params": [
+    {
+     "name": "text",
+     "required": true,
+     "description": "Any text, including NUL."
+    }
+   ],
+   "output": [
+    "length",
+    "echo"
+   ]
+  },
+  {
+   "name": "dbus_call",
+   "title": "Call D-Bus method",
+   "description": "Escape hatch: call any method on the session bus. The declared signature is introspected (Qt overloads supported). Prefer the dedicated tools.",
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false,
+    "openWorldHint": true
+   },
+   "params": [
+    {
+     "name": "service",
+     "required": true,
+     "description": "Bus name, e.g. org.kde.KWin."
+    },
+    {
+     "name": "path",
+     "required": true,
+     "description": "Object path."
+    },
+    {
+     "name": "interface",
+     "required": true,
+     "description": null
+    },
+    {
+     "name": "method",
+     "required": true,
+     "description": null
+    },
+    {
+     "name": "args",
+     "required": false,
+     "default": null,
+     "description": "dbus-send strings (\"int32:5\") and/or typed JSON {type, value, element_type?}, mixable."
+    }
+   ],
+   "output": [
+    "reply",
+    "signature"
+   ]
+  },
+  {
+   "name": "wayland_list",
+   "title": "List Wayland globals",
+   "description": "Escape hatch: list the Wayland protocol globals the compositor advertises (wayland-info).",
+   "annotations": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false
+   },
+   "params": [
+    {
+     "name": "filter",
+     "required": false,
+     "default": "",
+     "description": "Keep raw lines containing this (case-sensitive)."
+    }
+   ],
+   "output": [
+    "filter",
+    "lines",
+    "globals"
+   ]
+  }
+ ]
+}

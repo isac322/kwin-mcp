@@ -1,0 +1,287 @@
+{
+ "scenario": "click_double_ctrl_shift",
+ "captured_from": "kwin-mcp 0.11.0 @ 7a5d781 (AutomationEngine, virtual KWin session)",
+ "call": {
+  "double": true,
+  "local": [
+   300,
+   200
+  ],
+  "modifiers": [
+   "ctrl",
+   "shift"
+  ],
+  "tool": "mouse_click"
+ },
+ "returned_text": [
+  "Clicked left at (440, 292) (double) with ctrl+shift"
+ ],
+ "probe": {
+  "client_size": [
+   1000,
+   640
+  ],
+  "coordinates": "probe-local logical px (global = client origin + local)"
+ },
+ "repeats": 5,
+ "sequence": [
+  {
+   "kind": "motion",
+   "x": 299,
+   "y": 200,
+   "mods": [],
+   "held": []
+  },
+  {
+   "kind": "motion",
+   "x": 300,
+   "y": 200,
+   "mods": [],
+   "held": []
+  },
+  {
+   "kind": "key_press",
+   "key": "Control_L",
+   "mods": []
+  },
+  {
+   "kind": "key_press",
+   "key": "Shift_L",
+   "mods": [
+    "ctrl"
+   ]
+  },
+  {
+   "kind": "button_press",
+   "button": "left",
+   "x": 300,
+   "y": 200,
+   "mods": [
+    "ctrl",
+    "shift"
+   ],
+   "held": []
+  },
+  {
+   "kind": "button_release",
+   "button": "left",
+   "x": 300,
+   "y": 200,
+   "mods": [
+    "ctrl",
+    "shift"
+   ],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "button_press",
+   "button": "left",
+   "x": 300,
+   "y": 200,
+   "mods": [
+    "ctrl",
+    "shift"
+   ],
+   "held": []
+  },
+  {
+   "kind": "gtk_double_press",
+   "button": "left",
+   "x": 300,
+   "y": 200,
+   "mods": [
+    "ctrl",
+    "shift"
+   ],
+   "held": []
+  },
+  {
+   "kind": "button_release",
+   "button": "left",
+   "x": 300,
+   "y": 200,
+   "mods": [
+    "ctrl",
+    "shift"
+   ],
+   "held": [
+    "left"
+   ]
+  },
+  {
+   "kind": "key_release",
+   "key": "Shift_L",
+   "mods": [
+    "ctrl",
+    "shift"
+   ]
+  },
+  {
+   "kind": "key_release",
+   "key": "Control_L",
+   "mods": [
+    "ctrl"
+   ]
+  }
+ ],
+ "gaps_ms": [
+  {
+   "from": 0,
+   "to": 1,
+   "mono": {
+    "min": 0.17,
+    "median": 0.22,
+    "max": 0.43
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 1,
+   "to": 2,
+   "mono": {
+    "min": 19.95,
+    "median": 20.04,
+    "max": 22.34
+   },
+   "event_clock": {
+    "min": 19.0,
+    "median": 21.0,
+    "max": 22.0
+   }
+  },
+  {
+   "from": 2,
+   "to": 3,
+   "mono": {
+    "min": 9.7,
+    "median": 10.49,
+    "max": 12.03
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 12.0,
+    "max": 12.0
+   }
+  },
+  {
+   "from": 3,
+   "to": 4,
+   "mono": {
+    "min": 10.4,
+    "median": 11.54,
+    "max": 12.63
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 11.0,
+    "max": 12.0
+   }
+  },
+  {
+   "from": 4,
+   "to": 5,
+   "mono": {
+    "min": 25.45,
+    "median": 26.65,
+    "max": 29.44
+   },
+   "event_clock": {
+    "min": 25.0,
+    "median": 26.0,
+    "max": 30.0
+   }
+  },
+  {
+   "from": 5,
+   "to": 6,
+   "mono": {
+    "min": 60.18,
+    "median": 61.19,
+    "max": 64.42
+   },
+   "event_clock": {
+    "min": 61.0,
+    "median": 61.0,
+    "max": 64.0
+   }
+  },
+  {
+   "from": 6,
+   "to": 7,
+   "mono": {
+    "min": 0.2,
+    "median": 0.2,
+    "max": 0.23
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 0.0
+   }
+  },
+  {
+   "from": 7,
+   "to": 8,
+   "mono": {
+    "min": 25.06,
+    "median": 25.16,
+    "max": 25.6
+   },
+   "event_clock": {
+    "min": 25.0,
+    "median": 26.0,
+    "max": 26.0
+   }
+  },
+  {
+   "from": 8,
+   "to": 9,
+   "mono": {
+    "min": 10.23,
+    "median": 10.54,
+    "max": 10.87
+   },
+   "event_clock": {
+    "min": 10.0,
+    "median": 10.0,
+    "max": 11.0
+   }
+  },
+  {
+   "from": 9,
+   "to": 10,
+   "mono": {
+    "min": 10.97,
+    "median": 11.09,
+    "max": 13.03
+   },
+   "event_clock": {
+    "min": 11.0,
+    "median": 11.0,
+    "max": 13.0
+   }
+  }
+ ],
+ "call_start_to_first_event_ms": {
+  "min": 0.7,
+  "median": 1.34,
+  "max": 2.41
+ },
+ "last_event_to_call_return_ms": {
+  "min": -0.53,
+  "median": -0.44,
+  "max": 0.19
+ },
+ "first_to_last_event_ms": {
+  "min": 176.08,
+  "median": 178.03,
+  "max": 185.4
+ },
+ "other_variants": []
+}

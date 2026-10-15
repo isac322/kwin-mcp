@@ -32,9 +32,11 @@ This allows Claude Code to act as a desktop automation agent on real user deskto
 
 ```
 Claude Code
-  └── kwin-mcp (MCP server)
-        ├── Environment management: dbus-run-session + kwin_wayland --virtual
-        ├── Screen observation: spectacle CLI + AT-SPI2
+  └── kwin-mcp (MCP server, 29 tools; kwin-mcp-cli exposes the same 29 commands)
+        ├── Shared types and result models: models.py (one render() per result)
+        ├── Environment management: dbus-run-session + kwin_wayland --virtual, or session_connect to a live KWin
+        ├── Screen observation: KWin ScreenShot2 (Spectacle fallback) + AT-SPI2 with element refs
+        ├── Window management: KWin scripting
         └── Input injection: KWin EIS D-Bus + libei
 ```
 
@@ -147,7 +149,7 @@ Triple isolation ensures no impact on the host desktop:
 - [x] `session_connect` MCP tool and engine method for attaching to existing KWin sessions
 - [x] Clipboard always enabled for live sessions (no `enable_clipboard` parameter needed)
 - [x] `session_stop` disconnects without killing KWin or pre-existing apps on live sessions
-- [x] `launch_app` supported on live sessions (subprocess with host env)
+- [x] `app_launch` supported on live sessions (subprocess with host env)
 - [x] `--default-live-session` CLI/server flag to switch default session mode
 - [x] Dynamic MCP tool descriptions based on session mode
 - [ ] ydotool fallback when EIS permission is denied on real sessions
@@ -171,3 +173,14 @@ Triple isolation ensures no impact on the host desktop:
 - [x] Run native CI jobs on `ubuntu-26.04` amd64 and `ubuntu-26.04-arm` arm64 without privileged, GPU, or device flags
 - [x] Keep the exact-virtual ScreenShot2 success case explicitly skipped because that backend does not return captures; verify its error path and prove screenshot success through nested X11 `scrot`
 - **Done**: Code, MCP transport, GUI pixels, teardown, and retained provenance are exercised in one installed-package Docker run
+
+### M14: 1.0 Tool Surface Redesign
+- [x] Replace the 0.11 tool set with 29 orthogonal tools, one per object and operation: `session_*`, `app_*`, `screen_capture`, `element_query`/`element_act`, `window_*`, `desktop_list`, `pointer_*`, `keyboard_*`, `touch_*`, `clipboard_*`, `dbus_call`, `wayland_list`
+- [x] Shared argument types in `models.py` (`Target`, `Rect`, `Capture`, `Wait`, `Retention`, `KeyChord`, `Locator`, `ElementAddress`, `WindowSelector`), `outputSchema` + `structuredContent` on every tool, one text renderer shared by the server and `kwin-mcp-cli`
+- [x] Element refs from `element_query`, usable as gesture targets and by `element_act`
+- [x] Explicit held input (`pointer_hold`, `keyboard_hold`) reported on every result and released by `session_stop` and server exit
+- [x] Live `window_close` with MCP form-elicitation consent and the `--live-consent {elicit,refuse}` flag
+- [x] Removed tools and unknown arguments return errors that name the 1.0 replacement; CHANGELOG migration tables for every old tool and parameter
+- [x] Version 1.0.0 with the `Development Status :: 5 - Production/Stable` classifier
+- [ ] Run the manual per-client schema smoke test (Claude Code, Codex, Gemini CLI and the other supported MCP clients) before tagging v1.0.0
+- **Goal**: A stable, orthogonal tool API for AI agents; later incompatible tool changes need 2.0.0

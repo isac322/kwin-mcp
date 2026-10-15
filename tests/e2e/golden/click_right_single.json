@@ -1,0 +1,117 @@
+{
+ "scenario": "click_right_single",
+ "captured_from": "kwin-mcp 0.11.0 @ 7a5d781 (AutomationEngine, virtual KWin session)",
+ "call": {
+  "button": "right",
+  "local": [
+   300,
+   200
+  ],
+  "tool": "mouse_click"
+ },
+ "returned_text": [
+  "Clicked right at (440, 292)"
+ ],
+ "probe": {
+  "client_size": [
+   1000,
+   640
+  ],
+  "coordinates": "probe-local logical px (global = client origin + local)"
+ },
+ "repeats": 5,
+ "sequence": [
+  {
+   "kind": "motion",
+   "x": 299,
+   "y": 200,
+   "mods": [],
+   "held": []
+  },
+  {
+   "kind": "motion",
+   "x": 300,
+   "y": 200,
+   "mods": [],
+   "held": []
+  },
+  {
+   "kind": "button_press",
+   "button": "right",
+   "x": 300,
+   "y": 200,
+   "mods": [],
+   "held": []
+  },
+  {
+   "kind": "button_release",
+   "button": "right",
+   "x": 300,
+   "y": 200,
+   "mods": [],
+   "held": [
+    "right"
+   ]
+  }
+ ],
+ "gaps_ms": [
+  {
+   "from": 0,
+   "to": 1,
+   "mono": {
+    "min": 0.17,
+    "median": 0.18,
+    "max": 0.27
+   },
+   "event_clock": {
+    "min": 0.0,
+    "median": 0.0,
+    "max": 1.0
+   }
+  },
+  {
+   "from": 1,
+   "to": 2,
+   "mono": {
+    "min": 19.8,
+    "median": 20.11,
+    "max": 23.42
+   },
+   "event_clock": {
+    "min": 21.0,
+    "median": 21.0,
+    "max": 24.0
+   }
+  },
+  {
+   "from": 2,
+   "to": 3,
+   "mono": {
+    "min": 25.34,
+    "median": 25.98,
+    "max": 26.85
+   },
+   "event_clock": {
+    "min": 25.0,
+    "median": 26.0,
+    "max": 26.0
+   }
+  }
+ ],
+ "call_start_to_first_event_ms": {
+  "min": 0.63,
+  "median": 0.9,
+  "max": 2.17
+ },
+ "last_event_to_call_return_ms": {
+  "min": -0.51,
+  "median": -0.47,
+  "max": 0.15
+ },
+ "first_to_last_event_ms": {
+  "min": 45.65,
+  "median": 46.27,
+  "max": 49.85
+ },
+ "other_variants": []
+}

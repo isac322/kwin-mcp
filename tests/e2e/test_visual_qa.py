@@ -3,23 +3,35 @@
 from __future__ import annotations
 
 import contextlib
-import re
 import shutil
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import anyio
 import pytest
-from _asserts import coordinate_spaces, kcalc_binary_label, screenshot_path
-from mcp_harness import running_mcp_server
+from _asserts import coordinate_spaces, frame_png, has_kcalc_binary
+from mcp_harness import MODELS, running_mcp_server
 from PIL import Image, ImageChops, ImageStat
 from visual_harness import nested_visual_kwin
+
+from kwin_mcp.models import (
+    AppLaunchResult,
+    ElementList,
+    Frame,
+    PointerClickResult,
+    PointerMoveResult,
+    SessionInfo,
+    SessionStopResult,
+    UIElement,
+    WindowList,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from mcp_harness import McpTestClient
+    from pydantic import BaseModel
 
 SCREEN_SIZE = (1280, 800)
 GUI_PROBE_COMMAND = "python3 /app/tests/e2e/gui_probe.py"
@@ -29,8 +41,7 @@ GUI_PROBE_VISIBLE_NAME = "GUI Probe"
 GUI_PROBE_CLIENT_SIZE = (920, 700)
 POLL_INTERVAL_SECONDS = 0.1
 STATE_TIMEOUT_SECONDS = 5.0
-_RECT = r"\((-?\d+), (-?\d+), (\d+)x(\d+)\)"
-_FRAME_LINE = re.compile(r"^\s+(\d+)ms: (.+?) \((\d+(?:\.\d+)?) KB\)$", re.MULTILINE)
+X11_BACKEND = "x11-scrot"
 
 pytestmark = [pytest.mark.anyio, pytest.mark.visual]
 
@@ -41,11 +52,25 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-def _single_rect(output: str, pattern: str) -> tuple[int, int, int, int]:
-    matches = re.findall(pattern, output, re.MULTILINE)
-    assert len(matches) == 1, output[:1500]
-    x, y, width, height = matches[0]
-    return int(x), int(y), int(width), int(height)
+async def _call[M: BaseModel](
+    client: McpTestClient, name: str, model_cls: type[M], arguments: dict[str, Any]
+) -> tuple[M, str]:
+    """Call a tool; return its validated result model and its text."""
+    assert MODELS[name] is model_cls, (name, MODELS[name])
+    structured, text = await client.call_structured(name, arguments)
+    return model_cls.model_validate(structured), text
+
+
+async def _elements(client: McpTestClient, app: str, query: str | None = None) -> ElementList:
+    locator: dict[str, str] = {"app": app}
+    if query is not None:
+        locator["query"] = query
+    found, _ = await _call(client, "element_query", ElementList, {"locator": locator})
+    return found
+
+
+def _names(found: ElementList) -> set[str]:
+    return {element.name for element in found.elements}
 
 
 async def _global_element_rect(
@@ -53,17 +78,14 @@ async def _global_element_rect(
     accessibility_app_name: str,
     name: str,
 ) -> tuple[int, int, int, int]:
-    elements = await client.call_text(
-        "find_ui_elements",
-        {"query": name, "app_name": accessibility_app_name},
-    )
-    # find_ui_elements already reports global screen coordinates.
-    x, y, width, height = _single_rect(
-        elements,
-        rf'^- \[[^]]+] "{re.escape(name)}" @ screen {_RECT}(?:\s|$)',
-    )
-    assert width > 0 and height > 0, elements[:1500]
-    return x, y, width, height
+    found = await _elements(client, accessibility_app_name, name)
+    exact: list[UIElement] = [element for element in found.elements if element.name == name]
+    assert len(exact) == 1, found.render()[:1500]
+    # element_query reports global logical screen coordinates.
+    rect = exact[0].rect
+    assert rect is not None, exact[0].render()
+    assert rect.width > 0 and rect.height > 0, exact[0].render()
+    return rect.x, rect.y, rect.width, rect.height
 
 
 def _center(rect: tuple[int, int, int, int]) -> tuple[int, int]:
@@ -71,12 +93,16 @@ def _center(rect: tuple[int, int, int, int]) -> tuple[int, int]:
     return x + width // 2, y + height // 2
 
 
-def _screenshot_source(output: str) -> Path:
-    path = screenshot_path(output)
-    assert path.is_file(), output
-    assert [(s.origin, s.size) for s in coordinate_spaces(output)] == [((0, 0), SCREEN_SIZE)], (
-        output
-    )
+def _frame_source(frame: Frame) -> Path:
+    """The PNG of a whole-workspace X11 capture mapped 1:1 onto the logical screen."""
+    path = frame_png(frame)
+    spaces = coordinate_spaces(frame.coordinate_space)
+    assert [(s.origin, s.size, s.backend) for s in spaces] == [
+        ((0, 0), SCREEN_SIZE, X11_BACKEND)
+    ], frame.coordinate_space
+    assert frame.mapping is not None, frame
+    assert frame.mapping.scale == 1.0, frame
+    assert (frame.mapping.origin.x, frame.mapping.origin.y) == (0, 0), frame
     return path
 
 
@@ -159,12 +185,6 @@ def _colorful_pixel_count(image: Image.Image) -> int:
     )
 
 
-def _app_log_path(launch_output: str) -> Path:
-    match = re.search(r"^App log: (.+)$", launch_output, re.MULTILINE)
-    assert match is not None, launch_output
-    return Path(match.group(1))
-
-
 def _preserve_runtime_evidence(
     client: McpTestClient,
     artifact_dir: Path,
@@ -193,48 +213,73 @@ def _preserve_capture_backend(
 
 
 async def _connect(client: McpTestClient, dbus_address: str, wayland_display: str) -> None:
-    output = await client.call_text(
+    info, text = await _call(
+        client,
         "session_connect",
+        SessionInfo,
         {
             "dbus_address": dbus_address,
             "wayland_display": wayland_display,
-            "keep_screenshots": True,
+            "retention": {"artifacts": True},
         },
     )
-    assert output.startswith("Connected to live KWin session."), output
-    assert f"D-Bus: {dbus_address}" in output, output
-    assert f"Wayland: {wayland_display}" in output, output
-    assert "Input backend: KWin EIS" in output, output
+    assert info.kind == "live", text
+    assert info.dbus_address == dbus_address, text
+    assert info.input_backend == "eis", text
+    assert text.startswith("Connected to live KWin session."), text
+    assert f"D-Bus: {dbus_address}" in text, text
+    assert f"Wayland: {wayland_display}" in text, text
+    assert "Input backend: KWin EIS" in text, text
+
+
+async def _launch(
+    client: McpTestClient, command: str, env: dict[str, str] | None = None
+) -> AppLaunchResult:
+    arguments: dict[str, Any] = {"command": command}
+    if env is not None:
+        arguments["env"] = env
+    launched, text = await _call(client, "app_launch", AppLaunchResult, arguments)
+    assert launched.command == command, text
+    assert text.startswith(f"App launched: {command} (PID="), text
+    return launched
+
+
+async def _wait_for_element(client: McpTestClient, app: str, name: str, role: str) -> None:
+    found, text = await _call(
+        client,
+        "element_query",
+        ElementList,
+        {"locator": {"app": app, "query": name}, "wait": {"timeout_ms": 15_000}},
+    )
+    assert found.wait is not None and found.wait.satisfied, text[:1500]
+    assert any(e.role == role and e.name == name for e in found.elements), text[:1500]
 
 
 async def _wait_for_accessible_name(
     client: McpTestClient,
     app_name: str,
     expected_name: str,
-) -> str:
+) -> ElementList:
     deadline = time.monotonic() + STATE_TIMEOUT_SECONDS
-    tree = ""
+    found: ElementList | None = None
     while time.monotonic() < deadline:
-        tree = await client.call_text("accessibility_tree", {"app_name": app_name})
-        if f'"{expected_name}"' in tree:
-            return tree
+        found = await _elements(client, app_name)
+        if expected_name in _names(found):
+            return found
         await anyio.sleep(POLL_INTERVAL_SECONDS)
+    tree = "" if found is None else found.render()
     raise AssertionError(f"AT-SPI name {expected_name!r} never appeared:\n{tree[:2000]}")
 
 
 async def _wait_for_binary(client: McpTestClient, expected: str) -> None:
     deadline = time.monotonic() + STATE_TIMEOUT_SECONDS
-    elements = ""
-    exact_label = kcalc_binary_label(expected)
+    found: ElementList | None = None
     while time.monotonic() < deadline:
-        elements = await client.call_text(
-            "find_ui_elements",
-            {"query": "", "app_name": "kcalc"},
-        )
-        element_lines = [line for line in elements.splitlines() if line.startswith("- [")]
-        if any(exact_label.match(line) for line in element_lines):
+        found = await _elements(client, "kcalc")
+        if has_kcalc_binary(found, expected):
             return
         await anyio.sleep(POLL_INTERVAL_SECONDS)
+    elements = "" if found is None else found.render()
     raise AssertionError(f"KCalc binary label {expected!r} never appeared:\n{elements[:1500]}")
 
 
@@ -249,8 +294,10 @@ async def _stop_session(
 ) -> None:
     try:
         if connected and body_succeeded:
-            output = await client.call_text("session_stop")
-            assert output == "Disconnected from live session.", output
+            stopped, text = await _call(client, "session_stop", SessionStopResult, {})
+            assert stopped.stopped and stopped.kind == "live", text
+            assert text.splitlines()[0] == "Disconnected from live session.", text
+            assert stopped.kept.artifacts_dir is not None, text
         elif connected:
             with contextlib.suppress(BaseException):
                 await client.call_result("session_stop")
@@ -258,15 +305,18 @@ async def _stop_session(
         _preserve_runtime_evidence(client, artifact_dir, app_log_path, app_log_name)
 
 
+async def _screen_capture(client: McpTestClient) -> Path:
+    frame, text = await _call(client, "screen_capture", Frame, {})
+    assert frame.delay_ms is None, text
+    return _frame_source(frame)
+
+
 async def _capture_preserved(
     client: McpTestClient,
     artifact_dir: Path,
     name: str,
-    *,
-    include_cursor: bool = False,
 ) -> tuple[Path, Image.Image]:
-    output = await client.call_text("screenshot", {"include_cursor": include_cursor})
-    destination = _preserve_png(_screenshot_source(output), artifact_dir, name)
+    destination = _preserve_png(await _screen_capture(client), artifact_dir, name)
     return destination, _load_rgb(destination)
 
 
@@ -287,8 +337,7 @@ async def _wait_for_material_repaint(
     absolute_difference = 0.0
 
     while True:
-        output = await client.call_text("screenshot", {"include_cursor": False})
-        source = _screenshot_source(output)
+        source = await _screen_capture(client)
         candidate = _load_rgb(source)
         candidate_crop = candidate.crop((x, y, x + width, y + height))
         changed_pixels, absolute_difference = _material_difference_metrics(
@@ -331,8 +380,7 @@ async def _wait_for_crop_match(
     absolute_difference = 0.0
 
     while True:
-        output = await client.call_text("screenshot", {"include_cursor": False})
-        source = _screenshot_source(output)
+        source = await _screen_capture(client)
         candidate = _load_rgb(source)
         candidate_crop = candidate.crop((x, y, x + width, y + height))
         changed_pixels, absolute_difference = _material_difference_metrics(
@@ -357,6 +405,32 @@ async def _wait_for_crop_match(
     )
 
 
+async def _pointer_move(
+    client: McpTestClient, x: int, y: int, capture: dict[str, Any] | None = None
+) -> PointerMoveResult:
+    arguments: dict[str, Any] = {"target": {"x": x, "y": y}}
+    if capture is not None:
+        arguments["capture"] = capture
+    moved, text = await _call(client, "pointer_move", PointerMoveResult, arguments)
+    assert moved.warnings == [], text
+    assert moved.at is not None and (moved.at.x, moved.at.y) == (x, y), text
+    assert text.splitlines()[0] == f"Mouse moved to ({x}, {y})", text
+    return moved
+
+
+async def _pointer_click(
+    client: McpTestClient, x: int, y: int, capture: dict[str, Any] | None = None
+) -> tuple[PointerClickResult, str]:
+    arguments: dict[str, Any] = {"target": {"x": x, "y": y}}
+    if capture is not None:
+        arguments["capture"] = capture
+    clicked, text = await _call(client, "pointer_click", PointerClickResult, arguments)
+    assert clicked.warnings == [], text
+    assert clicked.button == "left" and clicked.count == 1, text
+    assert text.splitlines()[0] == f"Clicked left at ({x}, {y})", text
+    return clicked, text
+
+
 async def test_gui_probe_visual_semantics_pixels_cursor_and_frame_burst() -> None:
     """Prove the probe with AT-SPI, EIS, and explicitly selected X11 scrot pixels."""
     with nested_visual_kwin() as visual:
@@ -377,49 +451,44 @@ async def test_gui_probe_visual_semantics_pixels_cursor_and_frame_burst() -> Non
                 await _connect(client, visual.dbus_address, visual.wayland_display)
                 connected = True
 
-                launch_output = await client.call_text(
-                    "launch_app",
+                launched = await _launch(
+                    client,
+                    GUI_PROBE_COMMAND,
                     {
-                        "command": GUI_PROBE_COMMAND,
-                        "env": {
-                            "GDK_BACKEND": "wayland",
-                            "GTK_MODULES": "gail:atk-bridge",
-                            "NO_AT_BRIDGE": "0",
-                            "XDG_SESSION_TYPE": "wayland",
-                        },
+                        "GDK_BACKEND": "wayland",
+                        "GTK_MODULES": "gail:atk-bridge",
+                        "NO_AT_BRIDGE": "0",
+                        "XDG_SESSION_TYPE": "wayland",
                     },
                 )
-                assert f"App launched: {GUI_PROBE_COMMAND}" in launch_output, launch_output
-                app_log_path = _app_log_path(launch_output)
-                waited = await client.call_text(
-                    "wait_for_element",
-                    {
-                        "query": "Animation Target",
-                        "app_name": GUI_PROBE_ACCESSIBILITY_SELECTOR,
-                        "timeout_ms": 15_000,
-                    },
+                app_log_path = Path(launched.log_path)
+                await _wait_for_element(
+                    client, GUI_PROBE_ACCESSIBILITY_SELECTOR, "Animation Target", "button"
                 )
-                assert '[button] "Animation Target"' in waited, waited[:1500]
 
-                initial_tree = await client.call_text(
-                    "accessibility_tree",
-                    {"app_name": GUI_PROBE_ACCESSIBILITY_SELECTOR},
-                )
-                assert f'[frame] "{GUI_PROBE_VISIBLE_NAME}"' in initial_tree, initial_tree[:2500]
-                assert f'[label] "{GUI_PROBE_VISIBLE_NAME}"' in initial_tree, initial_tree[:2500]
+                initial_tree = await _elements(client, GUI_PROBE_ACCESSIBILITY_SELECTOR)
+                roles_and_names = {(e.role, e.name) for e in initial_tree.elements}
+                tree_text = initial_tree.render()[:2500]
+                assert ("frame", GUI_PROBE_VISIBLE_NAME) in roles_and_names, tree_text
+                assert ("label", GUI_PROBE_VISIBLE_NAME) in roles_and_names, tree_text
 
-                probe_geometry = await client.call_text(
-                    "window_geometry",
-                    {"app_name": GUI_PROBE_WINDOW_SELECTOR},
+                windows, windows_text = await _call(
+                    client,
+                    "window_list",
+                    WindowList,
+                    {"filter": {"app_id": GUI_PROBE_WINDOW_SELECTOR}},
                 )
-                assert (
-                    f'- {GUI_PROBE_WINDOW_SELECTOR} "{GUI_PROBE_VISIBLE_NAME}"' in probe_geometry
-                ), probe_geometry[:1500]
-                _, _, client_width, client_height = _single_rect(
-                    probe_geometry,
-                    rf"client:\s+{_RECT}",
+                probe_windows = [
+                    window
+                    for window in windows.windows
+                    if window.app_id == GUI_PROBE_WINDOW_SELECTOR
+                    and window.caption == GUI_PROBE_VISIBLE_NAME
+                ]
+                assert len(probe_windows) == 1, windows_text[:1500]
+                client_rect = probe_windows[0].client
+                assert (client_rect.width, client_rect.height) == GUI_PROBE_CLIENT_SIZE, (
+                    windows_text[:1500]
                 )
-                assert (client_width, client_height) == GUI_PROBE_CLIENT_SIZE, probe_geometry[:1500]
                 exact_initial_names = (
                     "Hover Target",
                     "hover_status: idle",
@@ -430,8 +499,9 @@ async def test_gui_probe_visual_semantics_pixels_cursor_and_frame_burst() -> Non
                     "Animation Target",
                     "animation_status: 0",
                 )
+                initial_names = _names(initial_tree)
                 for name in exact_initial_names:
-                    assert f'"{name}"' in initial_tree, initial_tree[:2500]
+                    assert name in initial_names, (name, tree_text)
 
                 rects = {
                     name: await _global_element_rect(
@@ -469,17 +539,15 @@ async def test_gui_probe_visual_semantics_pixels_cursor_and_frame_burst() -> Non
 
                 hover_rect = rects["Hover Target"]
                 hover_x, hover_y = _center(hover_rect)
-                move_output = await client.call_text(
-                    "mouse_move",
-                    {"x": hover_x, "y": hover_y},
-                )
-                assert move_output == f"Mouse moved to ({hover_x}, {hover_y})", move_output
+                await _pointer_move(client, hover_x, hover_y)
                 hovered_tree = await _wait_for_accessible_name(
                     client,
                     GUI_PROBE_ACCESSIBILITY_SELECTOR,
                     "hover_status: entered",
                 )
-                assert '"hover_status: idle"' not in hovered_tree, hovered_tree[:2500]
+                assert "hover_status: idle" not in _names(hovered_tree), hovered_tree.render()[
+                    :2500
+                ]
                 await _wait_for_material_repaint(
                     client,
                     visual.artifact_dir,
@@ -487,21 +555,17 @@ async def test_gui_probe_visual_semantics_pixels_cursor_and_frame_burst() -> Non
                     crops["Hover Target"],
                     hover_rect,
                     minimum_pixels=1000,
-                    label="mouse_move hover target",
+                    label="pointer_move hover target",
                 )
 
                 static_x, static_y = _center(rects["Unicode Sample"])
-                move_output = await client.call_text(
-                    "mouse_move",
-                    {"x": static_x, "y": static_y},
-                )
-                assert move_output == f"Mouse moved to ({static_x}, {static_y})", move_output
+                await _pointer_move(client, static_x, static_y)
                 idle_tree = await _wait_for_accessible_name(
                     client,
                     GUI_PROBE_ACCESSIBILITY_SELECTOR,
                     "hover_status: idle",
                 )
-                assert '"hover_status: entered"' not in idle_tree, idle_tree[:2500]
+                assert "hover_status: entered" not in _names(idle_tree), idle_tree.render()[:2500]
                 no_cursor_image = await _wait_for_crop_match(
                     client,
                     visual.artifact_dir,
@@ -510,14 +574,23 @@ async def test_gui_probe_visual_semantics_pixels_cursor_and_frame_burst() -> Non
                     hover_rect,
                     maximum_pixels=32,
                     maximum_absolute_difference=2000,
-                    label="mouse_move away from hover target",
+                    label="pointer_move away from hover target",
                 )
-                _, with_cursor_image = await _capture_preserved(
+                # Re-moving onto the same point leaves the scene unchanged; its
+                # include_cursor frame differs from the plain capture only by the cursor.
+                cursor_move = await _pointer_move(
                     client,
+                    static_x,
+                    static_y,
+                    {"delays_ms": [0], "include_cursor": True},
+                )
+                assert [frame.delay_ms for frame in cursor_move.frames] == [0], cursor_move
+                with_cursor_path = _preserve_png(
+                    _frame_source(cursor_move.frames[0]),
                     visual.artifact_dir,
                     "gui-probe-pointer-with-cursor.png",
-                    include_cursor=True,
                 )
+                with_cursor_image = _load_rgb(with_cursor_path)
                 cursor_difference, cursor_mask = _difference_mask(
                     no_cursor_image,
                     with_cursor_image,
@@ -546,31 +619,25 @@ async def test_gui_probe_visual_semantics_pixels_cursor_and_frame_burst() -> Non
                 animation_rect = rects["Animation Target"]
                 animation_x, animation_y = _center(animation_rect)
                 requested_delays = [650, 0, 250, 450]
-                burst_output = await client.call_text(
-                    "mouse_click",
-                    {
-                        "x": animation_x,
-                        "y": animation_y,
-                        "screenshot_after_ms": requested_delays,
-                    },
+                burst, burst_text = await _pointer_click(
+                    client,
+                    animation_x,
+                    animation_y,
+                    {"delays_ms": requested_delays},
                 )
-                assert burst_output.startswith(
+                assert burst_text.startswith(
                     f"Clicked left at ({animation_x}, {animation_y})\nCaptured 4 frames:"
-                ), burst_output
-                frame_matches = _FRAME_LINE.findall(burst_output)
-                assert len(frame_matches) == len(requested_delays), burst_output
+                ), burst_text
                 sorted_delays = sorted(requested_delays)
-                assert [int(delay) for delay, _, _ in frame_matches] == sorted_delays, burst_output
+                assert [frame.delay_ms for frame in burst.frames] == sorted_delays, burst_text
                 # Frames are cropped below with logical element rectangles, which is
                 # only valid because every frame reports the logical workspace at (0, 0).
-                assert [(s.origin, s.size) for s in coordinate_spaces(burst_output)] == [
-                    ((0, 0), SCREEN_SIZE)
-                ] * len(requested_delays), burst_output
+                frame_sources = [_frame_source(frame) for frame in burst.frames]
 
                 frame_images: list[Image.Image] = []
-                for index, (delay_text, path_text, _) in enumerate(frame_matches):
-                    delay = int(delay_text)
-                    source = Path(path_text)
+                for index, (delay, source) in enumerate(
+                    zip(sorted_delays, frame_sources, strict=True)
+                ):
                     preserved = _preserve_png(
                         source,
                         visual.artifact_dir,
@@ -617,7 +684,7 @@ async def test_gui_probe_visual_semantics_pixels_cursor_and_frame_burst() -> Non
                 )
 
 
-async def test_kcalc_binary_values_have_significant_screenshot_transitions() -> None:
+async def test_kcalc_binary_values_have_significant_screen_capture_transitions() -> None:
     """Pair KCalc's binary AT-SPI value with preserved before/after pixels."""
     with nested_visual_kwin() as visual:
         _preserve_capture_backend(
@@ -637,14 +704,9 @@ async def test_kcalc_binary_values_have_significant_screenshot_transitions() -> 
                 await _connect(client, visual.dbus_address, visual.wayland_display)
                 connected = True
 
-                launch_output = await client.call_text("launch_app", {"command": "kcalc"})
-                assert "App launched: kcalc" in launch_output, launch_output
-                app_log_path = _app_log_path(launch_output)
-                waited = await client.call_text(
-                    "wait_for_element",
-                    {"query": "Seven", "app_name": "kcalc", "timeout_ms": 15_000},
-                )
-                assert '[button] "Seven"' in waited, waited[:1500]
+                launched = await _launch(client, "kcalc")
+                app_log_path = Path(launched.log_path)
+                await _wait_for_element(client, "kcalc", "Seven", "button")
 
                 await _wait_for_binary(client, "0")
                 _, initial_image = await _capture_preserved(
@@ -655,11 +717,7 @@ async def test_kcalc_binary_values_have_significant_screenshot_transitions() -> 
 
                 seven_rect = await _global_element_rect(client, "kcalc", "Seven")
                 seven_x, seven_y = _center(seven_rect)
-                seven_output = await client.call_text(
-                    "mouse_click",
-                    {"x": seven_x, "y": seven_y},
-                )
-                assert seven_output == f"Clicked left at ({seven_x}, {seven_y})", seven_output
+                await _pointer_click(client, seven_x, seven_y)
                 await _wait_for_binary(client, "111")
                 _, seven_image = await _capture_preserved(
                     client,
@@ -675,11 +733,7 @@ async def test_kcalc_binary_values_have_significant_screenshot_transitions() -> 
 
                 zero_rect = await _global_element_rect(client, "kcalc", "Zero")
                 zero_x, zero_y = _center(zero_rect)
-                zero_output = await client.call_text(
-                    "mouse_click",
-                    {"x": zero_x, "y": zero_y},
-                )
-                assert zero_output == f"Clicked left at ({zero_x}, {zero_y})", zero_output
+                await _pointer_click(client, zero_x, zero_y)
                 await _wait_for_binary(client, "1000110")
                 _, zero_image = await _capture_preserved(
                     client,

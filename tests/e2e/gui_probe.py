@@ -1,7 +1,17 @@
-"""Deterministic GTK3 application used by containerized GUI end-to-end tests."""
+"""Deterministic GTK3 application used by containerized GUI end-to-end tests.
+
+With ``KWIN_MCP_GUI_PROBE_EXTRAS=1`` the probe also offers transient surfaces
+without changing its layout: a tooltip on the Hover Target, a context menu on a
+right click anywhere in the window (``Probe Menu Item``, ``Open Probe Dialog``),
+and a modal ``GUI Probe Dialog`` (from the menu or Ctrl+D). Each transition is
+printed to stdout as one flushed line (``menu_status:``, ``tooltip_status:``,
+``dialog_status:``) so tests read it from the app log instead of the tool under
+test. Without the variable the probe behaves exactly as before.
+"""
 
 from __future__ import annotations
 
+import os
 import sys
 
 import gi
@@ -18,6 +28,12 @@ TARGET_HEIGHT = 84
 ANIMATION_INTERVAL_MS = 50
 ANIMATION_FRAME_COUNT = 12
 SCROLL_STEP = 40.0
+EXTRAS_ENV = "KWIN_MCP_GUI_PROBE_EXTRAS"
+MENU_ITEM = "Probe Menu Item"
+MENU_DIALOG_ITEM = "Open Probe Dialog"
+DIALOG_TITLE = "GUI Probe Dialog"
+DIALOG_CLOSE = "Close Dialog"
+TOOLTIP_TEXT = "Hover Target Tooltip"
 
 _CSS = b"""
 window {
@@ -128,8 +144,15 @@ class GuiProbeWindow(Gtk.ApplicationWindow):
         self._animation_label: Gtk.Label | None = None
         self._animation_status: Gtk.Label | None = None
 
+        self._hover_target: Gtk.Button | None = None
+        self._menu: Gtk.Menu | None = None
+        self._dialog: Gtk.Dialog | None = None
+        self._tooltip_shown = False
+
         self.add(self._build_content())
         self.connect("destroy", self._on_destroy)
+        if os.environ.get(EXTRAS_ENV) == "1":
+            self._install_extras()
 
     def _build_content(self) -> Gtk.Widget:
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
@@ -169,6 +192,7 @@ class GuiProbeWindow(Gtk.ApplicationWindow):
         hover_target.connect("enter-notify-event", self._on_hover_enter)
         hover_target.connect("leave-notify-event", self._on_hover_leave)
         self._hover_status = _named_label("hover_status: idle", "status")
+        self._hover_target = hover_target
 
         animation_target = Gtk.Button()
         animation_target.set_name("animation-target")
@@ -341,6 +365,94 @@ class GuiProbeWindow(Gtk.ApplicationWindow):
         status_prefix: str,
     ) -> None:
         self._set_status(status, f"{status_prefix}: {round(adjustment.get_value())}")
+
+    def _install_extras(self) -> None:
+        """Tooltip, context menu and dialog; layout and default behaviour stay unchanged."""
+        if self._hover_target is not None:
+            self._hover_target.set_has_tooltip(True)
+            self._hover_target.connect("query-tooltip", self._on_query_tooltip)
+            self._hover_target.connect("leave-notify-event", self._on_tooltip_leave)
+
+        menu = Gtk.Menu()
+        item = Gtk.MenuItem(label=MENU_ITEM)
+        item.connect("activate", self._on_menu_item, MENU_ITEM)
+        dialog_item = Gtk.MenuItem(label=MENU_DIALOG_ITEM)
+        dialog_item.connect("activate", self._on_menu_item, MENU_DIALOG_ITEM)
+        menu.append(item)
+        menu.append(dialog_item)
+        menu.attach_to_widget(self, None)
+        menu.connect("deactivate", self._on_menu_deactivate)
+        menu.show_all()
+        self._menu = menu
+        self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+        self.connect("button-press-event", self._on_extras_button_press)
+        self.connect("key-press-event", self._on_extras_key_press)
+
+    @staticmethod
+    def _report(line: str) -> None:
+        print(line, flush=True)
+
+    def _on_query_tooltip(
+        self,
+        _widget: Gtk.Widget,
+        _x: int,
+        _y: int,
+        _keyboard_mode: bool,
+        tooltip: Gtk.Tooltip,
+    ) -> bool:
+        tooltip.set_text(TOOLTIP_TEXT)
+        if not self._tooltip_shown:
+            self._tooltip_shown = True
+            self._report(f"tooltip_status: shown {TOOLTIP_TEXT}")
+        return True
+
+    def _on_tooltip_leave(self, _widget: Gtk.Widget, _event: Gdk.EventCrossing) -> bool:
+        if self._tooltip_shown:
+            self._tooltip_shown = False
+            self._report("tooltip_status: hidden")
+        return False
+
+    def _on_extras_button_press(self, _widget: Gtk.Widget, event: Gdk.EventButton) -> bool:
+        if event.type != Gdk.EventType.BUTTON_PRESS or event.button != 3 or self._menu is None:
+            return False
+        self._menu.popup_at_pointer(event)
+        self._report("menu_status: shown")
+        return True
+
+    def _on_menu_deactivate(self, _menu: Gtk.Menu) -> None:
+        self._report("menu_status: hidden")
+
+    def _on_menu_item(self, _item: Gtk.MenuItem, name: str) -> None:
+        self._report(f"menu_status: activated {name}")
+        if name == MENU_DIALOG_ITEM:
+            self._open_dialog()
+
+    def _on_extras_key_press(self, _widget: Gtk.Widget, event: Gdk.EventKey) -> bool:
+        control = bool(event.state & Gdk.ModifierType.CONTROL_MASK)
+        if control and Gdk.keyval_to_lower(event.keyval) == Gdk.KEY_d:
+            self._open_dialog()
+            return True
+        return False
+
+    def _open_dialog(self) -> None:
+        if self._dialog is not None:
+            self._dialog.present()
+            return
+        dialog = Gtk.Dialog(title=DIALOG_TITLE, transient_for=self, modal=True)
+        _set_accessible_name(dialog, DIALOG_TITLE)
+        dialog.add_button(DIALOG_CLOSE, Gtk.ResponseType.CLOSE)
+        dialog.get_content_area().pack_start(
+            _named_label("dialog_status: open", "status"), False, False, 12
+        )
+        dialog.connect("response", self._on_dialog_response)
+        dialog.show_all()
+        self._dialog = dialog
+        self._report(f"dialog_status: shown {DIALOG_TITLE}")
+
+    def _on_dialog_response(self, dialog: Gtk.Dialog, _response: int) -> None:
+        dialog.destroy()
+        self._dialog = None
+        self._report(f"dialog_status: closed {DIALOG_TITLE}")
 
     def _on_destroy(self, _window: Gtk.Widget) -> None:
         if self._animation_source_id is not None:

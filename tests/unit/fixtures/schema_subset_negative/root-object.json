@@ -1,0 +1,28 @@
+{
+ "anyOf": [
+  {
+   "type": "object",
+   "properties": {
+    "a": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "a"
+   ],
+   "additionalProperties": false
+  },
+  {
+   "type": "object",
+   "properties": {
+    "b": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "b"
+   ],
+   "additionalProperties": false
+  }
+ ]
+}

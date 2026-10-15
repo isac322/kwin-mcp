@@ -14,7 +14,7 @@ jobs:
         python-version: ["3.12", "3.13", "3.14", "3.15"]
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: astral-sh/setup-uv@v10.2.0
       - run: uvx --python ${{ matrix.python-version }} ruff check src/ tests/
       - run: uvx --python ${{ matrix.python-version }} ruff format --check src/ tests/
 
@@ -22,24 +22,59 @@ jobs:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: astral-sh/setup-uv@v10.2.0
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libcairo2-dev libgirepository-2.0-dev libdbus-1-dev pkg-config
-      - run: uv run ty check src/
+      - run: uv run --locked ty check src/ tests/
+
+  # KWin-free tests: in-process server, schema gates, render goldens, fakes.
+  # The Docker E2E shards also collect tests/unit inside each distro image.
+  unit:
+    name: unit (${{ matrix.python-version }})
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # Not 3.15: dbus-python (1.4.0) fails to import on CPython 3.15
+        # ("_dbus_bindings.Connection has Py_TPFLAGS_MANAGED_WEAKREF but not
+        # Py_TPFLAGS_HAVE_GC"), so nothing that imports kwin_mcp can run there yet.
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev libgirepository-2.0-dev libdbus-1-dev pkg-config gir1.2-atspi-2.0
+      - run: uv sync --locked --python ${{ matrix.python-version }}
+      - run: >-
+          uv run --locked --python ${{ matrix.python-version }}
+          pytest tests/unit -q
+          --junitxml=artifacts/unit/junit-${{ matrix.python-version }}.xml
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: unit-${{ matrix.python-version }}
+          path: artifacts/unit/
+          if-no-files-found: warn
 
   build:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: astral-sh/setup-uv@v10.2.0
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libcairo2-dev libgirepository-2.0-dev libdbus-1-dev pkg-config
+      - run: uv lock --check
       - run: uv build
       - run: uvx twine check dist/*
+      - run: python3 scripts/check_wheel.py dist/*.whl
+      # QA-PKG-003: the wheel run the way users run it serves the 1.0 listing.
+      - run: python3 scripts/check_uvx_listing.py dist/*.whl
       - uses: actions/upload-artifact@v7
         with:
           name: dist
@@ -47,7 +82,7 @@ jobs:
 
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [lint, type-check, build]
+    needs: [lint, type-check, build, unit]
     runs-on: ubuntu-26.04
     environment: pypi
     permissions:

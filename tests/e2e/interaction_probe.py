@@ -1,21 +1,46 @@
-"""Deterministic GTK3 interaction probe for containerized end-to-end tests."""
+"""Deterministic GTK3 interaction probe for containerized end-to-end tests.
+
+Besides the per-target status labels, the probe records every raw pointer, key,
+scroll and touch event before GTK dispatches it (``Gdk.event_handler_set``):
+
+- ``hold_status:`` left/middle/right press/release counts, the buttons held now
+  and the motions seen while any button was held;
+- ``key_log:`` press/release counts per key name plus the auto-repeat count (a
+  press of a key that is already down);
+- ``raw_events:`` raw ``bp``/``br``/``kp``/``kr`` counts, multi-press counts, the
+  last event and the modifiers held after it.
+
+All three are exposed as AT-SPI label names like ``click_status:``. When
+``KWIN_MCP_PROBE_EVENT_LOG`` names a file, every raw event is also appended to it
+as one JSON line, flushed per line, stamped with CLOCK_MONOTONIC and
+CLOCK_REALTIME nanoseconds so frame capture times can be anchored to the last
+injected event. Coordinates in the log are surface-local to the probe window.
+"""
 
 from __future__ import annotations
 
+import json
+import os
 import sys
-from typing import Final
+import time
+from typing import TYPE_CHECKING, Final
 
 import gi
 
 gi.require_version("Gdk", "3.0")
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gdk, GLib, Gtk  # noqa: E402
+gi.require_version("Pango", "1.0")
+from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
+
+if TYPE_CHECKING:
+    from typing import IO
 
 APP_NAME: Final = "Interaction Probe"
 WINDOW_WIDTH: Final = 920
 WINDOW_HEIGHT: Final = 700
 TARGET_HEIGHT: Final = 90
 SCROLL_STEP: Final = 48.0
+EVENT_LOG_ENV: Final = "KWIN_MCP_PROBE_EVENT_LOG"
 
 _BUTTON_NAMES: Final = {
     1: "left",
@@ -34,6 +59,38 @@ _MODIFIERS: Final = (
     (Gdk.ModifierType.SUPER_MASK, "super"),
     (Gdk.ModifierType.META_MASK, "meta"),
     (Gdk.ModifierType.HYPER_MASK, "hyper"),
+)
+_MODIFIER_ORDER: Final = tuple(name for _, name in _MODIFIERS)
+# The modifiers the 0.11 goldens record in ``mods`` (tests/e2e/golden/README.md).
+_GOLDEN_MODIFIERS: Final = frozenset({"shift", "ctrl", "alt", "super", "meta"})
+# Width cap (characters) of the raw-event labels; shorter than any of their texts.
+_RAW_LABEL_CHARS: Final = 20
+# Key names whose press/release changes a modifier before the next event's state.
+_MODIFIER_KEYS: Final = {
+    "Control_L": "ctrl",
+    "Control_R": "ctrl",
+    "Shift_L": "shift",
+    "Shift_R": "shift",
+    "Alt_L": "alt",
+    "Alt_R": "alt",
+    "Super_L": "super",
+    "Super_R": "super",
+    "Meta_L": "meta",
+    "Meta_R": "meta",
+    "Hyper_L": "hyper",
+    "Hyper_R": "hyper",
+}
+_TOUCH_KINDS: Final = {
+    Gdk.EventType.TOUCH_BEGIN: "touch_begin",
+    Gdk.EventType.TOUCH_UPDATE: "touch_update",
+    Gdk.EventType.TOUCH_END: "touch_end",
+    Gdk.EventType.TOUCH_CANCEL: "touch_cancel",
+}
+_PRESS_KINDS: Final = {1: "button_press", 2: "gtk_double_press", 3: "gtk_triple_press"}
+_BUTTON_MASKS: Final = (
+    (Gdk.ModifierType.BUTTON1_MASK, "left"),
+    (Gdk.ModifierType.BUTTON2_MASK, "middle"),
+    (Gdk.ModifierType.BUTTON3_MASK, "right"),
 )
 
 _CSS = b"""
@@ -87,6 +144,11 @@ entry {
     background-color: #ffe2bd;
     border: 1px solid #b66b20;
 }
+label.raw-status {
+    color: #202938;
+    font-family: monospace;
+    font-size: 10px;
+}
 """
 
 
@@ -132,6 +194,237 @@ def _coordinate(value: float) -> int:
     return round(value)
 
 
+def _raw_status_label(text: str) -> Gtk.Label:
+    """Create a one-line raw-event status label; its full text stays in the AT-SPI name.
+
+    The window is not resizable, so GTK sizes it to its natural request. An
+    ellipsized label's natural width is its whole text unless capped, and these
+    texts grow with every event: without the cap the window widened mid-drag and
+    moved the targets under the pointer. Every text is longer than the cap, so
+    the natural width never changes.
+    """
+    label = _named_label(text, "raw-status")
+    label.set_ellipsize(Pango.EllipsizeMode.END)
+    label.set_width_chars(_RAW_LABEL_CHARS)
+    label.set_max_width_chars(_RAW_LABEL_CHARS)
+    return label
+
+
+def _surface_coords(event: Gdk.Event) -> tuple[float, float] | None:
+    """Event coordinates translated into the probe window's surface, if it has any."""
+    has_coords, x, y = event.get_coords()
+    window = event.get_window()
+    if not has_coords or window is None:
+        return None
+    while window.get_window_type() == Gdk.WindowType.CHILD:
+        parent = window.get_effective_parent()
+        if parent is None:
+            break
+        x, y = window.coords_to_parent(x, y)
+        window = parent
+    return x, y
+
+
+class RawEventRecorder:
+    """Counts and logs every raw input event before GTK dispatches it."""
+
+    def __init__(self, log_path: str | None) -> None:
+        self._seq = 0
+        self._button_counts = {name: [0, 0] for name in ("left", "middle", "right")}
+        self._held_buttons: set[str] = set()
+        self._motions_held = 0
+        self._key_counts: dict[str, list[int]] = {}
+        self._held_keys: set[str] = set()
+        self._repeats = 0
+        self._raw = {"bp": 0, "br": 0, "kp": 0, "kr": 0, "bp2": 0, "bp3": 0}
+        self._last = "none"
+        self._held_mods = "none"
+        self._touch_slots: dict[object, int] = {}
+        self._log: IO[str] | None = (
+            open(log_path, "a", encoding="utf-8", buffering=1) if log_path else None  # noqa: SIM115
+        )
+        self.hold_status = _raw_status_label(self._hold_text())
+        self.key_log = _raw_status_label("key_log: none repeats=0")
+        self.raw_events = _raw_status_label(
+            "raw_events: bp=0 br=0 kp=0 kr=0 bp2=0 bp3=0 last=none held_mods=none"
+        )
+
+    def handle(self, event: Gdk.Event, *_data: object) -> None:
+        """``Gdk.event_handler_set`` callback: record, then let GTK dispatch the event."""
+        try:
+            self._record(event)
+        finally:
+            Gtk.main_do_event(event)
+
+    def _hold_text(self) -> str:
+        held = ",".join(sorted(self._held_buttons)) or "none"
+        parts = " ".join(
+            f"{name}={counts[0]}/{counts[1]}" for name, counts in self._button_counts.items()
+        )
+        return f"hold_status: {parts} held={held} motions_held={self._motions_held}"
+
+    def _held_modifiers(self, state: Gdk.ModifierType, key: str | None, pressed: bool) -> str:
+        held = {name for mask, name in _MODIFIERS if state & mask}
+        modifier = _MODIFIER_KEYS.get(key or "")
+        if modifier is not None:
+            if pressed:
+                held.add(modifier)
+            else:
+                held.discard(modifier)
+        ordered = [name for name in _MODIFIER_ORDER if name in held]
+        return "+".join(ordered) if ordered else "none"
+
+    def _touch_slot(self, event: Gdk.Event, kind: str) -> int:
+        """Finger slot of a touch sequence; slots restart at 0 for each gesture."""
+        sequence = event.get_event_sequence()
+        if kind == "touch_begin" and sequence not in self._touch_slots:
+            used = set(self._touch_slots.values())
+            self._touch_slots[sequence] = min(i for i in range(len(used) + 1) if i not in used)
+        slot = self._touch_slots.get(sequence, -1)
+        if kind in {"touch_end", "touch_cancel"}:
+            self._touch_slots.pop(sequence, None)
+        return slot
+
+    def _record(self, event: Gdk.Event) -> None:
+        """Log one event in the schema of tests/e2e/golden/README.md plus timing extras.
+
+        Core fields per kind match the 0.11 goldens: ``kind``, ``button``/``key``,
+        probe-local rounded ``x``/``y``, ``mods`` (modifiers held before the
+        event, sorted), ``held`` (pointer buttons held before the event, from
+        its state), scroll ``direction``/``dx``/``dy``/``is_stop`` and touch
+        ``touch``. Extras: ``seq``, ``mono_us`` (g_get_monotonic_time at
+        dispatch), ``event_time`` (compositor ms), ``mono_ns``/``real_ns``
+        (CLOCK_MONOTONIC/CLOCK_REALTIME), ``held_mods`` (after the event),
+        ``keycode`` and ``repeat`` for keys.
+        """
+        event_type = event.get_event_type()
+        has_state, state = event.get_state()
+        if not has_state:
+            state = Gdk.ModifierType(0)
+        coords = _surface_coords(event)
+        at = "" if coords is None else f"@({round(coords[0])},{round(coords[1])})"
+        mods = sorted(
+            name for mask, name in _MODIFIERS if state & mask and name in _GOLDEN_MODIFIERS
+        )
+        held = sorted(name for mask, name in _BUTTON_MASKS if state & mask)
+        position: dict[str, object] = (
+            {} if coords is None else {"x": round(coords[0]), "y": round(coords[1])}
+        )
+        key: str | None = None
+        pressed = False
+        entry: dict[str, object]
+
+        if event_type in _CLICK_COUNTS:
+            _has_button, button = event.get_button()
+            name = _button_name(button)
+            count = _CLICK_COUNTS[event_type]
+            kind = _PRESS_KINDS[count]
+            counter = "bp" if count == 1 else f"bp{count}"
+            self._raw[counter] += 1
+            if count == 1:
+                self._button_counts.setdefault(name, [0, 0])[0] += 1
+                self._held_buttons.add(name)
+            entry = {"button": name, **position, "mods": mods, "held": held}
+            self._last = f"{counter}:{name}{at}"
+        elif event_type == Gdk.EventType.BUTTON_RELEASE:
+            _has_button, button = event.get_button()
+            name = _button_name(button)
+            kind = "button_release"
+            self._raw["br"] += 1
+            self._button_counts.setdefault(name, [0, 0])[1] += 1
+            self._held_buttons.discard(name)
+            entry = {"button": name, **position, "mods": mods, "held": held}
+            self._last = f"br:{name}{at}"
+        elif event_type in (Gdk.EventType.KEY_PRESS, Gdk.EventType.KEY_RELEASE):
+            _has_keyval, keyval = event.get_keyval()
+            _has_keycode, keycode = event.get_keycode()
+            key = Gdk.keyval_name(keyval) or f"keyval-{keyval}"
+            pressed = event_type == Gdk.EventType.KEY_PRESS
+            counts = self._key_counts.setdefault(key, [0, 0])
+            repeat = False
+            if pressed:
+                kind, counter = "key_press", "kp"
+                repeat = key in self._held_keys
+                if repeat:
+                    self._repeats += 1
+                else:
+                    counts[0] += 1
+                self._held_keys.add(key)
+            else:
+                kind, counter = "key_release", "kr"
+                counts[1] += 1
+                self._held_keys.discard(key)
+            self._raw[counter] += 1
+            entry = {"key": key, "mods": mods, "keycode": keycode, "repeat": repeat}
+            self._last = f"{counter}:{key}"
+        elif event_type == Gdk.EventType.MOTION_NOTIFY:
+            kind = "motion"
+            if self._held_buttons:
+                self._motions_held += 1
+            entry = {**position, "mods": mods, "held": held}
+            self._last = f"motion{at}"
+        elif event_type == Gdk.EventType.SCROLL:
+            kind = "scroll"
+            # get_scroll_direction() reports nothing for smooth events; the field does.
+            direction = event.direction
+            entry = {
+                **position,
+                "mods": mods,
+                "direction": direction.value_nick,
+                "dx": float(event.delta_x),
+                "dy": float(event.delta_y),
+                "is_stop": bool(event.is_stop),
+            }
+            self._last = f"scroll:{direction.value_nick}{at}"
+        elif event_type in _TOUCH_KINDS:
+            kind = _TOUCH_KINDS[event_type]
+            entry = {**position, "touch": self._touch_slot(event, kind)}
+            self._last = f"{kind}{at}"
+        else:
+            return
+
+        self._held_mods = self._held_modifiers(state, key, pressed)
+        self._seq += 1
+        if self._log is not None:
+            record = {
+                "kind": kind,
+                **entry,
+                "seq": self._seq,
+                "mono_us": GLib.get_monotonic_time(),
+                "event_time": event.get_time(),
+                "mono_ns": time.monotonic_ns(),
+                "real_ns": time.clock_gettime_ns(time.CLOCK_REALTIME),
+                "held_mods": self._held_mods,
+            }
+            self._log.write(json.dumps(record) + "\n")
+        self._publish(kind)
+
+    def _publish(self, kind: str) -> None:
+        # Motion and touch-update streams are only counted: relabelling (and the
+        # AT-SPI name-change signal) on every one of them slowed the probe enough
+        # that fewer drag motions reached the widgets. The labels catch up at the
+        # next button, key, scroll or touch begin/end event, e.g. the release that
+        # ends a drag.
+        if kind in {"motion", "touch_update"}:
+            return
+        if kind in {"button_press", "button_release"}:
+            _set_status_text(self.hold_status, self._hold_text())
+        if kind in {"key_press", "key_release"}:
+            keys = " ".join(
+                f"{key}={counts[0]}/{counts[1]}" for key, counts in sorted(self._key_counts.items())
+            )
+            _set_status_text(self.key_log, f"key_log: {keys or 'none'} repeats={self._repeats}")
+        raw = " ".join(f"{name}={value}" for name, value in self._raw.items())
+        _set_status_text(
+            self.raw_events, f"raw_events: {raw} last={self._last} held_mods={self._held_mods}"
+        )
+
+
+def _set_status_text(label: Gtk.Label, text: str) -> None:
+    label.set_text(text)
+    _set_accessible_name(label, text)
+
+
 class InteractionProbeWindow(Gtk.ApplicationWindow):
     """Fixed-size window exposing observable input state to users and AT-SPI."""
 
@@ -140,6 +433,22 @@ class InteractionProbeWindow(Gtk.ApplicationWindow):
         self.set_default_size(WINDOW_WIDTH, WINDOW_HEIGHT)
         self.set_resizable(False)
         _set_accessible_name(self, APP_NAME)
+        self.raw_recorder = RawEventRecorder(os.environ.get(EVENT_LOG_ENV) or None)
+        # Every wl_pointer motion frame becomes one event, as in the 0.11 golden capture
+        # (see disable_event_compression; applied once the widget windows exist).
+        # The toplevel takes every pointer/key/scroll/touch event no child window
+        # selects, so the raw recorder sees motion and touches over any widget (as
+        # the golden capture probe did), not only over the Drag/Zoom Targets.
+        self.add_events(
+            Gdk.EventMask.POINTER_MOTION_MASK
+            | Gdk.EventMask.BUTTON_PRESS_MASK
+            | Gdk.EventMask.BUTTON_RELEASE_MASK
+            | Gdk.EventMask.SCROLL_MASK
+            | Gdk.EventMask.SMOOTH_SCROLL_MASK
+            | Gdk.EventMask.KEY_PRESS_MASK
+            | Gdk.EventMask.KEY_RELEASE_MASK
+            | Gdk.EventMask.TOUCH_MASK
+        )
 
         self._click_button = 0
         self._click_count = 1
@@ -243,6 +552,15 @@ class InteractionProbeWindow(Gtk.ApplicationWindow):
         scroll_group.pack_start(scroll_region, True, True, 0)
         scroll_group.pack_start(scroll_status, False, False, 0)
         root.pack_start(scroll_group, True, True, 0)
+
+        raw_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        for label in (
+            self.raw_recorder.hold_status,
+            self.raw_recorder.key_log,
+            self.raw_recorder.raw_events,
+        ):
+            raw_row.pack_start(label, True, True, 0)
+        root.pack_start(raw_row, False, False, 0)
 
         return root
 
@@ -524,6 +842,21 @@ class InteractionProbeWindow(Gtk.ApplicationWindow):
             f"position={round(adjustment.get_value())}",
         )
 
+    def disable_event_compression(self) -> None:
+        """Turn GDK motion compression off on every window of the probe.
+
+        During a press GDK delivers motion to the grabbing widget's child window, not
+        the toplevel, and newer GTK (3.24.52) merges queued motions there: a drag
+        captured on a loaded host then lost interpolated steps that KWin did send.
+        Child windows exist only after ``show_all`` realizes the widgets.
+        """
+        pending = [self.get_window()]
+        while pending:
+            window = pending.pop()
+            if window is not None:
+                window.set_event_compression(False)
+                pending.extend(window.get_children())
+
     def focus_keyboard_target(self) -> None:
         if self._keyboard_target is not None:
             self._keyboard_target.grab_focus()
@@ -544,7 +877,10 @@ class InteractionProbeApplication(Gtk.Application):
     def do_activate(self) -> None:
         if self._window is None:
             self._window = InteractionProbeWindow(self)
+            # Every event passes the recorder before GTK dispatches it.
+            Gdk.event_handler_set(self._window.raw_recorder.handle)
         self._window.show_all()
+        self._window.disable_event_compression()
         self._window.present()
         self._window.focus_keyboard_target()
 

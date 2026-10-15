@@ -3,7 +3,7 @@
 ## Project Overview
 
 kwin-mcp is an MCP (Model Context Protocol) server for Linux desktop GUI automation on KDE Plasma 6 Wayland.
-**Purpose**: Enable AI agents (Claude Code and other MCP clients) to launch, interact with, and observe any Wayland application — either in a fully isolated virtual KWin session for reproducible GUI testing, or by connecting to a live KDE Plasma desktop (real session or container) for collaborative desktop automation workflows.
+**Purpose**: Enable AI agents (Claude Code and other MCP clients) to launch, interact with, and observe any Wayland application — either in a fully isolated virtual KWin session for reproducible GUI testing, or by connecting to a live KDE Plasma desktop (real session or container) for collaborative live desktop automation workflows.
 
 ## Toolchain
 
@@ -35,109 +35,27 @@ uv run python -m kwin_mcp # Run server
 
 ## Architecture
 
-See ROADMAP.md. Key modules:
-- `core.py`: AutomationEngine — MCP-independent automation logic (session, input, screenshot, a11y)
-- `server.py`: Thin MCP wrappers delegating to AutomationEngine
+Key modules in `src/kwin_mcp/`:
+- `models.py`: Shared argument types and result models; one `render()` per result
+- `core.py`: `AutomationEngine` — MCP-independent automation logic for all 29 tools
+- `server.py`: Thin MCP wrappers delegating to `AutomationEngine`
 - `cli.py`: Interactive REPL + pipe mode via `cmd.Cmd` (`kwin-mcp-cli` entry point)
-- `session.py`: Virtual sessions (dbus-run-session + kwin_wayland --virtual) and live session attachment (session_connect to real desktop or container)
-- `screenshot.py`: KWin ScreenShot2 D-Bus (screenshots)
-- `accessibility.py`: AT-SPI2 (widget tree)
-- `input.py`: KWin EIS D-Bus + libei (input injection)
+- `session.py`: Virtual sessions (`dbus-run-session` + `kwin_wayland --virtual`) and live session attachment (`session_connect` to real desktop or container)
+- `screenshot.py`: KWin ScreenShot2 D-Bus, Spectacle, and X11/scrot capture
+- `accessibility.py`: AT-SPI2 widget queries, element refs, and actions
+- `spoken_name.py`: Unicode normalization and spoken accessible-name matching
+- `geometry.py`: Windows, virtual desktops, activation, and output topology via KWin scripting
+- `clipboard.py`: Private Wayland data-control helper for Unicode paste
+- `dbus_args.py`: `dbus_call` argument parser (`dbus-send` strings and typed JSON)
+- `dbus_service_file.py`: Bounded D-Bus service-file parser and direct AT-SPI exec helper
+- `input.py`: KWin EIS D-Bus + libei input injection and held-input tracking
 
-## Pre-work Checklist
+## Verification & Sync Checks
 
-1. Read `ROADMAP.md` to understand current progress
-2. Start from the first incomplete item in the next milestone
-3. After code changes, run `uv run ruff check .` + `uv run ruff format .` + `uv run ty check`
-4. Update ROADMAP.md checklist when a milestone item is completed
-5. **Verify with CLI, not MCP tools**: After modifying any kwin-mcp code, verify via the CLI (`uv run python -m kwin_mcp.cli`), NOT the MCP server tools. The MCP server process is already running with the old code loaded in memory — calling MCP tools after editing source files will NOT reflect the changes. Use the CLI to launch a session and test the modified functionality. Use `retention='{"artifacts": true}'` in `session_start` to preserve screenshot files after `session_stop` (they are deleted by default). Files in `/tmp/kwin-mcp-screenshots-*` must be cleaned up manually when this option is used.
-6. **Invoke docs-seo agent after relevant file changes**: After modifying any of the trigger files below, invoke the `@docs-seo` agent to evaluate whether documentation is stale. A no-op conclusion is acceptable if nothing needs updating.
-
-### docs-seo Auto-Trigger Files
-
-| Changed File | Trigger Label | docs-seo Action |
-|---|---|---|
-| `src/kwin_mcp/server.py` | tool-registration, code-general | Check tool count, README tool tables, CONTRIBUTING structure, **integrations/*/skills/*/SKILL.md tool list freshness** |
-| `src/kwin_mcp/session.py` | session-api | Check README arch diagram, CONTRIBUTING session docs |
-| `src/kwin_mcp/core.py` | engine-api, code-general | Check README arch description, CONTRIBUTING structure |
-| `src/kwin_mcp/*.py` (any) | code-general | Check concrete numbers, CONTRIBUTING file listing, **integrations/*/skills/*/SKILL.md "29 capabilities" reference** |
-| `pyproject.toml` | package-metadata | Sync keywords with `.claude/positioning.yml`; check CLAUDE.md keyword tiers; **run `python3 scripts/sync_plugin_version.py` to propagate version to integrations manifests** |
-| `CHANGELOG.md` | changelog-update | Sync docs-seo.md positioning; add new search intents |
-| `README.md` | readme-update | Sync docs-seo.md positioning; update CLAUDE.md keyword tiers |
-| `ROADMAP.md` | roadmap-update | Add new long-tail keywords; update CONTRIBUTING.md if milestone adds contributor workflow |
-| `.claude/positioning.yml` | manifest-update | Full sync of docs-seo.md + CLAUDE.md SEO sections; **propagate `plugin_manifest_required_keywords` to integrations manifests** |
-| `.claude-plugin/marketplace.json` | plugin-manifest | Verify version matches pyproject; verify keywords ⊇ `plugin_manifest_required_keywords` |
-| `integrations/claude-code/.claude-plugin/plugin.json` | plugin-manifest | Verify version + keywords (same rule as above) |
-| `integrations/opencode/plugin/package.json` | plugin-manifest | Verify version + keywords (same rule as above) |
-| `integrations/claude-code/skills/*/SKILL.md` | plugin-skill | This is the source-of-truth SKILL.md. After edit, run `python3 scripts/sync_plugin_version.py` to mirror it into `integrations/opencode/plugin/skill/<name>/SKILL.md` |
-| `integrations/opencode/plugin/skill/*/SKILL.md` | plugin-skill | This file is auto-generated from the Claude Code source. Direct edits are forbidden — `check_docs_seo.py::check_skill_identical` will fail CI. Edit the Claude Code SKILL.md instead |
-| `scripts/sync_plugin_version.py` | code-general | Self-tests: run `--check` after editing the script itself |
-
-**Automation — Claude Code hook**: `.claude/settings.json` registers a `PostToolUse` hook on `Bash` that runs `.claude/hooks/docs-seo-trigger.sh` when `git commit` or `git add` is executed. The script detects whether committed files match trigger patterns, then injects context into the conversation prompting docs-seo evaluation.
-
-**Automation — CI**: `.github/workflows/docs-seo.yml` runs `scripts/check_docs_seo.py` on pull requests to validate SEO keyword consistency.
-
-**Manual invocation**: Use `/check-docs-seo` skill or the `@docs-seo` agent directly.
+1. After code changes, run `uv run ruff check .`, `uv run ruff format --check .`, `uv run ty check src tests`, and `uv run pytest tests/unit`.
+2. **Verify with CLI, not MCP tools**: After modifying any kwin-mcp code, verify via the CLI (`uv run python -m kwin_mcp.cli`), NOT the running MCP server process (which still has old code loaded in memory). Use `retention='{"artifacts": true}'` in `session_start` to preserve `/tmp/kwin-mcp-screenshots-*` after `session_stop`, and remove it manually when done.
+3. **Plugin and documentation sync**: After changing `pyproject.toml`, `src/kwin_mcp/server.py`, or `integrations/claude-code/skills/kwin-desktop-automation/SKILL.md` (the source of truth — never edit the OpenCode mirror directly), run `python3 scripts/sync_plugin_version.py` and `python3 scripts/check_docs_seo.py`.
 
 ## Release Gate
 
 Before tagging a release, verify every kwin-mcp tool end to end on the release commit with the Docker E2E suite (`scripts/run-e2e-docker.sh`, once per `--distro` variant).
-
-## System Dependencies (Arch/Manjaro)
-
-- `at-spi2-core`: AT-SPI2 accessibility framework (installed)
-- `python-gobject`: GObject introspection Python bindings (installed)
-- `kwin`: KWin Wayland compositor (installed)
-- `spectacle`: Screenshot tool (installed, fallback)
-- `selenium-webdriver-at-spi`: inputsynth binary (AUR, may need installation)
-
-## Documentation & SEO
-
-When writing or editing any documentation (README.md, CHANGELOG.md, GitHub release notes, pyproject.toml metadata, or repository settings), follow these SEO guidelines.
-
-### Target Keywords
-
-**Primary**: kwin-mcp, MCP server, GUI automation, KDE Plasma, Wayland automation, Linux desktop automation, live desktop automation
-**Secondary**: headless GUI testing, AI agent desktop, accessibility tree, AT-SPI2, libei, EIS, KWin virtual session, live session, session_connect, desktop testing framework, Wayland compositor testing, MCP tools, real desktop automation, desktop collaboration, kiosk automation, embedded device automation
-**Long-tail**: headless Wayland GUI testing, KDE Plasma automated testing, Linux GUI test automation CI/CD, Claude Code desktop automation, AI-driven Linux desktop testing, live KDE Plasma session automation, AI agent real desktop control, connect to live KWin session, container desktop automation, kiosk desktop automation, embedded Linux desktop testing
-
-### README.md Rules
-
-- H1 must be the project name; the line immediately after must be a bold description under 160 characters (acts as meta description for GitHub/search engines)
-- Include a badge row (PyPI version, downloads, Python version, license, CI status)
-- Use keyword-rich headings (e.g. "Available Tools", "System Requirements", "How It Works")
-- Maintain the tool reference tables with tool name, parameters, and description columns
-- Include copy-paste installation commands (uv, pip, from source)
-- Cross-link sections with a Table of Contents
-- Keep the architecture diagram (ASCII art) up to date when adding tools or modules
-
-### CHANGELOG.md Rules
-
-- Follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format
-- Use Added / Changed / Deprecated / Removed / Fixed / Security categories
-- Name specific tools (e.g. `pointer_click`, `element_query`) in entries
-- Include comparison links at the bottom (`[0.x.y]: https://github.com/...`)
-- Maintain an `[Unreleased]` section at the top for in-progress changes
-
-### GitHub Release Notes Rules
-
-- Always written in English
-- **Minor+ releases** structure: opening paragraph with value proposition -> Highlights (bullet list) -> New Tools table (if applicable) -> Installation commands -> Full Changelog comparison link
-- **Patch releases** structure: What's Changed -> detailed description -> Full Changelog comparison link
-- First sentence must convey the value proposition (what the user gains)
-- Name exact technologies: AT-SPI2, libei, EIS, KWin ScreenShot2, D-Bus, PyGObject, wl-clipboard, wtype
-- Include tool counts when relevant (e.g. "29 MCP tools" or "17 new tools")
-
-### pyproject.toml SEO Rules
-
-- `description` must be under 120 characters and include "MCP server" + "Linux" + "GUI automation" + "KDE Plasma" + "Wayland"
-- Maintain 20+ keywords covering: protocol (mcp, model-context-protocol), compositor (kwin, kde, plasma, wayland), purpose (gui-automation, desktop-automation, testing, e2e-testing, headless, headless-testing), technology (at-spi2, libei, accessibility, ai-agents), ecosystem (claude-code, linux-desktop, wayland-automation, mcp-server)
-- Keep classifiers up to date (Development Status, Python versions, Topics)
-- `[project.urls]` must include Homepage, Repository, Issues, Changelog, and Documentation
-
-### GitHub Repository Decoration Rules
-
-- **About description**: must match pyproject.toml `description` or be a shorter variant with primary keywords
-- **Topics**: maintain 15-20 topics mirroring pyproject.toml keywords plus GitHub-specific tags (e.g. `hacktoberfest` when applicable)
-- **Homepage URL**: link to PyPI project page (`https://pypi.org/project/kwin-mcp/`)
-- **Social preview**: use a branded 1280x640 image with project name, tagline, and technology logos/icons

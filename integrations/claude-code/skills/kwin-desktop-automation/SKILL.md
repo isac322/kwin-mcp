@@ -18,17 +18,7 @@ Activate this skill whenever the user wants to:
 
 If no kwin-mcp tools are available, this skill does not apply.
 
-## The 29 tools
-
-- Session: `session_start` (virtual), `session_connect` (live), `session_stop`, `session_info`.
-- Apps: `app_launch`, `app_log`.
-- Observe: `screen_capture`, `element_query`, `window_list`, `desktop_list`, `clipboard_read`.
-- Act on elements and windows: `element_act`, `window_focus`, `window_place`, `window_close`.
-- Pointer: `pointer_click`, `pointer_move`, `pointer_scroll`, `pointer_drag`, `pointer_hold`.
-- Keyboard: `keyboard_press`, `keyboard_type`, `keyboard_hold`.
-- Touch: `touch_tap`, `touch_swipe`, `touch_pinch`.
-- Clipboard: `clipboard_write` (and `clipboard_read` above).
-- Escape hatches: `dbus_call`, `wayland_list`.
+## Conventions across all 29 tools
 
 Every coordinate, in and out, is a global logical pixel. Points are objects (`target={"x": 10, "y": 20}`), rectangles are `{x, y, width, height}`, and key combinations are one string (`"ctrl+shift+t"`). Unknown argument names are errors that name the right argument; read the error and retry.
 
@@ -140,9 +130,9 @@ These are properties of the Wayland / AT-SPI2 / EIS stack, not bugs. Know them o
 4. `element_query(locator={"query": "Save File"}, wait={"timeout_ms": 3000})` to confirm the dialog appeared.
 5. `session_stop()`.
 
-**"Type 안녕하세요 into the active text field"**:
+**"Type non-ASCII Unicode text into the active text field"**:
 1. (Session already open.)
-2. `keyboard_type(text="안녕하세요", method="unicode")` — never the default `keys` method; it rejects non-ASCII text.
+2. `keyboard_type(text="...", method="unicode")` — pass any non-ASCII text (CJK, accented characters, symbols, or emoji) with `method="unicode"`; the default `keys` method is US-QWERTY only and rejects non-ASCII characters.
 
 **"Find what currently has focus"**:
 1. `element_query(locator={"states": ["focused"]})`.

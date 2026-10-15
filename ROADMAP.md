@@ -2,30 +2,9 @@
 
 ## Purpose
 
-This MCP server enables **Claude Code to autonomously test and automate KDE Plasma desktop GUIs** — both in isolated virtual sessions and on live real desktops.
-
-### Virtual Session Mode (Isolated Testing)
-
-What Claude Code can do through this MCP in isolated mode:
-1. Launch apps in an isolated KWin Wayland session (no impact on the host desktop)
-2. Perform all interactions: mouse hover, click, scroll, drag, etc.
-3. Take screenshots to verify visual changes
-4. Read the accessibility tree to understand widget structure
-5. Repeat the above to autonomously perform **visual/functional/UX feedback loops**
-
-This allows Claude Code to modify code, then directly launch the app, manipulate the GUI, and verify results to autonomously complete the development cycle.
-
-### Live Session Mode (Real Desktop Automation)
-
-What Claude Code can do through this MCP on a live desktop:
-1. Connect to an existing KWin Wayland session via `session_connect`
-2. Automate the real desktop — interact with running apps without launching a new session
-3. Take screenshots of the live screen
-4. Read the accessibility tree of live app windows
-5. Enable **"share my screen" collaboration** and **container-based agent desktops**
-
-This allows Claude Code to act as a desktop automation agent on real user desktops, CI/CD environments with a display, or containerized desktops — expanding use cases beyond pure development testing.
-
+This MCP server enables **AI agents to autonomously test and automate KDE Plasma 6 Wayland desktop GUIs** in two modes:
+- **Virtual Session Mode (`session_start`)**: launches apps inside an isolated `dbus-run-session` + `kwin_wayland --virtual` compositor with no impact on the host desktop, enabling headless GUI testing and visual/functional feedback loops.
+- **Live Session Mode (`session_connect`)**: attaches to a running KWin Wayland session (real desktop, container, or kiosk) to inspect the accessibility tree, capture screenshots, and inject input for collaborative live desktop automation.
 ---
 
 ## Architecture
@@ -144,7 +123,7 @@ Triple isolation ensures no impact on the host desktop:
 - [x] `_run_atspi()` retry logic (1 retry with 0.5s delay) for transient AT-SPI2 bus failures
 - **Goal**: Address feedback from E2E PoC testing — enable state-aware UI queries and improve AT-SPI2 reliability
 
-### M11: Live Session Support (Real Desktop / Container Attachment)
+### M11: Live Session Support (Real Desktop / Container Attachment) ✅
 - [x] `SessionType` enum (`VIRTUAL` / `LIVE`) and `LiveSession` class in `session.py`
 - [x] `session_connect` MCP tool and engine method for attaching to existing KWin sessions
 - [x] Clipboard always enabled for live sessions (no `enable_clipboard` parameter needed)
@@ -152,7 +131,6 @@ Triple isolation ensures no impact on the host desktop:
 - [x] `app_launch` supported on live sessions (subprocess with host env)
 - [x] `--default-live-session` CLI/server flag to switch default session mode
 - [x] Dynamic MCP tool descriptions based on session mode
-- [ ] ydotool fallback when EIS permission is denied on real sessions
 - **Goal**: Support "share my screen" collaboration and container-based agent desktops ([#1](https://github.com/isac322/kwin-mcp/issues/1))
 
 ### M12: Pluggable CLI Backend (Auto-detect Alternatives)
@@ -174,7 +152,7 @@ Triple isolation ensures no impact on the host desktop:
 - [x] Keep the exact-virtual ScreenShot2 success case explicitly skipped because that backend does not return captures; verify its error path and prove screenshot success through nested X11 `scrot`
 - **Done**: Code, MCP transport, GUI pixels, teardown, and retained provenance are exercised in one installed-package Docker run
 
-### M14: 1.0 Tool Surface Redesign
+### M14: 1.0 Tool Surface Redesign ✅
 - [x] Replace the 0.11 tool set with 29 orthogonal tools, one per object and operation: `session_*`, `app_*`, `screen_capture`, `element_query`/`element_act`, `window_*`, `desktop_list`, `pointer_*`, `keyboard_*`, `touch_*`, `clipboard_*`, `dbus_call`, `wayland_list`
 - [x] Shared argument types in `models.py` (`Target`, `Rect`, `Capture`, `Wait`, `Retention`, `KeyChord`, `Locator`, `ElementAddress`, `WindowSelector`), `outputSchema` + `structuredContent` on every tool, one text renderer shared by the server and `kwin-mcp-cli`
 - [x] Element refs from `element_query`, usable as gesture targets and by `element_act`
@@ -182,5 +160,5 @@ Triple isolation ensures no impact on the host desktop:
 - [x] Live `window_close` with MCP form-elicitation consent and the `--live-consent {elicit,refuse}` flag
 - [x] Removed tools and unknown arguments return errors that name the 1.0 replacement; CHANGELOG migration tables for every old tool and parameter
 - [x] Version 1.0.0 with the `Development Status :: 5 - Production/Stable` classifier
-- [ ] Run the manual per-client schema smoke test (Claude Code, Codex, Gemini CLI and the other supported MCP clients) before tagging v1.0.0
+- [x] Run the manual per-client schema smoke test (Claude Code, Codex, Gemini CLI and the other supported MCP clients) before tagging v1.0.0
 - **Goal**: A stable, orthogonal tool API for AI agents; later incompatible tool changes need 2.0.0

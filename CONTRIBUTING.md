@@ -30,8 +30,8 @@ uv sync
 
 The project includes two consistency checkers that run in CI on pull requests:
 
-1. **`scripts/check_docs_seo.py`** — validates SEO keywords and positioning terms across documentation files. It also verifies that the bundled plugin manifests (`.claude-plugin/marketplace.json`, `integrations/claude-code/.claude-plugin/plugin.json`, `integrations/opencode/plugin/package.json`) keep their keyword sets in sync with `.claude/positioning.yml`, and that the Claude Code source SKILL.md and the OpenCode plugin's bundled SKILL.md remain byte-identical.
-2. **`scripts/sync_plugin_version.py --check`** — verifies that `pyproject.toml [project].version` matches the version recorded in every plugin manifest, and that the OpenCode plugin's bundled SKILL.md mirrors the Claude Code source. Without `--check`, the script *writes* the synced state.
+1. **`scripts/check_docs_seo.py`** — validates SEO keywords, canonical tool counts (29), and plugin manifest keyword alignment across `README.md`, `CLAUDE.md`, `ROADMAP.md`, `CONTRIBUTING.md`, `pyproject.toml`, and `integrations/*`, and verifies that the Claude Code source `SKILL.md` and the OpenCode plugin's bundled `SKILL.md` remain byte-identical.
+2. **`scripts/sync_plugin_version.py --check`** — verifies that `pyproject.toml [project].version` matches the version recorded in every plugin manifest, and that the OpenCode plugin's bundled `SKILL.md` mirrors the Claude Code source. Without `--check`, the script *writes* the synced state.
 
 Invoke locally:
 
@@ -39,8 +39,6 @@ Invoke locally:
 python3 scripts/check_docs_seo.py
 python3 scripts/sync_plugin_version.py --check
 ```
-
-In Claude Code sessions, use the `/check-docs-seo` skill or the `@docs-seo` agent to evaluate and update documentation after code changes.
 
 ## Code Style
 
@@ -288,6 +286,8 @@ integrations/
 └── marketplace.json                                            # Claude Code marketplace catalog
 ```
 
+Two explicit session entry points (`session_start` and `session_connect`) are used without a `session_list` discovery tool because cross-bus D-Bus discovery is not possible: each virtual KWin runs on its own isolated `dbus-run-session` bus with no central registry, while a live KWin registers `org.kde.KWin` on `$DBUS_SESSION_BUS_ADDRESS`.
+
 The exit path is part of `session.py`'s `OwnedProcessRegistry` contract and is worth reading before changing session teardown: the serialized `session_stop` on the tool thread is the primary cleanup when the server exits, and the registry's direct process-group termination and temp-dir removal is the fallback when an in-flight tool still holds the thread after the 2 s drain. The registry signals a group only while its leader is still an unreaped child of the process, so a live-session KWin and pre-existing apps are never reached; `kwin-mcp-cli` reuses the same registry to sweep owned groups that were never attached to a session on exit.
 
 ## Pull Request Process
@@ -300,7 +300,7 @@ The exit path is part of `session.py`'s `OwnedProcessRegistry` contract and is w
 6. Update `README.md` if you add new tools or change existing tool behavior
 7. **If you bumped `pyproject.toml [project].version` or modified the MCP tool list (`src/kwin_mcp/server.py`)**: run `python3 scripts/sync_plugin_version.py` to keep `.claude-plugin/marketplace.json`, `integrations/claude-code/.claude-plugin/plugin.json`, `integrations/opencode/plugin/package.json`, and the OpenCode plugin's bundled SKILL.md in sync with the source. Verify with `python3 scripts/sync_plugin_version.py --check` (CI runs the same check).
 8. **If you added/renamed/removed an MCP tool**: also update `integrations/claude-code/skills/kwin-desktop-automation/SKILL.md` (the source of truth — the OpenCode plugin auto-syncs from it during `npm run build`).
-9. **If you bumped any plugin keyword set or `pyproject.toml [project].keywords`**: ensure the plugin manifests' keyword arrays still satisfy the subset rule defined in `.claude/positioning.yml § drift_detection.plugin_keywords_min_overlap` (the `check_docs_seo.py` plugin keyword check enforces this).
+9. **If you changed `pyproject.toml [project].keywords` or a plugin manifest's `keywords`**: run `python3 scripts/check_docs_seo.py` to verify keyword alignment across manifests.
 10. Open a pull request with a clear description of the changes
 
 ## Reporting Issues

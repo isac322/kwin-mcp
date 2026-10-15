@@ -247,7 +247,7 @@ Visual tests do not infer success from process exit alone. They preserve PNGs an
 - captures with and without `include_cursor` must differ near the requested pointer coordinates rather than elsewhere on the frame;
 - a `capture={delays_ms:[...]}` burst returns distinct animation frames for the requested delays;
 - at output scales 1.0 and 1.45, a probe button located by pixel color in a screenshot and clicked at the reported origin plus that pixel must activate, the image size must equal the logical workspace, burst frames must report the same mapping, and the `include_cursor` difference must appear at the logical pointer position;
-- the CJK sample `GUI 검증 42` must render with materially different pixels and color content from the same-sized tofu control `□□`.
+- the CJK text sample must render with materially different pixels and color content from the same-sized missing-glyph tofu control.
 
 The screen-capture visual tests also drive frame-producing pointer, keyboard, touch, and drag tools through installed MCP stdio.
 

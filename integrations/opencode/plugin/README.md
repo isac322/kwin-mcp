@@ -39,31 +39,11 @@ You also need the kwin-mcp system dependencies (`kwin_wayland`, `at-spi2-core`, 
 
 ## Manual fallback
 
-If the plugin's `config` hook ever fails to inject the MCP server (e.g. OpenCode's plugin contract changed), add a static block to `opencode.json`:
+If the plugin's `config` hook ever fails to inject the MCP server, copy [`opencode.json.example`](https://github.com/isac322/kwin-mcp/blob/main/integrations/opencode/opencode.json.example) into your `opencode.json`.
 
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "kwin-mcp": {
-      "type": "local",
-      "command": ["uvx", "kwin-mcp"],
-      "enabled": true
-    }
-  }
-}
-```
+## Bundled skill
 
-A copy of this snippet ships at [`opencode.json.example`](https://github.com/isac322/kwin-mcp/blob/main/integrations/opencode/opencode.json.example).
-
-## What the skill teaches
-
-`kwin-desktop-automation` is a host-agnostic `SKILL.md` shipped inside this npm package. It uses bare tool names (`session_start`, `screen_capture`, etc.) — OpenCode adds its own `kwin-mcp_` prefix when exposing the tools to the model, so the agent learns the actual tool symbols from OpenCode's tool list rather than from the skill body. (The same SKILL.md content is shared with the [Claude Code plugin](https://github.com/isac322/kwin-mcp/tree/main/integrations/claude-code); `npm run build` copies the source from `../../claude-code/skills/...` into this package's `skill/` directory before packaging.) The skill covers:
-
-1. **Session mode selection** — when to call `session_start` (virtual / isolated) vs `session_connect` (live / real desktop / container / kiosk).
-2. **The observe → act → verify loop** — observation tools ordered by cost (`window_list` < `element_query` < `element_query` with `wait` < `screen_capture`), and actions ordered by robustness (`element_act` on a ref, then a gesture with a `{ref}` target, then `{x, y}` coordinates).
-3. **Pitfalls** — `keyboard_type` is US-QWERTY only by default (use `method="unicode"` for CJK), clipboard is opt-in on virtual sessions, every coordinate is a global logical pixel, held input must be released, QMenu can be invisible to AT-SPI2, screen-edge triggers ignore EIS pointer events, container live sessions need Wayland/D-Bus mounts.
-4. **Cleanup** — always `session_stop`; `retention={"artifacts": true}` and `retention={"home": true}` keep `/tmp` directories that you must delete.
+This package ships the host-agnostic `kwin-desktop-automation` skill (mirrored from [`integrations/claude-code/skills/kwin-desktop-automation/SKILL.md`](https://github.com/isac322/kwin-mcp/blob/main/integrations/claude-code/skills/kwin-desktop-automation/SKILL.md) during `npm run build`), covering session-mode selection (`session_start` vs `session_connect`), the observe → act → verify loop, Wayland/AT-SPI2/EIS platform pitfalls, and session cleanup.
 
 ## Customising the skill
 

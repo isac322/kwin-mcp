@@ -12,7 +12,7 @@ A clear description of what the bug is.
 
 ## Environment
 
-- **kwin-mcp version**: (e.g. 0.5.1)
+- **kwin-mcp version**: (e.g. 1.0.0)
 - **Python version**: (e.g. 3.12.4)
 - **OS / Distribution**: (e.g. Arch Linux, Fedora 40, Kubuntu 24.04)
 - **KDE Plasma version**: (e.g. 6.1.4)

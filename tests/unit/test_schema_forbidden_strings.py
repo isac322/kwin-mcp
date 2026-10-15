@@ -7,7 +7,7 @@ the server ``instructions`` (with and without ``--default-live-session``), and t
 text: the removed-tool remedy legitimately names the old tool.
 
 The repository scan keeps the removed names out of everything a user reads about the
-current product: README, CONTRIBUTING, docker/README, ``docs/``, ``integrations/``
+current product: README, CONTRIBUTING, docker/README, ``integrations/``
 (plugin manifests, the SKILL source and its mirror), the marketplace manifest,
 ``pyproject.toml``, the current sections of CHANGELOG ([Unreleased]) and ROADMAP
 (milestones not marked ✅), plus the shipped server texts. Released CHANGELOG
@@ -109,7 +109,6 @@ _SCANNED = (
     "CHANGELOG.md",
     "pyproject.toml",
     "docker/README.md",
-    "docs",
     "integrations",
     ".claude-plugin",
 )

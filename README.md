@@ -67,9 +67,6 @@ Automate kiosk interfaces and embedded Linux desktops running KDE Plasma or a ba
 
 > Requires KDE Plasma 6 on Wayland. See [System Requirements](#system-requirements) for details.
 
-> [!NOTE]
-> **0.7.0 only:** the published kwin-mcp 0.7.0 package on PyPI did not cap its `mcp` dependency, so a fresh install could resolve `mcp` 2.x and the server failed at startup with `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`. Releases 0.8.0–0.9.x cap `mcp<2`, and 0.10.0 and later require `mcp>=2.2.0,<3`. If you are still on 0.7.0, upgrade kwin-mcp before following the steps below.
-
 **1. Install system and build dependencies**
 
 `uv tool install` and `uvx` always install kwin-mcp into an isolated Python environment, and `pip install` does the same when run inside a virtual environment. An isolated environment cannot reuse your distribution's `python3-gi` or `python3-dbus` packages, so PyGObject, pycairo, and dbus-python are built from source during installation and need a C compiler and development headers. Install the packages from [Installing System Dependencies](#installing-system-dependencies) first. On Debian 13 (Trixie):
@@ -135,7 +132,7 @@ The fastest way to wire kwin-mcp into your editor is to install one of the bundl
 }
 ```
 
-For the full integration guide (manual fallback, customising the skill, troubleshooting), see [docs/ai-agent-integration.md](docs/ai-agent-integration.md).
+For manual OpenCode setup without the plugin, copy [`integrations/opencode/opencode.json.example`](integrations/opencode/opencode.json.example) into `opencode.json`. To customize or override the bundled skill, place a `SKILL.md` at `~/.claude/skills/kwin-desktop-automation/SKILL.md` (Claude Code) or `~/.config/opencode/skills/kwin-desktop-automation/SKILL.md` (OpenCode).
 
 ### Claude Code
 
@@ -610,9 +607,6 @@ sudo apt install wl-clipboard wtype wayland-utils
 
 Install the [system and build dependencies](#installing-system-dependencies) before using any method below. The uv installs, pip installs into a virtual environment, and the from-source install build PyGObject, pycairo, and dbus-python from source and fail without them.
 
-> [!NOTE]
-> kwin-mcp 0.7.0 on PyPI did not cap its `mcp` dependency, so a fresh install could resolve `mcp` 2.x and the server failed at startup with `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`. Releases 0.8.0–0.9.x cap `mcp<2`, and 0.10.0 and later require `mcp>=2.2.0,<3`; upgrading kwin-mcp fixes the error.
-
 ### Using uv (recommended)
 
 ```bash
@@ -706,7 +700,7 @@ Coverage of the Docker suite includes:
 - the `org.a11y.Status.IsEnabled` switch: on in virtual sessions, and in live sessions reported, left off by default, switched on by `enable_accessibility=true`, and restored by `session_stop` and by a server exit while a tool is still running;
 - exact input- and output-schema checks for all 29 registered tools, plus installed-server stdio calls through every MCP tool, resource and the live-consent elicitation flow;
 - nested visual tests that start Xvfb and a test-owned KWin compositor inside the container, connect the installed MCP server to it, and verify pixels as well as accessibility state;
-- KCalc before/after pixel transitions and a deterministic GUI probe for mouse hover, cursor inclusion, animation frame bursts, and CJK text (`GUI 검증 42`) rendered differently from a tofu control (`□□`);
+- KCalc before/after pixel transitions and a deterministic GUI probe for mouse hover, cursor inclusion, animation frame bursts, and CJK text rendered differently from a missing-glyph tofu control;
 - screenshot coordinate mapping at output scales 1.0 and 1.45 (the fractional scale is set through `kscreen-doctor`): a probe button found by pixel color in the screenshot is clicked at origin plus pixel and must activate, and single captures and frame bursts report the logical workspace as their coordinate space;
 - artifact retention and failure behavior, environment provenance, installed distribution metadata (version 1.0.0, the `Production/Stable` classifier), console entry points, and process/socket cleanup.
 

@@ -1,7 +1,7 @@
 """QA traceability gate (G10): ``tests/qa_trace.toml`` and the test tree's QA markers agree.
 
-The ledger is generated from the merged QA list by ``scripts/gen_qa_trace.py``. Test modules are
-read with ``ast`` and never imported, so the gate needs neither KWin nor the test dependencies.
+Test modules are read with ``ast`` and never imported, so the gate needs neither KWin nor the test
+dependencies.
 A marker is ``@pytest.mark.qa("QA-…")`` on a test function, on its ``Test*`` class, or in the
 module's ``pytestmark``; ``slow`` is found the same way.
 """

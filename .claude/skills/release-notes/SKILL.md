@@ -8,7 +8,7 @@ Generate SEO-optimized GitHub release notes for kwin-mcp.
 /release-notes <version>
 ```
 
-Example: `/release-notes v0.5.1`
+Example: `/release-notes v1.0.0`
 
 ## Instructions
 
@@ -49,7 +49,7 @@ kwin-mcp vX.Y.Z <one-line value proposition with primary keywords>.
 ## Highlights
 
 - **Feature name**: Description mentioning exact technology (AT-SPI2, libei, EIS, D-Bus, etc.)
-- **Feature name**: Description with concrete numbers (e.g. "17 new MCP tools")
+- **Feature name**: Description with concrete numbers (e.g. "29 MCP tools")
 - ...
 
 ## New Tools
@@ -90,8 +90,8 @@ kwin-mcp vX.Y.Z <one-line summary of what was fixed/improved>.
 - **First sentence**: Must convey the value proposition (what the user gains)
 - **Technology names**: Always use exact names — AT-SPI2, libei, EIS, KWin ScreenShot2, D-Bus, PyGObject, wl-clipboard, wtype
 - **Tool names**: Use backtick code format with bare names (e.g. `pointer_click`, `element_query`). Hosts add their own prefix (`mcp__kwin-mcp__*` for Claude Code, `kwin-mcp_*` for OpenCode) — never hardcode prefixes in release notes
-- **Tool counts**: Include total tool count when relevant (e.g. "now with 29 MCP tools"). When the count changes, also update `.claude/positioning.yml § product.tool_count`, `.claude/positioning.yml § drift_detection.tool_count_canonical`, `check_docs_seo.py § TOOL_COUNT_CANONICAL`, README tool tables, and the SKILL.md "X capabilities" reference before tagging the release
-- **Plugin sync**: If the release ships new tools, mention that the bundled plugins were updated. Existing users will see the new guidance after a `/plugin update` (Claude Code) or after the OpenCode plugin's next `npm run build` mirrors the SKILL.md
+- **Tool counts**: Include total tool count when relevant (e.g. "29 MCP tools"). When the count changes, update `check_docs_seo.py § TOOL_COUNT_CANONICAL`, `README.md` tool tables, and `integrations/claude-code/skills/kwin-desktop-automation/SKILL.md` before tagging the release
+- **Plugin sync**: If the release changes tools or version, run `python3 scripts/sync_plugin_version.py` so the bundled Claude Code and OpenCode plugins stay in sync
 - **Comparison link**: Always end with a Full Changelog comparison link
 - **No emojis**: Do not use emojis in release notes
 

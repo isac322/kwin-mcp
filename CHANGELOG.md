@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- E2E CI now builds each distro-and-architecture image once per workflow run, shares a compressed image artifact with that row's five test shards, and validates seven row-specific required checks instead of rebuilding the same image in every shard. Image, diagnostic, and status artifacts include the workflow attempt, so a full workflow rerun rebuilds and validates a matching set.
+- E2E row aggregation now checks only its own five shard statuses and collected/full test counts, so an unrelated row failure no longer causes a false failure in a healthy row.
+
 ## [1.0.0] - 2026-10-15
 
 kwin-mcp 1.0.0 replaces the 37-tool surface of 0.12 with 29 orthogonal MCP tools: one tool per object and operation (session, app, screen, element, window, desktop, pointer, keyboard, touch, clipboard, D-Bus, Wayland), shared argument types, typed structured output on every tool, and the same lossless text as before. **This is a breaking release.** It is a clean cutover with no aliases: 9 tool names are kept (all with changed parameters or outputs), 28 are removed and 20 are new. Calling a removed tool returns an error that names its 1.0 replacement, and an argument that no longer exists returns an error that names the new argument. The [tool migration table](#tool-migration-table) and the [parameter migration table](#parameter-migration-table) below map every old call.

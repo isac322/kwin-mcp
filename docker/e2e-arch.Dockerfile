@@ -23,9 +23,8 @@ FROM archlinux:base-20260920.0.596911@sha256:f3691b4dde62ba4c4b6f0ae2c1fbf28e8c0
 # Read every package from the Arch Linux Archive snapshot of one day, the
 # pacman equivalent of the Debian image's snapshot.debian.org pin. `-Syyuu`
 # moves the base packages to exactly that snapshot, downgrading if needed.
-# The archive throttles bursts of parallel downloads until pacman's 10-second
-# low-speed abort fires, so limit parallelism and disable that timeout, as the
-# Debian image raises APT's retries and timeout for snapshot.debian.org.
+# Limit package download parallelism to two and disable pacman's low-speed
+# download timeout.
 # pacman's download sandbox restricts syscalls with seccomp, which fails with
 # EINVAL under qemu-user emulation (for example amd64 builds on arm64 hosts);
 # the filesystem part of the sandbox is already disabled by the base image.

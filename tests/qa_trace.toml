@@ -2622,13 +2622,18 @@ slow = false
 mutants = []
 
 [items."QA-PKG-015"]
-title = "e2e workflow wiring: 7 required names, aggregator fails unless all shards succeeded, shard-sum collection"
+title = "E2E shard checker validates one row's success states and collection coverage"
 priority = "P0"
 auto = "ci-gate"
 check = "pytest"
-file = "tests/unit/test_suite_policy.py"
-test = "test_e2e_workflow_wiring"
-extra_tests = []
+file = "tests/unit/test_e2e_shards.py"
+test = "test_checker_accepts_successful_row_and_ignores_other_row_failure"
+extra_tests = [
+    "tests/unit/test_e2e_shards.py::test_checker_rejects_non_success_shard_states",
+    "tests/unit/test_e2e_shards.py::test_checker_rejects_missing_or_corrupt_status_files",
+    "tests/unit/test_e2e_shards.py::test_checker_rejects_invalid_full_collection_metadata",
+    "tests/unit/test_e2e_shards.py::test_checker_rejects_collection_coverage_gaps",
+]
 slow = false
 mutants = []
 

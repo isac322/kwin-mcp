@@ -1,4 +1,4 @@
-"""Suite policy: sharding, the strict-skip guard, the test-tree layout and E2E wiring."""
+"""Suite policy: sharding, the strict-skip guard and the test-tree layout."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
 import pytest
@@ -32,18 +31,8 @@ from tool_surface import REMOVED_TOOL_NAMES, TOOL_NAMES
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TESTS = REPO_ROOT / "tests"
 DURATIONS = TESTS / "e2e" / "durations.json"
-E2E_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "e2e.yml"
 RUN_E2E_DOCKER = REPO_ROOT / "scripts" / "run-e2e-docker.sh"
 
-REQUIRED_ROW_LABELS = {
-    "amd64",
-    "arm64",
-    "fedora-amd64",
-    "fedora-arm64",
-    "opensuse-amd64",
-    "opensuse-arm64",
-    "archlinux-amd64",
-}
 
 # Modules that serve as independent oracles must not share code with the product.
 ORACLE_MODULES = ("kwin_oracle.py", "atspi_oracle.py", "window_zoo.py", "kwin_rules.py")
@@ -464,57 +453,3 @@ def test_run_e2e_docker_forwards_paths(tmp_path: Path) -> None:
     )
     assert "KWIN_MCP_E2E_STRICT_SKIPS=0" in relaxed
     assert "KWIN_MCP_E2E_REQUIRE=xwayland" in relaxed
-
-
-def _job_block(workflow: str, job: str) -> str:
-    match = re.search(rf"^  {re.escape(job)}:\n(.*?)(?=^  [\w-]+:\n|\Z)", workflow, re.S | re.M)
-    assert match is not None, job
-    return match.group(1)
-
-
-@pytest.mark.qa("QA-PKG-015")
-def test_e2e_workflow_wiring() -> None:
-    workflow = E2E_WORKFLOW.read_text(encoding="utf-8")
-    shard_job = _job_block(workflow, "virtual-session-shard")
-    aggregator = _job_block(workflow, "virtual-session")
-
-    # Every row a required distribution (the shard count is checked below).
-    shard_labels = set(re.findall(r"^\s+label: ([\w-]+)$", shard_job, re.M))
-    assert shard_labels == REQUIRED_ROW_LABELS
-
-    # The aggregator keeps the seven required check names.
-    assert "name: Virtual KWin session (${{ matrix.label }})" in aggregator
-    label_list = re.search(r"^\s+label:\n((?:\s+- [\w-]+\n)+)", aggregator, re.M)
-    assert label_list is not None, aggregator
-    assert set(re.findall(r"- ([\w-]+)", label_list.group(1))) == REQUIRED_ROW_LABELS
-    assert "needs: virtual-session-shard" in aggregator
-    assert "if: always()" in aggregator
-
-    # A2: skipped/cancelled shards fail; exactly one status file per shard, all success.
-    shard_list = re.search(r"^\s+shard: \[([\d, ]+)\]$", shard_job, re.M)
-    assert shard_list is not None, shard_job
-    shards = [int(n) for n in shard_list.group(1).split(",")]
-    count = len(shards)
-    assert shards == list(range(1, count + 1)), shards
-    assert "needs.virtual-session-shard.result" in aggregator
-    assert "!= success" in aggregator
-    assert f"!= {count}" in aggregator
-    # A3: the shards' collected counts add up to the full collection.
-    assert "sum != full" in aggregator
-    assert re.search(r'--collect-only -q -m "not slow"', shard_job), shard_job
-    assert 'collected=$(count_tests --kwin-shard="$E2E_SHARD")' in shard_job
-    assert f"E2E_SHARD: ${{{{ matrix.shard }}}}/{count}" in shard_job
-    assert f"${{{{ matrix.shard }}}}/{count})" in shard_job
-
-    # PR shards run the not-slow selection, strict skips, required layer-shell.
-    run_step = shard_job.split("- name: Run end-to-end tests", 1)[1].split("- name:", 1)[0]
-    assert '-m "not slow"' in run_step
-    assert '--kwin-shard="$E2E_SHARD"' in run_step
-    assert "KWIN_MCP_E2E_STRICT_SKIPS=1" in run_step
-    assert "KWIN_MCP_E2E_REQUIRE=layer-shell" in run_step
-
-    # pytest-timeout bounds every test (A5).
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    pytest_ini = pyproject["tool"]["pytest"]["ini_options"]
-    assert int(pytest_ini["timeout"]) > 0
-    assert any(dep.startswith("pytest-timeout") for dep in pyproject["dependency-groups"]["dev"])

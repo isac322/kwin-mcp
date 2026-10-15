@@ -83,9 +83,9 @@ uv run pytest tests/unit
 
 They check the 29 tool schemas against the design (names, parameters, annotations, output
 models), the removed-tool and unknown-argument errors, the text renderers, held-input rules,
-selector matching, and the documentation gates: the README tool tables, the CHANGELOG migration
-table, and the repository-wide scan that keeps removed tool names out of current docs. Mark a test
-that covers a QA item with `@pytest.mark.qa("QA-...")`.
+selector matching, shard-status aggregation behavior, and the documentation gates: the README
+tool tables, the CHANGELOG migration table, and the repository-wide scan that keeps removed tool
+names out of current docs. Mark a test that covers a QA item with `@pytest.mark.qa("QA-...")`.
 
 ### Virtual Session Testing (Isolated)
 
@@ -216,8 +216,15 @@ diagnostics.
 
 CI runs the same installed-package architecture natively. The Debian image and the Fedora 44 and
 openSUSE Tumbleweed variants run on both `ubuntu-26.04` amd64 and `ubuntu-26.04-arm` arm64
-runners; the Arch Linux variant runs on amd64 only. CI uploads the artifact directory for each job,
-and every job gates the workflow.
+runners; the Arch Linux variant runs on amd64 only. CI builds one image for each of the seven
+distro-and-architecture rows, uploads a compressed image artifact within the same workflow run,
+and shares that artifact with the row's five test shards. The 35 shards feed seven independent
+required checks, one per row; each check reads only its own five shard results and collection
+counts. Shard execution keeps the `not slow` selection, strict skip handling, layer-shell
+requirement, and existing timeouts. CI artifacts are retained for one day, and artifact names
+include the workflow attempt. Rerun the whole workflow to rebuild the images and produce matching
+shard statuses; an individual job rerun does not reuse artifacts from another attempt. The local
+`scripts/run-e2e-docker.sh` interface is unchanged.
 
 See `docker/README.md` for backend details and test-by-test coverage.
 
@@ -251,6 +258,7 @@ docker/
 
 scripts/
 ├── run-e2e-docker.sh        # Recommended local Docker E2E runner and artifact collector
+├── check_e2e_shards.py      # Validates one row's five shard results and collection counts
 ├── check_docs_seo.py        # Documentation/SEO consistency checker (tool count, keywords, SKILL mirror)
 ├── check_wheel.py           # Built-wheel gate: file list, version, classifier, and description
 ├── sync_plugin_version.py   # Syncs project version and SKILL.md into integrations
@@ -261,7 +269,8 @@ tests/
 ├── tool_surface.py     # The 29 tool names and the 28 removed names, written out independently of the server
 ├── unit/               # KWin-free schemas, renderers, held input, selectors, CLI, and docs gates
 │   ├── test_spoken_name.py       # Spoken-name Unicode, whitespace, punctuation, and word-boundary rules
-│   └── test_dbus_service_file.py # Service-file parsing and argv parity with dbus-daemon activation
+│   ├── test_dbus_service_file.py # Service-file parsing and argv parity with dbus-daemon activation
+│   └── test_e2e_shards.py        # Row-local E2E shard aggregation behavior
 └── e2e/                # Installed-package Docker tests: per-tool, cross-cutting, and MCP stdio
     ├── test_atspi_service_acquisition.py # Bounded service-file acquisition, descriptor guards, preflight
     ├── test_atspi_exec_security.py       # Literal argv execution; no implicit PATH or shell fallback

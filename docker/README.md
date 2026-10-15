@@ -232,9 +232,10 @@ The suite is organized by tool: one file per 1.0 tool for engine-level behavior,
 |---|---|
 | `tests/unit/test_spoken_name.py` | `spoken_name.py`: NFC/case folding, significant compatibility characters, Unicode whitespace, the seven allowed terminal punctuation marks, and word boundaries. |
 | `tests/unit/test_dbus_service_file.py` | `dbus_service_file.py`: `Exec=` argument splitting compared with real dbus-daemon activation, first-group/first-`Exec` rules, malformed files, line endings, and no expansion. |
+| `tests/unit/test_e2e_shards.py` | Behavioral subprocess tests for row-local E2E shard aggregation: exact five-file coverage, successful shard results, collected/full count agreement, and isolation from other rows. |
 | `tests/e2e/transient_probe.py` | GTK parent/child/nested transient windows for independent desktop-propagation and modal-refusal checks. |
 
-KWin-free tests live in `tests/unit/` and run on the host with `uv run pytest tests/unit` (CI's `unit` job, Python 3.12 to 3.14; dbus-python 1.4.0 does not import on CPython 3.15 yet). They cover the schemas against the design, unknown-argument and removed-tool errors, the renderers (`test_render.py` goldens), held-input state machines, selector and locator matching, KWin script rendering, CLI value parsing, and the documentation gates.
+KWin-free tests live in `tests/unit/` and run on the host with `uv run pytest tests/unit` (CI's `unit` job, Python 3.12 to 3.14; dbus-python 1.4.0 does not import on CPython 3.15 yet). They cover the schemas against the design, unknown-argument and removed-tool errors, the renderers (`test_render.py` goldens), held-input state machines, selector and locator matching, KWin script rendering, CLI value parsing, row-local shard-status aggregation behavior, and the documentation gates.
 
 The CI workflow (`.github/workflows/e2e.yml`) runs `python -m pytest tests -v -m "not slow"` in the image, sharded across jobs, so it also collects `tests/unit`. `.github/workflows/e2e-slow.yml` runs the tests marked `slow`. The image's default command runs `tests/e2e`; `scripts/run-e2e-docker.sh` runs the whole `tests` tree unless you name a test path.
 
@@ -283,7 +284,7 @@ docker.log
 docker-processes.txt
 ```
 
-CI stores the same evidence under `artifacts/e2e/<label>/` and uploads it as `e2e-<label>`. Lint and type checks run only in the Debian rows because they do not depend on the distro. The native runner matrix is:
+CI stores shard evidence under `artifacts/e2e/<label>-s<N>/` and uploads one diagnostic artifact and one status artifact per shard, plus one compressed image artifact per row. Lint and type checks run only in the Debian rows because they do not depend on the distro. The native runner matrix is:
 
 | Label | Image | Runner |
 |---|---|---|
@@ -297,7 +298,16 @@ CI stores the same evidence under `artifacts/e2e/<label>/` and uploads it as `e2
 
 The Arch Linux image has no arm64 row because no current Arch-family arm64 base image exists.
 
-Every row fails the workflow on any test failure.
+CI builds one image for each row once per workflow run, exports it as a compressed artifact, and
+shares it with that row's five test shards. The 35 shards feed seven independent required checks,
+one per row. Each check reads only its own five status files and requires every shard to succeed
+and the collected test count to equal the full collection count. A failure in another row does
+not change that result. The shard command keeps the `not slow` selection, strict skip handling,
+layer-shell requirement, and existing timeouts. CI artifacts are retained for one day.
+
+Artifacts are namespaced by workflow attempt. Rerun the whole workflow to rebuild each image and
+produce a matching set of five shard statuses; an individual job rerun does not reuse artifacts
+from another attempt.
 
 One test, the missing-command case of `test_app_launch_log.py`, fails only when the container runs on an emulated kernel such as an arm64 Docker host: qemu-user lets `execve` of a missing file report as exit 127 in the child instead of raising `FileNotFoundError`, so `app_launch` reports a launched process that immediately died. On a native amd64 runner the assertion holds.
 

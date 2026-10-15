@@ -82,14 +82,21 @@ def test_checker_accepts_successful_row_and_ignores_other_row_failure(tmp_path: 
     assert result.stderr == ""
 
 
-@pytest.mark.parametrize("state", ["failure", "cancelled", "skipped"])
+@pytest.mark.parametrize(
+    ("shard", "state"),
+    [(shard, state) for state in ("failure", "cancelled", "skipped") for shard in (1, 3, 5)],
+)
 @pytest.mark.qa("QA-PKG-015")
-def test_checker_rejects_non_success_shard_states(tmp_path: Path, state: str) -> None:
-    _write_row(tmp_path, result=state)
+def test_checker_rejects_non_success_shard_states(tmp_path: Path, shard: int, state: str) -> None:
+    _write_row(tmp_path)
+    status_file = tmp_path / f"amd64-s{shard}.txt"
+    status_file.write_text(
+        _status(2, result=state, full=10 if shard == 1 else None), encoding="utf-8"
+    )
 
     result = _run_checker(tmp_path)
 
-    _assert_failure(result, f"reports result {state!r}")
+    _assert_failure(result, f"amd64-s{shard}.txt reports result {state!r}")
 
 
 @pytest.mark.parametrize(
@@ -150,6 +157,16 @@ def test_checker_rejects_invalid_full_collection_metadata(
     result = _run_checker(tmp_path)
 
     _assert_failure(result, diagnostic)
+
+
+@pytest.mark.qa("QA-PKG-015")
+def test_checker_rejects_duplicate_full_metadata(tmp_path: Path) -> None:
+    _write_row(tmp_path)
+    (tmp_path / "amd64-s2.txt").write_text(_status(2, full=10), encoding="utf-8")
+
+    result = _run_checker(tmp_path)
+
+    _assert_failure(result, "record full exactly once (found 2)")
 
 
 @pytest.mark.parametrize(

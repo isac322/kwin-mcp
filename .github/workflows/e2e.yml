@@ -170,7 +170,6 @@ jobs:
           name: e2e-${{ matrix.row.label }}-s${{ matrix.shard }}-attempt-${{ github.run_attempt }}
           path: ${{ env.E2E_ARTIFACT_DIR }}
           if-no-files-found: warn
-          retention-days: 1
 
       - name: Record the shard result
         if: always()
@@ -183,7 +182,6 @@ jobs:
           name: e2e-status-${{ matrix.row.label }}-attempt-${{ github.run_attempt }}-s${{ matrix.shard }}
           path: shard-status/
           if-no-files-found: error
-          retention-days: 1
 
   build-image:
     name: Build E2E image (${{ matrix.row.label }})
@@ -218,6 +216,7 @@ jobs:
   virtual-session:
     name: Virtual KWin session (${{ matrix.row.label }})
     needs: virtual-session-shard
+    # Required checks must run after shard failures: GitHub treats skipped checks as passing.
     if: always()
     strategy:
       fail-fast: false

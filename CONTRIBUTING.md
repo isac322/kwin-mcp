@@ -221,8 +221,8 @@ distro-and-architecture rows, uploads a compressed image artifact within the sam
 and shares that artifact with the row's five test shards. The 35 shards feed seven independent
 required checks, one per row; each check reads only its own five shard results and collection
 counts. Shard execution keeps the `not slow` selection, strict skip handling, layer-shell
-requirement, and existing timeouts. CI artifacts are retained for one day, and artifact names
-include the workflow attempt. Rerun the whole workflow to rebuild the images and produce matching
+requirement, and existing timeouts. Image artifacts are retained for one day; diagnostic and status
+artifacts keep the repository's default retention. Artifact names include the workflow attempt.
 shard statuses; an individual job rerun does not reuse artifacts from another attempt. The local
 `scripts/run-e2e-docker.sh` interface is unchanged.
 

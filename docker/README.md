@@ -303,7 +303,8 @@ shares it with that row's five test shards. The 35 shards feed seven independent
 one per row. Each check reads only its own five status files and requires every shard to succeed
 and the collected test count to equal the full collection count. A failure in another row does
 not change that result. The shard command keeps the `not slow` selection, strict skip handling,
-layer-shell requirement, and existing timeouts. CI artifacts are retained for one day.
+layer-shell requirement, and existing timeouts. Image artifacts are retained for one day; diagnostic
+and status artifacts keep the repository's default retention.
 
 Artifacts are namespaced by workflow attempt. Rerun the whole workflow to rebuild each image and
 produce a matching set of five shard statuses; an individual job rerun does not reuse artifacts

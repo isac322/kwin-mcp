@@ -32,9 +32,12 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 import gi
 
-from kwin_mcp.models import Locator
+from kwin_mcp.models import Locator, MatchMode
+from kwin_mcp.spoken_name import SpokenNameKey, normalize_spoken_name, spoken_name_matches
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from kwin_mcp.geometry import KWinWindow
 
 gi.require_version("Atspi", "2.0")
@@ -133,14 +136,24 @@ class _Criteria:
     query: str = ""
     role: str = ""
     states: tuple[str, ...] = ()
+    match: MatchMode = "substring"
+    spoken: SpokenNameKey | None = None
 
     @classmethod
     def from_locator(cls, locator: Locator) -> _Criteria:
         return cls(
             app=(locator.app or "").lower(),
-            query=(locator.query or "").lower(),
+            query=(
+                " ".join((locator.query or "").casefold().split())
+                if locator.match == "exact"
+                else (locator.query or "").lower()
+            ),
             role=(locator.role or "").lower(),
             states=tuple(locator.states or ()),
+            match=locator.match,
+            spoken=normalize_spoken_name(locator.query or "")
+            if locator.match == "spoken"
+            else None,
         )
 
     def matches_app(self, app_name: str) -> bool:
@@ -148,11 +161,15 @@ class _Criteria:
         return self.app in app_name.lower()
 
     def matches_text(self, name: str, role: str, description: str) -> bool:
-        """Role (exact) and query (substring of name/role/description), case-insensitive."""
+        """Role is exact; query is substring text or an exact/spoken accessible name."""
         if self.role and role.lower() != self.role:
             return False
         if not self.query:
             return True
+        if self.match == "exact":
+            return " ".join(name.casefold().split()) == self.query
+        if self.match == "spoken" and self.spoken is not None:
+            return spoken_name_matches(self.spoken, normalize_spoken_name(name))
         return (
             self.query in name.lower()
             or self.query in role.lower()
@@ -542,17 +559,11 @@ class _Candidate:
     action: str
 
 
-def _strict_candidates(criteria: _Criteria, wanted: str) -> tuple[list[_Candidate], list[str]]:
-    """Every (element, action) pair whose element matches and whose action is ``wanted``.
-
-    ``wanted`` is lowercased; action names compare case-insensitively. Also
-    returns the actions the matching elements expose, for the zero-candidate
-    refusal. Discovery must be complete: every element in scope is fully
-    read, because a read failure could hide the real unique match — or a
-    second match that must refuse the action. Any failed read, and any
-    subtree deeper than ``_ACTION_SEARCH_MAX_DEPTH``, raises
-    :class:`_IncompleteDiscoveryError`.
-    """
+def _strict_candidates(
+    criteria: _Criteria, wanted: str | Sequence[str]
+) -> tuple[list[_Candidate], list[str]]:
+    """One preferred matching action per element, with fail-closed discovery."""
+    priorities = [wanted.lower()] if isinstance(wanted, str) else [a.lower() for a in wanted]
     candidates: list[_Candidate] = []
     exposed: list[str] = []
 
@@ -599,6 +610,7 @@ def _strict_candidates(criteria: _Criteria, wanted: str) -> tuple[list[_Candidat
                     action_count = action_iface.get_n_actions()
                 except Exception as exc:
                     raise _IncompleteDiscoveryError(f"could not read action count: {exc}") from exc
+                matched_actions: dict[str, str] = {}
                 for index in range(action_count):
                     try:
                         available = action_iface.get_action_name(index) or ""
@@ -607,9 +619,15 @@ def _strict_candidates(criteria: _Criteria, wanted: str) -> tuple[list[_Candidat
                         raise _IncompleteDiscoveryError(msg) from exc
                     if available and available not in exposed:
                         exposed.append(available)
-                    if available.lower() == wanted:
-                        entry = _RefEntry(element, role, app_name, depth, application, toplevel)
-                        candidates.append(_Candidate(entry, name, available))
+                    key = available.lower()
+                    if key in priorities:
+                        matched_actions.setdefault(key, available)
+                chosen = next(
+                    (matched_actions[a] for a in priorities if a in matched_actions), None
+                )
+                if chosen is not None:
+                    entry = _RefEntry(element, role, app_name, depth, application, toplevel)
+                    candidates.append(_Candidate(entry, name, chosen))
 
         try:
             child_count = element.get_child_count()
@@ -663,8 +681,10 @@ def _process_name(app: _AccessibleApp) -> str:
         return ""
 
 
-def _action_by_ref(ref: str, action_name: str) -> tuple[_RefEntry, ElementInfo, object, int, str]:
-    """The live element ``ref`` names and its action matching ``action_name``."""
+def _action_by_ref(
+    ref: str, action_name: str | Sequence[str]
+) -> tuple[_RefEntry, ElementInfo, object, int, str]:
+    """The live element and first available action in the caller's priority order."""
     resolved = _resolve_refs([ref])[0]
     if resolved.entry is None or resolved.info is None:
         raise _ActionRefusedError(resolved.error)
@@ -680,33 +700,44 @@ def _action_by_ref(ref: str, action_name: str) -> tuple[_RefEntry, ElementInfo, 
     except Exception as exc:
         msg = f"Stale ref {ref} (element no longer exists); re-run element_query."
         raise _ActionRefusedError(msg) from exc
-    wanted = action_name.lower()
-    indexes = [index for index, name in enumerate(names) if name.lower() == wanted]
-    if action_iface is None or not indexes:
-        msg = (
-            f'Element {ref} [{info.role}] "{info.name}" has no AT-SPI action '
-            f"'{action_name}'; it exposes: {_exposed([n for n in names if n])}.\n"
-            "Use one of those action names."
-        )
-        raise _ActionRefusedError(msg)
-    # Prefer the exact spelling when the element offers several casings.
-    index = next((i for i in indexes if names[i] == action_name), indexes[0])
-    return entry, info, action_iface, index, names[index]
+    requested = [action_name] if isinstance(action_name, str) else list(action_name)
+    for wanted in requested:
+        indexes = [index for index, name in enumerate(names) if name.lower() == wanted.lower()]
+        if action_iface is not None and indexes:
+            index = next((i for i in indexes if names[i] == wanted), indexes[0])
+            return entry, info, action_iface, index, names[index]
+    action_desc = (
+        f"no AT-SPI action {requested[0]!r}"
+        if len(requested) == 1
+        else f"none of AT-SPI actions {requested!r}"
+    )
+    msg = (
+        f'Element {ref} [{info.role}] "{info.name}" has {action_desc}; '
+        f"it exposes: {_exposed([n for n in names if n])}.\n"
+        "Use one of those action names."
+    )
+    raise _ActionRefusedError(msg)
 
 
 def _action_by_locator(
-    locator: Locator, action_name: str
+    locator: Locator, action_name: str | Sequence[str]
 ) -> tuple[_RefEntry, ElementInfo, object, int, str]:
     """The single (element, action) candidate of a strict search; refuse anything else."""
     criteria = _Criteria.from_locator(locator)
     try:
-        candidates, exposed = _strict_candidates(criteria, action_name.lower())
+        candidates, exposed = _strict_candidates(criteria, action_name)
     except _IncompleteDiscoveryError as exc:
         raise _ActionRefusedError(_incomplete_discovery_message(exc, criteria.app)) from exc
     desc = locator.describe()
+    requested = [action_name] if isinstance(action_name, str) else list(action_name)
     if not candidates:
+        target_desc = (
+            f"AT-SPI action {requested[0]!r}"
+            if len(requested) == 1
+            else f"any AT-SPI action in {requested!r}"
+        )
         msg = (
-            f"No element matching {desc} exposes AT-SPI action '{action_name}'. "
+            f"No element matching {desc} exposes {target_desc}. "
             f"Matching elements expose: {_exposed(exposed)}.\n"
             "Use one of those action names, or check the locator with element_query."
         )
@@ -717,16 +748,17 @@ def _action_by_locator(
             f'[{candidate.entry.role}] "{candidate.name}" in {candidate.entry.app} ({ref})'
             for candidate, ref in zip(candidates, refs, strict=True)
         )
+        expose_desc = f"{requested[0]!r}" if len(requested) == 1 else f"an action in {requested!r}"
         msg = (
             f"Refused ambiguous AT-SPI action: {len(candidates)} elements matching {desc} "
-            f"expose '{action_name}': {listed}\n"
+            f"expose {expose_desc}: {listed}\n"
             "Narrow the locator (role, states, app) or act on one ref."
         )
         raise _ActionRefusedError(msg)
     return _action_by_ref(refs[0], candidates[0].action)
 
 
-def invoke_action(address: dict[str, Any], action_name: str) -> dict[str, Any]:
+def invoke_action(address: dict[str, Any], action_name: str | Sequence[str]) -> dict[str, Any]:
     """Invoke one AT-SPI action on ``{ref}`` or on the strict ``{strict: locator}`` match.
 
     The ref path skips the search: the element must still be alive with its
@@ -1222,7 +1254,7 @@ def _handle_request(request: dict[str, Any]) -> dict[str, Any]:
     if op == "action":
         try:
             result = invoke_action(
-                dict(request.get("address") or {}), str(request.get("action_name", ""))
+                dict(request.get("address") or {}), request.get("action_name", "")
             )
         except _ActionRefusedError as exc:
             return {"ok": False, "error": str(exc)}

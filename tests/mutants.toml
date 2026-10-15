@@ -160,11 +160,11 @@ replace = '''
 [[mutant.patch]]
 file = "src/kwin_mcp/accessibility.py"
 search = '''
-                        entry = _RefEntry(element, role, app_name, depth, application, toplevel)'''
+                    entry = _RefEntry(element, role, app_name, depth, application, toplevel)'''
 replace = '''
-                        entry = _RefEntry(
-                            element, role, app_name, depth, application, toplevel, name=name
-                        )'''
+                    entry = _RefEntry(
+                        element, role, app_name, depth, application, toplevel, name=name
+                    )'''
 
 [[mutant.patch]]
 file = "src/kwin_mcp/accessibility.py"
@@ -203,16 +203,15 @@ note = "_strict_candidates appends one candidate per matching element regardless
 [[mutant.patch]]
 file = "src/kwin_mcp/accessibility.py"
 search = '''
-                    if available and available not in exposed:
-                        exposed.append(available)
-                    if available.lower() == wanted:
-                        entry = _RefEntry(element, role, app_name, depth, application, toplevel)
-                        candidates.append(_Candidate(entry, name, available))'''
+                chosen = next(
+                    (matched_actions[a] for a in priorities if a in matched_actions), None
+                )
+                if chosen is not None:
+                    entry = _RefEntry(element, role, app_name, depth, application, toplevel)
+                    candidates.append(_Candidate(entry, name, chosen))'''
 replace = '''
-                    if available and available not in exposed:
-                        exposed.append(available)
             entry = _RefEntry(element, role, app_name, depth, application, toplevel)
-            candidates.append(_Candidate(entry, name, wanted))'''
+            candidates.append(_Candidate(entry, name, priorities[0]))'''
 
 [[mutant]]
 id = "M07"
@@ -1253,9 +1252,9 @@ note = "element_act sends the action request with retry=True; the unit test reco
 [[mutant.patch]]
 file = "src/kwin_mcp/core.py"
 search = '''
-            resp = self._run_atspi("action", retry=False, address=address, action_name=action)'''
+            resp = self._run_atspi("action", retry=False, address=address, action_name=actions)'''
 replace = '''
-            resp = self._run_atspi("action", retry=True, address=address, action_name=action)'''
+            resp = self._run_atspi("action", retry=True, address=address, action_name=actions)'''
 
 # stale-name-scan: allow-begin
 [[mutant]]
@@ -1941,3 +1940,66 @@ search = '''
     selector = window if window_target is None else WindowSelector(id=window_target.window_id)'''
 replace = '''
     selector = window'''
+
+[[mutant]]
+id = "M83"
+module = "session.py"
+mutation = "KWIN_MCP_ATSPI_DIRECT_START opt-in treats any non-empty value as enabled"
+source = "PR atspi-direct-launch"
+qa = ["QA-SES-026"]
+tier = "e2e"
+kill = ["tests/e2e/test_session_atspi_direct_start.py::test_atspi_direct_start_uses_only_the_exact_server_opt_in"]
+note = "Checking truthiness instead of the exact value '1' incorrectly enables direct start for '0'."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/session.py"
+search = '''        direct_start = os.environ.get(ATSPI_DIRECT_START_ENV) == "1"'''
+replace = '''        direct_start = bool(os.environ.get(ATSPI_DIRECT_START_ENV))'''
+
+[[mutant]]
+id = "M84"
+module = "dbus_service_file.py"
+mutation = "service_file_argv does not verify Name key in service file"
+source = "PR atspi-direct-launch"
+qa = ["QA-SES-027"]
+tier = "unit"
+kill = ["tests/unit/test_dbus_service_file.py::test_malformed_service_files_are_rejected"]
+note = "A mismatched service Name would activate a service other than the requested bus name."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/dbus_service_file.py"
+search = '''    if group.get(_NAME_KEY) != name:
+        raise ServiceFileError(f"[{_SERVICE_SECTION}] does not have {_NAME_KEY}={name}")'''
+replace = '''    pass'''
+
+[[mutant]]
+id = "M85"
+module = "spoken_name.py"
+mutation = "normalize_spoken_name retains trailing sentence punctuation"
+source = "PR ui-action-spoken-name"
+qa = ["QA-ELEM-045"]
+tier = "unit"
+kill = ["tests/unit/test_spoken_name.py::test_each_whitelisted_trailing_mark_is_ignored"]
+note = "Retaining terminal marks prevents labels differing only by sentence punctuation from matching."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/spoken_name.py"
+search = '''    trimmed = " ".join(folded.split()).rstrip(TRAILING_PUNCTUATION + " ")'''
+replace = '''    trimmed = " ".join(folded.split())'''
+
+[[mutant]]
+id = "M86"
+module = "cli.py"
+mutation = "CLI boolean parsing falls back to False on unrecognized literal"
+source = "Commit c0c86c7 CLI bug fix"
+qa = ["QA-CLI-009"]
+tier = "unit"
+kill = ["tests/unit/test_cli_parse_value.py::test_unknown_bool_literals_are_rejected"]
+note = "Unknown boolean literals silently become False instead of raising ValueError."
+
+[[mutant.patch]]
+file = "src/kwin_mcp/cli.py"
+search = '''        else:
+            raise ValueError(f"Invalid boolean literal {value_str!r}; use true/false, 1/0, yes/no.")'''
+replace = '''        else:
+            value = False'''

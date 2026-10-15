@@ -911,6 +911,15 @@
       "query": {
        "type": "string"
       },
+      "match": {
+       "default": "substring",
+       "enum": [
+        "substring",
+        "exact",
+        "spoken"
+       ],
+       "type": "string"
+      },
       "role": {
        "type": "string"
       },
@@ -922,7 +931,9 @@
       }
      },
      "type": "object",
-     "default": {}
+     "default": {
+      "match": "substring"
+     }
     },
     "max_depth": {
      "default": 15,
@@ -984,6 +995,15 @@
         }
        ],
        "default": null
+      },
+      "match": {
+       "default": "substring",
+       "enum": [
+        "substring",
+        "exact",
+        "spoken"
+       ],
+       "type": "string"
       },
       "role": {
        "anyOf": [
@@ -1236,6 +1256,15 @@
           "query": {
            "type": "string"
           },
+          "match": {
+           "default": "substring",
+           "enum": [
+            "substring",
+            "exact",
+            "spoken"
+           ],
+           "type": "string"
+          },
           "role": {
            "type": "string"
           },
@@ -1258,7 +1287,7 @@
      "description": "{ref} from element_query, or {strict: Locator}."
     },
     "action": {
-     "description": "AT-SPI action name, case-insensitive, e.g. \"Press\", \"Toggle\", \"Activate\".",
+     "description": "AT-SPI action name, case-insensitive, e.g. \"Press\", \"Toggle\", \"Activate\" (or \"|\"-separated fallbacks, e.g. \"Press|click\").",
      "type": "string"
     },
     "capture": {

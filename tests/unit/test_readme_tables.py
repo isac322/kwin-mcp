@@ -165,6 +165,62 @@ def test_readme_documents_sigkill_retention_limit() -> None:
     assert "never reuses" in limits
 
 
+def test_readme_documents_matching_fallbacks_and_direct_atspi_opt_in() -> None:
+    text = _readme()
+    types = _section(text, "Shared Argument Types")
+    for term in (
+        'match?="substring"',
+        '"substring" | "exact" | "spoken"',
+        "name only",
+        "NFC",
+        "not fuzzy matching",
+        "action: str | list[str]",
+        'action=["Press", "click"]',
+        "rather than trying the alternatives after dispatch",
+    ):
+        assert term in types, term
+
+    tools = _section(text, "Available Tools")
+    query = next(line for line in tools.splitlines() if line.startswith("| `element_query` |"))
+    assert "locator.match" in query
+    for mode in ('"substring"', '"exact"', '"spoken"'):
+        assert mode in query
+    act = next(line for line in tools.splitlines() if line.startswith("| `element_act` |"))
+    assert "fallback list" in act
+    assert "action actually dispatched" in act
+
+    architecture = _section(text, "How It Works")
+    for term in (
+        "KWIN_MCP_ATSPI_DIRECT_START=1",
+        "only the exact value `1`",
+        "server's `KWIN_MCP_ATSPI_DIRECT_START`",
+        "not an application's `env`",
+        "Only after activation fails",
+        "XDG_DATA_DIRS",
+        "128 KiB",
+        "less confinement",
+        "do not verify this path on an SELinux-enforcing Fedora host",
+    ):
+        assert term in architecture, term
+
+
+def test_documentation_inventories_cover_ported_modules_and_tests() -> None:
+    contributing = (REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    docker = (REPO_ROOT / "docker" / "README.md").read_text(encoding="utf-8")
+    for name in (
+        "dbus_service_file.py",
+        "spoken_name.py",
+        "test_spoken_name.py",
+        "test_dbus_service_file.py",
+        "test_atspi_service_acquisition.py",
+        "test_atspi_exec_security.py",
+        "test_session_atspi_direct_start.py",
+        "transient_probe.py",
+    ):
+        assert name in contributing, name
+        assert name in docker, name
+
+
 def test_anchor_rules_match_github() -> None:
     """Calibration of the anchor rules against anchors GitHub generates."""
     assert _slug("Screenshot Size (`--screenshot-max-edge`, `region`, `max_edge`)") == (

@@ -266,7 +266,9 @@
     {
      "name": "locator",
      "required": false,
-     "default": {},
+     "default": {
+      "match": "substring"
+     },
      "description": null
     },
     {
@@ -307,7 +309,7 @@
     {
      "name": "action",
      "required": true,
-     "description": "AT-SPI action name, case-insensitive, e.g. \"Press\", \"Toggle\", \"Activate\"."
+     "description": "AT-SPI action name, case-insensitive, e.g. \"Press\", \"Toggle\", \"Activate\" (or \"|\"-separated fallbacks, e.g. \"Press|click\")."
     },
     {
      "name": "capture",

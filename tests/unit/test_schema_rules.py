@@ -235,7 +235,7 @@ _TYPES: dict[str, tuple[str, set[str]]] = {
     "Locator": (
         "AND-ed filters; app/query/role case-insensitive, states = exact AT-SPI state names; "
         "{} = all.",
-        {"app", "query", "role", "states"},
+        {"app", "query", "role", "states", "match"},
     ),
     "WindowSelector": (
         "AND-ed filters over all windows; mutators need exactly one match (errors list ids "

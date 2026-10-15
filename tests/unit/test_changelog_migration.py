@@ -1,8 +1,8 @@
 """Release gate: the CHANGELOG 1.0.0 entry documents the whole tool cutover.
 
-The entry must follow Keep a Changelog, map every 0.11 tool name (and the two PR #103
-names) to a 1.0 call that uses only 1.0 tool names, map every removed or renamed 0.11
-parameter, and state each of the 24 intentional behavior changes of the design. The
+The entry must follow Keep a Changelog, map every 0.11 and 0.12 tool name to a 1.0
+call that uses only 1.0 tool names, map every removed or renamed 0.11/0.12 parameter,
+and state each of the 24 intentional behavior changes of the design. The
 expected sets are written out here, not read from the server or the CHANGELOG itself.
 """
 
@@ -36,7 +36,7 @@ KEPT_TOOL_NAMES = frozenset(
 OLD_TOOL_NAMES = KEPT_TOOL_NAMES | frozenset(REMOVED_TOOL_NAMES)
 NEW_TOOL_NAMES = frozenset(TOOL_NAMES) - KEPT_TOOL_NAMES
 
-# Every (0.11 tool, parameter) that 1.0 removed or renamed.
+# Every (0.11/0.12 tool, parameter) that 1.0 removed or renamed.
 REMOVED_PARAMETERS = frozenset(
     {
         ("session_start", "app_command"),
@@ -59,6 +59,9 @@ REMOVED_PARAMETERS = frozenset(
         ("invoke_ui_action", "query"),
         ("invoke_ui_action", "app_name"),
         ("invoke_ui_action", "action_name"),
+        ("invoke_ui_action", "exact_name"),
+        ("invoke_ui_action", "spoken_name"),
+        ("invoke_ui_action", "fallback_action_names"),
         ("mouse_click", "x"),
         ("mouse_click", "y"),
         ("mouse_click", "double"),
@@ -272,7 +275,49 @@ def test_changelog_1_0_0_migration_table() -> None:
         assert anchor in anchors, anchor
     text = CHANGELOG.read_text(encoding="utf-8")
     assert "[Unreleased]: https://github.com/isac322/kwin-mcp/compare/v1.0.0...HEAD" in text
-    assert "[1.0.0]: https://github.com/isac322/kwin-mcp/compare/v0.11.0...v1.0.0" in text
+    assert "[1.0.0]: https://github.com/isac322/kwin-mcp/compare/v0.12.0...v1.0.0" in text
+    assert "[0.12.0]: https://github.com/isac322/kwin-mcp/compare/v0.11.0...v0.12.0" in text
+
+
+def test_changelog_preserves_0_12_release_and_matching_migration() -> None:
+    versions = _sections(CHANGELOG.read_text(encoding="utf-8"), 2)
+    assert list(versions)[:4] == [
+        "[Unreleased]",
+        "[1.0.0] - 2026-10-12",
+        "[0.12.0] - 2026-10-15",
+        "[0.11.0] - 2026-10-12",
+    ]
+    previous = versions["[0.12.0] - 2026-10-15"]
+    for term in (
+        "virtual_desktops",
+        "window_set_desktop",
+        "37 tools",
+        "exact_name",
+        "spoken_name",
+        "fallback_action_names",
+        "KWIN_MCP_ATSPI_DIRECT_START=1",
+        "embedded NUL bytes",
+        "unrecognized boolean",
+    ):
+        assert term in previous, term
+
+    migration = _entry_subsections()["Tool migration table"]
+    for term in (
+        'Locator(match="substring"|"exact"|"spoken")',
+        "element_query",
+        "element_act",
+        "action: str | list[str]",
+        'action=["Press", "click"]',
+        "counts once",
+        "never retries",
+        "KWIN_MCP_ATSPI_DIRECT_START=1",
+        "PR #111, merged after 0.12.0",
+        "active_window",
+        "window_list(filter={active:true})",
+        "desktop_list",
+        "window_place",
+    ):
+        assert term in migration, term
 
 
 def test_readme_links_resolve_to_the_release_entry() -> None:

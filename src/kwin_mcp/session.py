@@ -10,9 +10,11 @@ from __future__ import annotations
 import contextlib
 import os
 import select
+import shlex
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -21,7 +23,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from kwin_mcp import progress
+from kwin_mcp import dbus_service_file, progress
 from kwin_mcp.models import NO_RETENTION, AppEntry, AppLogResult, KeptPaths
 
 if TYPE_CHECKING:
@@ -54,6 +56,7 @@ _A11Y_STATUS_INTERFACE = "org.a11y.Status"
 # stalled bus never holds the registry lock or the server exit longer.
 _A11Y_CALL_TIMEOUT_S = 5.0
 _KWIN_BUS_NAME_TIMEOUT = 30
+ATSPI_DIRECT_START_ENV = "KWIN_MCP_ATSPI_DIRECT_START"
 
 
 class SessionType(Enum):
@@ -1172,14 +1175,32 @@ class Session:
 
     def _build_wrapper_script(self, config: SessionConfig) -> str:
         """Build the bash script that runs inside dbus-run-session."""
+        # The opt-in is read from the server's environment, never from a
+        # session's extra env. On failure the warning names it unless it is set.
+        direct_start = os.environ.get(ATSPI_DIRECT_START_ENV) == "1"
+        python_executable = sys.executable
+        helper = (
+            [python_executable, "-I", "-S", os.path.abspath(dbus_service_file.__file__)]
+            if direct_start and python_executable
+            else []
+        )
+        atspi_hint = (
+            ""
+            if direct_start
+            else f"; set {ATSPI_DIRECT_START_ENV}=1 to start it directly from its service files"
+        )
         return f"""\
+# Keep every background child in the registered group, even with inherited monitor mode.
+set +m
 echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
 
 # Ensure all child processes are cleaned up on exit.
-# The AT-SPI bus launcher and registryd are started via D-Bus
-# auto-activation below; they are terminated automatically when our
-# isolated session bus exits (dbus-run-session tears the bus down on
-# parent exit), so we only need to track KWin explicitly here.
+# The AT-SPI bus launcher and registryd are normally started via D-Bus
+# auto-activation below and exit with our isolated session bus
+# (dbus-run-session tears the bus down on parent exit). When activation is
+# denied and the direct start is enabled, they are started directly as children
+# of this script, in its process group, which session_stop signals as a whole.
+# Only KWin is tracked here.
 cleanup() {{
     kill $KWIN_PID 2>/dev/null
     wait $KWIN_PID 2>/dev/null
@@ -1187,8 +1208,8 @@ cleanup() {{
 trap cleanup EXIT TERM INT HUP
 
 # Bring up the AT-SPI accessibility bus via synchronous D-Bus activation.
-# Calling org.a11y.Bus.GetAddress makes dbus-daemon resolve the distro-provided
-# service file (/usr/share/dbus-1/services/org.a11y.Bus.service) and exec the
+# Calling org.a11y.Bus.GetAddress makes dbus-daemon resolve a service file from
+# the XDG data roots (typically /usr/share/dbus-1/services) and exec the
 # launcher at whatever path the current distro uses — /usr/libexec on
 # Fedora/Debian/Ubuntu, /usr/libexec/at-spi2 on openSUSE, /app/libexec on
 # Flatpak, and so on. A hardcoded candidate list silently misses every layout
@@ -1197,22 +1218,116 @@ trap cleanup EXIT TERM INT HUP
 # the wrapper already requires, so no extra dependency is introduced.
 # ATSPI_DBUS_IMPLEMENTATION=dbus-daemon (set in _build_env) prevents
 # dbus-broker from sharing the host's a11y bus.
-# The registry daemon comes up on its own when apps first touch the a11y
-# bus, so no manual bootstrap is needed here. Activation failure is reported
-# to the caller instead of being hidden: without the bus the first AT-SPI2
-# query itself activates the launcher and always returns an empty result.
+# After a successful activation the registry daemon comes up on its own when
+# apps first touch the a11y bus, so no manual bootstrap is needed. Activation
+# failure is reported to the caller instead of being hidden.
+#
+# When activation fails and KWIN_MCP_ATSPI_DIRECT_START=1, owned helper children
+# read the service files and exec the launcher and registry directly. Some
+# SELinux policies deny activation from a private dbus-run-session bus; direct
+# helpers instead run in the server's domain by specific operator opt-in.
+# The launcher validates both services before exec; the registry reads its own
+# service again at spawn. Lookup and exec share each child's readiness deadline.
+ATSPI_HELPER=({shlex.join(helper)})
+ATSPI_LAUNCHER_SERVICE=(launcher)
+ATSPI_REGISTRY_SERVICE=(registry)
+# Pair arguments are a unique job-command marker followed by a numeric PID.
+# Numeric probes only decide how long to poll; signals use Bash's owned jobs.
+# Keep this non-interactive shell's job control off and install no SIGCHLD trap:
+# native kill resolves and signals its live job while protecting the job table.
+atspi_alive() {{
+    while [ "$#" -ge 2 ]; do
+        builtin kill -0 "$2" 2>/dev/null && return 0
+        shift 2
+    done
+    return 1
+}}
+atspi_signal() {{
+    local sig=$1
+    shift
+    while [ "$#" -ge 2 ]; do
+        if builtin kill -0 "$2" 2>/dev/null; then
+            builtin kill -s "$sig" "%?$1" 2>/dev/null || :
+        fi
+        shift 2
+    done
+}}
+atspi_stop() {{
+    local deadline
+    # Signal every owned job first, then share one grace period across them.
+    atspi_signal TERM "$@"
+    deadline=$((SECONDS + {int(_APP_TERM_GRACE_SECONDS)}))
+    while atspi_alive "$@" && [ "$SECONDS" -lt "$deadline" ]; do
+        sleep 0.1
+    done
+    if atspi_alive "$@"; then
+        atspi_signal KILL "$@"
+        deadline=$((SECONDS + {int(_APP_KILL_GRACE_SECONDS)}))
+        while atspi_alive "$@" && [ "$SECONDS" -lt "$deadline" ]; do
+            sleep 0.1
+        done
+    fi
+    # Never wait: an uninterruptible child may survive the grace period, but
+    # remains in the private session group for the parent's bounded teardown.
+    return 0
+}}
+# Wait up to 5 s (by the clock, not by attempts) for name $2 to get an owner
+# on bus $1, giving up as soon as process $3 exits.
+atspi_wait_for_name() {{
+    local bus=$1 name=$2 pid=$3 deadline=$((SECONDS + 5))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if dbus-send "$bus" --print-reply=literal --reply-timeout=500 \\
+            --dest=org.freedesktop.DBus /org/freedesktop/DBus \\
+            org.freedesktop.DBus.NameHasOwner "string:$name" 2>/dev/null | grep -q true; then
+            return 0
+        fi
+        builtin kill -0 "$pid" 2>/dev/null || return 1
+        sleep 0.1
+    done
+    return 1
+}}
+atspi_start_directly() {{
+    local address launcher_pid registry_pid
+    [ "${{#ATSPI_HELPER[@]}}" -gt 0 ] || return 1
+    "${{ATSPI_HELPER[@]}}" "${{ATSPI_LAUNCHER_SERVICE[@]}}" >/dev/null &
+    launcher_pid=$!
+    if atspi_wait_for_name --session org.a11y.Bus "$launcher_pid" \\
+        && address=$(dbus-send --session --print-reply=literal --reply-timeout=5000 \\
+            --dest=org.a11y.Bus /org/a11y/bus org.a11y.Bus.GetAddress 2>/dev/null); then
+        address=$(echo $address)
+        "${{ATSPI_HELPER[@]}}" "${{ATSPI_REGISTRY_SERVICE[@]}}" >/dev/null &
+        registry_pid=$!
+        if atspi_wait_for_name "--bus=$address" org.a11y.atspi.Registry "$registry_pid"; then
+            return 0
+        fi
+        atspi_stop ATSPI_LAUNCHER_SERVICE "$launcher_pid" \\
+            ATSPI_REGISTRY_SERVICE "$registry_pid"
+        return 1
+    fi
+    # Leave no half-started accessibility bus behind.
+    atspi_stop ATSPI_LAUNCHER_SERVICE "$launcher_pid"
+    return 1
+}}
+ATSPI_UP=1
 if ! ATSPI_ERR=$(dbus-send --session --print-reply --reply-timeout=10000 \\
     --dest=org.a11y.Bus /org/a11y/bus \\
     org.a11y.Bus.GetAddress 2>&1 >/dev/null); then
     # Keep the warning on one line: multi-line stderr would read as several
     # unrelated diagnostics in the startup handshake.
     ATSPI_ERR=${{ATSPI_ERR%%$'\\n'*}}
-    echo "WARN: AT-SPI bus activation failed, accessibility tools may be unavailable" \\
-        "in this session: ${{ATSPI_ERR:-unknown error}}"
+    if atspi_start_directly; then
+        echo "WARN: AT-SPI bus activation failed (${{ATSPI_ERR:-unknown error}});" \\
+            "started the accessibility bus and registry directly instead"
+    else
+        echo "WARN: AT-SPI bus activation failed, accessibility tools may be unavailable" \\
+            "in this session: ${{ATSPI_ERR:-unknown error}}{atspi_hint}"
+        ATSPI_UP=0
+    fi
+fi
 # Switch accessibility on for every app of this session. The a11y bus belongs
 # to this private session bus, so the host desktop's setting is untouched.
 # It is set before any app runs, for apps that read it only at startup.
-elif ! ATSPI_ERR=$(dbus-send --session --print-reply --reply-timeout=10000 \\
+if [ "$ATSPI_UP" = 1 ] && ! ATSPI_ERR=$(dbus-send --session --print-reply --reply-timeout=10000 \\
     --dest=org.a11y.Bus /org/a11y/bus org.freedesktop.DBus.Properties.Set \\
     string:org.a11y.Status string:IsEnabled variant:boolean:true 2>&1 >/dev/null); then
     ATSPI_ERR=${{ATSPI_ERR%%$'\\n'*}}
@@ -1264,9 +1379,10 @@ fi
 # the session needs that name, so the wrapper waits for it here; READY only
 # means callers may talk to KWin immediately. The wait never hangs: stop as
 # soon as KWin dies, and give up after {_KWIN_BUS_NAME_TIMEOUT} s so a hung
-# bus name claim still reaches FAILED before the parent's handshake
-# deadline. dbus-send --reply-timeout bounds each probe reply; a bus that
-# stalls authentication leaves the parent deadline as the outer bound.
+# bus name claim reports FAILED. If earlier steps already used most of the
+# parent's handshake deadline, that deadline ends the startup first.
+# dbus-send --reply-timeout bounds each probe reply; a bus that stalls
+# authentication leaves the parent deadline as the outer bound.
 KWIN_NAME_DEADLINE=$((SECONDS + {int(_KWIN_BUS_NAME_TIMEOUT)}))
 while true; do
     kill -0 $KWIN_PID 2>/dev/null || break

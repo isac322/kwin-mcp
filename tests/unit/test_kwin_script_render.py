@@ -207,3 +207,55 @@ def test_geometry_helper_starts_without_pydantic() -> None:
         [sys.executable, "-c", probe], capture_output=True, text=True, check=True, timeout=30
     )
     assert result.stdout.strip() == "[]", result.stdout
+
+
+def _desktop_assignment_script() -> str:
+    """Render the production script without contacting KWin."""
+    return geometry._render_script(
+        geometry._SET_DESKTOP_SCRIPT_TEMPLATE,
+        {"window_id": "{parent}", "desktop_id": "d2", "check_only": False},
+    )
+
+
+@pytest.mark.qa("QA-WIN-028")
+def test_desktop_native_equality_skips_refusal_and_assignment() -> None:
+    script = _desktop_assignment_script()
+    # Only a non-equal desktop list may enter refusal or write w.desktops.
+    guard = "} else if (result.before.length !== 1 || result.before[0] !== String(desktop.id)) {"
+    assert guard in script
+    branch = script.partition(guard)[2].partition("\n        }\n")[0]
+    assert "var refused = refusal(w, String(desktop.id), windows);" in branch
+    assert "} else if (!checkOnly) {\n                w.desktops = [desktop];" in branch
+    assert script.count("refusal(w, String(desktop.id), windows)") == 1
+    assert script.count("w.desktops = [desktop]") == 1
+    # Moving non-normal window kinds remains supported by the 1.0 surface.
+    assert "normalWindow" not in script
+
+
+@pytest.mark.qa("QA-WIN-028")
+def test_desktop_traversal_stops_at_child_already_on_target() -> None:
+    script = _desktop_assignment_script()
+    refusal = script.partition("function refusal(")[2].partition("\nvar desktop = null;")[0]
+    stop = (
+        "if (c > 0 && memberships.length === 1 && memberships[0] === desktopId) {\n"
+        "            continue;\n"
+        "        }"
+    )
+    assert stop in refusal
+    # The native equality stop must precede both descendant and modal-parent
+    # traversal, otherwise grandchildren still become falsely related.
+    assert refusal.index(stop) < refusal.index("for (var t = 0; t < windows.length; t++)")
+    assert refusal.index(stop) < refusal.index("if (w.modal && w.transientFor")
+    assert refusal.index("var memberships = desktopIds(w);") < refusal.index(stop)
+
+
+@pytest.mark.qa("QA-WIN-028")
+def test_x11_group_transient_check_is_global_and_precedes_noop_guard() -> None:
+    script = _desktop_assignment_script()
+    refusal, _, assignment = script.partition("\nvar desktop = null;")
+    assert "windows[u].transient" not in refusal
+    check = "if (windows[u].transient && !windows[u].transientFor) {"
+    assert check in assignment
+    assert 'if (unsupported) {\n            result.refused = "unsupported";' in assignment
+    assert assignment.index("for (var u = 0; u < windows.length; u++)") < assignment.index(check)
+    assert assignment.index(check) < assignment.index("} else if (result.before.length")

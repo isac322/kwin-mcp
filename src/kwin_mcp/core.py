@@ -19,7 +19,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -912,12 +912,18 @@ class AutomationEngine:
             # The startup wrapper switches IsEnabled on; report what the bus
             # actually says, so a failed switch is not claimed as "on" (the
             # wrapper's own warning is already in the startup warnings).
-            try:
-                if not accessibility_enabled(info.dbus_address):
-                    accessibility = "off"
-            except AccessibilityError as exc:
+            if any(
+                "AT-SPI bus activation failed, accessibility tools may be unavailable" in w
+                for w in info.startup_warnings
+            ):
                 accessibility = "unavailable"
-                warnings.append(f"org.a11y.Status unavailable ({exc})")
+            else:
+                try:
+                    if not accessibility_enabled(info.dbus_address):
+                        accessibility = "off"
+                except AccessibilityError as exc:
+                    accessibility = "unavailable"
+                    warnings.append(f"org.a11y.Status unavailable ({exc})")
         except Exception as exc:
             # Roll back everything started so far. Exception, not BaseException:
             # CLI interrupts are cleaned up by its own exit path.
@@ -1249,7 +1255,7 @@ class AutomationEngine:
         )
 
     def element_act(
-        self, element: ElementAddress, action: str, capture: Capture | None = None
+        self, element: ElementAddress, action: str | Sequence[str], capture: Capture | None = None
     ) -> ElementActResult:
         """Invoke a named AT-SPI action on exactly one element ({ref} or {strict: Locator}).
 
@@ -1257,8 +1263,25 @@ class AutomationEngine:
         incomplete discovery) raise. A matched action whose dispatch the
         application did not confirm is reported as sent, since it may have run.
         """
-        if not action:
+        if isinstance(action, str):
+            if not action.strip():
+                raise ValueError('element_act needs an action name, e.g. "Press".')
+            requested: Sequence[object] = action.split("|") if "|" in action else [action]
+        elif isinstance(action, Sequence):
+            if not action:
+                raise ValueError("element_act action list cannot be empty.")
+            requested = action
+        else:
             raise ValueError('element_act needs an action name, e.g. "Press".')
+        actions: list[str] = []
+        seen: set[str] = set()
+        for name in requested:
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError("element_act action names must be non-blank strings.")
+            name = name.strip()
+            if name.lower() not in seen:
+                seen.add(name.lower())
+                actions.append(name)
         self._require_session()
         address: dict[str, object]
         if isinstance(element, RefAddr):
@@ -1271,18 +1294,19 @@ class AutomationEngine:
         # invoke the action even after this request timed out or the worker was
         # torn down. A request that never reached a worker cannot have run.
         try:
-            resp = self._run_atspi("action", retry=False, address=address, action_name=action)
+            resp = self._run_atspi("action", retry=False, address=address, action_name=actions)
         except _AtspiRequestNotSentError:
             raise
         except RuntimeError as exc:
             msg = f"{exc}. The action may still have run; check the UI before retrying."
             raise RuntimeError(msg) from exc
         result = self._atspi_result(resp)
+        chosen_action = str(result["action"])
 
         dispatch_error = result.get("error")
         if not dispatch_error and not result.get("invoked"):
             msg = (
-                f"AT-SPI action {action!r} matched one element but "
+                f"AT-SPI action {chosen_action!r} matched one element but "
                 "the application reported failure."
             )
             raise RuntimeError(msg)
@@ -1296,7 +1320,7 @@ class AutomationEngine:
             held = self._input.held()
         return ElementActResult(
             element=UIElement.from_worker(result["element"]),
-            action=str(result.get("action") or action),
+            action=chosen_action,
             dispatch="sent_unconfirmed" if dispatch_error else "confirmed",
             dispatch_error=str(dispatch_error) if dispatch_error else None,
             frames=frames,

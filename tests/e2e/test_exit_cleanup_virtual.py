@@ -66,6 +66,20 @@ from typing import IO, TYPE_CHECKING
 import pytest
 from mcp_harness import LEGACY_PROTOCOL_VERSION
 from session_harness import live_kwin
+from test_session_atspi_direct_start import (
+    _deny_first_a11y_activation,
+    _install_interpreter_shim,
+    _process_identity,
+    _read_process_identity,
+    _real_launcher_argv,
+    _real_service_file,
+    _reap,
+    _record_identity,
+    _service_data_dir,
+    _spawn_neighbor,
+)
+
+from kwin_mcp.session import ATSPI_DIRECT_START_ENV
 
 if TYPE_CHECKING:
     from session_harness import LiveKWin
@@ -1851,3 +1865,207 @@ def test_signal_exit_codes_after_cleanup(signum: int, second_sigterm: bool) -> N
         if server.poll() is None:
             server.kill()
             server.wait()
+
+
+@pytest.mark.qa("QA-SES-028")
+@pytest.mark.parametrize("shell_options", ["unset", "monitor"], ids=["unset", "inherited-monitor"])
+@pytest.mark.parametrize("fault", ["launcher", "lookup"])
+def test_server_sigterm_during_direct_atspi_start_cleans_owned_children(
+    fault: str, shell_options: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both shell-option modes keep stalled AT-SPI children owned across signal exit."""
+    real_interpreter = sys.executable
+    # Set the fresh installed server's actual environment, not a wrapper mock.
+    # Unset controls must not inherit unrelated Bash options from the test host.
+    monkeypatch.delenv("SHELLOPTS", raising=False)
+    if shell_options == "monitor":
+        monkeypatch.setenv("SHELLOPTS", "monitor")
+    identity_path = tmp_path / "stalled-launcher-identity"
+    launcher = tmp_path / "stalled-launcher"
+    if fault == "launcher":
+        launcher.write_text(
+            "#!/bin/bash\n"
+            f"{_record_identity(identity_path)}"
+            "trap '' TERM\n"
+            "exec /bin/sleep infinity\n"
+        )
+        launcher.chmod(0o755)
+        launcher_exec = shlex.quote(str(launcher))
+    else:
+        launcher_exec = shlex.join(_real_launcher_argv())
+    data_dir = _service_data_dir(tmp_path, monkeypatch, launcher_exec)
+    (data_dir / "dbus-1/accessibility-services/org.a11y.atspi.Registry.service").write_text(
+        _real_service_file("accessibility-services/org.a11y.atspi.Registry.service")
+    )
+    monkeypatch.setenv(ATSPI_DIRECT_START_ENV, "1")
+    _deny_first_a11y_activation(tmp_path, monkeypatch)
+    argv = [real_interpreter, "-m", "kwin_mcp"]
+    log: Path | None = None
+    if fault == "lookup":
+        # Change the interpreter dependency in the fresh installed server, not
+        # just in pytest: its real session wrapper must launch the stalled role.
+        with monkeypatch.context() as interpreter_patch:
+            log = _install_interpreter_shim(
+                tmp_path, interpreter_patch, stall_role="launcher", spoof_stdout=False
+            )
+        entry = (
+            "import runpy,sys; "
+            f"sys.executable = {str(tmp_path / 'interpreter-shim')!r}; "
+            "runpy.run_module('kwin_mcp', run_name='__main__')"
+        )
+        argv = [real_interpreter, "-c", entry]
+
+    neighbor = _spawn_neighbor(f"kwin-mcp-exit-neighbor-{tmp_path.name}")
+    neighbor_identity = _process_identity(neighbor.pid)
+    server: subprocess.Popen[str] | None = None
+    pgid: int | None = None
+    owned_identities: dict[int, tuple[int, int]] = {}
+    stalled_identity: tuple[int, int, int] | None = None
+
+    def remember_owned_children() -> None:
+        # Capture descendants while their parentage still proves test ownership.
+        # Inherited monitor can move a child outside the registered wrapper group.
+        roots = [
+            pid for pid, identity in owned_identities.items() if _process_identity(pid) == identity
+        ]
+        if pgid is not None and pgid in roots:
+            roots.extend(_group_pids(pgid))
+        seen: set[int] = set()
+        while roots:
+            pid = roots.pop()
+            if pid in seen:
+                continue
+            seen.add(pid)
+            identity = _process_identity(pid)
+            if identity is None:
+                continue
+            owned_identities[pid] = identity
+            roots.extend(_children(pid))
+
+    try:
+        assert neighbor_identity is not None
+        server = _spawn_with_stderr(argv)
+        reader = _LineReader(_stdout(server))
+        assert server.stderr is not None
+        stderr_reader = _LineReader(server.stderr)
+        _initialize_server(server, reader)
+        request = {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "session_start", "arguments": {}},
+        }
+        stdin = _stdin(server)
+        stdin.write(json.dumps(request) + "\n")
+        stdin.flush()
+        pgid = _wait_for_pgid(server.pid, SESSION_START_TIMEOUT_SECONDS)
+        assert pgid is not None, "session_start never spawned its owned wrapper"
+        wrapper_identity = _process_identity(pgid)
+        assert wrapper_identity is not None and wrapper_identity[0] == pgid
+        owned_identities[pgid] = wrapper_identity
+
+        def child_is_waiting() -> bool:
+            nonlocal stalled_identity
+            try:
+                if log is None:
+                    candidate = _read_process_identity(identity_path)
+                else:
+                    records = [
+                        row.split()
+                        for row in log.read_text().splitlines()
+                        if row.split()[:1] == ["launcher"]
+                    ]
+                    if not records or len(records[-1]) != 4:
+                        return False
+                    _, pid_text, pgid_text, start_text = records[-1]
+                    candidate = (int(pid_text), int(pgid_text), int(start_text))
+            except (OSError, ValueError):
+                return False
+            pid, child_pgid, start_time = candidate
+            if _process_identity(pid) != (child_pgid, start_time):
+                return False
+            owned_identities[pid] = (child_pgid, start_time)
+            child_argv = _cmdline(pid)
+            # exec happens after installing SIG_IGN, so this is an event guard,
+            # not a sleep that might signal the child before its trap is ready.
+            if not child_argv or os.path.basename(child_argv[0]) != "sleep":
+                return False
+            if child_argv[1:] != ["infinity"]:
+                return False
+            stalled_identity = (pid, child_pgid, start_time)
+            return True
+
+        assert _wait_until(child_is_waiting, SESSION_START_TIMEOUT_SECONDS), (
+            f"the {fault} fault never reached its actual owned child wait"
+        )
+        assert stalled_identity is not None
+        remember_owned_children()
+        assert stalled_identity[1] == pgid, (
+            f"AT-SPI {fault} child escaped the owned session group with "
+            f"SHELLOPTS={shell_options}: child={stalled_identity}, wrapper={pgid}"
+        )
+        assert (tmp_path / "activation-denied").is_file()
+        assert server.poll() is None, "server exited before receiving SIGTERM"
+
+        # Leave stdin open: only SIGTERM, not an incidental transport EOF, exits.
+        deadline = time.monotonic() + SERVER_EXIT_TIMEOUT_TOOL_OVERRUN_SECONDS
+        server.send_signal(signal.SIGTERM)
+        exit_code = server.wait(timeout=max(0.0, deadline - time.monotonic()))
+        assert exit_code == 143, f"expected exit 143 on SIGTERM, got {exit_code}"
+
+        def drain_to_eof(stream_reader: _LineReader) -> str:
+            lines: list[str] = []
+            while time.monotonic() < deadline:
+                try:
+                    line = stream_reader.get(
+                        timeout=min(0.1, max(0.0, deadline - time.monotonic()))
+                    )
+                except EOFError:
+                    return "".join(lines)
+                if line is not None:
+                    lines.append(line)
+            pytest.fail(f"{fault} child retained a server pipe beyond the exit bound")
+
+        drain_to_eof(reader)
+        stderr = drain_to_eof(stderr_reader)
+        assert "kwin-mcp: exit cleanup:" in stderr, stderr
+        assert _wait_until(lambda: not _group_pids(pgid), max(0.0, deadline - time.monotonic())), (
+            f"owned group {pgid} survived shutdown: {sorted(_group_pids(pgid))}"
+        )
+        pid, child_pgid, start_time = stalled_identity
+        assert _process_identity(pid) != (child_pgid, start_time), stalled_identity
+        assert _process_identity(neighbor.pid) == neighbor_identity
+        assert _group_pids(neighbor.pid) == {neighbor.pid}
+    finally:
+        try:
+            if server is not None:
+                remember_owned_children()
+                if server.poll() is None:
+                    # Give real cleanup a chance even when an event assertion fails.
+                    server.send_signal(signal.SIGTERM)
+                    with contextlib.suppress(subprocess.TimeoutExpired):
+                        server.wait(timeout=SERVER_EXIT_TIMEOUT_TOOL_OVERRUN_SECONDS)
+                for owned_pgid in {identity[0] for identity in owned_identities.values()}:
+                    if owned_pgid <= 1 or owned_pgid in (os.getpgrp(), neighbor.pid):
+                        continue
+                    if not any(
+                        identity[0] == owned_pgid and _process_identity(pid) == identity
+                        for pid, identity in owned_identities.items()
+                    ):
+                        continue
+                    # An exact live PID/group/start-time match keeps this group's
+                    # ID reserved. This also cleans up a proven test-owned child
+                    # that escaped under monitor; never kill a reused numeric PID.
+                    with contextlib.suppress(ProcessLookupError, PermissionError):
+                        os.killpg(owned_pgid, signal.SIGKILL)
+                    _wait_until(
+                        lambda target=owned_pgid: not _group_pids(target), CLEANUP_SETTLE_SECONDS
+                    )
+                if server.poll() is None:
+                    server.kill()
+                    server.wait(timeout=SERVER_EXIT_TIMEOUT_TOOL_OVERRUN_SECONDS)
+                for stream in (server.stdin, server.stdout, server.stderr):
+                    if stream is not None:
+                        stream.close()
+        finally:
+            _reap(neighbor)

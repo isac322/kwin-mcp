@@ -26,6 +26,7 @@ from kwin_mcp.models import (
     SessionInfo,
     WaylandGlobals,
 )
+from kwin_mcp.session import Session
 
 
 class _StubEngine:
@@ -109,6 +110,33 @@ def test_successful_command_prints_its_result(capsys: pytest.CaptureFixture[str]
     captured = capsys.readouterr()
     assert captured.out == "Clipboard set: 'hello'\n"
     assert captured.err == ""
+
+
+def test_invalid_boolean_is_rejected_before_any_session_or_action(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A misspelled boolean must fail parsing, not silently start a session with False."""
+    started = False
+
+    def unexpected_start(_session: Session, _config: object) -> None:
+        nonlocal started
+        started = True
+        msg = "invalid boolean reached Session.start"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(Session, "start", unexpected_start)
+    engine = AutomationEngine()
+    shell = KwinMcpShell(engine=engine)
+
+    shell.default("session_start enable_clipboard=banana")
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    _assert_one_error_line(captured.err, "Error: Invalid boolean literal")
+    assert "banana" in captured.err, captured.err
+    assert "true/false" in captured.err, captured.err
+    assert started is False
+    assert engine.session_info().session is None
 
 
 # Real engine, no session: every line fails before any KWin is needed.

@@ -29,7 +29,7 @@ CHECK_KINDS = frozenset({"pytest", "workflow-step", "checklist", "script"})
 GATING = frozenset({"P0", "P1"})
 QA_ID = re.compile(r"QA-[A-Z0-9]+-\d{3}")
 MUTANT_ID = re.compile(r"M\d{2}")
-MUTANT_COUNT = 82
+MUTANT_COUNT = 86
 
 
 @dataclass(frozen=True)

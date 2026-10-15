@@ -232,8 +232,10 @@ src/kwin_mcp/
 ├── server.py          # MCP server: tool registration, schema post-processing, gates, consent, resources, flags
 ├── cli.py             # Interactive REPL + pipe mode exposing the same 29 commands
 ├── session.py         # KWin session management (isolated virtual + live) and the owned-process registry for exit cleanup
+├── dbus_service_file.py # Bounded D-Bus service-file parser and isolated direct AT-SPI exec helper
 ├── screenshot.py      # ScreenShot2, Spectacle, and X11/scrot capture normalized to logical pixels
 ├── accessibility.py   # AT-SPI2 worker: element queries, refs, and actions
+├── spoken_name.py     # Deterministic Unicode normalization and spoken accessible-name matching
 ├── geometry.py        # Windows, virtual desktops, activation, and output topology via KWin scripting
 ├── clipboard.py       # Private Wayland data-control helper for keyboard_type(method="unicode") paste
 ├── dbus_args.py       # dbus_call argument parser (dbus-send strings and typed JSON)
@@ -259,11 +261,16 @@ scripts/
 tests/
 ├── conftest.py         # Suite policy: markers (qa, slow, visual), strict skips, sharding
 ├── tool_surface.py     # The 29 tool names and the 28 removed names, written out independently of the server
-├── unit/               # KWin-free tests: schemas vs the design, unknown arguments, renderers, held input,
-│                       #   selectors, KWin script rendering, CLI parsing, README/CHANGELOG gates
-└── e2e/                # Installed-package Docker tests: one file per tool, cross-cutting files, and
-                        #   test_mcp_* files over stdio; harnesses (mcp_harness.py, session_harness.py,
-                        #   visual_harness.py), oracles (kwin_oracle.py, atspi_oracle.py), and probes
+├── unit/               # KWin-free schemas, renderers, held input, selectors, CLI, and docs gates
+│   ├── test_spoken_name.py       # Spoken-name Unicode, whitespace, punctuation, and word-boundary rules
+│   └── test_dbus_service_file.py # Service-file parsing and argv parity with dbus-daemon activation
+└── e2e/                # Installed-package Docker tests: per-tool, cross-cutting, and MCP stdio
+    ├── test_atspi_service_acquisition.py # Bounded service-file acquisition, descriptor guards, preflight
+    ├── test_atspi_exec_security.py       # Literal argv execution; no implicit PATH or shell fallback
+    ├── test_session_atspi_direct_start.py # Explicit opt-in, activation denial, rollback, and XDG roots
+    └── transient_probe.py               # GTK parent, child, and nested transient-window test fixture
+                        #   Harnesses: mcp_harness.py, session_harness.py, visual_harness.py
+                        #   Oracles: kwin_oracle.py, atspi_oracle.py; other per-tool files omitted here
 
 integrations/
 ├── claude-code/

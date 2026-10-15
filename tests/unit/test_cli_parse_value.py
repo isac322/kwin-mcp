@@ -159,6 +159,28 @@ def test_scalars_keep_their_conversions() -> None:
     assert _parse_value("left", Any) == "left"
 
 
+@pytest.mark.qa("QA-CLI-009")
+@pytest.mark.parametrize("literal", ["true", "True", "TRUE", "tRuE", "yes", "YES", "Yes", "1"])
+def test_true_literals_convert_to_true(literal: str) -> None:
+    assert _parse_value(literal, bool) is True
+    assert _parse_value(literal, bool | None) is True
+
+
+@pytest.mark.qa("QA-CLI-009")
+@pytest.mark.parametrize("literal", ["false", "False", "FALSE", "fAlSe", "no", "NO", "No", "0"])
+def test_false_literals_convert_to_false(literal: str) -> None:
+    assert _parse_value(literal, bool) is False
+    assert _parse_value(literal, bool | None) is False
+
+
+@pytest.mark.qa("QA-CLI-009")
+@pytest.mark.parametrize("literal", ["", "tue", "banana", "2", "-1", "on", "off", " true "])
+def test_unknown_bool_literals_are_rejected(literal: str) -> None:
+    for annotation in (bool, bool | None):
+        with pytest.raises(ValueError, match="Invalid boolean"):
+            _parse_value(literal, annotation)
+
+
 @pytest.mark.parametrize(
     ("command", "arguments"),
     [

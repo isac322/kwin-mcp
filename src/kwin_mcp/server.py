@@ -733,7 +733,8 @@ def element_act(
     action: Annotated[
         str,
         Field(
-            description='AT-SPI action name, case-insensitive, e.g. "Press", "Toggle", "Activate".'
+            description='AT-SPI action name, case-insensitive, e.g. "Press", "Toggle", "Activate" '
+            '(or "|"-separated fallbacks, e.g. "Press|click").'
         ),
     ],
     capture: Capture | None = None,

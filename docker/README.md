@@ -132,6 +132,18 @@ docker run --rm \
 
 Additional arguments after the image command can select a file, node ID, marker, or `-k` expression. Replace `docker/e2e.Dockerfile` with `docker/e2e-arch.Dockerfile`, `docker/e2e-fedora.Dockerfile`, or `docker/e2e-opensuse.Dockerfile` to build another distro's image.
 
+### Direct AT-SPI startup coverage
+
+Virtual sessions normally activate AT-SPI2 through D-Bus. On a host whose SELinux policy denies that activation, `KWIN_MCP_ATSPI_DIRECT_START=1` in the **server environment** opts into direct startup; no other value enables it, and an application's `env` does not opt in. The helper (`dbus_service_file.py`) validates both service commands before launching, bounds service-file acquisition and rollback, and runs only after normal activation fails. The [README accessibility section](../README.md#accessibility-tree) describes the trust and confinement limits.
+
+Run the controlled activation-denial and execution-security tests with:
+
+```bash
+scripts/run-e2e-docker.sh -- tests/e2e/test_session_atspi_direct_start.py tests/e2e/test_atspi_service_acquisition.py tests/e2e/test_atspi_exec_security.py -v
+```
+
+These tests simulate activation denial and stalled helpers; a successful container run does not verify behavior on an SELinux-enforcing Fedora host or real NFS/FUSE stalls.
+
 ## Test-file inventory
 
 The suite is organized by tool: one file per 1.0 tool for engine-level behavior, cross-cutting files for rules shared by several tools, and `test_mcp_*` files that drive the installed server over stdio through `mcp_harness.py`. Oracles are independent of the tool under test (`kwin_oracle.py` reads KWin through its own scripts, `atspi_oracle.py` reads AT-SPI2 directly, and the probes record the events they receive). Tests that cover a QA item carry `@pytest.mark.qa("QA-...")`; `tests/qa_trace.toml` maps every QA id to its tests.
@@ -148,11 +160,11 @@ The suite is organized by tool: one file per 1.0 tool for engine-level behavior,
 | `test_screen_capture.py`, `test_screen_capture_visual.py` | `screen_capture`: `Frame` fields, `region` inside/outside/partial, `max_edge` `0`/null/server default, virtual-backend failure as a tool error with the server surviving; pixel oracles at output scales 1.0 and 1.45 in the nested X11/scrot fixture. |
 | `test_element_query.py` | `element_query`: empty-locator and filtered headers, case-sensitive states, `max_depth` `0`, childless applications, `window_id`, `wait` present/absent/timeout/`timeout_ms=0`, scrollbar values. |
 | `test_element_refs.py` | Ref generation prefix, stale refs after a worker restart, role change rejected, `rect: null` target refused with the reason, `{ref, dx, dy}` hitting the neighbour. |
-| `test_element_act.py` | `element_act` by ref and by strict locator (depth 64, fail-closed), zero candidates listing actions, `confirmed`/`sent_unconfirmed`, app-reported failure, `capture` after the action. |
+| `test_element_act.py` | `element_act` by ref and by strict locator (depth 64, fail-closed), exact/spoken name matching, ordered fallback actions, zero candidates listing actions, `confirmed`/`sent_unconfirmed`, app-reported failure, `capture` after the action. |
 | `test_window_list.py` | `window_list`: every window kind with `kind`, `filter={kind:["normal"]}`, `{active:true}`, capability flags that match KWin, `desktops`, frame contains client, unknown app gives `[]`, a KWin timeout as a tool error. |
 | `test_desktop_list.py` | `desktop_list`: stable ids, names, the current desktop. |
 | `test_window_focus.py` | `window_focus` by id, dialog focus allowed, a vanished window as `window: null`, `capture` after focus, a window on another desktop or minimized. |
-| `test_window_place.py`, `test_window_place_desktop.py` | `window_place`: partial frames, applied vs pending, `before` with moveable/resizeable, `window: null`, `observation_error`, beyond-workspace refusal; desktop moves (one window, unknown window or desktop changes nothing, all-desktops windows end on one desktop, transient refusal with `nothing was changed`). |
+| `test_window_place.py`, `test_window_place_desktop.py` | `window_place`: partial frames, applied vs pending, `before` with moveable/resizeable, `window: null`, `observation_error`, beyond-workspace refusal; desktop moves, idempotent assignment with divergent transients, propagation stopping at a child already on the target desktop, nested transient and modal refusal with `nothing was changed` (GTK fixtures in `transient_probe.py`). |
 | `test_window_close.py`, `test_window_close_consent.py` | `window_close`: virtual `not_required` closes only the target; ambiguous selectors list ids and kinds; `closeable=false` gives `not_closeable`; live accept, accept-unchecked, decline and cancel texts; `--live-consent=refuse`; no prompt for an unknown id. |
 | `test_window_selector_errors.py` | Window-selector teaching errors over MCP without a session and with one: empty selector, zero and several matches, `kind: []`. |
 | `test_pointer_click.py` | `pointer_click`: hits on KCalc, `count` 2 and 3, `KeyChord` modifiers, `hold_ms` long-press and its progress, `hold_ms=0`. |
@@ -174,6 +186,9 @@ The suite is organized by tool: one file per 1.0 tool for engine-level behavior,
 | `test_virtual_session_smoke.py` | The virtual-session smoke run, including the exact-virtual ScreenShot2 success probe `test_screen_capture_exact_virtual_backend` (skipped with its reason, see below) and the error path of that backend. |
 | `test_session_accessibility_switch.py` | The `org.a11y.Status.IsEnabled` switch: on in virtual sessions; reported, left off by default, enabled by `enable_accessibility=true`, and restored at `session_stop` and on a server exit, including one that lands while a tool runs. |
 | `test_atspi_worker.py` | The long-lived AT-SPI2 worker: answers from the current bus after a replaced session, respawn of a killed worker, reaping of a stopped worker, no helper left after `session_stop`. |
+| `test_session_atspi_direct_start.py` | Exact server-environment opt-in, activation-denial warnings, `XDG_DATA_DIRS`, missing/invalid services, stalled-helper rollback, and direct-start cleanup. |
+| `test_atspi_service_acquisition.py` | Child-only service lookup, the 128 KiB limit, descriptor guards, nonregular candidates, symlinks, inaccessible roots, both-service preflight, registry revalidation, and literal argv/environment handoff. |
+| `test_atspi_exec_security.py` | Direct helper execution rejects shell builtins, implicit `PATH` search, function evaluation, and `ENOEXEC` fallback; permits valid shebang scripts and explicit interpreters; isolates Python customization and startup-handshake stdout. |
 | `test_eis_device_replacement.py`, `test_eis_handshake.py`, `test_lazy_libei.py` | Input after KWin replaces its EIS devices (#76), the scripted-libei handshake and device lifecycle, and a missing `libei.so.1` reported in `session_info` with the session still stoppable. |
 | `test_pointer_reconnect.py` | A `pointer_click` after `session_stop` and `session_connect` to the same KWin reaches a new window under the parked cursor (#66). |
 | `test_environment_evidence.py`, `test_installed_package.py` | Allowlisted `environment.json` provenance; the installed distribution: version 1.0.0 equal to `pyproject.toml` and `serverInfo.version`, the `Production/Stable` classifier, entry points, `kwin-mcp --help` equal to the shipped usage text, usage errors with exit status 2. |
@@ -210,6 +225,14 @@ The suite is organized by tool: one file per 1.0 tool for engine-level behavior,
 | `test_mcp_unknown_args.py` | Per tool: an unknown key is an `isError` naming it plus the closest key; each removed argument names its replacement. |
 | `test_mcp_input_tools.py`, `test_mcp_session_observation.py`, `test_mcp_clipboard.py`, `test_mcp_stdin_isolation.py` | Input, session, observation, window, log, Wayland, D-Bus and clipboard tools changing application state over stdio; the server's JSON-RPC stdin stays private from launched apps. |
 | `test_mcp_scenarios.py` | Agent tasks as 1.0 call sequences over stdio, each checked through an independent oracle. |
+
+**Parser and fixture support**
+
+| File | Coverage |
+|---|---|
+| `tests/unit/test_spoken_name.py` | `spoken_name.py`: NFC/case folding, significant compatibility characters, Unicode whitespace, the seven allowed terminal punctuation marks, and word boundaries. |
+| `tests/unit/test_dbus_service_file.py` | `dbus_service_file.py`: `Exec=` argument splitting compared with real dbus-daemon activation, first-group/first-`Exec` rules, malformed files, line endings, and no expansion. |
+| `tests/e2e/transient_probe.py` | GTK parent/child/nested transient windows for independent desktop-propagation and modal-refusal checks. |
 
 KWin-free tests live in `tests/unit/` and run on the host with `uv run pytest tests/unit` (CI's `unit` job, Python 3.12 to 3.14; dbus-python 1.4.0 does not import on CPython 3.15 yet). They cover the schemas against the design, unknown-argument and removed-tool errors, the renderers (`test_render.py` goldens), held-input state machines, selector and locator matching, KWin script rendering, CLI value parsing, and the documentation gates.
 

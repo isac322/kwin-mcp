@@ -145,6 +145,68 @@ def test_element_act_respects_application_filter(
     assert str(failure.value).startswith(expected), str(failure.value)
 
 
+@pytest.mark.qa("QA-ELEM-046")
+def test_element_act_exact_match_on_kcalc(kcalc_session: AutomationEngine) -> None:
+    """Exact accessible names disambiguate Clear from KCalc's other clear buttons."""
+    with pytest.raises(RuntimeError, match=r"^Refused ambiguous AT-SPI action:"):
+        kcalc_session.element_act(StrictAddr(strict=Locator(query="Clear", app="kcalc")), "Press")
+
+    cleared = kcalc_session.element_act(
+        StrictAddr(strict=Locator(query="clear", app="kcalc", match="exact")), "Press"
+    )
+    assert cleared.action == "Press", cleared
+    assert cleared.dispatch == "confirmed", cleared
+    assert cleared.element is not None and cleared.element.name == "Clear", cleared
+    assert cleared.summary().startswith("Invoked AT-SPI action: Press on "), cleared.render()
+
+    # Neither a partial accessible name nor a role is an exact name.
+    for query in ("Seve", "button"):
+        with pytest.raises(
+            RuntimeError,
+            match=(
+                rf"^No element matching query='{query}', match='exact', app='kcalc' "
+                r"exposes AT-SPI action 'Press'\."
+            ),
+        ):
+            kcalc_session.element_act(
+                StrictAddr(strict=Locator(query=query, app="kcalc", match="exact")), "Press"
+            )
+
+    result = kcalc_session.element_act(
+        StrictAddr(strict=Locator(query="seven", app="kcalc", match="exact")), "Press"
+    )
+    assert result.action == "Press" and result.dispatch == "confirmed", result
+    assert result.element is not None and result.element.name == "Seven", result
+    _wait_for_binary(AtspiOracle(_session_dbus(kcalc_session)), "111")
+
+
+def test_element_act_spoken_match_on_kcalc(kcalc_session: AutomationEngine) -> None:
+    """A dictated SEVEN. matches Seven; the preferred listed action is reported."""
+    result = kcalc_session.element_act(
+        StrictAddr(strict=Locator(query="SEVEN.", app="kcalc", match="spoken")),
+        ["Press", "click"],
+    )
+    assert result.action == "Press" and result.dispatch == "confirmed", result
+    assert result.element is not None and result.element.name == "Seven", result
+    assert result.summary().startswith("Invoked AT-SPI action: Press on "), result.render()
+    _wait_for_binary(AtspiOracle(_session_dbus(kcalc_session)), "111")
+
+
+@pytest.mark.qa("QA-ELEM-046")
+def test_element_act_fallback_actions_on_kcalc(kcalc_session: AutomationEngine) -> None:
+    """An unavailable first action falls back to Press and reports the invoked action."""
+    for fallback in ("click|Press", ["click", "Press"]):
+        result = kcalc_session.element_act(
+            StrictAddr(strict=Locator(query="seven", app="kcalc", match="exact")),
+            fallback,
+        )
+        assert result.action == "Press", result
+        assert result.dispatch == "confirmed", result
+        assert result.element is not None and result.element.name == "Seven", result
+        assert result.summary().startswith("Invoked AT-SPI action: Press on "), result.render()
+    _wait_for_binary(AtspiOracle(_session_dbus(kcalc_session)), "1001101")
+
+
 # ── Incomplete-discovery refusal (fake AT-SPI, no session needed) ────────
 #
 # The strict search must prove its search of the scope was complete before it

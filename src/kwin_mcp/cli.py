@@ -119,6 +119,10 @@ def _default_text(value: object) -> str:
     return repr(value)
 
 
+_TRUE_LITERALS = frozenset({"true", "1", "yes"})
+_FALSE_LITERALS = frozenset({"false", "0", "no"})
+
+
 def _parse_value(value_str: str, annotation: object) -> object:
     """Convert one ``key=value`` value to the parameter's type.
 
@@ -136,7 +140,13 @@ def _parse_value(value_str: str, annotation: object) -> object:
     scalar = _scalar_type(annotation)
     value: object = value_str
     if scalar is bool:
-        value = value_str.lower() in ("true", "1", "yes")
+        literal = value_str.lower()
+        if literal in _TRUE_LITERALS:
+            value = True
+        elif literal in _FALSE_LITERALS:
+            value = False
+        else:
+            raise ValueError(f"Invalid boolean literal {value_str!r}; use true/false, 1/0, yes/no.")
     elif scalar is int:
         value = int(value_str)
     elif scalar is float:

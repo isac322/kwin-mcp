@@ -9,7 +9,10 @@ tool under test.
 from __future__ import annotations
 
 import json
+import shlex
+import sys
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -27,6 +30,7 @@ if TYPE_CHECKING:
 UNKNOWN_ID = "{00000000-0000-0000-0000-000000000000}"
 STATE_TIMEOUT_S = 15.0
 POLL_S = 0.25
+TRANSIENT_PROBE = Path(__file__).with_name("transient_probe.py")
 
 
 def _info(engine: AutomationEngine) -> SessionInfo:
@@ -247,3 +251,188 @@ def test_transient_parent_child_modal_refusal(
     main, dialog = _wait_for_transient(oracle, lambda w: "Open File" in w.caption and w.modal)
     assert main.id == kwrite.id, (main, dialog)
     _assert_refused_without_changes(kcalc_session, oracle, dialog.id, third, main.id)
+
+
+def _set_probe_desktops(oracle: KWinOracle, assignments: dict[str, str]) -> None:
+    """Assign ancestors first, then split descendants using KWin's native setters."""
+    oracle.run(
+        f"""
+        var assignments = {json.dumps(list(assignments.items()))};
+        for (var a = 0; a < assignments.length; a++) {{
+            var w = findWindow(assignments[a][0]);
+            if (!w) throw new Error("probe window vanished");
+            for (var d = 0; d < workspace.desktops.length; d++) {{
+                if (String(workspace.desktops[d].id) === assignments[a][1]) {{
+                    w.desktops = [workspace.desktops[d]];
+                    break;
+                }}
+            }}
+        }}
+        report(true);
+        """
+    )
+    oracle.wait_for_windows(
+        lambda windows: all(
+            any(w.id == window_id and w.desktops == (desktop_id,) for w in windows)
+            for window_id, desktop_id in assignments.items()
+        )
+    )
+
+
+def _desktop_current_from_dbus(engine: AutomationEngine) -> str:
+    reply = engine.dbus_call(
+        "org.kde.KWin",
+        "/VirtualDesktopManager",
+        "org.freedesktop.DBus.Properties",
+        "Get",
+        ["string:org.kde.KWin.VirtualDesktopManager", "string:current"],
+    )
+    assert isinstance(reply.reply, str), reply
+    return reply.reply
+
+
+def _focus_sentinel_snapshot(
+    engine: AutomationEngine, oracle: KWinOracle
+) -> dict[str, OracleWindow]:
+    """Focus KCalc so the tested probe must not gain focus when its desktop is set."""
+    [sentinel] = engine.window_list(filter=WindowSelector(app_id="kcalc")).windows
+    focused = engine.window_focus(WindowSelector(id=sentinel.id))
+    assert focused.window is not None and focused.window.active, focused
+    windows = oracle.wait_for_windows(
+        lambda windows: any(w.id == sentinel.id and w.active for w in windows)
+    )
+    return {w.id: w for w in windows}
+
+
+def _assert_probe_desktop_state(
+    engine: AutomationEngine,
+    oracle: KWinOracle,
+    before: dict[str, OracleWindow],
+    changed: dict[str, str],
+    current: str,
+) -> None:
+    """Witness every membership, survivor, and active/current window independently."""
+    after = {w.id: w for w in oracle.windows()}
+    assert set(after) == set(before), (before, after)
+    for window_id, window in before.items():
+        expected = (changed[window_id],) if window_id in changed else window.desktops
+        assert after[window_id].desktops == expected, (window_id, before, after)
+    assert [w.id for w in after.values() if w.active] == [
+        w.id for w in before.values() if w.active
+    ], (before, after)
+    desktops = engine.desktop_list()
+    assert desktops.current_desktop_id == current, desktops
+    assert [d.id for d in desktops.desktops if d.current] == [current], desktops
+    assert oracle.current_desktop().id == current
+    assert _desktop_current_from_dbus(engine) == current
+
+
+def test_parent_already_on_target_is_noop_with_divergent_transient_child(
+    kcalc_session: AutomationEngine, oracle: KWinOracle
+) -> None:
+    current, other, _ = _add_two_desktops(oracle)
+    kcalc_session.app_launch(shlex.join([sys.executable, str(TRANSIENT_PROBE)]))
+    parent, child = _wait_for_transient(
+        oracle, lambda w: w.caption == "Transient Probe Dialog" and not w.modal
+    )
+    assignments = {parent.id: current, child.id: other}
+    _set_probe_desktops(oracle, assignments)
+    before = _focus_sentinel_snapshot(kcalc_session, oracle)
+    assert before[parent.id].transient_for is None, before[parent.id]
+    assert before[child.id].transient_for == parent.id, before[child.id]
+    assert not before[child.id].modal, before[child.id]
+    for window_id, desktop in assignments.items():
+        assert before[window_id].desktops == (desktop,), before[window_id]
+    assert _desktop_current_from_dbus(kcalc_session) == current
+
+    result = kcalc_session.window_place(WindowSelector(id=parent.id), desktop=current)
+
+    assert result.applied.desktop is True, result
+    assert result.observation_error is None, result
+    assert result.before.desktops == [current], result
+    assert result.before.on_all_desktops is False, result
+    assert result.window is not None and result.window.desktops == [current], result
+    assert result.current_desktop_before == result.current_desktop_after == current, result
+    _assert_probe_desktop_state(kcalc_session, oracle, before, {}, current)
+
+
+def test_parent_moves_only_itself_when_targeted_child_stops_nested_propagation(
+    kcalc_session: AutomationEngine, oracle: KWinOracle
+) -> None:
+    current, target, _ = _add_two_desktops(oracle)
+    kcalc_session.app_launch(shlex.join([sys.executable, str(TRANSIENT_PROBE), "--nested"]))
+    parent, child = _wait_for_transient(
+        oracle, lambda w: w.caption == "Transient Probe Dialog" and not w.modal
+    )
+    middle, grandchild = _wait_for_transient(
+        oracle, lambda w: w.caption == "Transient Probe Grandchild" and not w.modal
+    )
+    assert middle.id == child.id, (child, middle, grandchild)
+    assignments = {parent.id: current, child.id: target, grandchild.id: current}
+    _set_probe_desktops(oracle, assignments)
+    before = _focus_sentinel_snapshot(kcalc_session, oracle)
+    assert before[parent.id].transient_for is None, before[parent.id]
+    assert before[child.id].transient_for == parent.id, before[child.id]
+    assert before[grandchild.id].transient_for == child.id, before[grandchild.id]
+    assert all(not before[w.id].modal for w in (child, grandchild)), before
+    for window_id, desktop in assignments.items():
+        assert before[window_id].desktops == (desktop,), before[window_id]
+    assert _desktop_current_from_dbus(kcalc_session) == current
+
+    result = kcalc_session.window_place(WindowSelector(id=parent.id), desktop=target)
+
+    assert result.applied.desktop is True, result
+    assert result.observation_error is None, result
+    assert result.before.desktops == [current], result
+    assert result.before.on_all_desktops is False, result
+    assert result.window is not None and result.window.desktops == [target], result
+    assert result.current_desktop_before == result.current_desktop_after == current, result
+    _assert_probe_desktop_state(kcalc_session, oracle, before, {parent.id: target}, current)
+
+
+def test_parent_move_refuses_both_nested_transients_that_would_change(
+    kcalc_session: AutomationEngine, oracle: KWinOracle
+) -> None:
+    current, target, third = _add_two_desktops(oracle)
+    kcalc_session.app_launch(shlex.join([sys.executable, str(TRANSIENT_PROBE), "--nested"]))
+    parent, child = _wait_for_transient(
+        oracle, lambda w: w.caption == "Transient Probe Dialog" and not w.modal
+    )
+    middle, grandchild = _wait_for_transient(
+        oracle, lambda w: w.caption == "Transient Probe Grandchild" and not w.modal
+    )
+    assert middle.id == child.id, (child, middle, grandchild)
+    assignments = {parent.id: current, child.id: current, grandchild.id: third}
+    _set_probe_desktops(oracle, assignments)
+    before = _focus_sentinel_snapshot(kcalc_session, oracle)
+    assert before[parent.id].transient_for is None, before[parent.id]
+    assert before[child.id].transient_for == parent.id, before[child.id]
+    assert before[grandchild.id].transient_for == child.id, before[grandchild.id]
+    assert all(not before[w.id].modal for w in (child, grandchild)), before
+    for window_id, desktop in assignments.items():
+        assert before[window_id].desktops == (desktop,), before[window_id]
+        assert desktop != target
+    assert _desktop_current_from_dbus(kcalc_session) == current
+
+    with pytest.raises(RuntimeError, match="related window") as refused:
+        kcalc_session.window_place(WindowSelector(id=parent.id), desktop=target)
+
+    assert child.id in str(refused.value), refused.value
+    assert grandchild.id in str(refused.value), refused.value
+    _assert_probe_desktop_state(kcalc_session, oracle, before, {}, current)
+
+
+def test_modal_dialog_is_refused_because_its_main_window_would_move(
+    kcalc_session: AutomationEngine, oracle: KWinOracle
+) -> None:
+    _, target, _ = _add_two_desktops(oracle)
+    kcalc_session.app_launch("kwrite")
+    deadline = time.monotonic() + STATE_TIMEOUT_S
+    while not (kwrite := kcalc_session.window_list(filter=WindowSelector(app_id="kwrite")).windows):
+        assert time.monotonic() < deadline, "kwrite never mapped a window"
+        time.sleep(POLL_S)
+    kcalc_session.window_focus(WindowSelector(id=kwrite[0].id))
+    kcalc_session.keyboard_press(keys="ctrl+o")
+    main, dialog = _wait_for_transient(oracle, lambda w: "Open File" in w.caption and w.modal)
+    assert main.id == kwrite[0].id, (main, dialog)
+    _assert_refused_without_changes(kcalc_session, oracle, dialog.id, target, main.id)

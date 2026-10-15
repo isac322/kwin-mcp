@@ -18,6 +18,8 @@ from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, Field, JsonValue, field_validator, model_validator
 
+from kwin_mcp.spoken_name import normalize_spoken_name
+
 # ── Enumerations ─────────────────────────────────────────────────────────
 
 MouseButtonName = Literal["left", "right", "middle"]
@@ -28,6 +30,7 @@ KeyboardHoldPhase = Literal["press", "release"]
 TypeMethod = Literal["keys", "unicode"]
 HomeMode = Literal["host", "isolated"]
 WaitUntil = Literal["present", "absent"]
+MatchMode = Literal["substring", "exact", "spoken"]
 WindowKind = Literal["normal", "dialog", "utility", "popup", "shell", "other"]
 SessionKind = Literal["virtual", "live"]
 AccessibilityState = Literal["on", "switched_on", "off", "unavailable"]
@@ -155,8 +158,20 @@ class Locator(_Input):
 
     app: str | None = None
     query: str | None = None
+    match: MatchMode = "substring"
     role: str | None = None
     states: list[str] | None = None
+
+    @model_validator(mode="after")
+    def validate_match(self) -> Self:
+        """Non-substring modes need a meaningful accessible-name query."""
+        if self.match != "substring" and self.query is None:
+            raise ValueError("match requires query")
+        if self.match == "exact" and not (self.query or "").strip():
+            raise ValueError("exact matching requires a non-blank query")
+        if self.match == "spoken" and not normalize_spoken_name(self.query or "").words:
+            raise ValueError("spoken matching requires a query containing words")
+        return self
 
     def is_empty(self) -> bool:
         """Whether the locator selects every element (``{}``; empty values count as unset)."""
@@ -167,6 +182,8 @@ class Locator(_Input):
         criteria: list[str] = []
         if self.query:
             criteria.append(f"query='{self.query}'")
+        if self.match != "substring":
+            criteria.append(f"match='{self.match}'")
         if self.role:
             criteria.append(f"role='{self.role}'")
         if self.states:

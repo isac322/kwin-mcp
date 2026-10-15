@@ -1,22 +1,26 @@
 """Locator matching of the AT-SPI worker's lenient walk, over a fake tree.
 
-``app``, ``query`` and ``role`` compare case-insensitively (``app`` and
-``query`` as substrings, ``role`` exactly); ``states`` are exact,
-case-sensitive AT-SPI state nicks that must all hold; all fields are AND-ed
-and ``{}`` selects every element.
+``app`` compares as a case-insensitive substring, ``role`` case-insensitively
+and exactly; ``query`` uses substring, exact-name or spoken-name matching.
+``states`` are exact AT-SPI state nicks that must all hold; all fields are
+AND-ed and ``{}`` selects every element.
 """
 
 from __future__ import annotations
 
 import types
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
+from pydantic import ValidationError
 
 from kwin_mcp import accessibility
 from kwin_mcp.accessibility import ElementInfo, _Criteria, _RefTable
-from kwin_mcp.models import Locator
+from kwin_mcp.models import Locator, RefAddr, StrictAddr
+
+if TYPE_CHECKING:
+    from ._fakes import FakeEngine
 
 
 def _info(
@@ -116,6 +120,17 @@ class _FakeStateSet:
         return [_FakeState(nick) for nick in self._nicks]
 
 
+class _FakeActions:
+    def __init__(self, names: list[str]) -> None:
+        self.names = names
+
+    def get_n_actions(self) -> int:
+        return len(self.names)
+
+    def get_action_name(self, index: int) -> str:
+        return self.names[index]
+
+
 @dataclass(eq=False)
 class _FakeNode:
     """Minimal ``Atspi.Accessible`` double; ``unreadable`` makes every read raise."""
@@ -125,6 +140,7 @@ class _FakeNode:
     children: list[_FakeNode] = field(default_factory=list)
     states: list[str] = field(default_factory=lambda: ["enabled"])
     unreadable: bool = False
+    actions: list[str] = field(default_factory=list)
 
     def _check(self) -> None:
         if self.unreadable:
@@ -148,8 +164,8 @@ class _FakeNode:
     def get_component_iface(self) -> None:
         return None
 
-    def get_action_iface(self) -> None:
-        return None
+    def get_action_iface(self) -> _FakeActions | None:
+        return _FakeActions(self.actions) if self.actions else None
 
     def get_text_iface(self) -> None:
         return None
@@ -290,3 +306,139 @@ def test_wait_until_present_absent_and_timeout_as_data(desktop: list[_FakeNode])
     # The element disappears: absence is satisfied.
     del desktop[0].children[0].children[0].children[1]
     assert wait(locator={"query": "Eight"}, until="absent", timeout_ms=0)["satisfied"] is True
+
+
+@pytest.mark.parametrize(
+    ("locator", "name", "expected"),
+    [
+        (Locator(query="save as", match="exact"), " SAVE\tAS ", True),
+        (Locator(query="STRASSE", match="exact"), "Straße", True),
+        (Locator(query="save", match="exact"), "Save As", False),
+        (Locator(query="save as", match="exact"), "Save As...", False),
+        (Locator(query="save as", match="spoken"), "SaveAs...", True),
+        (Locator(query="save as", match="spoken"), "Save As?!", True),
+        (Locator(query="résumé", match="spoken"), "Re\u0301sume\u0301", True),
+        (Locator(query="saveas", match="spoken"), "Save As", False),
+        (Locator(query="save as", match="spoken"), "Save-As", False),
+        (Locator(query="save as", match="spoken"), "Saves A", False),
+        (Locator(query="...", match="exact"), "...", True),
+    ],
+)
+def test_accessible_name_matching_modes(locator: Locator, name: str, expected: bool) -> None:
+    assert _Criteria.from_locator(locator).matches(_info(name=name)) is expected
+
+
+@pytest.mark.parametrize("match", ["exact", "spoken"])
+def test_name_modes_do_not_match_role_or_description(match: str) -> None:
+    locator = Locator.model_validate({"query": "push button", "match": match})
+    assert not _Criteria.from_locator(locator).matches(
+        _info(name="Other", description="push button")
+    )
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"match": "exact", "query": None},
+        {"match": "spoken", "query": None},
+        {"match": "exact", "query": ""},
+        {"match": "spoken", "query": ""},
+        {"match": "exact", "query": " \t\n"},
+        {"match": "spoken", "query": " \t\n"},
+        {"match": "spoken", "query": "..."},
+        {"match": "spoken", "query": "?! \u2026"},
+        {"match": "unknown", "query": "Seven"},
+    ],
+)
+def test_name_matching_rejects_invalid_locators(fields: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        Locator.model_validate(fields)
+
+
+@pytest.mark.parametrize("match", ["exact", "spoken"])
+def test_name_modes_filter_the_fake_tree(desktop: list[_FakeNode], match: str) -> None:
+    button = desktop[0].children[0].children[0].children[0]
+    button.name = " Save\tAs " if match == "exact" else "SaveAs..."
+    assert _names({"query": "save as", "app": "kcalc", "match": match}) == [
+        (3, "kcalc", button.name)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("available", "wanted", "chosen"),
+    [
+        (["Press", "Press"], ["Press"], "Press"),
+        (["press", "PRESS"], ["Press"], "press"),
+        (["click", "Press", "click"], ["Press", "click"], "Press"),
+        (["click", "click"], ["Press", "click"], "click"),
+    ],
+)
+def test_strict_candidates_deduplicate_per_element(
+    desktop: list[_FakeNode], available: list[str], wanted: list[str], chosen: str
+) -> None:
+    button = _FakeNode("Save As", "push button", actions=available)
+    desktop[0].children[:] = [button]
+    candidates, exposed = accessibility._strict_candidates(
+        _Criteria.from_locator(Locator(query="Save As", match="exact", app="kcalc")), wanted
+    )
+    assert len(candidates) == 1
+    assert candidates[0].entry.accessible is button
+    assert candidates[0].action == chosen
+    assert exposed == list(dict.fromkeys(available))
+
+    # Deduplicate action indexes, never distinct elements with the same label.
+    desktop[0].children.append(_FakeNode("Save As", "push button", actions=available))
+    candidates, _ = accessibility._strict_candidates(
+        _Criteria.from_locator(Locator(query="Save As", match="exact", app="kcalc")), wanted
+    )
+    assert len(candidates) == 2
+
+
+@pytest.mark.parametrize("by_ref", [False, True], ids=["strict", "ref"])
+@pytest.mark.parametrize(
+    ("available", "chosen"), [(["click", "click"], "click"), (["click", "Press"], "Press")]
+)
+@pytest.mark.parametrize("dispatch", ["confirmed", "unconfirmed", "failed"])
+def test_element_act_fallback_reports_the_invoked_action(
+    desktop: list[_FakeNode],
+    fake_engine: FakeEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    by_ref: bool,
+    available: list[str],
+    chosen: str,
+    dispatch: str,
+) -> None:
+    button = _FakeNode("Save As...", "push button", actions=available)
+    desktop[0].children[:] = [button]
+    dispatched: list[str] = []
+
+    def do_action(iface: _FakeActions, index: int) -> bool:
+        dispatched.append(iface.names[index])
+        if dispatch == "unconfirmed":
+            raise RuntimeError("Timeout was reached")
+        return dispatch != "failed"
+
+    monkeypatch.setattr(
+        accessibility.Atspi, "Action", types.SimpleNamespace(do_action=do_action), raising=False
+    )
+    monkeypatch.setattr(fake_engine.engine, "_atspi_generation", 1)
+    fake_engine.atspi.respond(
+        "action", lambda arguments: accessibility._handle_request({"op": "action", **arguments})
+    )
+    locator = Locator(query="save as", match="spoken", app="kcalc")
+    element: RefAddr | StrictAddr
+    if by_ref:
+        response = accessibility._handle_request({"op": "query", "locator": locator.model_dump()})
+        element = RefAddr(ref=response["result"][0]["ref"])
+    else:
+        element = StrictAddr(strict=locator)
+    if dispatch == "failed":
+        with pytest.raises(RuntimeError, match=f"AT-SPI action '{chosen}' matched one element"):
+            fake_engine.engine.element_act(element=element, action=["Press", "click"])
+    else:
+        result = fake_engine.engine.element_act(element=element, action=["Press", "click"])
+        assert result.action == chosen
+        assert result.dispatch == ("sent_unconfirmed" if dispatch == "unconfirmed" else "confirmed")
+        assert f"action: {chosen}" in result.render() or f"action '{chosen}'" in result.render()
+    assert dispatched == [chosen]
+    assert fake_engine.atspi.calls[-1].kwargs["action_name"] == ["Press", "click"]

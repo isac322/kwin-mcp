@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.0] - 2026-10-12
 
-kwin-mcp 1.0.0 replaces the 35-tool surface of 0.11 with 29 orthogonal MCP tools: one tool per object and operation (session, app, screen, element, window, desktop, pointer, keyboard, touch, clipboard, D-Bus, Wayland), shared argument types, typed structured output on every tool, and the same lossless text as before. **This is a breaking release.** It is a clean cutover with no aliases: 9 tool names are kept (all with changed parameters or outputs), 28 are removed and 20 are new. Calling a removed tool returns an error that names its 1.0 replacement, and an argument that no longer exists returns an error that names the new argument. The [tool migration table](#tool-migration-table) and the [parameter migration table](#parameter-migration-table) below map every 0.11 call to its 1.0 form.
+kwin-mcp 1.0.0 replaces the 37-tool surface of 0.12 with 29 orthogonal MCP tools: one tool per object and operation (session, app, screen, element, window, desktop, pointer, keyboard, touch, clipboard, D-Bus, Wayland), shared argument types, typed structured output on every tool, and the same lossless text as before. **This is a breaking release.** It is a clean cutover with no aliases: 9 tool names are kept (all with changed parameters or outputs), 28 are removed and 20 are new. Calling a removed tool returns an error that names its 1.0 replacement, and an argument that no longer exists returns an error that names the new argument. The [tool migration table](#tool-migration-table) and the [parameter migration table](#parameter-migration-table) below map every old call.
 
 ### Added
 
@@ -48,7 +48,7 @@ kwin-mcp 1.0.0 replaces the 35-tool surface of 0.11 with 29 orthogonal MCP tools
 
 These changes are intentional. Each one keeps the capability; only the call shape or the edge behavior changes.
 
-1. **Tool names: 37 become 29.** The 35 tools of 0.11 plus the two tools proposed in PR #103 (`virtual_desktops`, `window_set_desktop`) are 37 names: 9 kept, 28 removed, 20 new. There are no aliases. A removed tool returns `Unknown tool: <name>. Removed in kwin-mcp 1.0; use <replacement>.`
+1. **Tool names: 37 become 29.** The 37 tools shipped in 0.12.0 include `virtual_desktops` and `window_set_desktop`: 9 kept, 28 removed, 20 new. There are no aliases. A removed tool returns `Unknown tool: <name>. Removed in kwin-mcp 1.0; use <replacement>.`
 2. **`session_start` no longer launches an app.** Call `session_start`, then `app_launch(command, env)`. A failed `app_launch` leaves the session running, and its error says to call `session_stop` to roll back.
 3. **One retention type.** `session_start` and `session_connect` take `retention={artifacts, home}` instead of `keep_screenshots`/`keep_home`, and `session_start(home="isolated")` replaces `isolate_home=true`. `retention.home` requires `home="isolated"`, and `session_connect` rejects it.
 4. **One window pool.** `window_list`, `window_focus`, `window_place` and `window_close` select from every window KWin lists, shell surfaces, dialogs and popups included. A name lookup (`app_id`, `caption`) must match exactly one window instead of taking the first match, and an ambiguous match is an error listing the candidate ids with their `kind`. `window_list()` without a filter lists every window; `window_list(filter={kind:["normal"]})` gives the normal-window list.
@@ -80,9 +80,17 @@ These changes are intentional. Each one keeps the capability; only the call shap
 
 #### Tool migration table
 
-Every tool name of 0.11 and of PR #103, with the 1.0 call that does the same thing. `{x,y}` is a point in global logical pixels; any `target` also accepts `{ref, dx, dy}` from `element_query`.
+Every tool name of 0.11 and 0.12, with the 1.0 call that does the same thing. `{x,y}` is a point in global logical pixels; any `target` also accepts `{ref, dx, dy}` from `element_query`.
 
-| 0.11 tool | 1.0 call |
+**Capabilities carried forward from 0.12.0 and PR #111.** 0.12.0 shipped `virtual_desktops` and `window_set_desktop` (37 tools total), `invoke_ui_action(exact_name, spoken_name, fallback_action_names)`, and `KWIN_MCP_ATSPI_DIRECT_START=1`. The desktop tools become `desktop_list` and `window_place(window={id}, desktop)`. The direct AT-SPI startup opt-in remains unchanged for virtual sessions.
+
+Use `Locator(match="substring"|"exact"|"spoken")` in `element_query(locator=...)`, including its `wait`, or `element_act(element={strict: ...})`. `"substring"` preserves the default case-insensitive search over name, role, and description. `"exact"` replaces `exact_name=true`: names only, equal after case folding and whitespace collapsing, with punctuation significant. `"spoken"` replaces `spoken_name=true`: names only, NFC and case folding, normalized whitespace, and trailing `. , ! ? ; : …` ignored; a multi-word query can also match a joined label (`save as` matches `SaveAs`). Other punctuation remains significant, and this is not fuzzy matching. The enum makes exact and spoken matching mutually exclusive.
+
+`element_act(action: str | list[str])` replaces `action_name` plus `fallback_action_names`: `action=["Press", "click"]` prefers `Press`, then `click`. Each matching element counts once even if it exposes multiple requested actions; distinct matching elements remain ambiguous. The result's `action` names the action actually dispatched, and fallback selection never retries an already dispatched action.
+
+PR #111, merged after 0.12.0, added typed `active_window` structured output. Use `window_list(filter={active:true})` for the same single-query observation, including dialogs and other window kinds; it returns a typed window list (empty when none is active), rather than the old `{window: object|null}` wrapper. A failed query or missing session remains a tool error.
+
+| 0.11 / 0.12 tool | 1.0 call |
 |---|---|
 | `session_start` | `session_start(screen_width, screen_height, enable_clipboard, home, retention)`, then `app_launch(command, env)` |
 | `session_connect` | `session_connect(dbus_address, wayland_display, enable_accessibility, retention)` |
@@ -92,7 +100,7 @@ Every tool name of 0.11 and of PR #103, with the 1.0 call that does the same thi
 | `find_ui_elements` | `element_query(locator={query, app, states})` |
 | `wait_for_element` | `element_query(locator={query, app, states}, wait={timeout_ms, poll_interval_ms})` |
 | `list_windows` | `element_query(max_depth=1)` |
-| `invoke_ui_action` | `element_act(element={strict:{query, app}}, action)` |
+| `invoke_ui_action` | `element_act(element={strict:{query, app, match}}, action)` |
 | `mouse_click` | `pointer_click(target={x,y}, button, count, modifiers, hold_ms, capture)` |
 | `mouse_move` | `pointer_move(target={x,y}, capture)` |
 | `mouse_scroll` | `pointer_scroll(target={x,y}, delta, axis, unit, steps)` |
@@ -124,9 +132,9 @@ Every tool name of 0.11 and of PR #103, with the 1.0 call that does the same thi
 
 #### Parameter migration table
 
-Every 0.11 parameter that was removed or renamed. Parameters not listed keep their name and meaning.
+Every 0.11 or 0.12 parameter that was removed or renamed. Parameters not listed keep their name and meaning.
 
-| 0.11 tool | 0.11 parameter | 1.0 replacement |
+| 0.11 / 0.12 tool | 0.11 / 0.12 parameter | 1.0 replacement |
 |---|---|---|
 | `session_start` | `app_command` | `app_launch(command)` after `session_start` |
 | `session_start` | `env` | `app_launch(command, env)` |
@@ -148,6 +156,9 @@ Every 0.11 parameter that was removed or renamed. Parameters not listed keep the
 | `invoke_ui_action` | `query` | `element={strict:{query}}` |
 | `invoke_ui_action` | `app_name` | `element={strict:{app}}` |
 | `invoke_ui_action` | `action_name` | `action` |
+| `invoke_ui_action` | `exact_name` | `element={strict:{query, match:"exact"}}` |
+| `invoke_ui_action` | `spoken_name` | `element={strict:{query, match:"spoken"}}` |
+| `invoke_ui_action` | `fallback_action_names` | `action=[action_name, ...fallback_action_names]` |
 | `mouse_click` | `x`, `y` | `target={x,y}` |
 | `mouse_click` | `double`, `triple` | `count=2` or `count=3` |
 | `mouse_click` | `modifiers` | `modifiers='ctrl+shift'` (was a list) |
@@ -188,9 +199,30 @@ Every 0.11 parameter that was removed or renamed. Parameters not listed keep the
 | `window_set_geometry` | `window_id` | `window={id}` |
 | `window_set_geometry` | `x`, `y`, `width`, `height` | `frame={x, y, width, height}` (omitted fields keep their value) |
 | `window_close` | `window_id` | `window={id}` |
-| `window_set_desktop` (PR #103) | `window_id` | `window={id}` |
-| `window_set_desktop` (PR #103) | `desktop_id` | `desktop=<id from desktop_list>` |
+| `window_set_desktop` | `window_id` | `window={id}` |
+| `window_set_desktop` | `desktop_id` | `desktop=<id from desktop_list>` |
 | `wayland_info` | `filter_protocol` | `filter` |
+
+## [0.12.0] - 2026-10-15
+
+### Added
+
+- Added `virtual_desktops` and `window_set_desktop`, bringing the server to 37 tools. `virtual_desktops` (read-only) lists KWin's virtual desktops in order, each with its stable id, name, and whether it is the current desktop. `window_set_desktop` (destructive, idempotent) assigns a window, addressed by the exact KWin id from `window_geometry`, to only the desktop with the exact id from `virtual_desktops`; there is no app-name or position fallback. The operation does not explicitly select the current desktop or activate the window, and a window on all desktops ends up on only the requested one. Preflight refuses requests that would move related windows (transients or modal main windows) KWin scripting can enumerate at request time, and requests while an X11 group transient exists. Linked but unpainted or unlisted children may follow their parent, and KWin may switch the current desktop when they first appear. Both tools return structured content. `window_set_desktop` reports previous desktops (so they can be restored), membership observed by a separate KWin query, and `applied` verifying only the selected window's observed membership. The current desktop ids before and after are point-in-time observations, not future desktop or focus guarantees. Missing or unknown ids, a refused request, a failed `virtual_desktops` query, and a request whose result did not come back are tool errors; a readback that cannot observe the window is reported in `observation_error`, since the window may already have moved.
+- `invoke_ui_action` gains two optional parameters. Omitting both keeps the existing behaviour exactly: the same substring matching, the same per-action-index candidate counting, the same request shape, and the same messages. `exact_name=true` matches the query against element names only, equal after case-folding and collapsing whitespace (punctuation still counts), instead of as a substring of the name, role, or description, so a query can no longer select a different control whose label merely contains it. `fallback_action_names` lists further action names an element may expose instead of `action_name`, for example `["click"]` for GTK buttons next to Qt's `Press`: `action_name` is preferred first, then `fallback_action_names` in order. When either option is used, each element counts as one candidate however many of these actions it exposes, and two distinct matching elements always count as two, so they stay ambiguous even when one exposes `Press` and the other `click`. Name matching, action choice, and invocation happen in one discovery walk with the existing fail-closed rules for ambiguity, unreadable nodes, and the depth limit. Blank queries or action names and invalid option values are tool errors raised before the session lookup, and an empty normalized `exact_name` query never matches unnamed elements.
+- `KWIN_MCP_ATSPI_DIRECT_START=1` adds an opt-in direct AT-SPI2 startup path for virtual sessions when normal D-Bus activation fails, including the denial reported under Fedora's SELinux policy ([fedora-selinux/selinux-policy#3385](https://github.com/fedora-selinux/selinux-policy/issues/3385)). Only the exact value `1` in the server environment enables it; it is never enabled automatically or by an application's `env` argument.
+  - Service-file lookup runs only after activation fails, in an owned private-session child, never in the server or on the healthy activation path. It finds the named services under operator-trusted `XDG_DATA_DIRS` roots (default `/usr/local/share:/usr/share`) and parses `Exec=` as dbus-daemon does; those roots need not mirror every D-Bus activation root.
+  - Both commands are validated before the launcher executes. The registry revalidates its service file at its own startup, and a file that has become invalid triggers rollback. Acquisition retains the 128 KiB content limit and file-descriptor guards. Missing or nonregular candidates and existing invalid-path/link cases are skipped; malformed, unreadable, or oversized regular files and inaccessible metadata, paths, or roots stop direct startup.
+  - Failure reports a `Warning:` and lets KWin continue. Launcher and registry rollback shares a 3-second TERM grace and a 2-second KILL grace, targeting the wrapper's owned Bash jobs. Child-only lookup bounds the caller's wait for stalled NFS/FUSE metadata or reads, not kernel process disappearance during uninterruptible I/O; descendants may remain in the session group until `session_stop`. Normal D-Bus activation and the 60-second session-start watchdog are unchanged.
+  - The internal, standard-library-only helper runs the installed `dbus_service_file.py` with the server's existing `sys.executable -I -S`, then `os.execv`. It rejects implicit `PATH` lookup, shell builtins, function evaluation, and `ENOEXEC` shell fallback while preserving explicit interpreter commands such as `/bin/sh -c` and valid `#!` scripts. No installation step or MCP tool is added.
+  - Direct processes retain the same user, private bus, session process group, environment, and inherited server working directory. They start from the server's SELinux domain rather than through D-Bus service activation, which can mean less confinement. The opt-in does not modify SELinux policy or sandbox programs that escape the session group; SELinux-enforcing Fedora behavior is not verified by simulated activation-denial tests.
+- `invoke_ui_action` gains `spoken_name`, a deterministic accessible-name matching mode for spoken labels. It matches element names only (not role or description): it ignores case (Unicode NFC and case folding, no compatibility normalisation), normalises whitespace, and tolerates a trailing run of `. , ! ? ; : …`, while all other punctuation, including internal and leading punctuation, stays significant. The same normalised words match, and a multi-word query also matches the same words joined into one label (`save as` matches `SaveAs`), but a one-word query is never split to match a multi-word label. Every matching element that exposes a requested action is a candidate, so labels that differ only in case, whitespace, trailing punctuation, or joined spelling are refused as ambiguous instead of told apart. It is not fuzzy matching, cannot be combined with `exact_name`, and a query with no name left after normalisation (for example `...`) is refused before the session lookup. The candidate and action rules are those of `exact_name`, and omitting `spoken_name` leaves default and `exact_name` requests and behaviour unchanged.
+
+### Fixed
+
+- Direct AT-SPI service-file parsing rejects embedded NUL bytes anywhere in the file, including ignored comments and localized entries, matching dbus-daemon's rejection.
+- Expanded the bounded CI budget for the full virtual KWin E2E suite to a 30-minute test deadline and a 40-minute job deadline to avoid premature cutoff.
+- `window_set_desktop` no longer rejects an idempotent assignment because a related window is on another desktop, or a move whose propagation stops at a related window already on exactly the target desktop. Requests that would change enumerated related windows remain refused, as do requests while an unsupported X11 group transient exists.
+- `kwin-mcp-cli` turned any unrecognized boolean `key=value` literal into false, so a mistyped `invoke_ui_action` `exact_name=banana` silently fell back to substring matching. Boolean arguments now accept only `true`/`false`, `yes`/`no`, and `1`/`0` (in any case); any other value is a one-line `Error:` before the session is looked up or the tool runs.
 
 ## [0.11.0] - 2026-10-12
 
@@ -469,7 +501,8 @@ Every 0.11 parameter that was removed or renamed. Parameters not listed keep the
 - FastMCP-based MCP server with stdio transport
 
 [Unreleased]: https://github.com/isac322/kwin-mcp/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/isac322/kwin-mcp/compare/v0.11.0...v1.0.0
+[1.0.0]: https://github.com/isac322/kwin-mcp/compare/v0.12.0...v1.0.0
+[0.12.0]: https://github.com/isac322/kwin-mcp/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/isac322/kwin-mcp/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/isac322/kwin-mcp/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/isac322/kwin-mcp/compare/v0.9.0...v0.9.1

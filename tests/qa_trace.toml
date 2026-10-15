@@ -3806,3 +3806,75 @@ test = "test_filter_active_true_reports_shell_when_panel_active"
 extra_tests = []
 slow = true
 mutants = []
+
+[items."QA-SES-026"]
+title = "Direct AT-SPI startup opt-in via KWIN_MCP_ATSPI_DIRECT_START=1 when D-Bus activation fails"
+priority = "P1"
+auto = "e2e"
+check = "pytest"
+file = "tests/e2e/test_session_atspi_direct_start.py"
+test = "test_atspi_direct_start_uses_only_the_exact_server_opt_in"
+extra_tests = ["tests/e2e/test_session_atspi_direct_start.py::test_atspi_direct_start_warning_surfaces_when_denied_without_opt_in"]
+slow = false
+mutants = ["M83"]
+
+[items."QA-SES-027"]
+title = "Direct AT-SPI service file lookup and parsing (128 KiB limit, NUL byte rejection, dbus-daemon parity)"
+priority = "P1"
+auto = "unit"
+check = "pytest"
+file = "tests/unit/test_dbus_service_file.py"
+test = "test_malformed_service_files_are_rejected"
+extra_tests = ["tests/unit/test_dbus_service_file.py::test_service_file_argv_matches_dbus_activation"]
+slow = false
+mutants = ["M84"]
+
+[items."QA-SES-028"]
+title = "Direct AT-SPI execution security: no PATH search, no shell builtins, owned process cleanup on exit"
+priority = "P1"
+auto = "e2e"
+check = "pytest"
+file = "tests/e2e/test_atspi_exec_security.py"
+test = "test_direct_atspi_exec_rejects_shell_builtins_without_evaluation"
+extra_tests = ["tests/e2e/test_exit_cleanup_virtual.py::test_server_sigterm_during_direct_atspi_start_cleans_owned_children"]
+slow = false
+mutants = []
+
+[items."QA-ELEM-045"]
+title = "Spoken-name normalisation and matching rules (NFC case-fold, trailing punctuation, word boundaries)"
+priority = "P1"
+auto = "unit"
+check = "pytest"
+file = "tests/unit/test_spoken_name.py"
+test = "test_each_whitelisted_trailing_mark_is_ignored"
+extra_tests = [
+    "tests/unit/test_spoken_name.py::test_word_boundaries",
+    "tests/unit/test_spoken_name.py::test_composed_and_decomposed_forms_match",
+]
+slow = false
+mutants = ["M85"]
+
+[items."QA-ELEM-046"]
+title = "Exact accessible-name matching mode and fallback actions on element_act"
+priority = "P1"
+auto = "e2e"
+check = "pytest"
+file = "tests/e2e/test_element_act.py"
+test = "test_element_act_exact_match_on_kcalc"
+extra_tests = ["tests/e2e/test_element_act.py::test_element_act_fallback_actions_on_kcalc"]
+slow = false
+mutants = []
+
+[items."QA-CLI-009"]
+title = "CLI boolean parsing strictness: accepts only true/false, yes/no, 1/0; rejects unknown literals"
+priority = "P1"
+auto = "unit"
+check = "pytest"
+file = "tests/unit/test_cli_parse_value.py"
+test = "test_unknown_bool_literals_are_rejected"
+extra_tests = [
+    "tests/unit/test_cli_parse_value.py::test_true_literals_convert_to_true",
+    "tests/unit/test_cli_parse_value.py::test_false_literals_convert_to_false",
+]
+slow = false
+mutants = ["M86"]

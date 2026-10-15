@@ -296,7 +296,7 @@ def test_mutant_catalogue_matches_the_ledger() -> None:
     catalogue = tomllib.loads(MUTANTS.read_text(encoding="utf-8"))["mutant"]
     ids = [mutant["id"] for mutant in catalogue]
     expected_ids = [f"M{number:02d}" for number in range(1, MUTANT_COUNT + 1)]
-    assert ids == expected_ids, "tests/mutants.toml must list M01..M82 once, in order"
+    assert ids == expected_ids, "tests/mutants.toml must list M01..M86 once, in order"
     items = ledger()
     killers: dict[str, set[str]] = {}
     for qa_id, item in items.items():

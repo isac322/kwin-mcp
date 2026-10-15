@@ -1139,6 +1139,9 @@ _REMOVED_ARGUMENTS: dict[str, str] = {
     "window_id": "Use window={id} instead.",
     "desktop_id": "Use desktop=<id from desktop_list> instead.",
     "action_name": "Use element={strict:{query}} and action instead.",
+    "exact_name": "Use locator={query, match:'exact'} instead.",
+    "spoken_name": "Use locator={query, match:'spoken'} instead.",
+    "fallback_action_names": "Use '|'-separated fallbacks in action='Press|click' instead.",
     "double": "Use count=2 or count=3 instead.",
     "triple": "Use count=2 or count=3 instead.",
     "horizontal": "Use axis='horizontal' instead.",
@@ -1173,6 +1176,8 @@ _TOOL_REMOVED_ARGUMENTS: dict[tuple[str, str], str] = {
     ("element_query", "timeout_ms"): _WAIT_REMEDY,
     ("element_query", "poll_interval_ms"): _WAIT_REMEDY,
     ("element_act", "query"): "Use element={strict:{query}} and action instead.",
+    ("element_act", "exact_name"): "Use element={strict:{query, match:'exact'}} instead.",
+    ("element_act", "spoken_name"): "Use element={strict:{query, match:'spoken'}} instead.",
 }
 
 

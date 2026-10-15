@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.0] - 2026-10-12
+## [1.0.0] - 2026-10-15
 
 kwin-mcp 1.0.0 replaces the 37-tool surface of 0.12 with 29 orthogonal MCP tools: one tool per object and operation (session, app, screen, element, window, desktop, pointer, keyboard, touch, clipboard, D-Bus, Wayland), shared argument types, typed structured output on every tool, and the same lossless text as before. **This is a breaking release.** It is a clean cutover with no aliases: 9 tool names are kept (all with changed parameters or outputs), 28 are removed and 20 are new. Calling a removed tool returns an error that names its 1.0 replacement, and an argument that no longer exists returns an error that names the new argument. The [tool migration table](#tool-migration-table) and the [parameter migration table](#parameter-migration-table) below map every old call.
 
@@ -86,7 +86,7 @@ Every tool name of 0.11 and 0.12, with the 1.0 call that does the same thing. `{
 
 Use `Locator(match="substring"|"exact"|"spoken")` in `element_query(locator=...)`, including its `wait`, or `element_act(element={strict: ...})`. `"substring"` preserves the default case-insensitive search over name, role, and description. `"exact"` replaces `exact_name=true`: names only, equal after case folding and whitespace collapsing, with punctuation significant. `"spoken"` replaces `spoken_name=true`: names only, NFC and case folding, normalized whitespace, and trailing `. , ! ? ; : …` ignored; a multi-word query can also match a joined label (`save as` matches `SaveAs`). Other punctuation remains significant, and this is not fuzzy matching. The enum makes exact and spoken matching mutually exclusive.
 
-`element_act(action: str | list[str])` replaces `action_name` plus `fallback_action_names`: `action=["Press", "click"]` prefers `Press`, then `click`. Each matching element counts once even if it exposes multiple requested actions; distinct matching elements remain ambiguous. The result's `action` names the action actually dispatched, and fallback selection never retries an already dispatched action.
+`element_act(action="Press|click")` replaces `action_name` plus `fallback_action_names`: `"|"`-separated fallback names prefer `Press`, then `click` (the in-process Python engine also accepts `action=["Press", "click"]`). Each matching element counts once even if it exposes multiple requested actions; distinct matching elements remain ambiguous. The result's `action` names the action actually dispatched, and fallback selection never retries an already dispatched action.
 
 PR #111, merged after 0.12.0, added typed `active_window` structured output. Use `window_list(filter={active:true})` for the same single-query observation, including dialogs and other window kinds; it returns a typed window list (empty when none is active), rather than the old `{window: object|null}` wrapper. A failed query or missing session remains a tool error.
 
@@ -158,7 +158,7 @@ Every 0.11 or 0.12 parameter that was removed or renamed. Parameters not listed 
 | `invoke_ui_action` | `action_name` | `action` |
 | `invoke_ui_action` | `exact_name` | `element={strict:{query, match:"exact"}}` |
 | `invoke_ui_action` | `spoken_name` | `element={strict:{query, match:"spoken"}}` |
-| `invoke_ui_action` | `fallback_action_names` | `action=[action_name, ...fallback_action_names]` |
+| `invoke_ui_action` | `fallback_action_names` | `action="Press\|click"` |
 | `mouse_click` | `x`, `y` | `target={x,y}` |
 | `mouse_click` | `double`, `triple` | `count=2` or `count=3` |
 | `mouse_click` | `modifiers` | `modifiers='ctrl+shift'` (was a list) |

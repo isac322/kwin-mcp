@@ -283,7 +283,7 @@ def test_changelog_preserves_0_12_release_and_matching_migration() -> None:
     versions = _sections(CHANGELOG.read_text(encoding="utf-8"), 2)
     assert list(versions)[:4] == [
         "[Unreleased]",
-        "[1.0.0] - 2026-10-12",
+        "[1.0.0] - 2026-10-15",
         "[0.12.0] - 2026-10-15",
         "[0.11.0] - 2026-10-12",
     ]
@@ -306,8 +306,8 @@ def test_changelog_preserves_0_12_release_and_matching_migration() -> None:
         'Locator(match="substring"|"exact"|"spoken")',
         "element_query",
         "element_act",
-        "action: str | list[str]",
-        'action=["Press", "click"]',
+        'element_act(action="Press|click")',
+        '`"|"`-separated fallback names',
         "counts once",
         "never retries",
         "KWIN_MCP_ATSPI_DIRECT_START=1",

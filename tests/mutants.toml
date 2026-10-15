@@ -1,4 +1,4 @@
-# Mutation catalogue M01-M82 (QA list section 8, mutation plan) for scripts/qa_mutants.py
+# Mutation catalogue M01-M86 (QA list section 8, mutation plan) for scripts/qa_mutants.py
 # (gate G14, QA-PKG-012; weekly + workflow_dispatch in .github/workflows/qa-mutants.yml).
 #
 # Each [[mutant]] is a minimal, plausible bug in the current source:

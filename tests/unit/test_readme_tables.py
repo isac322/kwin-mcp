@@ -174,7 +174,7 @@ def test_readme_documents_matching_fallbacks_and_direct_atspi_opt_in() -> None:
         "name only",
         "NFC",
         "not fuzzy matching",
-        "action: str | list[str]",
+        'element_act(action="Press|click")',
         'action=["Press", "click"]',
         "rather than trying the alternatives after dispatch",
     ):

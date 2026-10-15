@@ -1,7 +1,7 @@
 name: QA mutants
 
 # Mutation gate G14 (QA-PKG-012): every mutant in tests/mutants.toml (the QA list's
-# M01-M82 plan) must be killed by its listed tests; scripts/qa_mutants.py exits 1 on a
+# M01-M86 plan) must be killed by its listed tests; scripts/qa_mutants.py exits 1 on a
 # survivor. Not PR-blocking: the workflow runs weekly and on demand, and one green
 # workflow_dispatch run on the release commit is required before the version tag is pushed.
 on:

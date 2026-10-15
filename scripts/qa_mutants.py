@@ -2,7 +2,7 @@
 """Mutation gate (G14, QA-PKG-012): every mutant in ``tests/mutants.toml`` must be killed.
 
 Each mutant is a search/replace patch of the current source taken from the QA list's mutation
-plan (M01-M82). For every selected mutant the script applies the patch to a temporary copy of
+plan (M01-M86). For every selected mutant the script applies the patch to a temporary copy of
 the repository, runs the mutant's killing tests and records whether at least one of them fails.
 
 * ``--tier unit`` runs ``pytest`` on the killing ``tests/unit`` node ids with the mutated

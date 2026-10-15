@@ -2590,7 +2590,7 @@ slow = false
 mutants = []
 
 [items."QA-PKG-012"]
-title = "Mutation run: zero surviving mutants M01-M82 (tag-blocking)"
+title = "Mutation run: zero surviving mutants M01-M86 (tag-blocking)"
 priority = "P2"
 auto = "ci-gate"
 check = "workflow-step"

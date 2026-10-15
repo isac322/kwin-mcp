@@ -293,15 +293,27 @@ _ACTIVE_RECORD = {
 
 
 def test_active_window_data_carries_the_reported_window(monkeypatch: pytest.MonkeyPatch) -> None:
-    engine = _engine_answering(monkeypatch, {"ok": True, "result": _ACTIVE_RECORD})
+    engine = core.AutomationEngine()
+    monkeypatch.setattr(engine, "_get_session", lambda: object())
+    requests: list[dict[str, object]] = []
+
+    def run_query(request: dict[str, object]) -> dict[str, object]:
+        requests.append(request)
+        return {"ok": True, "result": _ACTIVE_RECORD}
+
+    monkeypatch.setattr(engine, "_run_kwin_query", run_query)
 
     data = engine.active_window_data()
 
+    assert requests == [{"op": "active"}]
     assert data.window is not None
     assert data.window.model_dump(mode="json") == _ACTIVE_RECORD
-    # active_window() runs its own query; the fake answers it with the same record.
-    assert engine.active_window() == format_active_window(data)
-    assert engine.active_window().startswith('Active window:\n- org.kde.kcalc "KCalc" [active]\n')
+    # The text path formats the same single query rather than looking the window up twice.
+    requests.clear()
+    text = engine.active_window()
+    assert requests == [{"op": "active"}]
+    assert text == format_active_window(data)
+    assert text.startswith('Active window:\n- org.kde.kcalc "KCalc" [active]\n')
 
 
 def test_active_window_data_reports_no_active_window_as_null(

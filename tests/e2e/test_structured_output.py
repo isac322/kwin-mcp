@@ -449,7 +449,13 @@ async def test_typed_tools_return_schema_valid_structured_content_matching_text(
 
             empty = await record("element_query", {"locator": {"app": MISSING_NAME}})
             assert empty == {
-                "locator": {"app": MISSING_NAME, "query": None, "role": None, "states": None},
+                "locator": {
+                    "app": MISSING_NAME,
+                    "query": None,
+                    "role": None,
+                    "states": None,
+                    "match": "substring",
+                },
                 "elements": [],
                 "wait": None,
             }, empty

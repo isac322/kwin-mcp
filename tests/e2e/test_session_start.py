@@ -427,8 +427,8 @@ def test_session_start_reports_a_failed_accessibility_bus_activation(
     assert info.input_backend == "eis"
     assert info.accessibility == "unavailable", info
     assert info.warnings == [
-        f"{A11Y_ACTIVATION_WARNING}{stub_error}",
-        f"org.a11y.Status unavailable (org.a11y.Bus call failed: {stub_error})",
+        f"{A11Y_ACTIVATION_WARNING}{stub_error}; set KWIN_MCP_ATSPI_DIRECT_START=1 "
+        "to start it directly from its service files",
     ], info.warnings
     text = info.render()
     assert [line for line in text.splitlines() if line.startswith("Warning: ")] == [

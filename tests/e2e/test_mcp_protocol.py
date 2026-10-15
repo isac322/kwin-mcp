@@ -154,7 +154,9 @@ async def test_installed_server_registers_exact_tool_schemas() -> None:
         assert "from_" not in json.dumps(schema), expected["name"]
 
     assert tools["pointer_hold"].input_schema["required"] == ["phase", "target"]
-    assert tools["element_query"].input_schema["properties"]["locator"]["default"] == {}
+    assert tools["element_query"].input_schema["properties"]["locator"]["default"] == {
+        "match": "substring"
+    }
     assert tools["session_start"].input_schema["properties"]["retention"]["default"] == {
         "artifacts": False,
         "home": False,

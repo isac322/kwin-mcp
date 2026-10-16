@@ -63,7 +63,7 @@ jobs:
                 --base "$BASE_SHA" \
                 --head HEAD \
                 --markdown-out /tmp/tool-surface-grid/summary.md \
-                --preview-url "https://cv.bhyoo.com/kwin-mcp/pr-${PR_NUMBER}/" \
+                --preview-url "https://raw.githack.com/${REPOSITORY}/tool-surface-previews/pr-${PR_NUMBER}/index.html" \
                 --artifact-url "${SERVER_URL}/${REPOSITORY}/actions/runs/${RUN_ID}"
             fi
           fi
@@ -79,7 +79,7 @@ jobs:
           name: tool-surface-grid
           path: /tmp/tool-surface-grid/index.html
           if-no-files-found: error
-      - name: Publish Pages preview
+      - name: Publish preview branch
         if: steps.publish.outputs.publish == 'true'
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -87,27 +87,26 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin gh-pages
+          git fetch origin tool-surface-previews
           pages_dir=$(mktemp -d /tmp/tool-surface-pages.XXXXXX)
-          git worktree add --detach "$pages_dir" origin/gh-pages
+          git worktree add --detach "$pages_dir" origin/tool-surface-previews
           trap 'git worktree remove --force "$pages_dir"' EXIT
           mkdir -p "$pages_dir/pr-${PR_NUMBER}"
           cp /tmp/tool-surface-grid/index.html "$pages_dir/pr-${PR_NUMBER}/index.html"
-          touch "$pages_dir/.nojekyll"
-          git -C "$pages_dir" add "pr-${PR_NUMBER}/index.html" .nojekyll
+          git -C "$pages_dir" add "pr-${PR_NUMBER}/index.html"
           if git -C "$pages_dir" diff --cached --quiet; then
             exit 0
           fi
           git -C "$pages_dir" commit -m "Publish tool-surface grid for PR #${PR_NUMBER}"
           for attempt in 1 2 3; do
-            if git -C "$pages_dir" push origin HEAD:gh-pages; then
+            if git -C "$pages_dir" push origin HEAD:tool-surface-previews; then
               break
             fi
             if [ "$attempt" = 3 ]; then
               exit 1
             fi
-            git fetch origin gh-pages
-            git -C "$pages_dir" rebase origin/gh-pages
+            git fetch origin tool-surface-previews
+            git -C "$pages_dir" rebase origin/tool-surface-previews
           done
 
       - name: Create or update sticky PR comment
@@ -132,10 +131,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Check out gh-pages
+      - name: Check out tool-surface-previews
         uses: actions/checkout@v7
         with:
-          ref: gh-pages
+          ref: tool-surface-previews
           fetch-depth: 0
 
       - name: Remove closed PR preview
@@ -156,12 +155,12 @@ jobs:
           fi
           git commit -m "Remove tool-surface grid for PR #${PR_NUMBER}"
           for attempt in 1 2 3; do
-            if git push origin gh-pages; then
+            if git push origin tool-surface-previews; then
               break
             fi
             if [ "$attempt" = 3 ]; then
               exit 1
             fi
-            git fetch origin gh-pages
-            git rebase origin/gh-pages
+            git fetch origin tool-surface-previews
+            git rebase origin/tool-surface-previews
           done

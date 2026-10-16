@@ -274,11 +274,10 @@ def test_render_markdown_and_html_outputs(
     pointer_click["description"] += " Updated for the surface grid."
     report = surface_module.compute_diff(baseline, head)
 
-    markdown = surface_module.render_markdown(
-        report, preview_url="https://cv.bhyoo.com/kwin-mcp/pr-107/"
-    )
+    preview_url = "https://raw.githack.com/isac322/kwin-mcp/tool-surface-previews/pr-107/index.html"
+    markdown = surface_module.render_markdown(report, preview_url=preview_url)
     assert markdown.startswith("<!-- kwin-mcp-tool-grid-summary -->")
-    assert "https://cv.bhyoo.com/kwin-mcp/pr-107/" in markdown
+    assert preview_url in markdown
     for domain in surface_module.DOMAIN_OBJECTS:
         assert domain in markdown
     assert "<details>" in markdown
@@ -296,6 +295,12 @@ def test_render_markdown_and_html_outputs(
     assert json.loads(grid_data.group(1))["base_tool_count"] == 29
     assert "<!--" not in grid_data.group(1)
     assert "10.222" not in rendered_html
+    assert "cv.bhyoo.com" not in rendered_html
+    workflow_text = (REPO_ROOT / ".github" / "workflows" / "tool-surface-grid.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "cv.bhyoo.com" not in workflow_text
+    assert "raw.githack.com" in workflow_text
     for section_id in ("sGate", "sGrid", "sCards", "sDeep", "s4", "s3"):
         assert f'id="{section_id}"' in rendered_html, section_id
     drawer = re.search(r'<details\b[^>]*\bid="sDeep"[^>]*>', rendered_html)

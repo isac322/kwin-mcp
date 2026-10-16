@@ -262,6 +262,7 @@ scripts/
 ├── check_e2e_shards.py      # Validates one row's five shard results and collection counts
 ├── check_docs_seo.py        # Documentation/SEO consistency checker (tool count, keywords, SKILL mirror)
 ├── check_wheel.py           # Built-wheel gate: file list, version, classifier, and description
+├── render_tool_surface.py   # Generates before/after MCP tool-surface orthogonality grid (HTML, Markdown, JSON)
 ├── sync_plugin_version.py   # Syncs project version and SKILL.md into integrations
 └── update_e2e_durations.py  # Refreshes tests/e2e/durations.json used for E2E sharding
 

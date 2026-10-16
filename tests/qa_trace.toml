@@ -3246,6 +3246,87 @@ extra_tests = []
 slow = false
 mutants = []
 
+[items."QA-SURF-023"]
+title = "Tool-surface grid diff reports 29 unchanged tools and 48 cells on baseline"
+priority = "P1"
+auto = "unit"
+check = "pytest"
+file = "tests/unit/test_render_tool_surface.py"
+test = "test_baseline_diff_is_unchanged_and_passes_all_gates"
+extra_tests = []
+slow = false
+mutants = []
+
+[items."QA-SURF-024"]
+title = "Tool-surface grid diff detects added tools, cell collisions, and semantic overlaps"
+priority = "P1"
+auto = "unit"
+check = "pytest"
+file = "tests/unit/test_render_tool_surface.py"
+test = "test_added_tool_and_cell_collision_detected"
+extra_tests = [
+    "tests/unit/test_render_tool_surface.py::test_semantic_overlaps_flag_cross_cell_head_tools",
+    "tests/unit/test_render_tool_surface.py::test_semantic_overlap_thresholds",
+    "tests/unit/test_render_tool_surface.py::test_semantic_overlap_includes_shared_type_concepts",
+]
+slow = false
+mutants = []
+
+[items."QA-SURF-025"]
+title = "Tool-surface grid diff detects removed and modified tools with schema diffs"
+priority = "P1"
+auto = "unit"
+check = "pytest"
+file = "tests/unit/test_render_tool_surface.py"
+test = "test_removed_and_modified_tool_detected"
+extra_tests = []
+slow = false
+mutants = []
+
+[items."QA-SURF-026"]
+title = "Tool-surface grid diff detects ad-hoc parameter anti-patterns bypassing shared types"
+priority = "P1"
+auto = "unit"
+check = "pytest"
+file = "tests/unit/test_render_tool_surface.py"
+test = "test_ad_hoc_parameter_violations_detected"
+extra_tests = []
+slow = false
+mutants = []
+
+[items."QA-SURF-027"]
+title = "Tool-surface grid diff enforces the V1 model-visible token budget"
+priority = "P1"
+auto = "unit"
+check = "pytest"
+file = "tests/unit/test_render_tool_surface.py"
+test = "test_token_budget_overflow_detected"
+extra_tests = []
+slow = false
+mutants = []
+
+[items."QA-SURF-028"]
+title = "Tool-surface grid renders GFM Markdown and self-contained HTML without external assets"
+priority = "P1"
+auto = "unit"
+check = "pytest"
+file = "tests/unit/test_render_tool_surface.py"
+test = "test_render_markdown_and_html_outputs"
+extra_tests = []
+slow = false
+mutants = []
+
+[items."QA-SURF-029"]
+title = "Tool-surface grid CLI writes HTML, Markdown, and JSON reports and enforces --check"
+priority = "P1"
+auto = "unit"
+check = "pytest"
+file = "tests/unit/test_render_tool_surface.py"
+test = "test_cli_writes_html_markdown_and_json_files"
+extra_tests = []
+slow = false
+mutants = []
+
 [items."QA-WIN-001"]
 title = "window_list lists every KWin window with all fields"
 priority = "P0"

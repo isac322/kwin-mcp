@@ -1,0 +1,167 @@
+name: Tool Surface Grid
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+concurrency:
+  group: tool-surface-grid-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  render-grid:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Render initial tool-surface grid
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          SERVER_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/tool-surface-grid
+          python3 scripts/render_tool_surface.py \
+            --base "$BASE_SHA" \
+            --head HEAD \
+            --html-out /tmp/tool-surface-grid/index.html \
+            --markdown-out /tmp/tool-surface-grid/summary.md \
+            --json-out /tmp/tool-surface-grid/report.json \
+            --artifact-url "${SERVER_URL}/${REPOSITORY}/actions/runs/${RUN_ID}"
+
+      - name: Decide whether to publish preview and comment
+        id: publish
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          publish=false
+          comment_id=""
+          if [ "$HEAD_REPOSITORY" = "$REPOSITORY" ]; then
+            comment_id=$(gh api --paginate "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
+              --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("<!-- kwin-mcp-tool-grid-summary -->"))) | .id' | head -n 1)
+            has_surface_changes=$(jq -r '.has_surface_changes' /tmp/tool-surface-grid/report.json)
+            changed_files=$(git diff --name-only "$BASE_SHA" HEAD)
+            if [ "$has_surface_changes" = "true" ] || [ -n "$comment_id" ] || printf '%s\n' "$changed_files" | grep -Eq \
+              '^(scripts/render_tool_surface\.py|\.github/workflows/tool-surface-grid\.yml)$'; then
+              publish=true
+              python3 scripts/render_tool_surface.py \
+                --base "$BASE_SHA" \
+                --head HEAD \
+                --markdown-out /tmp/tool-surface-grid/summary.md \
+                --preview-url "https://cv.bhyoo.com/kwin-mcp/pr-${PR_NUMBER}/" \
+                --artifact-url "${SERVER_URL}/${REPOSITORY}/actions/runs/${RUN_ID}"
+            fi
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "comment_id=$comment_id" >> "$GITHUB_OUTPUT"
+
+      - name: Add summary
+        run: cat /tmp/tool-surface-grid/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload grid preview artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: tool-surface-grid
+          path: /tmp/tool-surface-grid/index.html
+          if-no-files-found: error
+      - name: Publish Pages preview
+        if: steps.publish.outputs.publish == 'true'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin gh-pages
+          pages_dir=$(mktemp -d /tmp/tool-surface-pages.XXXXXX)
+          git worktree add --detach "$pages_dir" origin/gh-pages
+          trap 'git worktree remove --force "$pages_dir"' EXIT
+          mkdir -p "$pages_dir/pr-${PR_NUMBER}"
+          cp /tmp/tool-surface-grid/index.html "$pages_dir/pr-${PR_NUMBER}/index.html"
+          touch "$pages_dir/.nojekyll"
+          git -C "$pages_dir" add "pr-${PR_NUMBER}/index.html" .nojekyll
+          if git -C "$pages_dir" diff --cached --quiet; then
+            exit 0
+          fi
+          git -C "$pages_dir" commit -m "Publish tool-surface grid for PR #${PR_NUMBER}"
+          for attempt in 1 2 3; do
+            if git -C "$pages_dir" push origin HEAD:gh-pages; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              exit 1
+            fi
+            git fetch origin gh-pages
+            git -C "$pages_dir" rebase origin/gh-pages
+          done
+
+      - name: Create or update sticky PR comment
+        if: steps.publish.outputs.publish == 'true'
+        env:
+          COMMENT_ID: ${{ steps.publish.outputs.comment_id }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ -n "$COMMENT_ID" ]; then
+            gh api --method PATCH "repos/${REPOSITORY}/issues/comments/${COMMENT_ID}" \
+              -F body=@/tmp/tool-surface-grid/summary.md
+          else
+            gh api --method POST "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
+              -F body=@/tmp/tool-surface-grid/summary.md
+          fi
+  cleanup-grid:
+    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: write
+    steps:
+      - name: Check out gh-pages
+        uses: actions/checkout@v7
+        with:
+          ref: gh-pages
+          fetch-depth: 0
+
+      - name: Remove closed PR preview
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          preview_dir="pr-${PR_NUMBER}"
+          if [ ! -d "$preview_dir" ]; then
+            exit 0
+          fi
+          rm -rf "$preview_dir"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "Remove tool-surface grid for PR #${PR_NUMBER}"
+          for attempt in 1 2 3; do
+            if git push origin gh-pages; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              exit 1
+            fi
+            git fetch origin gh-pages
+            git rebase origin/gh-pages
+          done

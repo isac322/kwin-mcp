@@ -5,6 +5,7 @@
   "type": "module",
   "main": "./dist/index.js",
   "exports": {
+    ".": "./dist/index.js",
     "./server": "./dist/index.js"
   },
   "files": [
@@ -19,10 +20,14 @@
     "build:js": "swc src -d dist --strip-leading-paths",
     "build": "npm run clean && npm run build:skill && npm run build:js",
     "typecheck": "tsgo -p tsconfig.json",
+    "test:contract": "npm run build && node test/contract.mjs",
     "prepack": "npm run build"
   },
+  "dependencies": {
+    "@opencode/plugin": "^2.0.29",
+    "@opencode/schema": "^2.0.29"
+  },
   "devDependencies": {
-    "@opencode-ai/plugin": "^1.18.32",
     "@swc/cli": "^0.8.1",
     "@swc/core": "^1.16.2",
     "@types/node": "^26.6.3",

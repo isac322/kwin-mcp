@@ -2,10 +2,10 @@
 
 OpenCode plugin for [`kwin-mcp`](https://github.com/isac322/kwin-mcp) — the MCP server for Linux desktop GUI automation on KDE Plasma 6 Wayland.
 
-On every OpenCode backend startup the plugin's `config` hook:
+On every OpenCode backend startup the plugin's V2 `setup` hook:
 
-1. **Registers the `kwin-mcp` MCP server** by injecting `mcp.kwin-mcp = { type: "local", command: ["uvx", "kwin-mcp"], enabled: true }` into the runtime config — equivalent to a static block in `opencode.json`, but added programmatically so users do not have to edit config.
-2. **Adds the bundled skill directory to `skills.paths`** so OpenCode discovers the `kwin-desktop-automation` SKILL.md shipped inside the npm package. The skill teaches which kwin-mcp tool to call when, plus the platform pitfalls of Wayland / AT-SPI2 / EIS.
+1. **Registers the `kwin-mcp` MCP server** through `ctx.mcp.transform`, equivalent to a static local server entry but without requiring users to edit config.
+2. **Registers the bundled skill** through `ctx.skill.transform`. The skill teaches which kwin-mcp tool to call when, plus the platform pitfalls of Wayland / AT-SPI2 / EIS.
 
 Both steps are idempotent — re-running OpenCode is a no-op. The plugin never copies files outside the npm package, so `npm uninstall @isac322/kwin-mcp-opencode` cleanly removes both the MCP server registration and the skill on next startup.
 
@@ -16,7 +16,7 @@ In your `opencode.json`:
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@isac322/kwin-mcp-opencode"]
+  "plugins": ["@isac322/kwin-mcp-opencode"]
 }
 ```
 
@@ -39,7 +39,7 @@ You also need the kwin-mcp system dependencies (`kwin_wayland`, `at-spi2-core`, 
 
 ## Manual fallback
 
-If the plugin's `config` hook ever fails to inject the MCP server, copy [`opencode.json.example`](https://github.com/isac322/kwin-mcp/blob/main/integrations/opencode/opencode.json.example) into your `opencode.json`.
+If you do not want to install the plugin, configure the local `kwin-mcp` server through OpenCode's V2 MCP configuration and add the bundled skill through another V2 skill source.
 
 ## Bundled skill
 
@@ -70,7 +70,8 @@ The published npm tarball ships only `dist/`, `skill/`, `README.md`, and `LICENS
 
 ## Compatibility
 
-- OpenCode (anomalyco/opencode) v1.14+ — uses the canonical `Plugin` function contract from [`@opencode-ai/plugin`](https://www.npmjs.com/package/@opencode-ai/plugin) and the `config` hook.
+- OpenCode (anomalyco/opencode) v2.0+ — uses the V2 `Plugin.define({ id, setup })` contract from [`@opencode/plugin`](https://www.npmjs.com/package/@opencode/plugin), with MCP and skill transforms.
+- This package is V2-only. OpenCode V1 is not supported.
 - Bun runtime (OpenCode runs plugins on Bun).
 - Build toolchain: [`swc`](https://swc.rs/) for transpile (`src/` → `dist/index.js`) and [`tsgo`](https://github.com/microsoft/typescript-go) (TypeScript v7 native preview, package `@typescript/native-preview`) for typecheck-only.
 - Linux with KDE Plasma 6 Wayland to actually run the MCP server.

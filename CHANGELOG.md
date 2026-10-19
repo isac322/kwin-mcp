@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - E2E CI shares stable, same-run image and shard-status artifacts across partial reruns. Each row checks its latest build and shard job results before validating coverage, so an older success cannot hide a newer failure. Diagnostic archives remain attempt-specific.
+- The OpenCode integration uses the V2 `Plugin.define` and `plugins` configuration to register the `kwin-mcp` MCP server and bundled `kwin-desktop-automation` skill automatically while preserving existing user entries. OpenCode V1 is unsupported.
 - E2E row aggregation now checks only its own five shard statuses and collected/full test counts, so an unrelated row failure no longer causes a false failure in a healthy row.
 - E2E CI detects the installed KWin version and passes `/dev/udmabuf` read/write with its matching host group to actual KWin 6.8 and later test containers; quality and collection containers remain device-free.
 - Visual QA keeps Xvfb/scrot on KWin 6.3 and 6.7 and uses private `--virtual` ScreenShot2 capture on KWin 6.8 and later, with an automatically enabled exact-backend probe and an independent Spectacle PNG comparison at scale 1. Existing semantic pixel, cursor, scaling, crop, retention, and mapping-failure checks remain, and the slow physical-X11 cases stay on the Debian lane.

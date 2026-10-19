@@ -81,6 +81,28 @@ def api(endpoint, target=None, paginate=False):
     return None if target else json.loads(proc.stdout)
 
 
+def select_source_image(run, pages):
+    """Select the newest available original diagnostic image, not a CI check result."""
+    if run["id"] != SOURCE_RUN or run["head_sha"] != SOURCE_SHA:
+        raise RuntimeError("Source workflow run or head SHA does not match the approved image source")
+    candidates = [artifact for page in pages for artifact in page["artifacts"]
+                  if not artifact["expired"] and re.fullmatch(
+                      r"e2e-image-opensuse-amd64-attempt-\d+", artifact["name"])]
+    if not candidates:
+        raise RuntimeError("No unexpired openSUSE AMD64 image artifact exists for the source run")
+    artifact = max(candidates, key=lambda item: (
+        int(item["name"].rsplit("-", 1)[1]), item["created_at"], item["id"]))
+    image_attempt = int(artifact["name"].rsplit("-", 1)[1])
+    if not 0 < image_attempt <= run["run_attempt"]:
+        raise RuntimeError("Image artifact attempt must be positive and no newer than the source run attempt")
+    if (artifact["workflow_run"]["id"] != SOURCE_RUN
+            or artifact["workflow_run"]["head_sha"] != SOURCE_SHA):
+        raise RuntimeError("Artifact source run or SHA mismatch")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", artifact["digest"].lower()):
+        raise RuntimeError("Artifact has no verifiable SHA-256 digest")
+    return artifact, image_attempt
+
+
 
 # Capture test-owned files before the existing fixture deletes them at teardown.
 # No product monkeypatches: this plugin only copies evidence and records reports.
@@ -205,27 +227,16 @@ def main():
                                    "--filter", f"reference={IMAGE}"]).strip():
         raise RuntimeError("Refusing to replace an existing test image; a fresh CI runner is required")
     run = api(f"actions/runs/{SOURCE_RUN}")
-    if run["head_sha"] != SOURCE_SHA:
-        raise RuntimeError("Source workflow head SHA does not match the approved image source")
+    # A failed-job rerun can advance run_attempt without rebuilding the image.
+    # This diagnostic reuses the original fixture, never that rerun's check status.
     pages = api(f"actions/runs/{SOURCE_RUN}/artifacts?per_page=100", paginate=True)
-    candidates = [artifact for page in pages for artifact in page["artifacts"]
-                  if not artifact["expired"] and re.fullmatch(
-                      r"e2e-image-opensuse-amd64-attempt-\d+", artifact["name"])]
-    if not candidates:
-        raise RuntimeError("No unexpired openSUSE AMD64 image artifact exists for the source run")
-    artifact = max(candidates, key=lambda item: (
-        int(item["name"].rsplit("-", 1)[1]), item["created_at"], item["id"]))
-    if int(artifact["name"].rsplit("-", 1)[1]) != run["run_attempt"]:
-        raise RuntimeError("Latest source-run attempt has no image artifact yet; refusing a stale attempt")
-    if artifact["workflow_run"]["head_sha"] != SOURCE_SHA:
-        raise RuntimeError("Artifact source SHA mismatch")
+    artifact, image_attempt = select_source_image(run, pages)
     digest = artifact["digest"].lower()
-    if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
-        raise RuntimeError("Artifact has no verifiable SHA-256 digest")
     provenance = {key: artifact[key] for key in (
         "id", "name", "digest", "created_at", "updated_at", "size_in_bytes")}
     provenance.update(source_run=SOURCE_RUN, source_head_sha=SOURCE_SHA,
-                      source_run_attempt=run["run_attempt"])
+                      currentSourceRunAttempt=run["run_attempt"],
+                      selectedSourceImageAttempt=image_attempt)
     save(OUT / "image-provenance.json", provenance)
     archive = SCRATCH / "image.zip"
     api(f"actions/artifacts/{artifact['id']}/zip", target=archive)

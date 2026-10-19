@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -25,21 +26,25 @@ def _run_checker(
     *,
     label: str = "amd64",
     shards: int = 5,
+    jobs_file: Path | None = None,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment.update(env or {})
+    command = [
+        sys.executable,
+        str(CHECKER),
+        "--status-dir",
+        str(status_dir),
+        "--label",
+        label,
+        "--shards",
+        str(shards),
+    ]
+    if jobs_file is not None:
+        command.extend(["--jobs-file", str(jobs_file)])
     return subprocess.run(
-        [
-            sys.executable,
-            str(CHECKER),
-            "--status-dir",
-            str(status_dir),
-            "--label",
-            label,
-            "--shards",
-            str(shards),
-        ],
+        command,
         cwd=REPO_ROOT,
         env=environment,
         capture_output=True,
@@ -70,6 +75,46 @@ def _assert_failure(result: subprocess.CompletedProcess[str], diagnostic: str) -
     assert diagnostic in result.stderr, result.stderr
 
 
+def _write_jobs(
+    path: Path,
+    label: str = "amd64",
+    *,
+    failed: str | None = None,
+    missing: str | None = None,
+    duplicate: str | None = None,
+    failed_status: str = "completed",
+    failed_conclusion: str | None = "failure",
+    pages: int = 1,
+    other_row_failure: bool = False,
+) -> None:
+    names = [
+        f"Build E2E image ({label})",
+        *(f"E2E shard ({label}, {number}/5)" for number in range(1, 6)),
+    ]
+    jobs: list[dict[str, str | None]] = []
+    for name in names:
+        if name == missing:
+            continue
+        if name == failed:
+            jobs.append({"name": name, "status": failed_status, "conclusion": failed_conclusion})
+        else:
+            jobs.append({"name": name, "status": "completed", "conclusion": "success"})
+    if duplicate is not None:
+        jobs.append({"name": duplicate, "status": "completed", "conclusion": "success"})
+    if other_row_failure:
+        jobs.append(
+            {
+                "name": "E2E shard (fedora-amd64, 1/5)",
+                "status": "completed",
+                "conclusion": "failure",
+            }
+        )
+    if pages < 1 or pages > len(jobs):
+        raise ValueError("pages must be between one and the number of jobs")
+    payload = [{"jobs": jobs[index::pages]} for index in range(pages)]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
 @pytest.mark.qa("QA-PKG-015")
 def test_checker_accepts_successful_row_and_ignores_other_row_failure(tmp_path: Path) -> None:
     _write_row(tmp_path)
@@ -80,6 +125,92 @@ def test_checker_accepts_successful_row_and_ignores_other_row_failure(tmp_path: 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "ok: row amd64 covered 10 tests" in result.stdout
     assert result.stderr == ""
+
+
+@pytest.mark.qa("QA-PKG-015")
+def test_checker_rejects_failed_current_job_with_stale_success_statuses(tmp_path: Path) -> None:
+    _write_row(tmp_path)
+    jobs_file = tmp_path / "jobs.json"
+    failed = "E2E shard (amd64, 3/5)"
+    _write_jobs(jobs_file, failed=failed)
+
+    result = _run_checker(tmp_path, jobs_file=jobs_file)
+
+    _assert_failure(result, f"required job {failed!r} is not successful")
+
+
+@pytest.mark.parametrize(
+    ("missing", "failed", "failed_status", "failed_conclusion", "diagnostic"),
+    [
+        (
+            "E2E shard (amd64, 2/5)",
+            None,
+            "completed",
+            "failure",
+            "missing required job",
+        ),
+        (
+            None,
+            "E2E shard (amd64, 2/5)",
+            "completed",
+            "cancelled",
+            "is not successful",
+        ),
+        (
+            None,
+            "E2E shard (amd64, 2/5)",
+            "in_progress",
+            None,
+            "is not successful",
+        ),
+    ],
+)
+@pytest.mark.qa("QA-PKG-015")
+def test_checker_rejects_missing_or_incomplete_current_jobs(
+    tmp_path: Path,
+    missing: str | None,
+    failed: str | None,
+    failed_status: str,
+    failed_conclusion: str | None,
+    diagnostic: str,
+) -> None:
+    _write_row(tmp_path)
+    jobs_file = tmp_path / "jobs.json"
+    _write_jobs(
+        jobs_file,
+        missing=missing,
+        failed=failed,
+        failed_status=failed_status,
+        failed_conclusion=failed_conclusion,
+    )
+
+    result = _run_checker(tmp_path, jobs_file=jobs_file)
+
+    _assert_failure(result, diagnostic)
+
+
+@pytest.mark.qa("QA-PKG-015")
+def test_checker_rejects_duplicate_current_job(tmp_path: Path) -> None:
+    _write_row(tmp_path)
+    jobs_file = tmp_path / "jobs.json"
+    duplicate = "Build E2E image (amd64)"
+    _write_jobs(jobs_file, duplicate=duplicate)
+
+    result = _run_checker(tmp_path, jobs_file=jobs_file)
+
+    _assert_failure(result, f"duplicate required job {duplicate!r}")
+
+
+@pytest.mark.qa("QA-PKG-015")
+def test_checker_accepts_paginated_jobs_and_ignores_other_row_failure(tmp_path: Path) -> None:
+    _write_row(tmp_path)
+    jobs_file = tmp_path / "jobs.json"
+    _write_jobs(jobs_file, pages=3, other_row_failure=True)
+
+    result = _run_checker(tmp_path, jobs_file=jobs_file)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "ok: row amd64 covered 10 tests" in result.stdout
 
 
 @pytest.mark.parametrize(

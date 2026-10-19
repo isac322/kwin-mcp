@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
-"""Validate one row of E2E shard status files.
+"""Validate one row of E2E shard status files and its current-run jobs.
 
 Usage: python3 scripts/check_e2e_shards.py --status-dir DIR --label LABEL --shards N
 
 The checker deliberately evaluates only the requested row.  A row is valid when
 it has exactly the requested shard files, every shard reports ``result=success``,
 each collected count is a non-negative integer, exactly one shard records a
-positive ``full`` count, and the collected counts sum to that full count.
+positive ``full`` count, and the collected counts sum to that full count.  When
+``--jobs-file`` is supplied, the file must contain the paginated jobs response
+for this run, and the requested image and shard jobs must each appear exactly
+once with ``status=completed`` and ``conclusion=success``.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from pathlib import Path
@@ -69,6 +73,61 @@ def _parse_status(path: Path) -> dict[str, str]:
     return values
 
 
+def _parse_jobs(path: Path, label: str, shards: int) -> None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise StatusError(f"jobs file cannot be read as JSON: {exc}") from exc
+
+    if not isinstance(payload, list):
+        raise StatusError("jobs file must contain a JSON list of response pages")
+
+    jobs: list[dict[str, object]] = []
+    for page_number, page in enumerate(payload, 1):
+        if not isinstance(page, dict):
+            raise StatusError(f"jobs page {page_number} must be a JSON object")
+        page_jobs = page.get("jobs")
+        if not isinstance(page_jobs, list):
+            raise StatusError(f"jobs page {page_number} must contain a jobs list")
+        for job_number, job in enumerate(page_jobs, 1):
+            if not isinstance(job, dict):
+                raise StatusError(f"jobs page {page_number} entry {job_number} must be an object")
+            if any(key not in job for key in ("name", "status", "conclusion")):
+                raise StatusError(
+                    f"jobs page {page_number} entry {job_number} must contain "
+                    "name, status, and conclusion"
+                )
+            if (
+                not isinstance(job["name"], str)
+                or not isinstance(job["status"], str)
+                or not (isinstance(job["conclusion"], str) or job["conclusion"] is None)
+            ):
+                raise StatusError(
+                    f"jobs page {page_number} entry {job_number} has invalid "
+                    "name, status, or conclusion"
+                )
+            jobs.append(job)
+
+    expected = {
+        f"Build E2E image ({label})",
+        *(f"E2E shard ({label}, {number}/{shards})" for number in range(1, shards + 1)),
+    }
+    for expected_name in sorted(expected):
+        matching = [job for job in jobs if job["name"] == expected_name]
+        if not matching:
+            raise StatusError(f"jobs file is missing required job {expected_name!r}")
+        if len(matching) != 1:
+            raise StatusError(
+                f"jobs file has duplicate required job {expected_name!r} (found {len(matching)})"
+            )
+        job = matching[0]
+        if job["status"] != "completed" or job["conclusion"] != "success":
+            raise StatusError(
+                f"required job {expected_name!r} is not successful "
+                f"(status={job['status']!r}, conclusion={job['conclusion']!r})"
+            )
+
+
 def check_row(status_dir: Path, label: str, shards: int) -> tuple[int, int]:
     """Validate one row and return ``(collected, full)`` on success."""
     if not status_dir.is_dir():
@@ -124,6 +183,7 @@ def check_row(status_dir: Path, label: str, shards: int) -> tuple[int, int]:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="validate one E2E shard status row")
     parser.add_argument("--status-dir", type=Path, required=True)
+    parser.add_argument("--jobs-file", type=Path)
     parser.add_argument("--label", type=_label, required=True)
     parser.add_argument("--shards", type=_positive_int, required=True)
     return parser
@@ -132,6 +192,8 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.jobs_file is not None:
+            _parse_jobs(args.jobs_file, args.label, args.shards)
         total, full = check_row(args.status_dir, args.label, args.shards)
     except StatusError as exc:
         print(f"error: {exc}", file=sys.stderr)

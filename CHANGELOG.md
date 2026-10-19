@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- E2E CI now builds each distro-and-architecture image once per workflow run, shares a compressed image artifact with that row's five test shards, and validates seven row-specific required checks instead of rebuilding the same image in every shard. Image, diagnostic, and status artifacts include the workflow attempt, so a full workflow rerun rebuilds and validates a matching set.
+- E2E CI shares stable, same-run image and shard-status artifacts across partial reruns. Each row checks its latest build and shard job results before validating coverage, so an older success cannot hide a newer failure. Diagnostic archives remain attempt-specific.
 - E2E row aggregation now checks only its own five shard statuses and collected/full test counts, so an unrelated row failure no longer causes a false failure in a healthy row.
 
 ## [1.0.0] - 2026-10-15

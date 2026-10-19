@@ -6,6 +6,7 @@ on:
   pull_request:
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -70,7 +71,7 @@ jobs:
       - name: Download the KWin test image
         uses: actions/download-artifact@v8
         with:
-          name: e2e-image-${{ matrix.row.label }}-attempt-${{ github.run_attempt }}
+          name: e2e-image-${{ matrix.row.label }}
           path: ${{ runner.temp }}/e2e-image
 
       - name: Load the KWin test image
@@ -179,9 +180,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: e2e-status-${{ matrix.row.label }}-attempt-${{ github.run_attempt }}-s${{ matrix.shard }}
-          path: shard-status/
+          name: e2e-status-${{ matrix.row.label }}-s${{ matrix.shard }}
+          path: ${{ env.E2E_STATUS_FILE }}
           if-no-files-found: error
+          overwrite: true
 
   build-image:
     name: Build E2E image (${{ matrix.row.label }})
@@ -206,10 +208,11 @@ jobs:
       - name: Upload the KWin test image
         uses: actions/upload-artifact@v7
         with:
-          name: e2e-image-${{ matrix.row.label }}-attempt-${{ github.run_attempt }}
+          name: e2e-image-${{ matrix.row.label }}
           path: ${{ runner.temp }}/image.tar.zst
           if-no-files-found: error
           compression-level: 0
+          overwrite: true
           retention-days: 1
 
   # Keeps the seven required check names `Virtual KWin session (<label>)`.
@@ -226,14 +229,29 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # The label and run attempt precede the shard wildcard so only this
-      # row's current-attempt statuses are downloaded.
+      - name: Collect current-run job metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate --slurp \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?filter=latest&per_page=100" \
+            > "${{ runner.temp }}/e2e-jobs.json"
+
+      # Stable names identify only this run's latest artifact set.  Each artifact
+      # contains one unique shard filename, so merging cannot mask a shard.
       - uses: actions/download-artifact@v8
+        continue-on-error: true
         with:
-          pattern: e2e-status-${{ matrix.row.label }}-attempt-${{ github.run_attempt }}-s*
+          pattern: e2e-status-${{ matrix.row.label }}-s*
           merge-multiple: true
           path: status
 
       - name: Require every shard to have succeeded and covered the suite
         shell: bash
-        run: python3 scripts/check_e2e_shards.py --status-dir status --label "${{ matrix.row.label }}" --shards 5
+        run: >-
+          python3 scripts/check_e2e_shards.py
+          --status-dir status
+          --jobs-file "${{ runner.temp }}/e2e-jobs.json"
+          --label "${{ matrix.row.label }}"
+          --shards 5

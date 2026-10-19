@@ -298,17 +298,20 @@ CI stores shard evidence under `artifacts/e2e/<label>-s<N>/` and uploads one dia
 
 The Arch Linux image has no arm64 row because no current Arch-family arm64 base image exists.
 
-CI builds one image for each row once per workflow run, exports it as a compressed artifact, and
-shares it with that row's five test shards. The 35 shards feed seven independent required checks,
-one per row. Each check reads only its own five status files and requires every shard to succeed
-and the collected test count to equal the full collection count. A failure in another row does
-not change that result. The shard command keeps the `not slow` selection, strict skip handling,
-layer-shell requirement, and existing timeouts. Image artifacts are retained for one day; diagnostic
-and status artifacts keep the repository's default retention.
+CI builds one image for each row and shares it with that row's five test shards. The 35 shards
+feed seven independent required checks, one per row. Each check first verifies through the
+current workflow run's latest jobs API that its row's build and all five shard jobs completed
+successfully, then reads its five status files and requires their summed test count to equal
+the full collection count. A failure in another row does not change that result. The shard
+command keeps the `not slow` selection, strict skip handling, layer-shell requirement, and
+existing timeouts. Image artifacts are retained for one day; diagnostic and status artifacts
+keep the repository's default retention.
 
-Artifacts are namespaced by workflow attempt. Rerun the whole workflow to rebuild each image and
-produce a matching set of five shard statuses; an individual job rerun does not reuse artifacts
-from another attempt.
+Image artifacts use stable same-run names `e2e-image-LABEL`; status artifacts use
+`e2e-status-LABEL-sN`. Reruns overwrite these artifacts, allowing partial reruns to reuse
+successful jobs from the same workflow run. Diagnostic archives remain attempt-specific.
+Checking the latest row job states before reading statuses prevents an older success from
+masking a newer failed, missing, or cancelled job.
 
 One test, the missing-command case of `test_app_launch_log.py`, fails only when the container runs on an emulated kernel such as an arm64 Docker host: qemu-user lets `execve` of a missing file report as exit 127 in the child instead of raising `FileNotFoundError`, so `app_launch` reports a launched process that immediately died. On a native amd64 runner the assertion holds.
 

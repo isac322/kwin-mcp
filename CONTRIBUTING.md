@@ -287,7 +287,7 @@ integrations/
 │   ├── .mcp.json                                              # MCP server config (uvx kwin-mcp)
 │   └── skills/kwin-desktop-automation/SKILL.md                # source-of-truth skill
 └── opencode/
-    ├── opencode.json.example                                  # manual fallback opencode config
+    ├── opencode.json.example                                  # OpenCode plugin config example
     └── plugin/                                                 # @isac322/kwin-mcp-opencode npm package
         ├── package.json                                        # npm manifest
         ├── src/index.ts                                        # V2 Plugin.define/setup implementation

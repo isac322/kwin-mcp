@@ -52,7 +52,7 @@ The shipped skill lives inside the npm package (read-only). To override or exten
 - Personal scope: `~/.claude/skills/<name>/SKILL.md`, `~/.config/opencode/skills/<name>/SKILL.md`, or `~/.agents/skills/<name>/SKILL.md`
 - Project scope: `<project>/.claude/skills/<name>/SKILL.md`, `<project>/.opencode/skills/<name>/SKILL.md`, or `<project>/.agents/skills/<name>/SKILL.md`
 
-The `.agents/skills` paths are OpenCode's official Agent Skills-compatible locations. OpenCode keys skills by their frontmatter `name`, so reuse `kwin-desktop-automation` to override the shipped one, or pick a unique name (e.g. `kwin-desktop-automation-custom`) to keep both alongside each other.
+The skill ID is the directory basename; frontmatter `name` is display-only. A skill in a directory named `kwin-desktop-automation` overrides the shipped skill, while a different directory ID (e.g. `kwin-desktop-automation-custom`) keeps both skills available, regardless of their frontmatter names.
 
 ## Uninstall
 
@@ -65,13 +65,13 @@ The `.agents/skills` paths are OpenCode's official Agent Skills-compatible locat
    ```
 
    If other plugins are configured, remove only `"@isac322/kwin-mcp-opencode"` (or the target you configured).
-2. Remove the cached OpenCode package:
+2. If the plugin is configured in OpenCode's global plugin configuration, remove it with:
 
    ```bash
    opencode plugin remove @isac322/kwin-mcp-opencode
    ```
 
-   Use the exact configured target if it differs. OpenCode installs npm plugins into its own cache, so `npm uninstall` in a project does not remove the cached package.
+   Use the exact configured target if it differs. This command edits the global plugin configuration; it does not delete the package cache. You do not need both steps—use the one that matches where the plugin is configured.
 3. Reload or restart OpenCode. The MCP server registration and bundled skill will no longer be loaded.
 
 ## Building from source

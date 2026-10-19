@@ -477,7 +477,7 @@ Mouse, keyboard, and touch events are injected through KWin's private `org.kde.K
 
 ### Screenshot Capture
 
-The normal Wayland capture path tries KWin's `org.kde.KWin.ScreenShot2` D-Bus interface first and uses the `spectacle` CLI as a fallback. Both capture the whole workspace across all outputs. `capture` bursts on the action tools use the same path, and Pillow converts ScreenShot2's raw pipe frames (RGB32, ARGB32, or RGBX8888 depending on the KWin version) to PNG. The Docker visual QA suite also has an explicit test-only X11 backend: when `KWIN_MCP_X11_SCREENSHOT=1` is set for a server connected to the nested KWin/Xvfb fixture, captures use `scrot`. Normal virtual and live Wayland sessions do not opt into this backend.
+The normal Wayland capture path tries KWin's `org.kde.KWin.ScreenShot2` D-Bus interface first and uses the `spectacle` CLI as a fallback. Both capture the whole workspace across all outputs. `capture` bursts on the action tools use the same path, and Pillow converts ScreenShot2's raw pipe frames (RGB32, ARGB32, or RGBX8888 depending on the KWin version) to PNG. The Docker visual QA fixture selects its backend from the installed KWin version: KWin 6.3 and 6.7 use the existing Xvfb/scrot path, while KWin 6.8 and later use a private `kwin_wayland --virtual` session with `/dev/udmabuf` and its host group, then compare ScreenShot2 output with an independent Spectacle PNG observer. Normal virtual and live Wayland sessions do not opt into the test-only X11 backend.
 
 Each Spectacle capture has a deadline derived from the image Spectacle must produce, the workspace canvas at the output scale (on mixed-scale layouts, every output is upscaled to the next whole scale above the largest): 15 seconds plus 1 second per canvas megapixel, capped at 120 seconds. A 1920x1080 output gets 18 seconds; a mixed-scale 1.45 + 1.0 layout (a 6490x2160 canvas) gets 30 seconds. A capture that does not finish in time fails with `spectacle timed out after <N>s`.
 
@@ -718,14 +718,14 @@ Coverage of the Docker suite includes:
 - an accessibility-bus check that `org.a11y.Bus` has an owner as soon as `session_start` returns, before any app or AT-SPI2 query could activate it, and that a failed activation (a `dbus-send` stub on `PATH`) is reported as a `Warning:` line in the `session_start` output;
 - the `org.a11y.Status.IsEnabled` switch: on in virtual sessions, and in live sessions reported, left off by default, switched on by `enable_accessibility=true`, and restored by `session_stop` and by a server exit while a tool is still running;
 - exact input- and output-schema checks for all 29 registered tools, plus installed-server stdio calls through every MCP tool, resource and the live-consent elicitation flow;
-- nested visual tests that start Xvfb and a test-owned KWin compositor inside the container, connect the installed MCP server to it, and verify pixels as well as accessibility state;
+- version-aware visual tests that use Xvfb/scrot on KWin 6.3 and 6.7, and private `--virtual` ScreenShot2 capture with `/dev/udmabuf` on KWin 6.8 and later;
 - KCalc before/after pixel transitions and a deterministic GUI probe for mouse hover, cursor inclusion, animation frame bursts, and CJK text rendered differently from a missing-glyph tofu control;
 - screenshot coordinate mapping at output scales 1.0 and 1.45 (the fractional scale is set through `kscreen-doctor`): a probe button found by pixel color in the screenshot is clicked at origin plus pixel and must activate, and single captures and frame bursts report the logical workspace as their coordinate space;
 - artifact retention and failure behavior, environment provenance, installed distribution metadata (version 1.0.0, the `Production/Stable` classifier), console entry points, and process/socket cleanup.
 
 Pull requests run every E2E test except the ones marked `slow`; `.github/workflows/e2e-slow.yml` runs the `slow` set.
 
-The container uses software rendering and needs no `--privileged`, `--cap-add`, GPU, or device flags. Its nested Xvfb server is part of the visual fixture; the host does not need an X server. CI runs the suite natively in four images: Debian trixie (`docker/e2e.Dockerfile`), Fedora 44 (`docker/e2e-fedora.Dockerfile`), openSUSE Tumbleweed (`docker/e2e-opensuse.Dockerfile`), and Arch Linux (`docker/e2e-arch.Dockerfile`, amd64 only). A failure in any of them fails the workflow.
+The container uses software rendering. KWin 6.8 and later actual test containers also receive `/dev/udmabuf` and its host group for the private virtual compositor; quality and collect-only containers remain device-free. The suite needs no `--privileged`, `--cap-add`, physical GPU, or `/dev/dri` passthrough. KWin 6.3 and 6.7 visual tests keep their test-owned nested Xvfb server, so the host does not need an X server. CI runs the suite natively in four images: Debian trixie (`docker/e2e.Dockerfile`), Fedora 44 (`docker/e2e-fedora.Dockerfile`), openSUSE Tumbleweed (`docker/e2e-opensuse.Dockerfile`), and Arch Linux (`docker/e2e-arch.Dockerfile`, amd64 only). A failure in any of them fails the workflow.
 
 | Jobs | GitHub Actions runner |
 |---|---|
@@ -734,7 +734,11 @@ The container uses software rendering and needs no `--privileged`, `--cap-add`, 
 
 A completed run retains `environment.json`, `junit.xml`, `pytest.log`, nested-KWin/Xvfb/MCP logs, and visual PNG evidence below its artifact directory. Failed runs also collect Docker inspect, container log, and process-list diagnostics.
 
-Exact-virtual ScreenShot2 coverage is version-dependent: on KWin 6.3–6.7, the legacy probe remains opt-in and is known to be unavailable in this container. KWin ≥6.8 requires `/dev/udmabuf` for its virtual software-render device; CI passes that device and its host group to the actual E2E container and opts the exact probe in. A historical native run confirmed the capability with a passing clipboard check and a real 1280×800 PNG, but this does not claim that the current PR's CI is green. The existing nested Xvfb fixture and visual oracles remain the legacy path; the KWin ≥6.8 nested visual fix is pending. Error propagation for the exact-virtual path is tested at both engine and MCP stdio levels; screenshot success, cursor pixels, frame bursts, and fractional-scale coordinate mapping are tested through the explicit nested X11/scrot visual mode. Multi-output layouts, negative origins, ScreenShot2 `CaptureWorkspace` normalization, and Spectacle partial coverage are not part of the container suite. See [docker/README.md](docker/README.md) for the process topology, complete test-file inventory, evidence layout, and targeted commands.
+Exact-virtual ScreenShot2 coverage follows the installed KWin version. KWin 6.3 and 6.7 keep the legacy opt-in probe and Xvfb/scrot visual path. KWin 6.8 and later actual test containers use `/dev/udmabuf` with its host group and automatically opt into the exact probe, which compares the product PNG with an independent Spectacle PNG at scale 1.
+
+Provider-unavailable checks use the real `org.kde.KWin /Plugins` lifecycle: unloading the screenshot plugin removes the provider and makes Spectacle fail without a PNG; reloading the plugin must restore the provider. Semantic pixel, cursor, animation, scaling, crop, retention, and coordinate-mapping failure checks remain in scope. The slow physical-X11 cases stay on the Debian slow lane.
+
+Physical multi-output capture and negative-origin layouts remain unverified, as does Spectacle partial coverage on those layouts. See [docker/README.md](docker/README.md) for the process topology, complete test-file inventory, evidence layout, and targeted commands.
 
 ## Contributing
 

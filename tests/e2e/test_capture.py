@@ -1,9 +1,8 @@
 """Post-action ``capture`` frames on the 15 GUI-state mutators (S §3.3, G4).
 
-The virtual KWin in the container never answers ScreenShot2, so every frame here
-comes from the 0.11 frame-burst path that works in the container: a nested
-Xvfb/X11 KWin (``visual_harness.nested_visual_kwin``) attached with
-``session_connect``, with ``KWIN_MCP_X11_SCREENSHOT=1`` selecting scrot.
+Frames come from the installed KWin's real visual backend: legacy releases use
+a nested Xvfb/X11 compositor and scrot; native virtual releases use ScreenShot2.
+``visual_harness.nested_visual_kwin`` selects the backend and its environment.
 
 Engine tests share one module-scoped KCalc session; the stdio tests
 (QA-CAP-010/011/017) start their own server against their own nested KWin.
@@ -92,11 +91,6 @@ CARRIERS = (
 )
 
 
-def _x11_env(visual: NestedVisualKWin) -> dict[str, str]:
-    """The opt-in X11/scrot frame backend of the nested compositor (0.11 mechanism)."""
-    return {"DISPLAY": visual.x_display, "KWIN_MCP_X11_SCREENSHOT": "1"}
-
-
 @dataclass
 class KCalcScene:
     """One nested KWin with KCalc, driven in-process by one engine."""
@@ -139,9 +133,9 @@ class KCalcScene:
 
 @pytest.fixture(scope="module")
 def scene() -> Iterator[KCalcScene]:
-    """Module-scoped nested KWin + KCalc, frames through the X11/scrot backend."""
+    """Module-scoped nested KWin + KCalc using the fixture's real capture backend."""
     with pytest.MonkeyPatch.context() as patch, nested_visual_kwin() as visual:
-        for key, value in _x11_env(visual).items():
+        for key, value in visual.capture_env.items():
             patch.setenv(key, value)
         engine = AutomationEngine(screenshot_max_edge=SERVER_MAX_EDGE)
         try:
@@ -417,14 +411,21 @@ def test_capture_failure_after_commit_is_warning_not_error(
     scene: KCalcScene, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     real_scrot = screenshot._capture_via_scrot
-    scrot_calls: list[Path] = []
+    real_raw_frame = screenshot._capture_raw_frame
+    provider_calls: list[object] = []
+    failure = f"{scene.visual.capture_backend} failed after the first frame in this test"
 
     def scrot_fails_after_first(output_path: Path, *, include_cursor: bool = False) -> None:
-        scrot_calls.append(output_path)
-        if len(scrot_calls) > 1:
-            msg = "scrot failed after the first frame in this test"
-            raise RuntimeError(msg)
+        provider_calls.append(output_path)
+        if len(provider_calls) > 1:
+            raise RuntimeError(failure)
         real_scrot(output_path, include_cursor=include_cursor)
+
+    def screenshot2_fails_after_first(iface: Any, options: Any) -> screenshot._RawFrame:
+        provider_calls.append(iface)
+        if len(provider_calls) > 1:
+            raise RuntimeError(failure)
+        return real_raw_frame(iface, options)
 
     def unavailable(*_args: object, **_kwargs: object) -> None:
         msg = "unavailable in this test"
@@ -432,23 +433,29 @@ def test_capture_failure_after_commit_is_warning_not_error(
 
     scene.clear()
     before = scene.frame_files()
-    monkeypatch.setattr(screenshot, "_capture_via_scrot", scrot_fails_after_first)
-    monkeypatch.setattr(screenshot, "_capture_frame_burst_dbus", unavailable)
-    monkeypatch.setattr(screenshot, "_capture_frame_burst_spectacle", unavailable)
+    if scene.visual.capture_backend == "x11-scrot":
+        monkeypatch.setattr(screenshot, "_capture_via_scrot", scrot_fails_after_first)
+        monkeypatch.setattr(screenshot, "_capture_raw_frame", unavailable)
+        provider_name = "X11/scrot"
+    else:
+        assert scene.visual.capture_backend == "screenshot2", scene.visual.capture_backend
+        monkeypatch.setattr(screenshot, "_capture_raw_frame", screenshot2_fails_after_first)
+        provider_name = "ScreenShot2"
+    monkeypatch.setattr(screenshot, "_capture_via_spectacle", unavailable)
 
     pressed = scene.engine.keyboard_press("7", capture=Capture(delays_ms=[0, 200]))
-    assert len(scrot_calls) == 2, scrot_calls
+    assert len(provider_calls) == 2, provider_calls
     assert pressed.frames == [], pressed
     [warning] = pressed.warnings
     assert warning.startswith(
-        "frame capture failed after the action: Frame burst capture failed: X11/scrot ("
+        f"frame capture failed after the action: Frame burst capture failed: {provider_name} ("
     ), warning
-    assert "scrot failed after the first frame in this test" in warning, warning
+    assert failure in warning, warning
     assert f"Warning: {warning}" in pressed.render().splitlines(), pressed.render()
     # The press committed exactly once: KCalc shows 7 (binary 111), not 77.
     scene.wait_binary("111")
 
-    scrot_calls.clear()
+    provider_calls.clear()
     acted = scene.engine.element_act(
         StrictAddr(strict=Locator(app="kcalc", query="Seven", role="button")),
         "Press",
@@ -457,7 +464,7 @@ def test_capture_failure_after_commit_is_warning_not_error(
     assert acted.dispatch in {"confirmed", "sent_unconfirmed"}, acted
     assert acted.frames == [], acted
     [warning] = acted.warnings
-    assert "scrot failed after the first frame in this test" in warning, warning
+    assert failure in warning, warning
     # One activation: 77 = binary 1001101.
     scene.wait_binary("1001101")
     # The failed burst published nothing.
@@ -472,7 +479,10 @@ def test_capture_failure_after_commit_is_warning_not_error(
 @pytest.mark.timeout(600)
 def test_topology_shift_mid_burst(monkeypatch: pytest.MonkeyPatch) -> None:
     with nested_visual_kwin() as visual:
-        for key, value in _x11_env(visual).items():
+        for key, value in {
+            "DISPLAY": visual.x_display,
+            "KWIN_MCP_X11_SCREENSHOT": "1",
+        }.items():
             monkeypatch.setenv(key, value)
         home = visual.artifact_dir / "home"
         isolated_home = {
@@ -556,7 +566,7 @@ def _probe_events(log_path: Path) -> list[dict[str, Any]]:
 async def test_capture_returns_frames_sorted_with_duplicates(tmp_path: Path) -> None:
     log_path = tmp_path / "probe-events.jsonl"
     with nested_visual_kwin() as visual:
-        async with running_mcp_server(env=_x11_env(visual)) as client:
+        async with running_mcp_server(env=visual.capture_env) as client:
             await _connect(client, visual)
             try:
                 await client.call_structured(
@@ -631,7 +641,7 @@ async def test_capture_returns_frames_sorted_with_duplicates(tmp_path: Path) -> 
     offsets_ms = [(m - last_event_ns) / 1e6 for m in mtimes]
     # A15 timing: lower bound = requested delay - 10 %; upper bound = 3x the delay plus
     # the backend's one-frame latency (the 0 ms frame's offset: topology observation
-    # and scrot), so a drifting schedule fails without a fixed +-N ms window.
+    # and capture), so a drifting schedule fails without a fixed +-N ms window.
     latency_ms = offsets_ms[0]
     for delay, offset in zip([0, 300, 300, 1200], offsets_ms, strict=True):
         assert offset >= 0.9 * delay, (delay, offsets_ms)
@@ -659,7 +669,7 @@ async def test_capture_returns_frames_sorted_with_duplicates(tmp_path: Path) -> 
 async def test_large_burst_no_cap() -> None:
     delays = list(range(51))
     with nested_visual_kwin() as visual:
-        async with running_mcp_server(env=_x11_env(visual)) as client:
+        async with running_mcp_server(env=visual.capture_env) as client:
             await _connect(client, visual)
             try:
                 progress = ProgressLog()
@@ -697,7 +707,7 @@ async def test_large_burst_no_cap() -> None:
 @pytest.mark.anyio
 async def test_negative_and_huge_delays() -> None:
     with nested_visual_kwin() as visual:
-        async with running_mcp_server(env=_x11_env(visual)) as client:
+        async with running_mcp_server(env=visual.capture_env) as client:
             await _connect(client, visual)
             try:
                 # SPEC-GAP-10 pin: a negative delay is clamped to 0, not rejected.
@@ -738,10 +748,10 @@ async def test_negative_and_huge_delays() -> None:
 
 # ── ScreenShot2 burst scheduling (QA-CAP-010, boundary stubs) ────────────
 #
-# No compositor in the container answers ScreenShot2, so only its I/O
-# boundary (the D-Bus connection, the per-frame topology read, and the raw
-# frame fetch) is stubbed here; the real ``_capture_frame_burst_dbus`` loop
-# runs and the oracle is the mtime each frame's PNG gets inside the loop.
+# The scheduling-only check isolates the I/O boundary (the D-Bus connection,
+# per-frame topology read, and raw frame fetch). The real
+# ``_capture_frame_burst_dbus`` loop runs, and the oracle is the mtime each
+# frame's PNG gets inside the loop; real compositor pixels are covered above.
 
 _STUB_SIZE = (64, 64)
 _STUB_TOPOLOGY = screenshot.WorkspaceTopology(

@@ -7,14 +7,18 @@ widgets can be queried, and keystrokes injected over EIS reach it.
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-from _asserts import frame_png
-from PIL import Image
+from _asserts import CoordinateSpace, coordinate_spaces, frame_png
+from _suite_policy import VIRTUAL_SCREENSHOT_SKIP_PREFIX
+from PIL import Image, ImageChops
+from visual_harness import requires_native_capture, spectacle_oracle
 
 from kwin_mcp.models import Locator
 
@@ -75,23 +79,23 @@ def test_keyboard_input_reaches_the_app(kcalc_session: AutomationEngine) -> None
 
 @pytest.mark.skipif(
     os.environ.get(SCREENSHOT_OPT_IN) != "1",
-    reason=(
-        f"set {SCREENSHOT_OPT_IN}=1 to run: KWin's virtual backend never answers"
-        " ScreenShot2 in a headless container (no reply, zero bytes), so capture"
-        " can only be exercised against a GPU-backed session"
-    ),
+    reason=f"{VIRTUAL_SCREENSHOT_SKIP_PREFIX}: exercise real virtual ScreenShot2 PNG capture",
 )
 def test_screen_capture_exact_virtual_backend(
-    kcalc_session: AutomationEngine, screen_size: tuple[int, int]
+    kcalc_session: AutomationEngine,
+    screen_size: tuple[int, int],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("DISPLAY", "")
+    monkeypatch.setenv("KWIN_MCP_X11_SCREENSHOT", "0")
     bus_names = kcalc_session.dbus_call(
         service="org.freedesktop.DBus",
         path="/",
         interface="org.freedesktop.DBus",
         method="ListNames",
     )
-    # KWin registers ScreenShot2 only when the screenshot effect loads, and that
-    # effect needs OpenGL compositing — i.e. a DRM render node in the container.
+    # A registered service is necessary, but the PNG and geometry checks below
+    # also require the provider to answer with a real full-resolution image.
     assert isinstance(bus_names.reply, list), bus_names
     assert SCREENSHOT_SERVICE in bus_names.reply, bus_names
 
@@ -107,3 +111,47 @@ def test_screen_capture_exact_virtual_backend(
     assert (frame.mapping.origin.x, frame.mapping.origin.y) == (0, 0), frame
     with Image.open(path) as image:
         assert image.size == screen_size
+
+    if requires_native_capture():
+        assert coordinate_spaces(frame.render()) == [
+            CoordinateSpace((0, 0), screen_size, "screenshot2", "full")
+        ], frame.render()
+        session = kcalc_session.session_info().session
+        assert session is not None
+        artifact_root = Path(os.environ["KWIN_MCP_ARTIFACT_DIR"])
+        evidence = artifact_root / f"exact-virtual-{session.wayland_socket}"
+        evidence.mkdir(parents=True, exist_ok=True)
+        evidence.chmod(0o755)
+        product_png = evidence / "product.png"
+        shutil.copy2(path, product_png)
+        oracle_png = spectacle_oracle(
+            session.dbus_address, session.wayland_socket, evidence / "spectacle.png"
+        )
+        # This fixture is one scale-1 output: both independent captures share
+        # the same pixel grid. Fractional-scale tests must not use this comparison.
+        with Image.open(product_png) as product, Image.open(oracle_png) as oracle:
+            assert product.size == oracle.size == screen_size, (product.size, oracle.size)
+            difference = ImageChops.difference(product.convert("RGB"), oracle.convert("RGB"))
+        red, green, blue = difference.split()
+        changed = ImageChops.lighter(ImageChops.lighter(red, green), blue)
+        different_pixels = sum(changed.histogram()[1:])
+        bbox = difference.getbbox()
+        (evidence / "rgb-comparison.json").write_text(
+            json.dumps(
+                {
+                    "size": list(screen_size),
+                    "compared_pixels": screen_size[0] * screen_size[1],
+                    "different_pixels": different_pixels,
+                    "difference_bbox": bbox,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        if different_pixels:
+            difference.save(evidence / "rgb-difference.png")
+        assert different_pixels == 0 and bbox is None, (
+            f"product ScreenShot2 and independent Spectacle RGB differ: "
+            f"{different_pixels} pixels, bbox={bbox}; evidence: {evidence}"
+        )

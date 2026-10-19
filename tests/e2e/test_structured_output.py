@@ -310,8 +310,7 @@ async def _tour(era: str) -> list[Call]:
         await _virtual_tour(virtual)
     user = ScriptedUser()
     with nested_visual_kwin() as visual:
-        env = {"DISPLAY": visual.x_display, "KWIN_MCP_X11_SCREENSHOT": "1"}
-        async with running_client(era, env=env, elicitation_callback=user) as client:
+        async with running_client(era, env=visual.capture_env, elicitation_callback=user) as client:
             live = Recorder(client)
             await _live_tour(live, user, visual)
     calls = [*virtual.calls, *live.calls]
@@ -558,8 +557,7 @@ async def test_text_equals_render_and_is_lossless(era: str) -> None:
 @pytest.mark.anyio
 async def test_echo_and_size_fragments_in_text() -> None:
     with nested_visual_kwin() as visual:
-        env = {"DISPLAY": visual.x_display, "KWIN_MCP_X11_SCREENSHOT": "1"}
-        async with running_mcp_server(env=env) as client:
+        async with running_mcp_server(env=visual.capture_env) as client:
             await client.call_structured(
                 "session_connect",
                 {"dbus_address": visual.dbus_address, "wayland_display": visual.wayland_display},

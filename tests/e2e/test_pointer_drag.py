@@ -33,6 +33,7 @@ from probe_session import (
 )
 from visual_harness import nested_visual_kwin
 
+from kwin_mcp import input as kwin_input
 from kwin_mcp.models import ElementPoint, HeldInput, Locator, Point, Waypoint
 
 if TYPE_CHECKING:
@@ -171,13 +172,13 @@ def test_dwell_ms_pauses_at_to(engine: AutomationEngine, probe: Probe) -> None:
 def test_button_and_modifiers_released_in_finally_on_error(
     engine: AutomationEngine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The drag fails after its press (the X11 screenshot-cursor mirror fails); the
+    # The drag fails after its press at a post-motion boundary; the
     # button and modifier it pressed must still come up and nothing stays latched.
     # A mid-path EIS loss cannot show this: KWin keeps an emulated button down after
     # the client disconnects or its pointer device is replaced (QA-INP-030/046).
     with nested_visual_kwin() as visual:
-        monkeypatch.setenv("DISPLAY", visual.x_display)
-        monkeypatch.setenv("KWIN_MCP_X11_SCREENSHOT", "1")
+        for key, value in visual.capture_env.items():
+            monkeypatch.setenv(key, value)
         info = engine.session_connect(
             dbus_address=visual.dbus_address, wayland_display=visual.wayland_display
         )
@@ -185,25 +186,66 @@ def test_button_and_modifiers_released_in_finally_on_error(
         probe = launch_probe(engine, tmp_path)
         mark = probe.park()
 
-        # A fake xdotool whose first mirror (the move to `from`) works and every
-        # later one (the final mirror at `to`) fails.
-        fake_bin = tmp_path / "bin"
-        fake_bin.mkdir()
-        xdotool = fake_bin / "xdotool"
-        xdotool.write_text(
-            '#!/bin/sh\nmarker="$0.called"\n'
-            'if [ -e "$marker" ]; then echo "synthetic final mirror failure" >&2; exit 73; fi\n'
-            ': > "$marker"\n',
-            encoding="utf-8",
-        )
-        xdotool.chmod(0o755)
-        real_path = os.environ["PATH"]
-        monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{real_path}")
-        with pytest.raises(RuntimeError, match=r"xdotool failed to mirror the screenshot cursor"):
-            engine.pointer_drag(
-                probe.to_global(100, 300), probe.to_global(400, 300), modifiers="ctrl"
+        if visual.capture_backend == "x11-scrot":
+            # A fake xdotool whose first mirror (the move to `from`) works and every
+            # later one (the final mirror at `to`) fails.
+            fake_bin = tmp_path / "bin"
+            fake_bin.mkdir()
+            xdotool = fake_bin / "xdotool"
+            xdotool.write_text(
+                '#!/bin/sh\nmarker="$0.called"\n'
+                'if [ -e "$marker" ]; then echo "synthetic final mirror failure" >&2; exit 73; fi\n'
+                ': > "$marker"\n',
+                encoding="utf-8",
             )
-        monkeypatch.setenv("PATH", real_path)
+            xdotool.chmod(0o755)
+            real_path = os.environ["PATH"]
+            monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{real_path}")
+            with pytest.raises(
+                RuntimeError, match=r"xdotool failed to mirror the screenshot cursor"
+            ):
+                engine.pointer_drag(
+                    probe.to_global(100, 300), probe.to_global(400, 300), modifiers="ctrl"
+                )
+            monkeypatch.setenv("PATH", real_path)
+        else:
+            assert visual.capture_backend == "screenshot2", visual.capture_backend
+            # Keep initial positioning real, then fail only after two real drag
+            # motions following the real button press. Raising outside the motion
+            # provider keeps EIS healthy so finally must deliver the real releases.
+            backend = engine._input
+            assert backend is not None
+            client = backend._client
+            real_button = client.pointer_button
+            real_motion = client.pointer_move_absolute
+            armed = False
+            motion_calls = 0
+            failure = RuntimeError("controlled native post-motion boundary failure")
+
+            def arm_after_press(button: int, state: int) -> None:
+                nonlocal armed
+                real_button(button, state)
+                if state == kwin_input._PRESSED:
+                    armed = True
+
+            def fail_after_second_drag_motion(x: float, y: float) -> None:
+                nonlocal motion_calls
+                real_motion(x, y)
+                if armed:
+                    motion_calls += 1
+                    if motion_calls == 2:
+                        raise failure
+
+            with monkeypatch.context() as patch:
+                patch.setattr(client, "pointer_button", arm_after_press)
+                patch.setattr(client, "pointer_move_absolute", fail_after_second_drag_motion)
+                with pytest.raises(RuntimeError) as raised:
+                    engine.pointer_drag(
+                        probe.to_global(100, 300), probe.to_global(400, 300), modifiers="ctrl"
+                    )
+                assert raised.value is failure
+                assert motion_calls == 2
+                assert not client.disconnected
 
         probe.wait_events(
             lambda evs: bool(of_kind(evs, "button_release")) and bool(of_kind(evs, "key_release")),

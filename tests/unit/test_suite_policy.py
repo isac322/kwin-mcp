@@ -153,7 +153,17 @@ def test_is_known_limit_rejects_near_misses(prefix: str) -> None:
 
 @pytest.mark.parametrize(
     "reason",
-    ["", "could not import 'gi': No module named 'gi'", "flaky on CI", "Skipped: unknown"],
+    [
+        "",
+        "could not import 'gi': No module named 'gi'",
+        "flaky on CI",
+        "Skipped: unknown",
+        "headless screenshot-error behavior contradicts the explicitly enabled success path",
+        (
+            "headless screenshot-error behavior contradicts the explicitly enabled success path"
+            ": details"
+        ),
+    ],
 )
 def test_is_known_limit_rejects_unregistered_reasons(reason: str) -> None:
     assert not is_known_limit(reason)

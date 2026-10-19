@@ -17,10 +17,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
+from xml.etree import ElementTree
 
 if TYPE_CHECKING:
     from collections.abc import Generator
     from typing import BinaryIO
+
+    import dbus
+    import dbus.bus
 
 _SCREEN_WIDTH = 1280
 _SCREEN_HEIGHT = 800
@@ -28,6 +32,10 @@ _X_READY_TIMEOUT = 10.0
 _SCALE_READY_TIMEOUT = 15.0
 _KWIN_READY_TIMEOUT = 30.0
 _SCREENSHOT_BUS_NAME = "org.kde.KWin.ScreenShot2"
+_SCREENSHOT_OBJECT_PATH = "/org/kde/KWin/ScreenShot2"
+_PLUGINS_INTERFACE = "org.kde.KWin.Plugins"
+_PROVIDER_READY_TIMEOUT = 10.0
+_SPECTACLE_TIMEOUT = 30.0
 _REQUIRED_BUS_NAMES = {
     "org.a11y.Bus",
     "org.kde.KWin",
@@ -53,6 +61,19 @@ class NestedVisualKWin:
     scale: float = 1.0
     screen_size: tuple[int, int] = (_SCREEN_WIDTH, _SCREEN_HEIGHT)
     output_count: int = 1
+
+    @property
+    def capture_backend(self) -> str:
+        """The real frame provider selected by this compositor's lifecycle."""
+        return "x11-scrot" if self.x_display else "screenshot2"
+
+    @property
+    def capture_env(self) -> dict[str, str]:
+        """Override inherited X11 forcing when the compositor is native virtual."""
+        return {
+            "DISPLAY": self.x_display,
+            "KWIN_MCP_X11_SCREENSHOT": "1" if self.x_display else "0",
+        }
 
 
 class _StartupError(RuntimeError):
@@ -94,6 +115,12 @@ AT_SPI_PID=$!
     XDG_CURRENT_DESKTOP=KDE \
     XDG_SESSION_TYPE=wayland
 
+if [ "$VISUAL_NATIVE_CAPTURE" = 1 ]; then
+    set -- --virtual
+else
+    set -- --x11-display "$DISPLAY"
+fi
+
 env \
     -u WAYLAND_DISPLAY \
     -u QT_QPA_PLATFORM \
@@ -101,7 +128,7 @@ env \
     KWIN_SCREENSHOT_NO_PERMISSION_CHECKS=1 \
     LIBGL_ALWAYS_SOFTWARE=1 \
     "$VISUAL_KWIN_WAYLAND" \
-        --x11-display "$DISPLAY" \
+        "$@" \
         --output-count "$VISUAL_OUTPUT_COUNT" \
         --width "$VISUAL_SCREEN_WIDTH" \
         --height "$VISUAL_SCREEN_HEIGHT" \
@@ -120,6 +147,40 @@ def _executable(name: str, *fallbacks: str) -> str:
         if Path(fallback).is_file() and os.access(fallback, os.X_OK):
             return fallback
     raise _StartupError(f"required executable not found: {name}")
+
+
+def requires_native_capture() -> bool:
+    """Inspect installed KWin only when a running test requests its backend."""
+    environment = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+    try:
+        result = subprocess.run(
+            [_executable("kwin_wayland"), "--version"],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise _StartupError(f"could not inspect installed KWin version: {error}") from error
+    version_text = f"{result.stdout}\n{result.stderr}"
+    match = re.search(r"\bkwin(?:_wayland)?\s+(\d+)\.(\d+)(?:\.\d+)?", version_text)
+    if result.returncode != 0 or match is None:
+        raise _StartupError(f"could not parse installed KWin version: {version_text.strip()}")
+    return tuple(int(part) for part in match.groups()) >= (6, 8)
+
+
+def _require_native_udmabuf() -> None:
+    """Fail before native startup if the real udmabuf descriptor is unavailable."""
+    try:
+        fd = os.open("/dev/udmabuf", os.O_RDWR | os.O_CLOEXEC)
+    except OSError as error:
+        raise _StartupError(
+            "KWin >= 6.8 native virtual capture requires O_RDWR access to /dev/udmabuf; "
+            f"provide the device and its host supplementary group: {error}"
+        ) from error
+    else:
+        os.close(fd)
 
 
 def _group_exists(process: subprocess.Popen[bytes]) -> bool:
@@ -198,6 +259,55 @@ def _wait_for_x_display(display: str, process: subprocess.Popen[bytes], xdpyinfo
     raise _StartupError(f"X display {display} did not become ready")
 
 
+@contextmanager
+def unrelated_x_display(
+    artifact_dir: Path, *, screen_size: tuple[int, int] = (640, 480)
+) -> Generator[str]:
+    """Own a real X display whose root contains no nested KWin output window."""
+    xvfb = _executable("Xvfb")
+    xdpyinfo = _executable("xdpyinfo")
+    process: subprocess.Popen[bytes] | None = None
+    read_fd: int | None = None
+    write_fd: int | None = None
+    width, height = screen_size
+    with (
+        (artifact_dir / "unrelated-xvfb.stdout.log").open("wb") as stdout,
+        (artifact_dir / "unrelated-xvfb.stderr.log").open("wb") as stderr,
+    ):
+        try:
+            read_fd, write_fd = os.pipe()
+            process = subprocess.Popen(
+                [
+                    xvfb,
+                    "-displayfd",
+                    str(write_fd),
+                    "-screen",
+                    "0",
+                    f"{width}x{height}x24",
+                    "-nolisten",
+                    "tcp",
+                    "-noreset",
+                ],
+                stdout=stdout,
+                stderr=stderr,
+                pass_fds=(write_fd,),
+                start_new_session=True,
+            )
+            os.close(write_fd)
+            write_fd = None
+            display = f":{_read_display_number(read_fd, process)}"
+            os.close(read_fd)
+            read_fd = None
+            _wait_for_x_display(display, process, xdpyinfo)
+            yield display
+        finally:
+            if read_fd is not None:
+                os.close(read_fd)
+            if write_fd is not None:
+                os.close(write_fd)
+            _terminate_process_group(process)
+
+
 def _read_dbus_address(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8", errors="replace").strip()
@@ -217,10 +327,167 @@ def _bus_names(dbus_address: str) -> set[str]:
         bus.close()
 
 
+def _screenshot_provider_available(bus: dbus.bus.BusConnection) -> bool:
+    """Inspect the real KWin object rather than inferring readiness from its bus name."""
+    import dbus
+
+    provider = bus.get_object("org.kde.KWin", _SCREENSHOT_OBJECT_PATH, introspect=False)
+    try:
+        xml = provider.Introspect(dbus_interface="org.freedesktop.DBus.Introspectable", timeout=2)
+    except dbus.DBusException as error:
+        if error.get_dbus_name() in {
+            "org.freedesktop.DBus.Error.UnknownObject",
+            "org.freedesktop.DBus.Error.UnknownInterface",
+        }:
+            return False
+        raise
+    root = ElementTree.fromstring(str(xml))
+    return any(node.get("name") == _SCREENSHOT_BUS_NAME for node in root.findall("interface"))
+
+
+def _wait_for_provider(
+    bus: dbus.bus.BusConnection, *, available: bool, plugins: dbus.Interface | None = None
+) -> None:
+    deadline = time.monotonic() + _PROVIDER_READY_TIMEOUT
+    observed = False
+    loaded: set[str] | None = None
+    while time.monotonic() < deadline:
+        observed = _screenshot_provider_available(bus)
+        service_available = _SCREENSHOT_BUS_NAME in {str(name) for name in bus.list_names()}
+        if plugins is not None:
+            loaded = {
+                str(name)
+                for name in plugins.Get(
+                    _PLUGINS_INTERFACE,
+                    "LoadedPlugins",
+                    dbus_interface="org.freedesktop.DBus.Properties",
+                    timeout=2,
+                )
+            }
+        plugin_matches = loaded is None or ("screenshot" in loaded) == available
+        if observed == available and plugin_matches and (not available or service_available):
+            return
+        time.sleep(0.1)
+    raise _StartupError(
+        f"ScreenShot2 provider did not become available={available}: "
+        f"interface={observed}, loaded_plugins={loaded}"
+    )
+
+
+@contextmanager
+def screenshot_provider_unavailable(dbus_address: str) -> Generator[None]:
+    """Unload the measured KWin screenshot plugin and restore it even after failure."""
+    import dbus
+    import dbus.bus
+
+    bus = dbus.bus.BusConnection(dbus_address)
+    try:
+        if not _screenshot_provider_available(bus):
+            # Legacy virtual KWin already lacks this object; do not invent an Effect API.
+            _wait_for_provider(bus, available=False)
+            yield
+            return
+        plugins = dbus.Interface(
+            bus.get_object("org.kde.KWin", "/Plugins", introspect=False),
+            _PLUGINS_INTERFACE,
+        )
+        _wait_for_provider(bus, available=True, plugins=plugins)
+        try:
+            result = plugins.UnloadPlugin("screenshot", timeout=5)
+            if result is not None:
+                raise _StartupError(f"UnloadPlugin must return void, got {result!r}")
+            _wait_for_provider(bus, available=False, plugins=plugins)
+            yield
+        finally:
+            if not plugins.LoadPlugin("screenshot", timeout=5):
+                raise _StartupError("LoadPlugin('screenshot') failed to restore the provider")
+            _wait_for_provider(bus, available=True, plugins=plugins)
+    finally:
+        bus.close()
+
+
+def spectacle_oracle(
+    dbus_address: str,
+    wayland_display: str,
+    output_path: Path,
+    *,
+    include_cursor: bool = False,
+) -> Path:
+    """Capture and decode an independent real Spectacle PNG, retaining command and logs."""
+    from PIL import Image
+
+    spectacle = Path("/usr/bin/spectacle")
+    if not spectacle.is_file() or not os.access(spectacle, os.X_OK):
+        raise RuntimeError("the independent PNG oracle requires /usr/bin/spectacle")
+    if output_path.exists():
+        raise RuntimeError(f"oracle output must not already exist: {output_path}")
+    home_dir = output_path.parent / "spectacle-oracle-home"
+    for subdir in (".config", ".local/share", ".local/state"):
+        (home_dir / subdir).mkdir(parents=True, exist_ok=True)
+    environment = {
+        **os.environ,
+        "HOME": str(home_dir),
+        "XDG_CONFIG_HOME": str(home_dir / ".config"),
+        "XDG_DATA_HOME": str(home_dir / ".local/share"),
+        "XDG_STATE_HOME": str(home_dir / ".local/state"),
+        "DBUS_SESSION_BUS_ADDRESS": dbus_address,
+        "WAYLAND_DISPLAY": wayland_display,
+        "QT_QPA_PLATFORM": "wayland",
+        "XDG_CURRENT_DESKTOP": "KDE",
+        "XDG_SESSION_TYPE": "wayland",
+    }
+    environment.pop("DISPLAY", None)
+    command = [str(spectacle), "-b", "-n", "-f", "-o", str(output_path)]
+    if include_cursor:
+        command.append("-p")
+    output_path.with_suffix(".command.log").write_text(
+        f"{' '.join(command)}\ntimeout={_SPECTACLE_TIMEOUT:g}s\n", encoding="utf-8"
+    )
+    process: subprocess.Popen[bytes] | None = None
+    with (
+        output_path.with_suffix(".stdout.log").open("wb") as stdout,
+        output_path.with_suffix(".stderr.log").open("wb") as stderr,
+    ):
+        try:
+            process = subprocess.Popen(
+                command,
+                env=environment,
+                stdout=stdout,
+                stderr=stderr,
+                start_new_session=True,
+            )
+            try:
+                returncode = process.wait(timeout=_SPECTACLE_TIMEOUT)
+            except subprocess.TimeoutExpired as error:
+                raise RuntimeError(
+                    f"independent Spectacle oracle timed out after {_SPECTACLE_TIMEOUT:g}s; "
+                    f"evidence: {output_path.parent}"
+                ) from error
+            if returncode != 0:
+                raise RuntimeError(
+                    f"independent Spectacle oracle exited {returncode}; "
+                    f"evidence: {output_path.parent}"
+                )
+        finally:
+            _terminate_process_group(process)
+    try:
+        with Image.open(output_path) as image:
+            if image.format != "PNG" or min(image.size) <= 0:
+                raise RuntimeError(
+                    f"independent Spectacle oracle produced no valid PNG: {output_path}"
+                )
+            image.load()
+    except OSError as error:
+        raise RuntimeError(
+            f"independent Spectacle oracle PNG cannot be decoded: {output_path}"
+        ) from (error)
+    return output_path
+
+
 def _wait_for_kwin(
     *,
     process: subprocess.Popen[bytes],
-    xvfb_process: subprocess.Popen[bytes],
+    xvfb_process: subprocess.Popen[bytes] | None,
     address_path: Path,
     socket_path: Path,
 ) -> tuple[str, bool]:
@@ -233,7 +500,7 @@ def _wait_for_kwin(
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise _StartupError(f"KWin session exited with status {process.returncode}")
-        if xvfb_process.poll() is not None:
+        if xvfb_process is not None and xvfb_process.poll() is not None:
             raise _StartupError(f"Xvfb exited with status {xvfb_process.returncode}")
 
         if not dbus_address:
@@ -407,13 +674,12 @@ def nested_visual_kwin(
     screen_size: tuple[int, int] = (_SCREEN_WIDTH, _SCREEN_HEIGHT),
     output_count: int = 1,
 ) -> Generator[NestedVisualKWin]:
-    """Run Xvfb and nested KWin, yielding connection details for ``session_connect``.
+    """Run the installed KWin's real visual backend for ``session_connect``.
 
-    ``screen_size`` is the physical size of each X11 output window; ``scale`` is
-    applied to every KWin output through kscreen-doctor before the fixture is
-    yielded, so the logical size of each output is ``screen_size / scale``.
-    ``output_count`` outputs (``--output-count``) share an Xvfb screen of
-    ``(width * output_count) x height`` with output i's window at x = i * width.
+    KWin >= 6.8 uses native virtual outputs and requires writable udmabuf.
+    Older versions retain the nested Xvfb/X11 lifecycle and output placement.
+    ``screen_size`` is each output's physical size, and KScreen applies ``scale``
+    before yielding, giving a logical size of ``screen_size / scale``.
     """
     if isinstance(output_count, bool) or output_count < 1:
         msg = f"output_count must be a positive integer, got {output_count!r}"
@@ -457,6 +723,8 @@ def nested_visual_kwin(
         xvfb_stderr_path,
         kwin_stdout_path,
         kwin_stderr_path,
+        artifact_dir / "startup-oracle.stdout.log",
+        artifact_dir / "startup-oracle.stderr.log",
     )
 
     xvfb_process: subprocess.Popen[bytes] | None = None
@@ -466,8 +734,9 @@ def nested_visual_kwin(
     log_files: list[BinaryIO] = []
 
     try:
-        xvfb = _executable("Xvfb")
-        xdpyinfo = _executable("xdpyinfo")
+        native_capture = requires_native_capture()
+        if native_capture:
+            _require_native_udmabuf()
         dbus_run_session = _executable("dbus-run-session")
         dbus_update_environment = _executable("dbus-update-activation-environment")
         kwin_wayland = _executable("kwin_wayland")
@@ -485,34 +754,38 @@ def nested_visual_kwin(
         kwin_stderr = kwin_stderr_path.open("wb")
         log_files.extend((xvfb_stdout, xvfb_stderr, kwin_stdout, kwin_stderr))
 
-        display_read_fd, display_write_fd = os.pipe()
-        try:
-            xvfb_process = subprocess.Popen(
-                [
-                    xvfb,
-                    "-displayfd",
-                    str(display_write_fd),
-                    "-screen",
-                    "0",
-                    f"{screen_width * output_count}x{screen_height}x24",
-                    "-nolisten",
-                    "tcp",
-                    "-noreset",
-                ],
-                stdout=xvfb_stdout,
-                stderr=xvfb_stderr,
-                pass_fds=(display_write_fd,),
-                start_new_session=True,
-            )
-        except OSError as error:
-            raise _StartupError(f"could not start Xvfb: {error}") from error
-        os.close(display_write_fd)
-        display_write_fd = None
-        display_number = _read_display_number(display_read_fd, xvfb_process)
-        os.close(display_read_fd)
-        display_read_fd = None
-        x_display = f":{display_number}"
-        _wait_for_x_display(x_display, xvfb_process, xdpyinfo)
+        x_display = ""
+        if not native_capture:
+            xvfb = _executable("Xvfb")
+            xdpyinfo = _executable("xdpyinfo")
+            display_read_fd, display_write_fd = os.pipe()
+            try:
+                xvfb_process = subprocess.Popen(
+                    [
+                        xvfb,
+                        "-displayfd",
+                        str(display_write_fd),
+                        "-screen",
+                        "0",
+                        f"{screen_width * output_count}x{screen_height}x24",
+                        "-nolisten",
+                        "tcp",
+                        "-noreset",
+                    ],
+                    stdout=xvfb_stdout,
+                    stderr=xvfb_stderr,
+                    pass_fds=(display_write_fd,),
+                    start_new_session=True,
+                )
+            except OSError as error:
+                raise _StartupError(f"could not start Xvfb: {error}") from error
+            os.close(display_write_fd)
+            display_write_fd = None
+            display_number = _read_display_number(display_read_fd, xvfb_process)
+            os.close(display_read_fd)
+            display_read_fd = None
+            x_display = f":{display_number}"
+            _wait_for_x_display(x_display, xvfb_process, xdpyinfo)
 
         environment = {
             **os.environ,
@@ -530,6 +803,7 @@ def nested_visual_kwin(
             "VISUAL_DBUS_ADDRESS_PATH": str(address_path),
             "VISUAL_WAYLAND_DISPLAY": wayland_display,
             "VISUAL_OUTPUT_COUNT": str(output_count),
+            "VISUAL_NATIVE_CAPTURE": "1" if native_capture else "0",
             "VISUAL_KWIN_WAYLAND": kwin_wayland,
             "VISUAL_SCREEN_HEIGHT": str(screen_height),
             "VISUAL_SCREEN_WIDTH": str(screen_width),
@@ -556,7 +830,7 @@ def nested_visual_kwin(
             address_path=address_path,
             socket_path=socket_path,
         )
-        if output_count > 1:
+        if not native_capture and output_count > 1:
             _place_output_windows(
                 x_display=x_display, output_count=output_count, output_width=screen_width
             )
@@ -568,6 +842,19 @@ def nested_visual_kwin(
                 log_path=artifact_dir / "kscreen-doctor.log",
                 isolated_home=isolated_home,
             )
+        if native_capture:
+            import dbus.bus
+
+            bus = dbus.bus.BusConnection(dbus_address)
+            try:
+                _wait_for_provider(bus, available=True)
+            finally:
+                bus.close()
+            try:
+                spectacle_oracle(dbus_address, wayland_display, artifact_dir / "startup-oracle.png")
+            except (OSError, RuntimeError) as error:
+                raise _StartupError(f"native capture readiness failed: {error}") from error
+            screenshot_service_available = True
 
         yield NestedVisualKWin(
             dbus_address=dbus_address,

@@ -18,18 +18,17 @@ if TYPE_CHECKING:
 
 STRICT_SKIPS_ENV: Final = "KWIN_MCP_E2E_STRICT_SKIPS"
 REQUIRE_ENV: Final = "KWIN_MCP_E2E_REQUIRE"
+VIRTUAL_SCREENSHOT_SKIP_PREFIX: Final = "set KWIN_MCP_E2E_SCREENSHOT=1 to run"
 
 # The only skip reasons allowed when KWIN_MCP_E2E_STRICT_SKIPS=1. A skip reason
 # must start with one of these verbatim; any other skip (including
 # ``pytest.importorskip``) fails the run as ``unregistered skip: <reason>``.
 KNOWN_LIMIT_PREFIXES: Final[tuple[str, ...]] = (
-    # test_virtual_session_smoke.py: KWin's virtual backend never answers a
-    # ScreenShot2 capture; the only expected skip in CI (one per shard set).
-    "set KWIN_MCP_E2E_SCREENSHOT=1 to run",
+    # test_virtual_session_smoke.py: legacy KWin 6.3/6.7 virtual backends
+    # never answer a ScreenShot2 capture; the only expected skip in CI.
+    VIRTUAL_SCREENSHOT_SKIP_PREFIX,
     # test_exit_cleanup*.py: directory-permission cases cannot fail as root.
     "root ignores directory permissions",
-    # test_mcp_session_observation.py: only when KWIN_MCP_E2E_SCREENSHOT=1.
-    "headless screenshot-error behavior contradicts the explicitly enabled success path",
     # window_zoo could not create a layer-shell surface (GtkLayerShell missing or
     # unsupported). CI sets KWIN_MCP_E2E_REQUIRE=layer-shell, so it fails there.
     "known KWin limit: layer-shell surface unavailable",

@@ -83,10 +83,6 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-def _visual_env(visual: NestedVisualKWin) -> dict[str, str]:
-    return {"DISPLAY": visual.x_display, "KWIN_MCP_X11_SCREENSHOT": "1"}
-
-
 def _assert_strictly_increasing(events: list[Event]) -> None:
     """Every value exceeds the previous one, has a total, and never passes it."""
     assert events, events
@@ -233,7 +229,7 @@ async def test_long_running_tools_report_increasing_progress_only_when_requested
 async def test_action_then_frame_burst_reports_strictly_increasing_progress() -> None:
     """The gesture's step count and the frame burst restart at 1; emitted progress must not."""
     with nested_visual_kwin() as visual:
-        async with running_mcp_server(env=_visual_env(visual)) as client:
+        async with running_mcp_server(env=visual.capture_env) as client:
             try:
                 await _connect(client, visual)
                 swipe_progress = ProgressLog()
@@ -313,9 +309,9 @@ async def test_progress_only_with_token_and_monotonic() -> None:
         assert {m for _, _, m in tapped} == {"Holding touch"}, tapped
         await _call_logged(client, "session_stop", {}, token=None)
 
-    # A hold followed by a frame burst needs a compositor that answers ScreenShot2.
+    # A hold followed by a frame burst needs the fixture's selected capture backend.
     with nested_visual_kwin() as visual:
-        async with raw_mcp_client({}, env=_visual_env(visual)) as client:
+        async with raw_mcp_client({}, env=visual.capture_env) as client:
             connect = {
                 "dbus_address": visual.dbus_address,
                 "wayland_display": visual.wayland_display,

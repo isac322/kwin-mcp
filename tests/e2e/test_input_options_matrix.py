@@ -162,9 +162,7 @@ async def test_interaction_options_change_visible_probe_state_and_preserve_evide
     with nested_visual_kwin() as visual:
         evidence: list[str] = []
         log_path = visual.artifact_dir / "interaction-probe-events.jsonl"
-        async with running_mcp_server(
-            env={"DISPLAY": visual.x_display, "KWIN_MCP_X11_SCREENSHOT": "1"}
-        ) as client:
+        async with running_mcp_server(env=visual.capture_env) as client:
             connected = False
             try:
                 info, _ = await client.call_structured(

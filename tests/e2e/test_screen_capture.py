@@ -1,9 +1,9 @@
 """screen_capture: Frame fields, regions, max_edge defaults and multi-output layouts.
 
-Pixel captures run against the nested X11 KWin of ``visual_harness`` with
-``KWIN_MCP_X11_SCREENSHOT=1``: the container's virtual KWin never answers ScreenShot2.
-The mixed-scale refusals run on a test-owned virtual KWin with two outputs, where
-ScreenShot2 fails and Spectacle is the only remaining backend.
+Pixel captures use ``visual_harness`` and its selected real capture backend:
+legacy nested X11/scrot or native virtual ScreenShot2. Mixed-scale layouts
+remain composable, while deterministic provider failures and unproven X11
+mapping exercise the refusal paths without assuming native capture is absent.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import os
 import re
 import subprocess
 import time
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -26,7 +26,6 @@ from test_screen_capture_visual import (
     ANIMATION_BLUE,
     GUI_PROBE_APP,
     GUI_PROBE_COMMAND,
-    X11_BACKEND,
     assert_full_frame,
     blue_in,
     capture,
@@ -37,12 +36,16 @@ from test_screen_capture_visual import (
     launch_gui_probe,
     status,
     stop_live,
+    visual_engine,
     wait_status_change,
     write_stderr,
-    x11_engine,
-    x11_env,
 )
-from visual_harness import nested_visual_kwin
+from visual_harness import (
+    nested_visual_kwin,
+    requires_native_capture,
+    screenshot_provider_unavailable,
+    unrelated_x_display,
+)
 
 from kwin_mcp.models import Capture, Frame, ImageMapping, Locator, Point, Rect, Wait
 
@@ -50,6 +53,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable
 
     from mcp_harness import McpTestClient
+    from session_harness import LiveKWin
     from visual_harness import NestedVisualKWin
 
     from kwin_mcp.core import AutomationEngine
@@ -102,7 +106,7 @@ def directory_files(directory: Path) -> list[Path]:
 def test_frame_fields_mapping_coverage_size_kb_uri(
     engine: AutomationEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with x11_engine(engine, monkeypatch):
+    with visual_engine(engine, monkeypatch) as visual:
         frame = engine.screen_capture()
 
         path = Path(frame.path)
@@ -121,7 +125,7 @@ def test_frame_fields_mapping_coverage_size_kb_uri(
         assert lines[0] == f"Screenshot saved: {path} ({frame.size_kb:.1f} KB)", text
         assert screenshot_path(text) == path, text
         assert coordinate_spaces(text) == [
-            CoordinateSpace((0, 0), SCREEN_SIZE, X11_BACKEND, "full")
+            CoordinateSpace((0, 0), SCREEN_SIZE, visual.capture_backend, "full")
         ], text
         assert lines[1] == frame.coordinate_space, text
         assert lines[2] == f"Image: 1280x800 px; scale 1; resource {frame.uri}", text
@@ -141,7 +145,7 @@ def test_frame_fields_mapping_coverage_size_kb_uri(
 def test_region_outside_workspace_dropped_partially_intersected(
     engine: AutomationEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with x11_engine(engine, monkeypatch):
+    with visual_engine(engine, monkeypatch) as visual:
         launch_gui_probe_engine(engine)
         full = engine.screen_capture(max_edge=0)
         full_path = assert_full_frame(full, SCREEN_SIZE)
@@ -158,7 +162,7 @@ def test_region_outside_workspace_dropped_partially_intersected(
         assert inside.mapping == ImageMapping(scale=1.0, origin=Point(x=100, y=100)), inside
         assert inside.coverage == "full", inside
         assert coordinate_spaces(inside.render()) == [
-            CoordinateSpace((100, 100), (200, 150), X11_BACKEND, "full")
+            CoordinateSpace((100, 100), (200, 150), visual.capture_backend, "full")
         ], inside.render()
         assert_crop_matches_full(inside, (100, 100, 300, 250))
 
@@ -194,7 +198,7 @@ def test_region_outside_workspace_dropped_partially_intersected(
 @asynccontextmanager
 async def max_edge_client(visual: NestedVisualKWin, max_edge: int) -> AsyncGenerator[McpTestClient]:
     async with running_mcp_server(
-        "--screenshot-max-edge", str(max_edge), env=x11_env(visual)
+        "--screenshot-max-edge", str(max_edge), env=visual.capture_env
     ) as client:
         connected = False
         try:
@@ -346,21 +350,25 @@ MIXED_SCALE = 1.45
 def test_mixed_scale_refusal_live_kwin(
     engine: AutomationEngine, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A live mixed-scale layout: KWin keeps it composable, so no refusal is issued.
+    """A mixed-scale layout stays composable when native ScreenShot2 is available.
 
-    The 0.11 refusal ("Spectacle X cannot capture this layout: mixed output scales
-    with ... outside its canvas anchored at logical (0, 0)") needs an output at a
-    negative origin. A live KWin never produces one: KWin 6.3 re-normalizes a
-    negative position so the layout's top-left is (0, 0), and newer kscreen-doctor
-    refuses a negative position outright. The test therefore asks for the layout
-    KWin 6.3 normalizes to (scaled output left, at the origin); the unit test
-    ``test_spectacle_mixed_scale_refused`` (fake topology) is the refusal oracle.
-    Here ScreenShot2 is absent (virtual backend), the layout guard lets Spectacle
-    start, and the capture fails with both backends named and no file left.
+    Legacy X11 KWin retains the historical Spectacle-unavailable boundary below;
+    native KWin instead returns a real frame whose geometry and mapping are checked.
     """
-    monkeypatch.delenv("DISPLAY", raising=False)
-    monkeypatch.delenv("KWIN_MCP_X11_SCREENSHOT", raising=False)
-    with live_kwin(output_count=2) as live:
+    with ExitStack() as compositor:
+        backend: str | None = None
+        live: LiveKWin | NestedVisualKWin
+        if requires_native_capture():
+            visual = compositor.enter_context(nested_visual_kwin(output_count=2))
+            for key, value in visual.capture_env.items():
+                monkeypatch.setenv(key, value)
+            live = visual
+            backend = visual.capture_backend
+        else:
+            # Legacy virtual KWin cannot capture, but its composable layout is not refused.
+            monkeypatch.delenv("DISPLAY", raising=False)
+            monkeypatch.delenv("KWIN_MCP_X11_SCREENSHOT", raising=False)
+            live = compositor.enter_context(live_kwin(output_count=2))
         screens = wait_for_screens(live.dbus_address, lambda s: len(s) == 2)
         name = next(s for s in screens if round(s["x"]) != 0)["name"]
         other = next(s for s in screens if s["name"] != name)["name"]
@@ -379,22 +387,42 @@ def test_mixed_scale_refusal_live_kwin(
         # Mixed scales, with the layout's top-left at (0, 0).
         assert sorted(round(s["scale"], 2) for s in screens) == [1.0, MIXED_SCALE], screens
         boxes = [screen_box(s) for s in screens]
-        assert (min(b[0] for b in boxes), min(b[1] for b in boxes)) == (0, 0), screens
+        origin = (min(b[0] for b in boxes), min(b[1] for b in boxes))
+        assert origin == (0, 0), screens
+        size = (
+            max(b[2] for b in boxes) - origin[0],
+            max(b[3] for b in boxes) - origin[1],
+        )
 
         info = engine.session_connect(
             dbus_address=live.dbus_address, wayland_display=live.wayland_display
         )
         assert info.kind == "live", info.render()
         try:
-            shots = Path(info.artifacts_dir)
-            before = directory_files(shots)
-            with pytest.raises(RuntimeError) as failure:
-                engine.screen_capture()
-            message = str(failure.value)
-            assert message.startswith("Screenshot capture failed: ScreenShot2 ("), message
-            assert "; Spectacle (spectacle " in message, message
-            assert "cannot capture this layout" not in message, message
-            assert directory_files(shots) == before
+            if backend is None:
+                shots = Path(info.artifacts_dir)
+                before = directory_files(shots)
+                with pytest.raises(RuntimeError) as failure:
+                    engine.screen_capture()
+                message = str(failure.value)
+                assert message.startswith("Screenshot capture failed: ScreenShot2 ("), message
+                assert "; Spectacle (spectacle " in message, message
+                assert "cannot capture this layout" not in message, message
+                assert directory_files(shots) == before
+            else:
+                frame = engine.screen_capture(max_edge=0)
+                assert backend == "screenshot2", backend
+                assert frame.mapping == ImageMapping(
+                    scale=1.0, origin=Point(x=origin[0], y=origin[1])
+                ), frame
+                assert frame.coverage == "full", frame
+                assert (frame.width, frame.height) == size, frame
+                with Image.open(frame_png(frame)) as image:
+                    image.load()
+                    assert image.format == "PNG" and image.size == size, frame
+                assert coordinate_spaces(frame.render()) == [
+                    CoordinateSpace(origin, size, backend, "full")
+                ], frame.render()
         finally:
             engine.session_stop()
 
@@ -406,11 +434,12 @@ def test_region_unproven_mapping_live(
 ) -> None:
     """A region on a layout whose mapping cannot be proven is an error, never a Frame.
 
-    Two X11 outputs of equal physical size (the second at scale 2, so the layout is
-    mixed-scale) cannot be told apart in the X root capture, ScreenShot2 is absent
-    and Spectacle cannot run: no backend proves a mapping, so the region is refused.
+    Legacy X11 retains two equal-physical outputs with the second at scale 2.
+    Native KWin uses an unrelated real X display with its screenshot plugin unloaded:
+    scrot produces pixels but cannot associate them with either KWin output, and
+    neither native capture backend can provide a frame.
     """
-    with nested_visual_kwin(output_count=2) as visual:
+    with nested_visual_kwin(output_count=2) as visual, ExitStack() as unavailable:
         screens = wait_for_screens(visual.dbus_address, lambda s: len(s) == 2)
         name = next(s for s in screens if round(s["x"]) != 0)["name"]
         kscreen_doctor(
@@ -423,7 +452,47 @@ def test_region_unproven_mapping_live(
             visual.dbus_address,
             lambda s: any(x["name"] == name and abs(x["scale"] - 2) < 1e-3 for x in s),
         )
-        monkeypatch.setenv("DISPLAY", visual.x_display)
+        for key, value in visual.capture_env.items():
+            monkeypatch.setenv(key, value)
+        if visual.capture_backend == "screenshot2":
+            display = unavailable.enter_context(unrelated_x_display(visual.artifact_dir))
+            unavailable.enter_context(screenshot_provider_unavailable(visual.dbus_address))
+            monkeypatch.setenv("DISPLAY", display)
+            scrot_path = visual.artifact_dir / "unrelated-x-scrot.png"
+            subprocess.run(
+                ["scrot", "--overwrite", str(scrot_path)],
+                env={**os.environ, "DISPLAY": display},
+                capture_output=True,
+                timeout=OUTPUT_TIMEOUT_SECONDS,
+                check=True,
+            )
+            with Image.open(scrot_path) as image:
+                image.load()
+                assert image.format == "PNG" and image.size == (640, 480), scrot_path
+            spectacle_path = visual.artifact_dir / "unavailable-spectacle.png"
+            spectacle_env = {
+                **os.environ,
+                "DBUS_SESSION_BUS_ADDRESS": visual.dbus_address,
+                "WAYLAND_DISPLAY": visual.wayland_display,
+                "QT_QPA_PLATFORM": "wayland",
+                "XDG_CURRENT_DESKTOP": "KDE",
+                "XDG_SESSION_TYPE": "wayland",
+            }
+            spectacle_env.pop("DISPLAY", None)
+            spectacle = subprocess.run(
+                ["/usr/bin/spectacle", "-b", "-n", "-f", "-o", str(spectacle_path)],
+                env=spectacle_env,
+                capture_output=True,
+                text=True,
+                timeout=OUTPUT_TIMEOUT_SECONDS,
+                check=False,
+            )
+            (visual.artifact_dir / "unavailable-spectacle.log").write_text(
+                f"exit {spectacle.returncode}\n{spectacle.stdout}{spectacle.stderr}",
+                encoding="utf-8",
+            )
+            assert spectacle.returncode != 0, spectacle.stdout
+            assert not spectacle_path.exists(), spectacle_path
         monkeypatch.setenv("KWIN_MCP_X11_SCREENSHOT", "1")
         info = engine.session_connect(
             dbus_address=visual.dbus_address, wayland_display=visual.wayland_display

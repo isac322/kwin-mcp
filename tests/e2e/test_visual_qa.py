@@ -41,7 +41,6 @@ GUI_PROBE_VISIBLE_NAME = "GUI Probe"
 GUI_PROBE_CLIENT_SIZE = (920, 700)
 POLL_INTERVAL_SECONDS = 0.1
 STATE_TIMEOUT_SECONDS = 5.0
-X11_BACKEND = "x11-scrot"
 
 pytestmark = [pytest.mark.anyio, pytest.mark.visual]
 
@@ -93,12 +92,12 @@ def _center(rect: tuple[int, int, int, int]) -> tuple[int, int]:
     return x + width // 2, y + height // 2
 
 
-def _frame_source(frame: Frame) -> Path:
-    """The PNG of a whole-workspace X11 capture mapped 1:1 onto the logical screen."""
+def _frame_source(frame: Frame, *, capture_backend: str) -> Path:
+    """The PNG of a whole-workspace capture mapped 1:1 onto the logical screen."""
     path = frame_png(frame)
     spaces = coordinate_spaces(frame.coordinate_space)
     assert [(s.origin, s.size, s.backend) for s in spaces] == [
-        ((0, 0), SCREEN_SIZE, X11_BACKEND)
+        ((0, 0), SCREEN_SIZE, capture_backend)
     ], frame.coordinate_space
     assert frame.mapping is not None, frame
     assert frame.mapping.scale == 1.0, frame
@@ -201,12 +200,13 @@ def _preserve_runtime_evidence(
 
 def _preserve_capture_backend(
     artifact_dir: Path,
+    capture_backend: str,
     screenshot_service_available: bool | None,
 ) -> None:
     assert screenshot_service_available is not None
     capability = "available" if screenshot_service_available else "unavailable"
     (artifact_dir / "capture-backend.txt").write_text(
-        "Selected screenshot capture backend: X11 scrot\n"
+        f"Selected screenshot capture backend: {capture_backend}\n"
         f"KWin ScreenShot2 capability: {capability}\n",
         encoding="utf-8",
     )
@@ -305,18 +305,22 @@ async def _stop_session(
         _preserve_runtime_evidence(client, artifact_dir, app_log_path, app_log_name)
 
 
-async def _screen_capture(client: McpTestClient) -> Path:
+async def _screen_capture(client: McpTestClient, *, capture_backend: str) -> Path:
     frame, text = await _call(client, "screen_capture", Frame, {})
     assert frame.delay_ms is None, text
-    return _frame_source(frame)
+    return _frame_source(frame, capture_backend=capture_backend)
 
 
 async def _capture_preserved(
     client: McpTestClient,
     artifact_dir: Path,
     name: str,
+    *,
+    capture_backend: str,
 ) -> tuple[Path, Image.Image]:
-    destination = _preserve_png(await _screen_capture(client), artifact_dir, name)
+    destination = _preserve_png(
+        await _screen_capture(client, capture_backend=capture_backend), artifact_dir, name
+    )
     return destination, _load_rgb(destination)
 
 
@@ -327,6 +331,7 @@ async def _wait_for_material_repaint(
     initial_crop: Image.Image,
     rect: tuple[int, int, int, int],
     *,
+    capture_backend: str,
     minimum_pixels: int,
     label: str,
 ) -> None:
@@ -337,7 +342,7 @@ async def _wait_for_material_repaint(
     absolute_difference = 0.0
 
     while True:
-        source = await _screen_capture(client)
+        source = await _screen_capture(client, capture_backend=capture_backend)
         candidate = _load_rgb(source)
         candidate_crop = candidate.crop((x, y, x + width, y + height))
         changed_pixels, absolute_difference = _material_difference_metrics(
@@ -369,6 +374,7 @@ async def _wait_for_crop_match(
     reference_crop: Image.Image,
     rect: tuple[int, int, int, int],
     *,
+    capture_backend: str,
     maximum_pixels: int,
     maximum_absolute_difference: float,
     label: str,
@@ -380,7 +386,7 @@ async def _wait_for_crop_match(
     absolute_difference = 0.0
 
     while True:
-        source = await _screen_capture(client)
+        source = await _screen_capture(client, capture_backend=capture_backend)
         candidate = _load_rgb(source)
         candidate_crop = candidate.crop((x, y, x + width, y + height))
         changed_pixels, absolute_difference = _material_difference_metrics(
@@ -432,18 +438,14 @@ async def _pointer_click(
 
 
 async def test_gui_probe_visual_semantics_pixels_cursor_and_frame_burst() -> None:
-    """Prove the probe with AT-SPI, EIS, and explicitly selected X11 scrot pixels."""
+    """Prove the probe with AT-SPI, EIS, and the explicitly selected capture backend."""
     with nested_visual_kwin() as visual:
         _preserve_capture_backend(
             visual.artifact_dir,
+            visual.capture_backend,
             visual.screenshot_service_available,
         )
-        async with running_mcp_server(
-            env={
-                "DISPLAY": visual.x_display,
-                "KWIN_MCP_X11_SCREENSHOT": "1",
-            },
-        ) as client:
+        async with running_mcp_server(env=visual.capture_env) as client:
             connected = False
             body_succeeded = False
             app_log_path: Path | None = None
@@ -515,6 +517,7 @@ async def test_gui_probe_visual_semantics_pixels_cursor_and_frame_burst() -> Non
                     client,
                     visual.artifact_dir,
                     "gui-probe-initial.png",
+                    capture_backend=visual.capture_backend,
                 )
                 crops = {
                     name: _assert_nonempty_rect(initial_image, rect, name)
@@ -554,6 +557,7 @@ async def test_gui_probe_visual_semantics_pixels_cursor_and_frame_burst() -> Non
                     "gui-probe-hovered.png",
                     crops["Hover Target"],
                     hover_rect,
+                    capture_backend=visual.capture_backend,
                     minimum_pixels=1000,
                     label="pointer_move hover target",
                 )
@@ -572,6 +576,7 @@ async def test_gui_probe_visual_semantics_pixels_cursor_and_frame_burst() -> Non
                     "gui-probe-pointer-without-cursor.png",
                     crops["Hover Target"],
                     hover_rect,
+                    capture_backend=visual.capture_backend,
                     maximum_pixels=32,
                     maximum_absolute_difference=2000,
                     label="pointer_move away from hover target",
@@ -586,7 +591,7 @@ async def test_gui_probe_visual_semantics_pixels_cursor_and_frame_burst() -> Non
                 )
                 assert [frame.delay_ms for frame in cursor_move.frames] == [0], cursor_move
                 with_cursor_path = _preserve_png(
-                    _frame_source(cursor_move.frames[0]),
+                    _frame_source(cursor_move.frames[0], capture_backend=visual.capture_backend),
                     visual.artifact_dir,
                     "gui-probe-pointer-with-cursor.png",
                 )
@@ -632,7 +637,10 @@ async def test_gui_probe_visual_semantics_pixels_cursor_and_frame_burst() -> Non
                 assert [frame.delay_ms for frame in burst.frames] == sorted_delays, burst_text
                 # Frames are cropped below with logical element rectangles, which is
                 # only valid because every frame reports the logical workspace at (0, 0).
-                frame_sources = [_frame_source(frame) for frame in burst.frames]
+                frame_sources = [
+                    _frame_source(frame, capture_backend=visual.capture_backend)
+                    for frame in burst.frames
+                ]
 
                 frame_images: list[Image.Image] = []
                 for index, (delay, source) in enumerate(
@@ -664,7 +672,7 @@ async def test_gui_probe_visual_semantics_pixels_cursor_and_frame_burst() -> Non
                     if burst_materially_changed:
                         break
                 assert burst_materially_changed, (
-                    "X11 scrot burst animation frames were all materially identical"
+                    f"{visual.capture_backend} burst animation frames were all materially identical"
                 )
                 await _wait_for_accessible_name(
                     client,
@@ -689,14 +697,10 @@ async def test_kcalc_binary_values_have_significant_screen_capture_transitions()
     with nested_visual_kwin() as visual:
         _preserve_capture_backend(
             visual.artifact_dir,
+            visual.capture_backend,
             visual.screenshot_service_available,
         )
-        async with running_mcp_server(
-            env={
-                "DISPLAY": visual.x_display,
-                "KWIN_MCP_X11_SCREENSHOT": "1",
-            },
-        ) as client:
+        async with running_mcp_server(env=visual.capture_env) as client:
             connected = False
             body_succeeded = False
             app_log_path: Path | None = None
@@ -713,6 +717,7 @@ async def test_kcalc_binary_values_have_significant_screen_capture_transitions()
                     client,
                     visual.artifact_dir,
                     "kcalc-initial-binary-0.png",
+                    capture_backend=visual.capture_backend,
                 )
 
                 seven_rect = await _global_element_rect(client, "kcalc", "Seven")
@@ -723,6 +728,7 @@ async def test_kcalc_binary_values_have_significant_screen_capture_transitions()
                     client,
                     visual.artifact_dir,
                     "kcalc-after-seven-binary-111.png",
+                    capture_backend=visual.capture_backend,
                 )
                 _assert_material_difference(
                     initial_image,
@@ -739,6 +745,7 @@ async def test_kcalc_binary_values_have_significant_screen_capture_transitions()
                     client,
                     visual.artifact_dir,
                     "kcalc-after-zero-binary-1000110.png",
+                    capture_backend=visual.capture_backend,
                 )
                 _assert_material_difference(
                     seven_image,

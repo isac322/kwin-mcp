@@ -1,10 +1,10 @@
-"""screen_capture pixels against real KWin backends: nested X11, virtual, Spectacle stubs.
+"""screen_capture pixels against real KWin backends and Spectacle fallback boundaries.
 
 Ported from the 0.11 ``test_screenshot_behavior.py`` (ledger row 32). Every capture is
 asserted structurally as a ``Frame`` (path, uri, width, height, mapping, coverage,
-size_kb); the coordinate-space line is still parsed from the text (F143). The container's
-virtual KWin never answers ScreenShot2, so pixel tests run against the nested X11 KWin of
-``visual_harness`` with ``KWIN_MCP_X11_SCREENSHOT=1`` (the 0.11 mechanism).
+size_kb); the coordinate-space line is still parsed from the text (F143). Pixel tests
+use the visual fixture's selected real backend: nested X11/scrot on legacy KWin and
+native virtual ScreenShot2 on newer releases.
 """
 
 from __future__ import annotations
@@ -26,7 +26,11 @@ from mcp.types import ImageContent, TextContent
 from mcp_harness import images, running_mcp_server, text_of
 from PIL import Image, ImageChops
 from probe_session import PROBE_APP, PROBE_COMMAND, PROBE_ENV, launch_probe
-from visual_harness import NestedVisualKWin, nested_visual_kwin
+from visual_harness import (
+    NestedVisualKWin,
+    nested_visual_kwin,
+    screenshot_provider_unavailable,
+)
 
 from kwin_mcp.models import Frame, ImageMapping, Point, Rect
 
@@ -54,7 +58,6 @@ COLOR_TOLERANCE = 12
 TARGET_SLACK_PX = 16
 FRAME_SLACK_PX = 3
 LOGICAL_SLACK_PX = 2
-X11_BACKEND = "x11-scrot"
 
 
 @pytest.fixture
@@ -179,10 +182,6 @@ def assert_full_frame(frame: Frame, size: tuple[int, int]) -> Path:
 # ── MCP calls ─────────────────────────────────────────────────────────────
 
 
-def x11_env(visual: NestedVisualKWin) -> dict[str, str]:
-    return {"DISPLAY": visual.x_display, "KWIN_MCP_X11_SCREENSHOT": "1"}
-
-
 async def connect(
     client: McpTestClient, visual: NestedVisualKWin, *, retention: dict[str, bool] | None = None
 ) -> dict[str, Any]:
@@ -302,11 +301,11 @@ def action_frames(structured: dict[str, Any]) -> list[Frame]:
 
 
 def burst_sources(
-    frames: list[Frame], text: str, delays: list[int], size: tuple[int, int]
+    frames: list[Frame], text: str, delays: list[int], size: tuple[int, int], backend: str
 ) -> list[Path]:
     """Frames of one burst: sorted delays, the full logical mapping, one directory."""
     assert [frame.delay_ms for frame in frames] == sorted(delays), frames
-    assert coordinate_spaces(text) == [CoordinateSpace((0, 0), size, X11_BACKEND, "full")] * len(
+    assert coordinate_spaces(text) == [CoordinateSpace((0, 0), size, backend, "full")] * len(
         delays
     ), text
     sources = [assert_full_frame(frame, size) for frame in frames]
@@ -325,7 +324,7 @@ async def live_client(
     visual: NestedVisualKWin, *server_args: str, retention: dict[str, bool] | None = None
 ) -> AsyncGenerator[McpTestClient]:
     """An installed server connected to ``visual``; disconnected (and checked) on exit."""
-    async with running_mcp_server(*server_args, env=x11_env(visual)) as client:
+    async with running_mcp_server(*server_args, env=visual.capture_env) as client:
         connected = False
         try:
             await connect(client, visual, retention=retention)
@@ -337,7 +336,7 @@ async def live_client(
                 await stop_live(client)
 
 
-# ── nested X11: pixels are logical click targets ─────────────────────────
+# ── real visual capture: pixels are logical click targets ───────────────
 
 
 @pytest.mark.anyio
@@ -375,7 +374,7 @@ async def test_x11_screen_capture_pixels_are_logical_click_targets(
             space = spaces[0]
             assert (space.origin, space.backend, space.coverage) == (
                 (0, 0),
-                X11_BACKEND,
+                visual.capture_backend,
                 "full",
             ), text
             assert all(
@@ -416,7 +415,9 @@ async def test_x11_screen_capture_pixels_are_logical_click_targets(
                 "pointer_click",
                 {"target": {"x": click_x, "y": click_y}, "capture": {"delays_ms": delays}},
             )
-            sources = burst_sources(action_frames(burst), burst_text, delays, space.size)
+            sources = burst_sources(
+                action_frames(burst), burst_text, delays, space.size, visual.capture_backend
+            )
             for index, source in enumerate(sources):
                 preserved = preserve_png(source, visual.artifact_dir, f"scaled-frame-{index}.png")
                 frame_bbox = largest_color_region(preserved, ANIMATION_BLUE)
@@ -426,7 +427,7 @@ async def test_x11_screen_capture_pixels_are_logical_click_targets(
                 ), (index, frame_bbox, bbox)
             await wait_status(client, GUI_PROBE_APP, "animation_status:", ANIMATION_DONE)
 
-            # The mirrored X11 cursor lands on the logical point it was moved to.
+            # The captured cursor lands on the logical point it was moved to.
             await client.call_structured("pointer_move", {"target": {"x": click_x, "y": click_y}})
             without_frame, _ = await capture(client, {"include_cursor": False})
             with_frame, _ = await capture(client, {"include_cursor": True})
@@ -455,7 +456,7 @@ async def test_x11_screen_capture_pixels_are_logical_click_targets(
 async def test_x11_screen_captures_cover_cursor_and_action_frame_paths() -> None:
     """Cursor pixels and each frame-producing input family cross installed MCP stdio."""
     with nested_visual_kwin() as visual:
-        async with running_mcp_server(env=x11_env(visual)) as client:
+        async with running_mcp_server(env=visual.capture_env) as client:
             connected = False
             screenshot_dir: Path | None = None
             try:
@@ -522,7 +523,9 @@ async def test_x11_screen_captures_cover_cursor_and_action_frame_paths() -> None
                     {"target": {"x": click_x, "y": click_y}, "capture": {"delays_ms": [0]}},
                 )
                 assert clicked["at"] == {"x": click_x, "y": click_y}, clicked
-                click_sources = burst_sources(action_frames(clicked), click_text, [0], SCREEN_SIZE)
+                click_sources = burst_sources(
+                    action_frames(clicked), click_text, [0], SCREEN_SIZE, visual.capture_backend
+                )
                 preserve_png(click_sources[0], visual.artifact_dir, "mouse-click-frame-000.png")
                 assert click_sources[0].parent == screenshot_dir
                 await wait_status_change(client, PROBE_APP, "click_status:", click_before)
@@ -535,7 +538,7 @@ async def test_x11_screen_captures_cover_cursor_and_action_frame_paths() -> None
                     "keyboard_type", {"text": "frame-path", "capture": {"delays_ms": [25]}}
                 )
                 keyboard_sources = burst_sources(
-                    action_frames(typed), typed_text, [25], SCREEN_SIZE
+                    action_frames(typed), typed_text, [25], SCREEN_SIZE, visual.capture_backend
                 )
                 preserve_png(keyboard_sources[0], visual.artifact_dir, "keyboard-type-frame.png")
                 assert keyboard_sources[0].parent == screenshot_dir
@@ -550,7 +553,9 @@ async def test_x11_screen_captures_cover_cursor_and_action_frame_paths() -> None
                         "capture": {"delays_ms": [50]},
                     },
                 )
-                touch_sources = burst_sources(action_frames(tapped), tap_text, [50], SCREEN_SIZE)
+                touch_sources = burst_sources(
+                    action_frames(tapped), tap_text, [50], SCREEN_SIZE, visual.capture_backend
+                )
                 preserve_png(touch_sources[0], visual.artifact_dir, "touch-tap-frame.png")
                 assert touch_sources[0].parent == screenshot_dir
                 await wait_status_change(client, PROBE_APP, "zoom_status:", zoom_before)
@@ -563,7 +568,9 @@ async def test_x11_screen_captures_cover_cursor_and_action_frame_paths() -> None
                     "pointer_drag",
                     {"from": drag_from, "to": drag_to, "capture": {"delays_ms": [75]}},
                 )
-                drag_sources = burst_sources(action_frames(dragged), drag_text, [75], SCREEN_SIZE)
+                drag_sources = burst_sources(
+                    action_frames(dragged), drag_text, [75], SCREEN_SIZE, visual.capture_backend
+                )
                 preserve_png(drag_sources[0], visual.artifact_dir, "mouse-drag-frame.png")
                 assert drag_sources[0].parent == screenshot_dir
                 await wait_status_change(client, PROBE_APP, "drag_status:", drag_before)
@@ -592,7 +599,7 @@ async def wait_entry_text(client: McpTestClient, expected: str) -> None:
 async def test_live_screen_capture_cleanup_respects_keep_screen_captures() -> None:
     """Generated files disappear by default and survive stop only with retention.artifacts."""
     with nested_visual_kwin() as visual:
-        async with running_mcp_server(env=x11_env(visual)) as client:
+        async with running_mcp_server(env=visual.capture_env) as client:
             connected = False
             kept_dir: Path | None = None
             try:
@@ -665,12 +672,13 @@ def _process_resource_counts(process_dir: Path) -> tuple[int, int]:
     )
 
 
-async def start_virtual(client: McpTestClient) -> None:
+async def start_virtual(client: McpTestClient) -> dict[str, Any]:
     info, _ = await client.call_structured(
         "session_start", {"screen_width": SCREEN_SIZE[0], "screen_height": SCREEN_SIZE[1]}
     )
     assert info["kind"] == "virtual", info
     assert info["input_backend"] == "eis", info
+    return info
 
 
 async def stop_virtual(client: McpTestClient) -> None:
@@ -691,51 +699,52 @@ async def assert_server_alive(client: McpTestClient) -> None:
 async def test_virtual_screen_capture_failures_name_each_attempt_and_server_survives(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Repeated headless failures retain diagnostics without leaking server resources."""
+    """Unavailable providers retain diagnostics without leaking server resources."""
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.delenv("KWIN_MCP_X11_SCREENSHOT", raising=False)
 
     async with running_mcp_server() as client:
         session_running = False
         try:
-            await start_virtual(client)
+            info = await start_virtual(client)
             session_running = True
 
-            server_process = _server_process_dir()
-            baseline_threads, baseline_fds = _process_resource_counts(server_process)
-            resource_samples: list[tuple[int, int]] = []
+            with screenshot_provider_unavailable(info["dbus_address"]):
+                server_process = _server_process_dir()
+                baseline_threads, baseline_fds = _process_resource_counts(server_process)
+                resource_samples: list[tuple[int, int]] = []
 
-            for _ in range(3):
-                error = "\n".join(await client.call_tool_error("screen_capture", lines=None))
-                assert "Screenshot capture failed" in error, error
-                assert "ScreenShot2" in error, error
-                assert "Spectacle" in error, error
-                resource_samples.append(_process_resource_counts(server_process))
+                for _ in range(3):
+                    error = "\n".join(await client.call_tool_error("screen_capture", lines=None))
+                    assert "Screenshot capture failed" in error, error
+                    assert "ScreenShot2" in error, error
+                    assert "Spectacle" in error, error
+                    resource_samples.append(_process_resource_counts(server_process))
 
-                # An action's frames are taken after the action is committed: their
-                # failure is a warning on a successful result, never an error.
-                burst, burst_text = await client.call_structured(
-                    "pointer_move",
-                    {
-                        "target": {"x": SCREEN_SIZE[0] // 2, "y": SCREEN_SIZE[1] // 2},
-                        "capture": {"delays_ms": [0]},
-                    },
-                )
-                assert burst["frames"] == [], burst
-                assert len(burst["warnings"]) == 1, burst_text
-                warning = burst["warnings"][0]
-                assert warning.startswith(
-                    "frame capture failed after the action: Frame burst capture failed"
-                ), warning
-                assert "ScreenShot2" in warning, warning
-                assert "Spectacle" in warning, warning
-                resource_samples.append(_process_resource_counts(server_process))
+                    # An action's frames are taken after the action is committed: their
+                    # failure is a warning on a successful result, never an error.
+                    burst, burst_text = await client.call_structured(
+                        "pointer_move",
+                        {
+                            "target": {"x": SCREEN_SIZE[0] // 2, "y": SCREEN_SIZE[1] // 2},
+                            "capture": {"delays_ms": [0]},
+                        },
+                    )
+                    assert burst["frames"] == [], burst
+                    assert len(burst["warnings"]) == 1, burst_text
+                    warning = burst["warnings"][0]
+                    assert warning.startswith(
+                        "frame capture failed after the action: Frame burst capture failed"
+                    ), warning
+                    assert "ScreenShot2" in warning, warning
+                    assert "Spectacle" in warning, warning
+                    resource_samples.append(_process_resource_counts(server_process))
 
-            thread_counts = [count[0] for count in resource_samples]
-            fd_counts = [count[1] for count in resource_samples]
-            assert max(thread_counts) <= baseline_threads + 2, (baseline_threads, thread_counts)
-            assert max(fd_counts) <= baseline_fds + 2, (baseline_fds, fd_counts)
-            await assert_server_alive(client)
+                thread_counts = [count[0] for count in resource_samples]
+                fd_counts = [count[1] for count in resource_samples]
+                assert max(thread_counts) <= baseline_threads + 2, (baseline_threads, thread_counts)
+                assert max(fd_counts) <= baseline_fds + 2, (baseline_fds, fd_counts)
+                await assert_server_alive(client)
         finally:
             if session_running:
                 await stop_virtual(client)
@@ -800,21 +809,20 @@ async def test_virtual_spectacle_fallback_waits_for_slow_healthy_capture(
     ) as client:
         session_running = False
         try:
-            await start_virtual(client)
+            info = await start_virtual(client)
             session_running = True
-            # Headless virtual KWin exposes no working ScreenShot2, so this
-            # exercises the real Spectacle fallback end to end.
-            started = time.monotonic()
-            frame, text = await capture(client)
-            elapsed = time.monotonic() - started
-            assert coordinate_spaces(text) == [
-                CoordinateSpace((0, 0), SCREEN_SIZE, "spectacle", "full")
-            ], text
-            assert_full_frame(frame, SCREEN_SIZE)
-            # One slow capture, not a retry that happened to fit a short bound.
-            invocations = calls.read_text(encoding="utf-8").splitlines()
-            assert len(invocations) == 1, invocations
-            assert elapsed >= SLOW_SPECTACLE_SECONDS, elapsed
+            with screenshot_provider_unavailable(info["dbus_address"]):
+                started = time.monotonic()
+                frame, text = await capture(client)
+                elapsed = time.monotonic() - started
+                assert coordinate_spaces(text) == [
+                    CoordinateSpace((0, 0), SCREEN_SIZE, "spectacle", "full")
+                ], text
+                assert_full_frame(frame, SCREEN_SIZE)
+                # One slow capture, not a retry that happened to fit a short bound.
+                invocations = calls.read_text(encoding="utf-8").splitlines()
+                assert len(invocations) == 1, invocations
+                assert elapsed >= SLOW_SPECTACLE_SECONDS, elapsed
         finally:
             if session_running:
                 await stop_virtual(client)
@@ -834,20 +842,24 @@ async def test_virtual_spectacle_fallback_bounds_stuck_capture(
     ) as client:
         session_running = False
         try:
-            await start_virtual(client)
+            info = await start_virtual(client)
             session_running = True
-            started = time.monotonic()
-            error = "\n".join(await client.call_tool_error("screen_capture", lines=None))
-            elapsed = time.monotonic() - started
-            match = re.search(r"Spectacle \(spectacle timed out after (\d+(?:\.\d+)?)s", error)
-            assert match is not None, error
-            deadline = float(match.group(1))
-            # The deadline must leave room for the recorded slow capture, and the
-            # reported value must be the one actually enforced.
-            assert deadline > SLOW_SPECTACLE_SECONDS, error
-            assert deadline <= elapsed <= deadline + STUCK_CAPTURE_SLACK_SECONDS, (elapsed, error)
-            assert len(calls.read_text(encoding="utf-8").splitlines()) == 1
-            await assert_server_alive(client)
+            with screenshot_provider_unavailable(info["dbus_address"]):
+                started = time.monotonic()
+                error = "\n".join(await client.call_tool_error("screen_capture", lines=None))
+                elapsed = time.monotonic() - started
+                match = re.search(r"Spectacle \(spectacle timed out after (\d+(?:\.\d+)?)s", error)
+                assert match is not None, error
+                deadline = float(match.group(1))
+                # The deadline must leave room for the recorded slow capture, and the
+                # reported value must be the one actually enforced.
+                assert deadline > SLOW_SPECTACLE_SECONDS, error
+                assert deadline <= elapsed <= deadline + STUCK_CAPTURE_SLACK_SECONDS, (
+                    elapsed,
+                    error,
+                )
+                assert len(calls.read_text(encoding="utf-8").splitlines()) == 1
+                await assert_server_alive(client)
         finally:
             if session_running:
                 await stop_virtual(client)
@@ -877,12 +889,13 @@ async def test_virtual_spectacle_fallback_reports_why_no_file_was_written(
     ) as client:
         session_running = False
         try:
-            await start_virtual(client)
+            info = await start_virtual(client)
             session_running = True
-            error = "\n".join(await client.call_tool_error("screen_capture", lines=None))
-            assert f"Spectacle (spectacle produced no output: {_SILENT_SPECTACLE_REASON})" in (
-                error
-            ), error
+            with screenshot_provider_unavailable(info["dbus_address"]):
+                error = "\n".join(await client.call_tool_error("screen_capture", lines=None))
+                assert f"Spectacle (spectacle produced no output: {_SILENT_SPECTACLE_REASON})" in (
+                    error
+                ), error
         finally:
             if session_running:
                 await stop_virtual(client)
@@ -906,11 +919,7 @@ SCALED_SLACK_PX = 4
 
 @asynccontextmanager
 async def wide_session(*server_args: str) -> AsyncGenerator[McpTestClient]:
-    """An installed server connected to a wide nested KWin, captured through X11.
-
-    The container's virtual KWin has no ScreenShot2, so pixel tests use the same
-    nested visual compositor as the other tests in this module.
-    """
+    """An installed server connected to a wide KWin using the fixture's real backend."""
     with nested_visual_kwin(screen_size=WIDE_SCREEN_SIZE) as visual:
         async with live_client(visual, *server_args) as client:
             yield client
@@ -1087,7 +1096,9 @@ async def test_later_frame_burst_never_overwrites_earlier_frames() -> None:
             first_burst, first_text = await client.call_structured(
                 "pointer_move", {"target": {"x": 10, "y": 10}, "capture": {"delays_ms": [0]}}
             )
-            (first,) = burst_sources(action_frames(first_burst), first_text, [0], SCREEN_SIZE)
+            (first,) = burst_sources(
+                action_frames(first_burst), first_text, [0], SCREEN_SIZE, visual.capture_backend
+            )
             first_bytes = first.read_bytes()
             first_mtime = first.stat().st_mtime_ns
             preserve_png(first, visual.artifact_dir, "burst-before-probe.png")
@@ -1099,7 +1110,9 @@ async def test_later_frame_burst_never_overwrites_earlier_frames() -> None:
             second_burst, second_text = await client.call_structured(
                 "pointer_move", {"target": {"x": 20, "y": 20}, "capture": {"delays_ms": [0]}}
             )
-            (second,) = burst_sources(action_frames(second_burst), second_text, [0], SCREEN_SIZE)
+            (second,) = burst_sources(
+                action_frames(second_burst), second_text, [0], SCREEN_SIZE, visual.capture_backend
+            )
             preserve_png(second, visual.artifact_dir, "burst-after-probe.png")
 
             assert second != first, (first, second)
@@ -1114,17 +1127,17 @@ async def test_later_frame_burst_never_overwrites_earlier_frames() -> None:
 
 
 @contextmanager
-def x11_engine(
+def visual_engine(
     engine: AutomationEngine,
     monkeypatch: pytest.MonkeyPatch,
     *,
     scale: float = 1.0,
     screen_size: tuple[int, int] = SCREEN_SIZE,
 ) -> Generator[NestedVisualKWin]:
-    """The engine connected to a nested X11 KWin, captures selecting X11/scrot."""
+    """The engine connected to a visual KWin using the fixture's real capture backend."""
     with nested_visual_kwin(scale=scale, screen_size=screen_size) as visual:
-        monkeypatch.setenv("DISPLAY", visual.x_display)
-        monkeypatch.setenv("KWIN_MCP_X11_SCREENSHOT", "1")
+        for key, value in visual.capture_env.items():
+            monkeypatch.setenv(key, value)
         info = engine.session_connect(
             dbus_address=visual.dbus_address, wayland_display=visual.wayland_display
         )
@@ -1141,7 +1154,7 @@ def test_include_cursor_draws_pointer(
     engine: AutomationEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """include_cursor defaults to false; true draws the pointer at its logical position."""
-    with x11_engine(engine, monkeypatch) as visual:
+    with visual_engine(engine, monkeypatch) as visual:
         target = Point(x=640, y=400)
         moved = engine.pointer_move(target)
         assert moved.at == target, moved.render()
@@ -1187,7 +1200,7 @@ def test_global_logical_px_on_scaled_output(
 ) -> None:
     """On a 1.45-scaled output, targets, window frames, crops and clicks share logical px."""
     scale = 1.45
-    with x11_engine(engine, monkeypatch, scale=scale, screen_size=(1920, 1200)) as visual:
+    with visual_engine(engine, monkeypatch, scale=scale, screen_size=(1920, 1200)) as visual:
         screens = kwin_screens(visual.dbus_address)
         assert [s["scale"] for s in screens] == [pytest.approx(scale)], screens
         probe = launch_probe(engine, tmp_path)

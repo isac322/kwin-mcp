@@ -164,8 +164,7 @@ The suite collects every test under `tests/e2e`. Together they prove:
 - the installed `kwin-mcp` entry point over real MCP stdio JSON-RPC, including the exact input and
   output schemas, structured results, resources, and live-consent elicitation of all 29 tools;
 - AT-SPI2 observation and KWin EIS keyboard, pointer, touch, clipboard, window, and D-Bus paths;
-- GUI pixels, cursor capture, repaint changes, and frame bursts in test-owned nested Xvfb/KWin
-  sessions using the explicitly selected X11 `scrot` capture mode;
+- GUI pixels, cursor capture, repaint changes, and frame bursts in version-aware visual fixtures: KWin 6.3 and 6.7 use the existing nested Xvfb/KWin sessions with explicit X11 `scrot`, while KWin 6.8 and later use a private `kwin_wayland --virtual` session with `/dev/udmabuf`, ScreenShot2, and an independent Spectacle PNG observer;
 - screenshot coordinate mapping at output scales 1.0 and 1.45: pixels read from a screenshot,
   offset by its reported origin, must click the intended widget;
 - lifecycle, error propagation, input-state reset, process/session teardown, temporary artifact
@@ -183,9 +182,9 @@ The suite collects every test under `tests/e2e`. Together they prove:
   returns, and a failed activation (a `dbus-send` stub on `PATH`) must reach the caller as a
   `Warning:` line.
 
-The image needs no `--privileged`, GPU, `/dev/dri`, or other device flags. Engine tests use KWin's exact virtual backend with llvmpipe. Visual tests start Xvfb and a nested KWin compositor inside the same container, then connect the installed MCP server to that session.
+The image uses Mesa llvmpipe software rendering and needs no `--privileged`, `--cap-add`, physical GPU, or `/dev/dri` passthrough. Actual KWin 6.8 and later test containers receive `/dev/udmabuf` with its matching host group for UID 1000; quality and collection containers remain device-free. KWin 6.3 and 6.7 visual tests keep the test-owned nested Xvfb path. The host does not need an X server.
 
-Exact-virtual ScreenShot2 coverage is version-dependent: on KWin 6.3–6.7, the legacy probe remains opt-in and is known to be unavailable in this container. KWin ≥6.8 requires `/dev/udmabuf` for its virtual software-render device; CI passes that device and its host group to the actual E2E container and opts the exact probe in. A historical native run confirmed the capability with a passing clipboard check and a real 1280×800 PNG, but this does not claim that the current PR's CI is green. The existing nested Xvfb fixture and visual oracles remain the legacy path; the KWin ≥6.8 nested visual fix is pending. Exact-virtual failure behavior is covered, while screenshot success is proved through the nested X11 `scrot` mode. Multi-output layouts, negative origins, ScreenShot2 `CaptureWorkspace` normalization, and Spectacle partial coverage are not exercised in the container.
+Exact-virtual ScreenShot2 coverage follows the installed KWin version. KWin 6.3 and 6.7 retain the legacy opt-in probe and Xvfb/scrot visual path. KWin 6.8 and later automatically opt into the exact probe and require `/dev/udmabuf` access. The probe compares the product PNG with an independent Spectacle PNG at scale 1. Provider-unavailable checks use the real `org.kde.KWin /Plugins` lifecycle: unloading the screenshot plugin removes the provider and makes Spectacle exit 1 without a PNG; reloading the plugin must restore the provider. Semantic pixel, cursor, animation, scaling, crop, retention, and coordinate-mapping failure checks remain in scope. Slow physical-X11 cases remain on the Debian slow lane. Physical multi-output layouts, negative origins, and Spectacle partial coverage remain unverified.
 
 The runner always removes its named container, including after a failure or handled signal, and
 prints the retained artifact directory:
@@ -217,9 +216,11 @@ and shares that artifact with the row's five test shards. The 35 shards feed sev
 required checks, one per row; each check reads only its own five shard results and collection
 counts. Shard execution keeps the `not slow` selection, strict skip handling, layer-shell
 requirement, and existing timeouts. Image artifacts are retained for one day; diagnostic and status
-artifacts keep the repository's default retention. Artifact names include the workflow attempt.
-Rerun the whole workflow to rebuild the images and produce matching shard statuses; an individual
-job rerun does not reuse artifacts from another attempt. The local
+artifacts keep the repository's default retention. Image artifacts use stable same-run names
+`e2e-image-LABEL`; status artifacts use `e2e-status-LABEL-sN`. Reruns overwrite these artifacts,
+allowing partial reruns to reuse successful jobs from the same workflow run. Diagnostic archives
+remain attempt-specific. Each row checks its latest build and all five shard job results before
+validating coverage, so an older success cannot hide a newer failed, missing, or cancelled job. The local
 `scripts/run-e2e-docker.sh` interface is unchanged.
 
 See `docker/README.md` for backend details and test-by-test coverage.

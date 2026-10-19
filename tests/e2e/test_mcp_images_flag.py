@@ -1,8 +1,8 @@
 """--screenshot-images over stdio: one ImageContent per frame on every capture tool.
 
-Successful frames need the nested X11 KWin (``KWIN_MCP_X11_SCREENSHOT=1`` plus
-``session_connect``): the virtual KWin in the container never answers ScreenShot2.
-A window_zoo started outside kwin-mcp gives the window and element carriers a target.
+Successful frames use the fixture-selected capture backend: native KWin 6.8+
+uses ScreenShot2, while legacy KWin uses the nested X11 backend. A window_zoo
+started outside kwin-mcp gives the window and element carriers a target.
 """
 
 from __future__ import annotations
@@ -75,10 +75,6 @@ OK_BUTTON = {"app": APP_ID, "query": "OK", "role": "button"}
 def anyio_backend() -> str:
     """The installed MCP client runs on asyncio."""
     return "asyncio"
-
-
-def _visual_env(visual: NestedVisualKWin) -> dict[str, str]:
-    return {"DISPLAY": visual.x_display, "KWIN_MCP_X11_SCREENSHOT": "1"}
 
 
 def _frames_of(name: str, structured: dict[str, Any]) -> list[dict[str, Any]]:
@@ -184,7 +180,7 @@ async def _desk(visual: NestedVisualKWin, era: str, *server_args: str) -> AsyncG
     ) as zoo:
         zoo.expect("window: Zoo")
         async with running_client(
-            era, *server_args, env=_visual_env(visual), elicitation_callback=user
+            era, *server_args, env=visual.capture_env, elicitation_callback=user
         ) as client:
             await _connect(client, visual)
             try:
@@ -273,7 +269,7 @@ async def _carrier_call(
 
 @pytest.fixture(scope="module")
 def visual() -> Iterator[NestedVisualKWin]:
-    """One nested X11 KWin for the module; each test starts its own zoo and server."""
+    """One isolated visual KWin for the module; each test starts its own zoo and server."""
     with nested_visual_kwin() as nested:
         yield nested
 
@@ -313,7 +309,7 @@ async def test_screen_capture_images_flag_attaches_captured_pngs_in_order(
     visual: NestedVisualKWin,
 ) -> None:
     """With --screenshot-images, each captured PNG follows the unchanged text block."""
-    async with running_mcp_server(IMAGES_FLAG, env=_visual_env(visual)) as client:
+    async with running_mcp_server(IMAGES_FLAG, env=visual.capture_env) as client:
         await _connect(client, visual)
         try:
             shot = await client.call_result("screen_capture")
@@ -353,7 +349,7 @@ async def test_screen_capture_results_carry_no_images_without_flag(
     visual: NestedVisualKWin,
 ) -> None:
     """Without the opt-in flag, capturing tools return only their text block."""
-    async with running_mcp_server(env=_visual_env(visual)) as client:
+    async with running_mcp_server(env=visual.capture_env) as client:
         await _connect(client, visual)
         try:
             shot = await client.call_result("screen_capture")

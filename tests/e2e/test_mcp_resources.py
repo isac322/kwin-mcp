@@ -1,8 +1,8 @@
 """MCP resources over stdio: the kwin:// twins of tool results, pid completion, refusals.
 
-``kwin://screenshots/{name}`` needs a real frame, so the twin test runs against the
-nested X11 KWin (``KWIN_MCP_X11_SCREENSHOT=1`` plus ``session_connect``); the virtual
-KWin in the container never answers ScreenShot2.
+``kwin://screenshots/{name}`` needs a real frame, so the twin test connects to
+the visual fixture: native KWin 6.8+ uses ScreenShot2, while legacy KWin uses
+the nested X11 capture backend.
 """
 
 from __future__ import annotations
@@ -96,9 +96,7 @@ async def test_resource_twins_equal_tool_output() -> None:
         ZooProcess(wayland_display=visual.wayland_display, dbus_address=visual.dbus_address) as zoo,
     ):
         zoo.expect("window: Zoo")
-        async with running_mcp_server(
-            env={"DISPLAY": visual.x_display, "KWIN_MCP_X11_SCREENSHOT": "1"}
-        ) as client:
+        async with running_mcp_server(env=visual.capture_env) as client:
             await client.call_structured(
                 "session_connect",
                 {"dbus_address": visual.dbus_address, "wayland_display": visual.wayland_display},

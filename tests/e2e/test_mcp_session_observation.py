@@ -7,13 +7,13 @@ One virtual session is driven through the S call sequence (plan row 26):
 
 from __future__ import annotations
 
-import os
 import re
 from typing import TYPE_CHECKING, Any
 
 import anyio
 import pytest
 from mcp_harness import running_mcp_server
+from visual_harness import screenshot_provider_unavailable
 
 if TYPE_CHECKING:
     from mcp_harness import McpTestClient
@@ -250,29 +250,28 @@ async def test_installed_server_observes_virtual_session_and_apps(
                 await client.call_result("session_stop")
 
 
-@pytest.mark.skipif(
-    os.environ.get("KWIN_MCP_E2E_SCREENSHOT") == "1",
-    reason="headless screenshot-error behavior contradicts the explicitly enabled success path",
-)
 @pytest.mark.anyio
 async def test_virtual_screen_capture_error_crosses_stdio_without_killing_server() -> None:
-    """The headless virtual backend's capture failure stays an MCP tool error."""
+    """A real screenshot-provider outage stays an MCP tool error without ending the session."""
     async with running_mcp_server() as client:
         session_running = False
         try:
-            _, start_text = await client.call_structured(
+            started, start_text = await client.call_structured(
                 "session_start", {"screen_width": SCREEN_WIDTH, "screen_height": SCREEN_HEIGHT}
             )
             session_running = True
             assert start_text.startswith("Session started."), start_text
 
-            capture_error = "\n".join(await client.call_tool_error("screen_capture", lines=None))
-            assert "Screenshot capture failed" in capture_error, capture_error
-            assert "ScreenShot2" in capture_error, capture_error
-            assert "Spectacle" in capture_error, capture_error
+            with screenshot_provider_unavailable(started["dbus_address"]):
+                capture_error = "\n".join(
+                    await client.call_tool_error("screen_capture", lines=None)
+                )
+                assert "Screenshot capture failed" in capture_error, capture_error
+                assert "ScreenShot2" in capture_error, capture_error
+                assert "Spectacle" in capture_error, capture_error
 
-            bus_names, _ = await client.call_structured("dbus_call", LIST_NAMES)
-            assert "org.kde.KWin" in bus_names["reply"], bus_names
+                bus_names, _ = await client.call_structured("dbus_call", LIST_NAMES)
+                assert "org.kde.KWin" in bus_names["reply"], bus_names
 
             stopped, stop_text = await client.call_structured("session_stop")
             session_running = False

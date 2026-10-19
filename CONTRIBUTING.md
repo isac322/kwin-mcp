@@ -183,14 +183,9 @@ The suite collects every test under `tests/e2e`. Together they prove:
   returns, and a failed activation (a `dbus-send` stub on `PATH`) must reach the caller as a
   `Warning:` line.
 
-The image needs no `--privileged`, GPU, `/dev/dri`, or other device flags. Engine tests use
-KWin's exact virtual backend with llvmpipe. Visual tests start Xvfb and a nested KWin compositor
-inside the same container, then connect the installed MCP server to that session. One legacy
-exact-virtual ScreenShot2 success test remains intentionally skipped because that backend does
-not return captures. Exact-virtual failure behavior is covered, while screenshot success is
-proved through the nested X11 `scrot` mode. Multi-output layouts, negative origins, ScreenShot2
-`CaptureWorkspace` normalization, and Spectacle partial coverage are not exercised in the
-container.
+The image needs no `--privileged`, GPU, `/dev/dri`, or other device flags. Engine tests use KWin's exact virtual backend with llvmpipe. Visual tests start Xvfb and a nested KWin compositor inside the same container, then connect the installed MCP server to that session.
+
+Exact-virtual ScreenShot2 coverage is version-dependent: on KWin 6.3–6.7, the legacy probe remains opt-in and is known to be unavailable in this container. KWin ≥6.8 requires `/dev/udmabuf` for its virtual software-render device; CI passes that device and its host group to the actual E2E container and opts the exact probe in. A historical native run confirmed the capability with a passing clipboard check and a real 1280×800 PNG, but this does not claim that the current PR's CI is green. The existing nested Xvfb fixture and visual oracles remain the legacy path; the KWin ≥6.8 nested visual fix is pending. Exact-virtual failure behavior is covered, while screenshot success is proved through the nested X11 `scrot` mode. Multi-output layouts, negative origins, ScreenShot2 `CaptureWorkspace` normalization, and Spectacle partial coverage are not exercised in the container.
 
 The runner always removes its named container, including after a failure or handled signal, and
 prints the retained artifact directory:

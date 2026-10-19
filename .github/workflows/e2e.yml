@@ -119,16 +119,81 @@ jobs:
           fi
           cat "$E2E_STATUS_FILE"
 
-      # No /dev/dri passthrough on purpose: KWin then runs on the same llvmpipe
-      # software path everywhere, so a run here matches a developer's laptop
-      # exactly. A DRM node would only let KWin register ScreenShot2, and its
-      # virtual backend still never answers a capture — see docker/README.md.
+      # No physical GPU or /dev/dri passthrough: KWin uses its llvmpipe software
+      # path. KWin >= 6.8 also needs the host's udmabuf allocator for its
+      # virtual software render device; only the actual E2E container gets it
+      # when needed.
+      - name: Prepare the udmabuf software allocator when required
+        shell: bash
+        run: |
+          set -euo pipefail
+          kwin_version="$(
+            docker run --rm --entrypoint kwin_wayland kwin-mcp-e2e --version
+          )"
+          echo "KWin version: $kwin_version"
+          if [[ ! "$kwin_version" =~ ([0-9]+)\.([0-9]+) ]]; then
+            echo "could not determine the KWin version" >&2
+            exit 1
+          fi
+          kwin_major="${BASH_REMATCH[1]}"
+          kwin_minor="${BASH_REMATCH[2]}"
+          if (( kwin_major > 6 || (kwin_major == 6 && kwin_minor >= 8) )); then
+            echo "KWIN_MCP_NEEDS_UDMABUF=1" >> "$GITHUB_ENV"
+            if [[ ! -c /dev/udmabuf ]]; then
+              if ! sudo -n modprobe udmabuf; then
+                echo "modprobe udmabuf returned non-zero; waiting for udev..." >&2
+              fi
+              if [[ ! -c /dev/udmabuf ]]; then
+                sudo -n udevadm settle --timeout=10
+              fi
+            fi
+            if [[ ! -c /dev/udmabuf ]]; then
+              echo "required character device /dev/udmabuf is unavailable" >&2
+              exit 1
+            fi
+            read -r major_hex minor_hex < <(stat -c '%t %T' /dev/udmabuf)
+            major=$((16#$major_hex))
+            minor=$((16#$minor_hex))
+            udmabuf_dev="/sys/class/misc/udmabuf/dev"
+            if [[ ! -r "$udmabuf_dev" ]]; then
+              echo "registered udmabuf identity is unavailable ($udmabuf_dev)" >&2
+              exit 1
+            fi
+            registered_device="$(<"$udmabuf_dev")"
+            if [[ "$registered_device" != "$major:$minor" ]]; then
+              echo "udmabuf identity mismatch: node=$major:$minor registered=$registered_device" >&2
+              exit 1
+            fi
+            echo "registered udmabuf device identity: $registered_device"
+            sysfs_device="/sys/dev/char/${major}:${minor}"
+            if [[ ! -e "$sysfs_device" ]]; then
+              echo "sysfs identity is unavailable for /dev/udmabuf ($major:$minor)" >&2
+              exit 1
+            fi
+            echo "udmabuf sysfs identity: $(readlink -f "$sysfs_device")"
+            cat "$sysfs_device/uevent"
+            stat -c 'udmabuf type=%F mode=%04a uid=%u gid=%g major=%t minor=%T' \
+              /dev/udmabuf
+          else
+            echo "KWin < 6.8 does not require /dev/udmabuf"
+            echo "KWIN_MCP_NEEDS_UDMABUF=0" >> "$GITHUB_ENV"
+          fi
+
+      # The actual E2E container gets only the software allocator device when
+      # KWin requires it, plus its existing host group. Quality and collect-only
+      # containers stay bare.
       - name: Run end-to-end tests
         shell: bash
         run: |
           set -o pipefail
+          docker_args=()
+          if [[ "${KWIN_MCP_NEEDS_UDMABUF:-0}" == 1 ]]; then
+            docker_args+=(--device=/dev/udmabuf:/dev/udmabuf:rw)
+            docker_args+=(--group-add "$(stat -c '%g' /dev/udmabuf)")
+            docker_args+=(--env KWIN_MCP_E2E_SCREENSHOT=1)
+          fi
           timeout --signal=INT --kill-after=1m 20m \
-            docker run \
+            docker run "${docker_args[@]}" \
               --name "$E2E_CONTAINER_NAME" \
               --env KWIN_MCP_E2E_STRICT_SKIPS=1 \
               --env KWIN_MCP_E2E_REQUIRE=layer-shell \

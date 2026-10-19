@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - E2E CI shares stable, same-run image and shard-status artifacts across partial reruns. Each row checks its latest build and shard job results before validating coverage, so an older success cannot hide a newer failure. Diagnostic archives remain attempt-specific.
 - E2E row aggregation now checks only its own five shard statuses and collected/full test counts, so an unrelated row failure no longer causes a false failure in a healthy row.
+- E2E CI detects KWin versions and exposes the host's `/dev/udmabuf` software allocator to actual KWin >=6.8 virtual-session test containers while keeping quality and collection containers device-free; nested Xvfb/DRI3 compatibility remains unresolved.
 
 ## [1.0.0] - 2026-10-15
 

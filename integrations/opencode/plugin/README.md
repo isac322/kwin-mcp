@@ -7,7 +7,7 @@ On every OpenCode backend startup the plugin's V2 `setup` hook:
 1. **Registers the `kwin-mcp` MCP server** through `ctx.mcp.transform`, equivalent to a static local server entry but without requiring users to edit config.
 2. **Registers the bundled skill** through `ctx.skill.transform`. The skill teaches which kwin-mcp tool to call when, plus the platform pitfalls of Wayland / AT-SPI2 / EIS.
 
-Both steps are idempotent — re-running OpenCode is a no-op. The plugin never copies files outside the npm package, so `npm uninstall @isac322/kwin-mcp-opencode` cleanly removes both the MCP server registration and the skill on next startup.
+Both steps are idempotent — re-running OpenCode is a no-op. The plugin never copies files outside the npm package, so removing the plugin from the configured `plugins` list and reloading OpenCode removes both registrations from the active runtime config.
 
 ## Installation
 
@@ -49,14 +49,30 @@ This package ships the host-agnostic `kwin-desktop-automation` skill (mirrored f
 
 The shipped skill lives inside the npm package (read-only). To override or extend it without touching the package, drop your own `SKILL.md` into a directory OpenCode already scans:
 
-- Personal scope: `~/.claude/skills/<name>/SKILL.md` or `~/.config/opencode/skills/<name>/SKILL.md`
-- Project scope: `<project>/.claude/skills/<name>/SKILL.md` or `<project>/.opencode/skills/<name>/SKILL.md`
+- Personal scope: `~/.claude/skills/<name>/SKILL.md`, `~/.config/opencode/skills/<name>/SKILL.md`, or `~/.agents/skills/<name>/SKILL.md`
+- Project scope: `<project>/.claude/skills/<name>/SKILL.md`, `<project>/.opencode/skills/<name>/SKILL.md`, or `<project>/.agents/skills/<name>/SKILL.md`
 
-OpenCode keys skills by their frontmatter `name`, so reuse `kwin-desktop-automation` to override the shipped one, or pick a unique name (e.g. `kwin-desktop-automation-custom`) to keep both alongside each other.
+The `.agents/skills` paths are OpenCode's official Agent Skills-compatible locations. OpenCode keys skills by their frontmatter `name`, so reuse `kwin-desktop-automation` to override the shipped one, or pick a unique name (e.g. `kwin-desktop-automation-custom`) to keep both alongside each other.
 
 ## Uninstall
 
-`npm uninstall @isac322/kwin-mcp-opencode`, then restart OpenCode. Because the plugin never copies files outside the npm package, no manual cleanup is needed — both the MCP server registration and the skill drop out of the next runtime config automatically.
+1. Remove the configured plugin entry from `opencode.json`:
+
+   ```jsonc
+   {
+     "plugins": []
+   }
+   ```
+
+   If other plugins are configured, remove only `"@isac322/kwin-mcp-opencode"` (or the target you configured).
+2. Remove the cached OpenCode package:
+
+   ```bash
+   opencode plugin remove @isac322/kwin-mcp-opencode
+   ```
+
+   Use the exact configured target if it differs. OpenCode installs npm plugins into its own cache, so `npm uninstall` in a project does not remove the cached package.
+3. Reload or restart OpenCode. The MCP server registration and bundled skill will no longer be loaded.
 
 ## Building from source
 

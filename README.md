@@ -123,16 +123,35 @@ The fastest way to wire kwin-mcp into your editor is to install one of the bundl
 /plugin install kwin-mcp@kwin-mcp
 ```
 
-**OpenCode** — add the npm plugin to your `opencode.json`:
+**OpenCode** — add the npm plugin to the `plugins` array in your `opencode.json`:
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@isac322/kwin-mcp-opencode"]
+  "plugins": ["@isac322/kwin-mcp-opencode"]
 }
 ```
 
-For manual OpenCode setup without the plugin, copy [`integrations/opencode/opencode.json.example`](integrations/opencode/opencode.json.example) into `opencode.json`. To customize or override the bundled skill, place a `SKILL.md` at `~/.claude/skills/kwin-desktop-automation/SKILL.md` (Claude Code) or `~/.config/opencode/skills/kwin-desktop-automation/SKILL.md` (OpenCode).
+For manual OpenCode V2 setup without the plugin, add `kwin-mcp` under `mcp.servers`:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "kwin-mcp": {
+        "type": "local",
+        "command": ["uvx", "kwin-mcp"]
+      }
+    }
+  }
+}
+```
+
+The bundled skill's source of truth is [`integrations/claude-code/skills/kwin-desktop-automation/SKILL.md`](integrations/claude-code/skills/kwin-desktop-automation/SKILL.md). To customize or override it, place a `SKILL.md` in one of OpenCode V2's skill locations:
+
+- Personal: `~/.claude/skills/kwin-desktop-automation/SKILL.md`, `~/.config/opencode/skills/kwin-desktop-automation/SKILL.md`, or `~/.agents/skills/kwin-desktop-automation/SKILL.md`
+- Project: `<project>/.claude/skills/kwin-desktop-automation/SKILL.md`, `<project>/.opencode/skills/kwin-desktop-automation/SKILL.md`, or `<project>/.agents/skills/kwin-desktop-automation/SKILL.md`
 
 ### Claude Code
 

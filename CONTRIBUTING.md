@@ -290,7 +290,7 @@ integrations/
     ├── opencode.json.example                                  # manual fallback opencode config
     └── plugin/                                                 # @isac322/kwin-mcp-opencode npm package
         ├── package.json                                        # npm manifest
-        ├── src/index.ts                                        # config-hook plugin
+        ├── src/index.ts                                        # V2 Plugin.define/setup implementation
         └── skill/kwin-desktop-automation/SKILL.md              # generated skill mirror
 
 .claude-plugin/

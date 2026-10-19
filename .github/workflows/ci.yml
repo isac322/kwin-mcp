@@ -84,7 +84,7 @@ jobs:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: "24"
       - name: Install plugin dependencies
@@ -112,96 +112,11 @@ jobs:
           ' "$artifact_dir/pack.json")"
           rm "$artifact_dir/pack.json"
           echo "path=$artifact_dir/$artifact_name" >> "$GITHUB_OUTPUT"
-      - name: Smoke-test packed plugin with OpenCode V2 host loader
+      - name: Smoke-test packed plugin with OpenCode V2 server
         env:
           PACKED_ARTIFACT: ${{ steps.pack.outputs.path }}
-        run: |
-          set -euo pipefail
-
-          smoke_root="$(mktemp -d)"
-          trap 'rm -rf "$smoke_root"' EXIT
-
-          npm init --yes --prefix "$smoke_root" >/dev/null
-          npm install --prefix "$smoke_root" --no-audit --no-fund \
-            "$PACKED_ARTIFACT" \
-            "@opencode/cli@2.0.32"
-
-          cli_version="$("$smoke_root/node_modules/.bin/opencode" --version)"
-          printf 'OpenCode version: %s\n' "$cli_version"
-          if [[ ! "$cli_version" =~ (^|[^0-9])2\.[0-9] ]]; then
-            echo "Expected OpenCode V2, got: $cli_version" >&2
-            exit 1
-          fi
-
-          cd "$smoke_root"
-          cat >"$smoke_root/host-smoke.mjs" <<'NODE'
-          import assert from "node:assert/strict";
-          import { dirname } from "node:path";
-          import { fileURLToPath } from "node:url";
-          import { load, resolve } from "@opencode/plugin/host";
-
-          const packageEntry = fileURLToPath(
-            import.meta.resolve("@isac322/kwin-mcp-opencode"),
-          );
-          const packageDir = dirname(dirname(packageEntry));
-          const target = {
-            directory: packageDir,
-            name: "@isac322/kwin-mcp-opencode",
-          };
-          const entrypoints = resolve(target);
-          assert.ok(entrypoints.server, "V2 host loader did not resolve the plugin server");
-
-          const loaded = await load(entrypoints.server);
-          assert.ok(loaded && typeof loaded === "object");
-          const plugin = loaded.default;
-          assert.ok(plugin && typeof plugin === "object");
-          assert.equal(plugin.id, "kwin-mcp-opencode");
-          assert.equal(typeof plugin.setup, "function");
-
-          const mcpServers = new Map();
-          const skills = new Map();
-          const mcpEditor = {
-            list: () => [...mcpServers.entries()],
-            get: (name) => mcpServers.get(name),
-            set: (name, config) => mcpServers.set(name, config),
-            update: (name, update) => update(mcpServers.get(name)),
-            remove: (name) => mcpServers.delete(name),
-          };
-          const skillEditor = {
-            list: () => [...skills.values()],
-            get: (id) => skills.get(id),
-            add: (skill) => skills.set(skill.id, skill),
-            update: (id, update) => update(skills.get(id)),
-            remove: (id) => skills.delete(id),
-          };
-          const context = {
-            mcp: {
-              transform: async (callback) => {
-                callback(mcpEditor);
-                return { dispose: async () => {} };
-              },
-            },
-            skill: {
-              transform: async (callback) => {
-                callback(skillEditor);
-                return { dispose: async () => {} };
-              },
-            },
-          };
-
-          await plugin.setup(context);
-
-          const mcpConfig = mcpServers.get("kwin-mcp");
-          assert.ok(mcpConfig, "plugin did not register the kwin-mcp MCP server");
-          assert.equal(mcpConfig.type, "local");
-          assert.deepEqual(mcpConfig.command, ["uvx", "kwin-mcp"]);
-          assert.equal(Object.hasOwn(mcpConfig, "enabled"), false);
-
-          const skill = skills.get("kwin-desktop-automation");
-          assert.ok(skill, "plugin did not register the kwin-desktop-automation skill");
-          console.log("OpenCode V2 host loader registered kwin-mcp and kwin-desktop-automation");
-          NODE
-          node "$smoke_root/host-smoke.mjs"
+        working-directory: integrations/opencode/plugin
+        run: node test/opencode-smoke.mjs "$PACKED_ARTIFACT"
 
   publish:
     if: startsWith(github.ref, 'refs/tags/v')

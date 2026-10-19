@@ -303,6 +303,61 @@ jobs:
             "/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?filter=latest&per_page=100" \
             > "${{ runner.temp }}/e2e-jobs.json"
 
+      # GitHub can expose a just-finished matrix job as queued/in-progress for
+      # a short interval after `needs` releases this aggregator. Poll the
+      # current run before applying the fail-closed row checker.
+      - name: Wait for current-run jobs to settle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -eu
+          jobs_file="${{ runner.temp }}/e2e-jobs.json"
+          for attempt in $(seq 1 24); do
+            gh api --paginate --slurp \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              "/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?filter=latest&per_page=100" \
+              > "$jobs_file"
+
+            set +e
+            python3 - "$jobs_file" "${{ matrix.row.label }}" <<'PY'
+          import json
+          import sys
+
+          jobs = [
+              job
+              for page in json.load(open(sys.argv[1], encoding="utf-8"))
+              for job in page["jobs"]
+          ]
+          label = sys.argv[2]
+          expected = [
+              f"Build E2E image ({label})",
+              *(f"E2E shard ({label}, {number}/5)" for number in range(1, 6)),
+          ]
+          matching = {name: [job for job in jobs if job["name"] == name] for name in expected}
+          if any(len(found) != 1 for found in matching.values()):
+              print("required jobs are not all visible yet", file=sys.stderr)
+              raise SystemExit(1)
+          if any(
+              found[0]["status"] == "completed" and found[0]["conclusion"] != "success"
+              for found in matching.values()
+          ):
+              print("a required job completed unsuccessfully", file=sys.stderr)
+              raise SystemExit(2)
+          if any(found[0]["status"] != "completed" for found in matching.values()):
+              print("required jobs are still settling", file=sys.stderr)
+              raise SystemExit(1)
+          PY
+            result=$?
+            set -e
+            if [[ "$result" -ne 1 ]]; then
+              break
+            fi
+            if [[ "$attempt" -lt 24 ]]; then
+              sleep 5
+            fi
+          done
+
       # Stable names identify only this run's latest artifact set.  Each artifact
       # contains one unique shard filename, so merging cannot mask a shard.
       - uses: actions/download-artifact@v8

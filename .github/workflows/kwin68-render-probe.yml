@@ -1,0 +1,39 @@
+name: Temporary KWin 6.8 native software-render probe
+
+on:
+  push:
+    branches: [diag/kwin68-software-render-20261019]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  native-amd64-probe:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Probe the original image without rebuilding it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .ci-probes/kwin68_native_probe.py
+
+      - name: Make diagnostics readable even after a failed probe
+        if: always()
+        run: |
+          if [ -d "$RUNNER_TEMP/kwin68-native-diagnostics" ]; then
+            sudo chmod -R a+rX "$RUNNER_TEMP/kwin68-native-diagnostics"
+          fi
+
+      # Authenticated Actions artifacts only; never publish logs to a site or PR.
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: kwin68-native-amd64-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kwin68-native-diagnostics
+          retention-days: 14
+          if-no-files-found: error

@@ -103,6 +103,36 @@ def select_source_image(run, pages):
     return artifact, image_attempt
 
 
+def ensure_udmabuf_registration(read_registration, load_module, observations):
+    """Return registered major/minor; callbacks read sysfs or run one loader."""
+    observations.update(before=None, after=None, loader_attempted=False,
+                        loader_returncode=None)
+    observations["before"] = read_registration()
+    observations["after"] = observations["before"]
+    if observations["before"] is None:
+        observations["loader_attempted"] = True
+        try:
+            observations["loader_returncode"] = load_module()
+        finally:
+            observations["after"] = read_registration()
+        if observations["loader_returncode"] != 0:
+            raise RuntimeError("Stock udmabuf module loader failed; see its logs")
+    identity = observations["after"]
+    if identity is None:
+        raise RuntimeError("No live udmabuf registration exists after the stock module loader")
+    if not re.fullmatch(r"[0-9]+:[0-9]+", identity.strip()):
+        raise RuntimeError("Invalid udmabuf sysfs device identity")
+    major, minor = map(int, identity.strip().split(":"))
+    if major == 0:
+        raise RuntimeError("Invalid udmabuf sysfs device major")
+    os.makedev(major, minor)
+    return major, minor
+
+
+def validate_udmabuf_node(info, major, minor):
+    if not stat.S_ISCHR(info.st_mode) or info.st_rdev != os.makedev(major, minor):
+        raise RuntimeError("Existing udmabuf node does not match registered sysfs identity")
+
 
 # Capture test-owned files before the existing fixture deletes them at teardown.
 # No product monkeypatches: this plugin only copies evidence and records reports.
@@ -270,21 +300,25 @@ def main():
         "test_node": CLIPBOARD, "passed": baseline_ok,
         "interpretation": "negative baseline is an expected observation, not a successful counterfactual",
     })
+    registration = Path("/sys/class/misc/udmabuf/dev")
     module_present = Path("/sys/module/udmabuf").exists()
-    require("load-udmabuf-module", ["sudo", "-n", "modprobe", "udmabuf"])
-    if not module_present:
-        record("kernel-module", "udmabuf", "sudo modprobe -r udmabuf")
-    actual_device = Path("/sys/class/misc/udmabuf/dev").read_text().strip()
-    if not re.fullmatch(r"\d+:\d+", actual_device):
-        raise RuntimeError("Invalid udmabuf sysfs device identity")
-    major, minor = map(int, actual_device.split(":"))
+    registration_observation = {}
+    try:
+        major, minor = ensure_udmabuf_registration(
+            lambda: registration.read_text() if registration.exists() else None,
+            lambda: command("load-udmabuf-module", ["sudo", "-n", "modprobe", "udmabuf"]),
+            registration_observation)
+    finally:
+        save(OUT / "udmabuf-registration.json", registration_observation)
+        if registration_observation.get("loader_returncode") == 0 and not module_present:
+            record("kernel-module", "udmabuf", "sudo modprobe -r udmabuf")
+    actual_device = f"{major}:{minor}"
     node = Path("/dev/udmabuf")
     if not node.exists():
         require("create-udmabuf-node", ["sudo", "-n", "mknod", str(node), "c", str(major), str(minor)])
         record("device-node", node, f"sudo rm -- {node}")
     info = node.stat()
-    if not stat.S_ISCHR(info.st_mode) or info.st_rdev != os.makedev(major, minor):
-        raise RuntimeError("Existing udmabuf node does not match registered sysfs identity")
+    validate_udmabuf_node(info, major, minor)
     require("udmabuf-group", ["sudo", "-n", "chgrp", str(gid), str(node)])
     require("udmabuf-mode", ["sudo", "-n", "chmod", "0660", str(node)])
     info = node.stat()

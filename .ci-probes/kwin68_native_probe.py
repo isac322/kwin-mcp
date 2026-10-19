@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Temporary CI-only counterfactual; never changes the image or product source."""
+"""Temporary CI-only current-image diagnostics; never changes image or product source."""
 
 import hashlib
 import json
@@ -14,13 +14,15 @@ import time
 import xml.etree.ElementTree as ET
 import zipfile
 
-SOURCE_RUN = 39213630319
-SOURCE_SHA = "3796d194372e355746ae2f85f24977b50c5b8713"
+SOURCE_RUN = 39280112134
+SOURCE_SHA = "804d5bc7a06d0144e5be4938492c0a2ff413ed00"
+EXPECTED_IMAGE_ID = "sha256:8204efb3aade495a8a5b36e7dc918c4a82b6be27e0c2c6fa464bb4420db9d636"
 REPOSITORY = "isac322/kwin-mcp"
 IMAGE = "kwin-mcp-e2e"
 PYTHON = "/opt/kwin-mcp-venv/bin/python"
-CLIPBOARD = "tests/e2e/test_clipboard.py::test_clipboard_roundtrip_and_paste_reach_kwrite"
-SCREENSHOT = "tests/e2e/test_virtual_session_smoke.py::test_screen_capture_exact_virtual_backend"
+KCALC_NODE = "tests/e2e/test_capture.py::test_capture_on_all_15_carriers[pointer_click]"
+KCALC_SHARD = ["tests", "-v", "-m", "not slow", "--kwin-shard=2/5"]
+CLI_NODE = "tests/e2e/test_cli_surface.py::test_cli_keyword_params_from_to"
 ROOT = Path(os.environ["RUNNER_TEMP"])
 OUT = ROOT / "kwin68-native-diagnostics"
 SCRATCH = ROOT / "kwin68-native-inputs"
@@ -82,25 +84,20 @@ def api(endpoint, target=None, paginate=False):
 
 
 def select_source_image(run, pages):
-    """Select the newest available original diagnostic image, not a CI check result."""
+    """Select only the stable current-run image artifact; never fall back."""
     if run["id"] != SOURCE_RUN or run["head_sha"] != SOURCE_SHA:
-        raise RuntimeError("Source workflow run or head SHA does not match the approved image source")
+        raise RuntimeError("Source workflow run or head SHA does not match the approved current image")
     candidates = [artifact for page in pages for artifact in page["artifacts"]
-                  if not artifact["expired"] and re.fullmatch(
-                      r"e2e-image-opensuse-amd64-attempt-\d+", artifact["name"])]
-    if not candidates:
-        raise RuntimeError("No unexpired openSUSE AMD64 image artifact exists for the source run")
-    artifact = max(candidates, key=lambda item: (
-        int(item["name"].rsplit("-", 1)[1]), item["created_at"], item["id"]))
-    image_attempt = int(artifact["name"].rsplit("-", 1)[1])
-    if not 0 < image_attempt <= run["run_attempt"]:
-        raise RuntimeError("Image artifact attempt must be positive and no newer than the source run attempt")
+                  if not artifact["expired"] and artifact["name"] == "e2e-image-opensuse-amd64"]
+    if len(candidates) != 1:
+        raise RuntimeError("Expected exactly one unexpired stable openSUSE AMD64 image artifact")
+    artifact = candidates[0]
     if (artifact["workflow_run"]["id"] != SOURCE_RUN
             or artifact["workflow_run"]["head_sha"] != SOURCE_SHA):
         raise RuntimeError("Artifact source run or SHA mismatch")
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", artifact["digest"].lower()):
         raise RuntimeError("Artifact has no verifiable SHA-256 digest")
-    return artifact, image_attempt
+    return artifact, None
 
 
 def ensure_udmabuf_registration(read_registration, load_module, observations):
@@ -193,16 +190,32 @@ def passed(case):
         test.find(tag) is not None for test in tests for tag in ("failure", "error", "skipped")
     )
 
+def suite_passed(case):
+    """A diagnostic suite is successful only with no failure/error/skip testcase."""
+    if RESULTS[case]["returncode"] != 0:
+        return False
+    junit = OUT / case / "junit.xml"
+    if not junit.is_file():
+        return False
+    tests = list(ET.parse(junit).iter("testcase"))
+    return bool(tests) and not any(
+        test.find(tag) is not None
+        for test in tests for tag in ("failure", "error", "skipped")
+    )
 
-def experiment(case, node, gid, device=False, screenshot=False):
+
+
+def experiment(case, node, gid, device=False, screenshot=False, timeout=155,
+               pytest_args=None, suite=False):
     artifacts = OUT / case
     artifacts.mkdir(mode=0o777)
     artifacts.chmod(0o777)
     name = f"kwin68-{case}-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+    args = list(pytest_args) if pytest_args is not None else [node]
     argv = ["docker", "run", "--pull=never", "--name", name,
             "--group-add", str(gid),
             "--env", "QT_FORCE_STDERR_LOGGING=1",
-            "--env", "PYTHONPATH=/probe",
+            "--env", "PYTHONPATH=/probe:/app/tests:/app/tests/e2e",
             "--env", "KWIN_MCP_E2E_STRICT_SKIPS=1",
             "--env", "KWIN_MCP_ARTIFACT_DIR=/artifacts",
             "--volume", f"{artifacts}:/artifacts",
@@ -211,18 +224,19 @@ def experiment(case, node, gid, device=False, screenshot=False):
         argv += ["--device", "/dev/udmabuf:/dev/udmabuf:rw"]
     if screenshot:
         argv += ["--env", "KWIN_MCP_E2E_SCREENSHOT=1"]
-    argv += [IMAGE, PYTHON, "-m", "pytest", "-p", "evidence", node,
-             "-v", "-s", "--junitxml=/artifacts/junit.xml"]
+    argv += [IMAGE, PYTHON, "-m", "pytest", "-p", "evidence",
+             "-p", "current_failures", *args, "-v", "-s",
+             "--junitxml=/artifacts/junit.xml"]
     record("container", name, f"docker rm --force {name}")
     try:
-        # Leave room for bounded termination and collection within three minutes.
-        command(case, argv, timeout=155)
+        command(case, argv, timeout=timeout)
     finally:
         command(case + "-kill", ["docker", "kill", name], timeout=5)
         command(case + "-inspect", ["docker", "inspect", name], timeout=5)
         command(case + "-logs", ["docker", "logs", "--timestamps", name], timeout=5)
-        command(case + "-processes", ["docker", "top", name, "-eo", "pid,ppid,user,stat,etime,args"], timeout=5)
-    return passed(case)
+        command(case + "-processes", ["docker", "top", name,
+                                      "-eo", "pid,ppid,user,stat,etime,args"], timeout=5)
+    return suite_passed(case) if suite else passed(case)
 
 
 def main():
@@ -286,22 +300,19 @@ def main():
             str(SCRATCH / "image.tar.zst")], timeout=170)
     record("docker-image", IMAGE, f"docker image rm {IMAGE}")
     image = json.loads(require("image-inspect", ["docker", "image", "inspect", IMAGE]))[0]
-    if image["Architecture"] != "amd64" or image["Config"]["User"] != "tester":
-        raise RuntimeError("Expected the original AMD64 image and its default tester user")
+    if (image["Architecture"] != "amd64" or image["Config"]["User"] != "tester"
+            or image["Id"] != EXPECTED_IMAGE_ID):
+        raise RuntimeError("Loaded image architecture, user, or immutable image ID mismatch")
     provenance["loaded_image_id"] = image["Id"]
     provenance["loaded_image_user"] = image["Config"]["User"]
+    provenance["loaded_image_architecture"] = image["Architecture"]
     save(OUT / "image-provenance.json", provenance)
     helpers = SCRATCH / "helpers"
     helpers.mkdir()
     (helpers / "evidence.py").write_text(EVIDENCE_PLUGIN)
-    (helpers / "layout_probe.py").write_text(
-        (Path(__file__).resolve().parent / "kwin68_layout_probe.py").read_text())
+    (helpers / "current_failures.py").write_text(
+        (Path(__file__).resolve().parent / "kwin68_current_failures.py").read_text())
     gid = os.getgid()
-    baseline_ok = experiment("baseline", CLIPBOARD, gid)
-    save(OUT / "baseline-observation.json", {
-        "test_node": CLIPBOARD, "passed": baseline_ok,
-        "interpretation": "negative baseline is an expected observation, not a successful counterfactual",
-    })
     registration = Path("/sys/class/misc/udmabuf/dev")
     module_present = Path("/sys/module/udmabuf").exists()
     registration_observation = {}
@@ -314,7 +325,7 @@ def main():
         save(OUT / "udmabuf-registration.json", registration_observation)
         if registration_observation.get("loader_returncode") == 0 and not module_present:
             record("kernel-module", "udmabuf", "sudo modprobe -r udmabuf")
-    actual_device = f"{major}:{minor}"
+    node = Path("/dev/udmabuf")
     node_created = False
     if not node.exists():
         require("create-udmabuf-node", ["sudo", "-n", "mknod", str(node), "c", str(major), str(minor)])
@@ -323,29 +334,17 @@ def main():
     info = node.stat()
     validate_udmabuf_node(info, major, minor)
     prior_node = {
-        "path": str(node),
-        "inode": info.st_ino,
-        "filesystem_device": info.st_dev,
-        "dev_t": info.st_rdev,
-        "device_major_minor": f"{os.major(info.st_rdev)}:{os.minor(info.st_rdev)}",
-        "uid": info.st_uid,
-        "gid": info.st_gid,
-        "mode": oct(stat.S_IMODE(info.st_mode)),
-        "character_device": stat.S_ISCHR(info.st_mode),
-        "created_by_probe": node_created,
+        "path": str(node), "inode": info.st_ino, "filesystem_device": info.st_dev,
+        "dev_t": info.st_rdev, "device_major_minor": f"{os.major(info.st_rdev)}:{os.minor(info.st_rdev)}",
+        "uid": info.st_uid, "gid": info.st_gid, "mode": oct(stat.S_IMODE(info.st_mode)),
+        "character_device": stat.S_ISCHR(info.st_mode), "created_by_probe": node_created,
     }
     save(OUT / "udmabuf-node-before.json", prior_node)
-    restore = (
-        f"sudo chown {info.st_uid}:{info.st_gid} {node} && "
-        f"sudo chmod {oct(stat.S_IMODE(info.st_mode))[2:]} {node}"
-    )
+    restore = f"sudo chown {info.st_uid}:{info.st_gid} {node} && sudo chmod {oct(stat.S_IMODE(info.st_mode))[2:]} {node}"
     with LEDGER.open("a") as ledger:
         ledger.write(json.dumps({
-            "kind": "device-node-metadata",
-            "identifier": str(node),
-            "prior": prior_node,
-            "restore_command": restore,
-            "created_at": time.time(),
+            "kind": "device-node-metadata", "identifier": str(node), "prior": prior_node,
+            "restore_command": restore, "created_at": time.time(),
             "note": "Record only; restore only after verifying the same inode and dev_t",
         }) + "\n")
     if info.st_gid != gid:
@@ -353,37 +352,47 @@ def main():
     if stat.S_IMODE(info.st_mode) != 0o660:
         require("udmabuf-mode", ["sudo", "-n", "chmod", "0660", str(node)])
     info = node.stat()
-    save(OUT / "software-device.json", {"sysfs_major_minor": actual_device,
+    save(OUT / "software-device.json", {
+        "sysfs_major_minor": f"{major}:{minor}",
         "device_major": os.major(info.st_rdev), "device_minor": os.minor(info.st_rdev),
         "mode": oct(stat.S_IMODE(info.st_mode)), "gid": info.st_gid,
         "container_user": "image default tester", "container_group_add": gid,
-        "passthrough": ["/dev/udmabuf:rw"], "drm_passthrough": False})
-    if not experiment("software-device", CLIPBOARD, gid, device=True):
-        raise RuntimeError("Required software-device clipboard counterfactual failed")
-    if not experiment("exact-virtual-screenshot", SCREENSHOT, gid, device=True, screenshot=True):
-        raise RuntimeError("Exact virtual ScreenShot2 test failed; no pixel-success claim is justified")
-    evidence = json.loads((OUT / "exact-virtual-screenshot" / "png-evidence.json").read_text())
-    if not any(item["format"] == "PNG" and item["bytes"] > 10_000
-               and item["width"] == 1280 and item["height"] == 800 for item in evidence):
-        raise RuntimeError("Exact virtual test did not retain its required nonempty PNG evidence")
-    save(OUT / "conclusion.json", {"software_clipboard_passed": True,
-        "exact_virtual_screenshot_passed": True, "png_evidence": evidence,
-        "scope": "diagnostic only; does not repair the separately confirmed X11/DRI3 failure"})
-    layout_completed = experiment(
-        "native-layouts", "/probe/layout_probe.py::test_native_layouts",
-        gid, device=True, screenshot=True)
-    mixed_oracle_passed = experiment(
-        "original-mixed-scale-oracle",
-        "tests/e2e/test_screen_capture.py::test_mixed_scale_refusal_live_kwin",
-        gid, device=True, screenshot=True)
-    save(OUT / "layout-experiments.json", {
-        "native_layout_probe_completed": layout_completed,
-        "original_qa_cap_007_passed": mixed_oracle_passed,
-        "observations": "native-layouts/layout-observations.json",
-        "interpretation": (
-            "Diagnostic observations only: completion is not proof that every layout "
-            "is supported. The original QA-CAP-007 error oracle is unchanged; its "
-            "failure remains a recorded failure, not an ignored product assertion."),
+        "passthrough": ["/dev/udmabuf:rw"], "drm_passthrough": False,
+    })
+
+    # First run exactly the fresh KCalc startup failure.  The full shard is only
+    # attempted if this one node succeeds, preserving the order/state question.
+    kcalc_ok = experiment(
+        "current-kcalc-node", KCALC_NODE, gid, device=True, timeout=155)
+    shard_ok = None
+    if kcalc_ok:
+        shard_ok = experiment(
+            "current-kcalc-shard2", KCALC_NODE, gid, device=True,
+            timeout=1500, pytest_args=KCALC_SHARD, suite=True)
+    cli_ok = experiment(
+        "current-cli-s5-051", CLI_NODE, gid, device=True, timeout=155)
+    save(OUT / "current-failure-experiments.json", {
+        "source_run": SOURCE_RUN,
+        "source_head_sha": SOURCE_SHA,
+        "loaded_image_id": EXPECTED_IMAGE_ID,
+        "experiments": {
+            "kcalc_startup": {
+                "node": KCALC_NODE, "artifact_directory": str(OUT / "current-kcalc-node"),
+                "passed": kcalc_ok,
+            },
+            "kcalc_shard2": {
+                "node": KCALC_SHARD, "artifact_directory": str(OUT / "current-kcalc-shard2"),
+                "attempted": kcalc_ok, "passed": shard_ok,
+            },
+            "cli_s5_051": {
+                "node": CLI_NODE, "artifact_directory": str(OUT / "current-cli-s5-051"),
+                "passed": cli_ok,
+            },
+        },
+        "diagnostic_scope": (
+            "Original current-image tests ran unchanged. The current_failures "
+            "plugin records boundaries only; it never changes RPC results or "
+            "catches an error into a pass."),
     })
 
 

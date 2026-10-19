@@ -1,4 +1,4 @@
-name: Temporary KWin 6.8 native software-render probe
+name: Temporary current KWin 6.8 failure-boundary probe
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
 jobs:
   native-amd64-probe:
     runs-on: ubuntu-26.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:

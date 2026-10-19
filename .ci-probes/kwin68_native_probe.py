@@ -315,14 +315,43 @@ def main():
         if registration_observation.get("loader_returncode") == 0 and not module_present:
             record("kernel-module", "udmabuf", "sudo modprobe -r udmabuf")
     actual_device = f"{major}:{minor}"
-    node = Path("/dev/udmabuf")
+    node_created = False
     if not node.exists():
         require("create-udmabuf-node", ["sudo", "-n", "mknod", str(node), "c", str(major), str(minor)])
-        record("device-node", node, f"sudo rm -- {node}")
+        node_created = True
+        record("device-node", node, f"sudo rm -- {node}  # recorded only; deletion is not run by this probe")
     info = node.stat()
     validate_udmabuf_node(info, major, minor)
-    require("udmabuf-group", ["sudo", "-n", "chgrp", str(gid), str(node)])
-    require("udmabuf-mode", ["sudo", "-n", "chmod", "0660", str(node)])
+    prior_node = {
+        "path": str(node),
+        "inode": info.st_ino,
+        "filesystem_device": info.st_dev,
+        "dev_t": info.st_rdev,
+        "device_major_minor": f"{os.major(info.st_rdev)}:{os.minor(info.st_rdev)}",
+        "uid": info.st_uid,
+        "gid": info.st_gid,
+        "mode": oct(stat.S_IMODE(info.st_mode)),
+        "character_device": stat.S_ISCHR(info.st_mode),
+        "created_by_probe": node_created,
+    }
+    save(OUT / "udmabuf-node-before.json", prior_node)
+    restore = (
+        f"sudo chown {info.st_uid}:{info.st_gid} {node} && "
+        f"sudo chmod {oct(stat.S_IMODE(info.st_mode))[2:]} {node}"
+    )
+    with LEDGER.open("a") as ledger:
+        ledger.write(json.dumps({
+            "kind": "device-node-metadata",
+            "identifier": str(node),
+            "prior": prior_node,
+            "restore_command": restore,
+            "created_at": time.time(),
+            "note": "Record only; restore only after verifying the same inode and dev_t",
+        }) + "\n")
+    if info.st_gid != gid:
+        require("udmabuf-group", ["sudo", "-n", "chgrp", str(gid), str(node)])
+    if stat.S_IMODE(info.st_mode) != 0o660:
+        require("udmabuf-mode", ["sudo", "-n", "chmod", "0660", str(node)])
     info = node.stat()
     save(OUT / "software-device.json", {"sysfs_major_minor": actual_device,
         "device_major": os.major(info.st_rdev), "device_minor": os.minor(info.st_rdev),

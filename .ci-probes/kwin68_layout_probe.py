@@ -18,6 +18,7 @@ import traceback
 from PIL import Image
 
 # The helper is mounted outside the original image's unchanged test tree.
+sys.path.insert(0, str(Path.cwd() / "tests"))
 sys.path.insert(0, str(Path.cwd() / "tests" / "e2e"))
 from session_harness import live_kwin
 from test_screen_capture import kscreen_doctor, screen_box, wait_for_screens

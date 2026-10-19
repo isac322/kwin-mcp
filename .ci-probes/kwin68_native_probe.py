@@ -294,6 +294,8 @@ def main():
     helpers = SCRATCH / "helpers"
     helpers.mkdir()
     (helpers / "evidence.py").write_text(EVIDENCE_PLUGIN)
+    (helpers / "layout_probe.py").write_text(
+        (Path(__file__).resolve().parent / "kwin68_layout_probe.py").read_text())
     gid = os.getgid()
     baseline_ok = experiment("baseline", CLIPBOARD, gid)
     save(OUT / "baseline-observation.json", {
@@ -338,6 +340,22 @@ def main():
     save(OUT / "conclusion.json", {"software_clipboard_passed": True,
         "exact_virtual_screenshot_passed": True, "png_evidence": evidence,
         "scope": "diagnostic only; does not repair the separately confirmed X11/DRI3 failure"})
+    layout_completed = experiment(
+        "native-layouts", "/probe/layout_probe.py::test_native_layouts",
+        gid, device=True, screenshot=True)
+    mixed_oracle_passed = experiment(
+        "original-mixed-scale-oracle",
+        "tests/e2e/test_screen_capture.py::test_mixed_scale_refusal_live_kwin",
+        gid, device=True, screenshot=True)
+    save(OUT / "layout-experiments.json", {
+        "native_layout_probe_completed": layout_completed,
+        "original_qa_cap_007_passed": mixed_oracle_passed,
+        "observations": "native-layouts/layout-observations.json",
+        "interpretation": (
+            "Diagnostic observations only: completion is not proof that every layout "
+            "is supported. The original QA-CAP-007 error oracle is unchanged; its "
+            "failure remains a recorded failure, not an ignored product assertion."),
+    })
 
 
 if __name__ == "__main__":

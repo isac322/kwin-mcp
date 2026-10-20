@@ -18,9 +18,9 @@ import pytest
 from _asserts import CoordinateSpace, coordinate_spaces, frame_png
 from _suite_policy import VIRTUAL_SCREENSHOT_SKIP_PREFIX
 from PIL import Image, ImageChops
-from visual_harness import requires_native_capture, spectacle_oracle
+from visual_harness import nested_visual_kwin, requires_native_capture, spectacle_oracle
 
-from kwin_mcp.models import Locator
+from kwin_mcp.models import Locator, Wait
 
 if TYPE_CHECKING:
     from kwin_mcp.core import AutomationEngine
@@ -75,6 +75,32 @@ def test_keyboard_input_reaches_the_app(kcalc_session: AutomationEngine) -> None
                 return
             time.sleep(0.2)
     pytest.fail("keystroke injected over EIS never reached kcalc")
+
+
+def test_visual_session_accessibility_ignores_inherited_display(
+    engine: AutomationEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DISPLAY", ":65535")
+    with nested_visual_kwin() as visual:
+        try:
+            connected = engine.session_connect(
+                dbus_address=visual.dbus_address,
+                wayland_display=visual.wayland_display,
+                enable_accessibility=True,
+            )
+            assert connected.kind == "live", connected.render()
+            launched = engine.app_launch("kcalc")
+            assert launched.pid > 0, launched
+            found = engine.element_query(
+                locator=Locator(app="kcalc", role="button", query="Seven"),
+                wait=Wait(timeout_ms=15_000),
+            )
+            assert found.wait is not None and found.wait.satisfied, found.render()[:500]
+            seven = [e for e in found.elements if (e.role, e.name) == ("button", "Seven")]
+            assert len(seven) == 1, found.render()[:500]
+            assert seven[0].app == "kcalc", seven[0]
+        finally:
+            engine.session_stop()
 
 
 @pytest.mark.skipif(

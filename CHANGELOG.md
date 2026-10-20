@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - E2E CI detects the installed KWin version and passes `/dev/udmabuf` read/write with its matching host group to actual KWin 6.8 and later test containers; quality and collection containers remain device-free.
 - Visual QA keeps Xvfb/scrot on KWin 6.3 and 6.7 and uses private `--virtual` ScreenShot2 capture on KWin 6.8 and later, with an automatically enabled exact-backend probe and an independent Spectacle PNG comparison at scale 1. Existing semantic pixel, cursor, scaling, crop, retention, and mapping-failure checks remain, and the slow physical-X11 cases stay on the Debian lane.
 - Native provider-unavailable checks unload the real screenshot plugin through `org.kde.KWin /Plugins`, verify capture failure without a PNG, then reload the plugin and verify provider recovery.
+- Native visual-test sessions unset `DISPLAY` instead of passing an empty value, so AT-SPI starts without an X server; legacy Xvfb sessions keep their allocated display.
 
 ## [1.0.0] - 2026-10-15
 

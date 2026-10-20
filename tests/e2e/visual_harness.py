@@ -108,8 +108,11 @@ printf '%s\n' "$DBUS_SESSION_BUS_ADDRESS" > "$VISUAL_DBUS_ADDRESS_PATH"
 "$VISUAL_AT_SPI_LAUNCHER" --launch-immediately &
 AT_SPI_PID=$!
 
-"$VISUAL_DBUS_UPDATE_ENVIRONMENT" \
-    DISPLAY="$DISPLAY" \
+set --
+if [ -n "${DISPLAY:-}" ]; then
+    set -- "DISPLAY=$DISPLAY"
+fi
+"$VISUAL_DBUS_UPDATE_ENVIRONMENT" "$@" \
     WAYLAND_DISPLAY="$VISUAL_WAYLAND_DISPLAY" \
     QT_QPA_PLATFORM=wayland \
     XDG_CURRENT_DESKTOP=KDE \
@@ -790,7 +793,6 @@ def nested_visual_kwin(
         environment = {
             **os.environ,
             "ATSPI_DBUS_IMPLEMENTATION": "dbus-daemon",
-            "DISPLAY": x_display,
             "GTK_MODULES": "gail:atk-bridge",
             "KWIN_SCREENSHOT_NO_PERMISSION_CHECKS": "1",
             "KWIN_WAYLAND_NO_PERMISSION_CHECKS": "1",
@@ -813,6 +815,10 @@ def nested_visual_kwin(
         environment.update(isolated_home)
         environment.pop("DBUS_SESSION_BUS_ADDRESS", None)
         environment.pop("WAYLAND_DISPLAY", None)
+        if x_display:
+            environment["DISPLAY"] = x_display
+        else:
+            environment.pop("DISPLAY", None)
 
         try:
             kwin_process = subprocess.Popen(

@@ -173,6 +173,7 @@ def _status_label(text: str) -> Gtk.Label:
     """Create a wrapping status label with deterministic accessibility text."""
     label = _named_label(text, "status")
     label.set_line_wrap(True)
+    label.set_width_chars(64)
     label.set_max_width_chars(64)
     label.set_size_request(-1, 48)
     return label

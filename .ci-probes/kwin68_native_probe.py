@@ -27,6 +27,9 @@ ROOT = Path(os.environ["RUNNER_TEMP"])
 OUT = ROOT / "kwin68-native-diagnostics"
 SCRATCH = ROOT / "kwin68-native-inputs"
 LEDGER = ROOT / "kwin68-native-cleanup.jsonl"
+FIX_NAMES = ("visual_harness.py", "interaction_probe.py", "test_cli_surface.py")
+FIX_DIR = Path(__file__).resolve().parent / "fixture-fix"
+IMAGE_TEST_ROOT = "/app/tests/e2e"
 RESULTS = {}
 
 
@@ -41,10 +44,13 @@ def record(kind, identifier, delete_command):
                                  "created_at": time.time()}) + "\n")
 
 
-def command(name, argv, timeout=30):
+def command(name, argv, timeout=15):
     """Keep bounded command output and status, never the inherited CI secrets."""
     env = {key: value for key, value in os.environ.items()
            if key not in ("GH_TOKEN", "GITHUB_TOKEN", "GH_DEBUG", "ACTIONS_STEP_DEBUG")}
+    secrets = [value.encode() for key, value in os.environ.items()
+               if value and any(word in key.lower() for word in
+                   ("token", "password", "secret", "credential", "authorization"))]
     started = time.monotonic()
     with (OUT / f"{name}.stdout").open("wb") as stdout, (OUT / f"{name}.stderr").open("wb") as stderr:
         try:
@@ -53,13 +59,19 @@ def command(name, argv, timeout=30):
             code = proc.returncode
         except subprocess.TimeoutExpired:
             code = 124
+        finally:
+            for path in (OUT / f"{name}.stdout", OUT / f"{name}.stderr"):
+                output = path.read_bytes()
+                for secret in secrets:
+                    output = output.replace(secret, b"<redacted>")
+                path.write_bytes(output)
     RESULTS[name] = {"argv": argv, "returncode": code,
                      "elapsed_seconds": time.monotonic() - started}
     save(OUT / "exit-codes.json", RESULTS)
     return code
 
 
-def require(name, argv, timeout=30):
+def require(name, argv, timeout=15):
     if command(name, argv, timeout):
         raise RuntimeError(f"{name} failed; see its logs and exit-codes.json")
     return (OUT / f"{name}.stdout").read_text()
@@ -77,7 +89,7 @@ def api(endpoint, target=None, paginate=False):
     with target.open("wb") if target else open(os.devnull, "wb") as sink:
         proc = subprocess.run(argv, env=env, stdin=subprocess.DEVNULL,
                               stdout=sink if target else subprocess.PIPE,
-                              stderr=subprocess.PIPE, timeout=170)
+                              stderr=subprocess.PIPE, timeout=170 if target else 15)
     if proc.returncode:
         raise RuntimeError(f"GitHub API request failed (exit {proc.returncode}); payload withheld")
     return None if target else json.loads(proc.stdout)
@@ -142,6 +154,24 @@ import stat
 from PIL import Image
 
 OUT = Path("/artifacts")
+COLLECTED = []
+REPORTS = []
+
+def pytest_itemcollected(item):
+    COLLECTED.append(item.nodeid)
+
+def pytest_collection_finish(session):
+    (OUT / "collection.json").write_text(json.dumps({
+        "collected": COLLECTED, "selected": [item.nodeid for item in session.items],
+        "collection_errors": session.testsfailed,
+    }, indent=2) + "\n")
+
+def pytest_sessionfinish(session, exitstatus):
+    (OUT / "session-result.json").write_text(json.dumps({
+        "exitstatus": int(exitstatus), "reports": REPORTS,
+        "observations_are_test_completion": False,
+    }, indent=2) + "\n")
+
 
 def pytest_sessionstart(session):
     record = {"uid": os.getuid(), "gid": os.getgid(), "groups": os.getgroups(),
@@ -160,9 +190,16 @@ def pytest_sessionstart(session):
     (OUT / "device-access.json").write_text(json.dumps(record, indent=2) + "\n")
 
 def pytest_runtest_logreport(report):
+    from _suite_policy import is_known_limit
+    reason = (str(report.longrepr[2]) if isinstance(report.longrepr, tuple)
+              else str(report.longrepr)).removeprefix("Skipped: ")
+    record = {"nodeid": report.nodeid, "when": report.when,
+              "outcome": report.outcome,
+              "allowed_skip": report.skipped and (
+                  hasattr(report, "wasxfail") or is_known_limit(reason))}
+    REPORTS.append(record)
     with (OUT / "reports.jsonl").open("a") as log:
-        log.write(json.dumps({"nodeid": report.nodeid, "when": report.when,
-                              "outcome": report.outcome}) + "\n")
+        log.write(json.dumps(record) + "\n")
     for source in Path("/tmp").glob("kwin-mcp-screenshots-*"):
         if source.is_dir():
             shutil.copytree(source, OUT / "session-files" / source.name, dirs_exist_ok=True)
@@ -178,55 +215,72 @@ def pytest_runtest_logreport(report):
 '''
 
 
-def passed(case):
-    """A zero pytest exit alone is not proof: require one non-skipped test."""
+def fixture_mounts():
+    return [part for name in FIX_NAMES for part in (
+        "--mount", f"type=bind,src={FIX_DIR / name},dst={IMAGE_TEST_ROOT}/{name},readonly")]
+
+
+def collection(case):
+    return json.loads((OUT / case / "collection.json").read_text())
+
+
+def result_passed(case, expected, suite=False):
+    """Only actual complete JUnit results qualify; observations cannot pass."""
     if RESULTS[case]["returncode"] != 0:
         return False
-    junit = OUT / case / "junit.xml"
-    if not junit.is_file():
+    directory = OUT / case
+    required = ("junit.xml", "collection.json", "session-result.json")
+    if not all((directory / name).is_file() for name in required):
         return False
-    tests = list(ET.parse(junit).iter("testcase"))
-    return len(tests) == 1 and not any(
-        test.find(tag) is not None for test in tests for tag in ("failure", "error", "skipped")
-    )
-
-def suite_passed(case):
-    """A diagnostic suite is successful only with no failure/error/skip testcase."""
-    if RESULTS[case]["returncode"] != 0:
+    actual = collection(case)
+    session = json.loads((directory / "session-result.json").read_text())
+    if (actual != expected or actual["collection_errors"] or session["exitstatus"] != 0
+            or not actual["selected"] or len(set(actual["selected"])) != len(actual["selected"])):
         return False
-    junit = OUT / case / "junit.xml"
-    if not junit.is_file():
+    tests = list(ET.parse(directory / "junit.xml").iter("testcase"))
+    if len(tests) != len(actual["selected"]) or any(
+            test.find(tag) is not None for test in tests for tag in ("failure", "error")):
         return False
-    tests = list(ET.parse(junit).iter("testcase"))
-    return bool(tests) and not any(
-        test.find(tag) is not None
-        for test in tests for tag in ("failure", "error", "skipped")
-    )
+    reports = session["reports"]
+    calls = {report["nodeid"] for report in reports if report["when"] == "call"}
+    skips = [report for report in reports if report["outcome"] == "skipped"]
+    skipped_nodes = {report["nodeid"] for report in skips}
+    junit_skips = sum(test.find("skipped") is not None for test in tests)
+    if calls | skipped_nodes != set(actual["selected"]) or junit_skips != len(skips):
+        return False
+    if suite:
+        return all(report["allowed_skip"] for report in skips)
+    return len(tests) == 1 and not skips
 
 
-
-def experiment(case, node, gid, device=False, screenshot=False, timeout=155,
-               pytest_args=None, suite=False):
+def experiment(case, node, gid, *, timeout, pytest_args=None, fixed=True,
+               collect_only=False):
     artifacts = OUT / case
     artifacts.mkdir(mode=0o777)
     artifacts.chmod(0o777)
     name = f"kwin68-{case}-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
     args = list(pytest_args) if pytest_args is not None else [node]
     argv = ["docker", "run", "--pull=never", "--name", name,
-            "--group-add", str(gid),
+            "--workdir", "/app", "--group-add", str(gid),
             "--env", "QT_FORCE_STDERR_LOGGING=1",
             "--env", "PYTHONPATH=/probe:/app/tests:/app/tests/e2e",
             "--env", "KWIN_MCP_E2E_STRICT_SKIPS=1",
+            "--env", "KWIN_MCP_E2E_REQUIRE=layer-shell",
             "--env", "KWIN_MCP_ARTIFACT_DIR=/artifacts",
             "--volume", f"{artifacts}:/artifacts",
             "--volume", f"{SCRATCH / 'helpers'}:/probe:ro"]
-    if device:
-        argv += ["--device", "/dev/udmabuf:/dev/udmabuf:rw"]
-    if screenshot:
-        argv += ["--env", "KWIN_MCP_E2E_SCREENSHOT=1"]
-    argv += [IMAGE, PYTHON, "-m", "pytest", "-p", "evidence",
-             "-p", "current_failures", *args, "-v", "-s",
-             "--junitxml=/artifacts/junit.xml"]
+    if fixed:
+        argv += fixture_mounts()
+    if not collect_only:
+        argv += ["--device", "/dev/udmabuf:/dev/udmabuf:rw",
+                 "--env", "KWIN_MCP_E2E_SCREENSHOT=1"]
+    plugins = ["-p", "evidence"]
+    if not collect_only and pytest_args is None:
+        plugins += ["-p", "current_failures"]
+    argv += [IMAGE, PYTHON, "/probe/launch.py", str(int(fixed)),
+             *plugins, *args, "-v", "-s", "--junitxml=/artifacts/junit.xml"]
+    if collect_only:
+        argv.append("--collect-only")
     record("container", name, f"docker rm --force {name}")
     try:
         command(case, argv, timeout=timeout)
@@ -236,7 +290,36 @@ def experiment(case, node, gid, device=False, screenshot=False, timeout=155,
         command(case + "-logs", ["docker", "logs", "--timestamps", name], timeout=5)
         command(case + "-processes", ["docker", "top", name,
                                       "-eo", "pid,ppid,user,stat,etime,args"], timeout=5)
-    return suite_passed(case) if suite else passed(case)
+
+
+LAUNCHER = r'''import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import sys
+
+fixed = sys.argv[1] == "1"
+expected = json.loads(Path("/probe/fixture-contract.json").read_text())
+observed = {}
+mounts = Path("/proc/self/mountinfo").read_text().splitlines()
+for name, digest in expected.items():
+    path = Path("/app/tests/e2e") / name
+    if not path.is_file() or path.resolve() != path:
+        raise RuntimeError(f"Image test target is missing or indirect: {path}")
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    spec = importlib.util.find_spec(path.stem)
+    if spec is None or Path(spec.origin) != path:
+        raise RuntimeError(f"Image test import target is not {path}")
+    if fixed:
+        entries = [line.split() for line in mounts if line.split()[4] == str(path)]
+        if (actual != digest or len(entries) != 1
+                or "ro" not in entries[0][5].split(",")):
+            raise RuntimeError(f"Fixed test target is not the approved readonly file: {path}")
+    observed[name] = {"path": str(path), "sha256": actual, "fixed": fixed}
+Path("/artifacts/test-targets.json").write_text(json.dumps(observed, indent=2) + "\n")
+os.execv(sys.executable, [sys.executable, "-m", "pytest", *sys.argv[2:]])
+'''
 
 
 def main():
@@ -259,6 +342,27 @@ def main():
             and platform.machine() == "x86_64"
             and os.environ.get("GITHUB_REPOSITORY") == REPOSITORY):
         raise RuntimeError("This probe may run only on the repository's fresh native AMD64 GitHub-hosted runner")
+    if (not FIX_DIR.is_dir() or FIX_DIR.is_symlink()
+            or {path.name for path in FIX_DIR.iterdir()} != set(FIX_NAMES)):
+        raise RuntimeError("fixture-fix must contain only the three parent-approved final test files")
+    if any(not (FIX_DIR / name).is_file() or (FIX_DIR / name).is_symlink()
+           for name in FIX_NAMES):
+        raise RuntimeError("Fixed test sources must be regular files, not symlinks")
+    fixed_hashes = {name: hashlib.sha256((FIX_DIR / name).read_bytes()).hexdigest()
+                    for name in FIX_NAMES}
+    save(OUT / "fixture-contract.json", {
+        "files": {name: {"source": str(FIX_DIR / name),
+                         "target": f"{IMAGE_TEST_ROOT}/{name}", "sha256": digest,
+                         "readonly": True} for name, digest in fixed_hashes.items()},
+        "source_run": SOURCE_RUN, "source_head_sha": SOURCE_SHA,
+        "loaded_image_id": EXPECTED_IMAGE_ID,
+        "product_source_mounts": [], "parent_final_sha_check_required": True,
+    })
+    save(OUT / "current-failure-experiments.json", {
+        "status": "observations_only", "passed": False,
+        "baseline_failure_evidence_run": 39297094218,
+        "pr_7x5_validation": "pending; parent-owned",
+    })
     save(OUT / "host-environment.json", {
         "platform": platform.platform(), "uid": os.getuid(), "gid": os.getgid(),
         "ci": {key: os.environ.get(key) for key in (
@@ -312,6 +416,8 @@ def main():
     (helpers / "evidence.py").write_text(EVIDENCE_PLUGIN)
     (helpers / "current_failures.py").write_text(
         (Path(__file__).resolve().parent / "kwin68_current_failures.py").read_text())
+    (helpers / "launch.py").write_text(LAUNCHER)
+    save(helpers / "fixture-contract.json", fixed_hashes)
     gid = os.getgid()
     registration = Path("/sys/class/misc/udmabuf/dev")
     module_present = Path("/sys/module/udmabuf").exists()
@@ -360,40 +466,68 @@ def main():
         "passthrough": ["/dev/udmabuf:rw"], "drm_passthrough": False,
     })
 
-    # First run exactly the fresh KCalc startup failure.  The full shard is only
-    # attempted if this one node succeeds, preserving the order/state question.
-    kcalc_ok = experiment(
-        "current-kcalc-node", KCALC_NODE, gid, device=True, timeout=155)
-    shard_ok = None
-    if kcalc_ok:
-        shard_ok = experiment(
-            "current-kcalc-shard2", KCALC_NODE, gid, device=True,
-            timeout=1500, pytest_args=KCALC_SHARD, suite=True)
-    cli_ok = experiment(
-        "current-cli-s5-051", CLI_NODE, gid, device=True, timeout=155)
+    # Collection alone is not a baseline failure replay. Derive all expected
+    # identities/counts from the immutable image, never from pinned test totals.
+    full_args = ["tests", "-m", "not slow"]
+    for case, args, fixed in (
+            ("image-full-collection", full_args, False),
+            ("image-shard2-collection", KCALC_SHARD, False),
+            ("fixed-full-collection", full_args, True)):
+        experiment(case, None, gid, timeout=60, pytest_args=args,
+                   fixed=fixed, collect_only=True)
+        if RESULTS[case]["returncode"] != 0:
+            raise RuntimeError(f"{case} failed; collection is not established")
+    expected_full = collection("image-full-collection")
+    expected_shard = collection("image-shard2-collection")
+    collection_ok = (
+        collection("fixed-full-collection") == expected_full
+        and not expected_full["collection_errors"]
+        and not expected_shard["collection_errors"]
+        and bool(expected_shard["selected"])
+        and set(expected_shard["selected"]).issubset(expected_full["selected"])
+        and len(expected_full["selected"]) >= len(expected_shard["selected"])
+        and all(expected_full["selected"].count(node) == 1 for node in (KCALC_NODE, CLI_NODE))
+    )
+    # These three executions are mandatory and independent, even after an
+    # earlier node fails. Never substitute observer JSON for actual JUnit.
+    experiment("fixed-kcalc-node", KCALC_NODE, gid, timeout=155)
+    experiment("fixed-cli-s5-051", CLI_NODE, gid, timeout=155)
+    experiment("fixed-kcalc-shard2", None, gid, timeout=1500, pytest_args=KCALC_SHARD)
+    experiments = {}
+    for case, node, expected, suite in (
+            ("fixed-kcalc-node", KCALC_NODE,
+             {"collected": [KCALC_NODE], "selected": [KCALC_NODE], "collection_errors": 0}, False),
+            ("fixed-cli-s5-051", CLI_NODE,
+             {"collected": [CLI_NODE], "selected": [CLI_NODE], "collection_errors": 0}, False),
+            ("fixed-kcalc-shard2", KCALC_SHARD, expected_shard, True)):
+        experiments[case] = {
+            "node": node, "artifact_directory": str(OUT / case), "attempted": True,
+            "passed": result_passed(case, expected, suite=suite),
+        }
+    all_passed = collection_ok and all(item["passed"] for item in experiments.values())
     save(OUT / "current-failure-experiments.json", {
-        "source_run": SOURCE_RUN,
-        "source_head_sha": SOURCE_SHA,
-        "loaded_image_id": EXPECTED_IMAGE_ID,
-        "experiments": {
-            "kcalc_startup": {
-                "node": KCALC_NODE, "artifact_directory": str(OUT / "current-kcalc-node"),
-                "passed": kcalc_ok,
-            },
-            "kcalc_shard2": {
-                "node": KCALC_SHARD, "artifact_directory": str(OUT / "current-kcalc-shard2"),
-                "attempted": kcalc_ok, "passed": shard_ok,
-            },
-            "cli_s5_051": {
-                "node": CLI_NODE, "artifact_directory": str(OUT / "current-cli-s5-051"),
-                "passed": cli_ok,
-            },
-        },
+        "status": "completed" if all_passed else "failed",
+        "passed": all_passed, "source_run": SOURCE_RUN,
+        "source_head_sha": SOURCE_SHA, "loaded_image_id": EXPECTED_IMAGE_ID,
+        "baseline_failure_evidence_run": 39297094218,
+        "baseline_failures_replayed": False,
+        "collection_matches_image": collection_ok,
+        "full_collected": len(expected_full["collected"]),
+        "full_not_slow_selected": len(expected_full["selected"]),
+        "shard2_selected": len(expected_shard["selected"]),
+        "experiments": experiments,
+        "unsupported_node_outcomes": ["failure", "error", "skipped"],
+        "shard_skips": "Only original image strict-skip policy known limits/xfails qualify",
+        "observations_are_test_completion": False,
+        "pr_7x5_validation": "pending; parent-owned",
         "diagnostic_scope": (
-            "Original current-image tests ran unchanged. The current_failures "
-            "plugin records boundaries only; it never changes RPC results or "
-            "catches an error into a pass."),
+            "Only visual_harness.py, interaction_probe.py, test_cli_surface.py are "
+            "readonly-overlaid. Image products and other tests remain original. "
+            "Boundary observers run on the two nodes only; the shard uses the "
+            "evidence plugin without AutomationEngine/CLI wrappers."),
     })
+    if not all_passed:
+        raise RuntimeError("Fixed KCalc, CLI, full shard 2, and image collection must all pass")
 
 
 if __name__ == "__main__":

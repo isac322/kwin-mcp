@@ -1,4 +1,4 @@
-name: Temporary current KWin 6.8 failure-boundary probe
+name: Temporary immutable-image fixture-fix counterfactual
 
 on:
   push:
@@ -11,13 +11,19 @@ permissions:
 jobs:
   native-amd64-probe:
     runs-on: ubuntu-26.04
-    timeout-minutes: 30
+    # Sequential: 3 collection checks x 60s + 2 nodes x 155s + shard2
+    # x 1500s + 6 containers x 20s diagnostics = 2110s. Image API/load
+    # bounds add 370s; host/device commands add at most 120s = 2600s.
+    # Checkout, local hashing/extraction, and upload fit the remaining margin.
+    # Do not run five shards concurrently on this one runner; PR 7x5 is pending.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - name: Probe the original image without rebuilding it
+      - name: Run mandatory fixed KCalc, CLI, and full shard 2
+        timeout-minutes: 44
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 .ci-probes/kwin68_native_probe.py

@@ -258,14 +258,23 @@ class AtspiOracle:
         timeout_s: float = 15.0,
         interval_s: float = 0.2,
     ) -> list[AtspiNode]:
-        """Repeat ``walk`` until ``predicate`` holds; raise ``AssertionError`` on timeout."""
+        """Poll until satisfied, ending with an observation begun at/after the deadline.
+
+        ``timeout_s`` sets the polling horizon, not a hard wall-clock bound:
+        each walk retains its own subprocess timeout.
+        """
         deadline = time.monotonic() + timeout_s
-        nodes = self.walk(app, max_depth)
-        while not predicate(nodes):
-            if time.monotonic() >= deadline:
+        while True:
+            walk_started = time.monotonic()
+            nodes = self.walk(app, max_depth)
+            if predicate(nodes):
+                return nodes
+            # A walk can return a stale snapshot after consuming the remaining
+            # time. Only a walk begun at/after the deadline can establish timeout.
+            if walk_started >= deadline:
                 names = [(n.role, n.name) for n in nodes[:40]]
                 msg = f"AT-SPI tree never satisfied the predicate (first nodes: {names})"
                 raise AssertionError(msg)
-            time.sleep(interval_s)
-            nodes = self.walk(app, max_depth)
-        return nodes
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(interval_s, remaining))

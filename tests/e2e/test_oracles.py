@@ -17,9 +17,11 @@ import os
 import subprocess
 import sys
 import time
+import types
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import atspi_oracle
 import pytest
 from _suite_policy import require_or_skip
 from atspi_oracle import AtspiNode, AtspiOracle
@@ -292,6 +294,84 @@ def test_kwin_rules_force_closeable_and_position(
 
 def _named(nodes: list[AtspiNode], name: str) -> list[AtspiNode]:
     return [node for node in nodes if node.name == name]
+
+
+@pytest.mark.parametrize(
+    ("timeout_s", "walk_duration_s", "ready_at_s", "expected_starts", "expected_sleeps"),
+    [
+        (15.0, 16.0, 14.0, [0.0, 16.0], []),
+        (15.0, 16.0, None, [0.0, 16.0], []),
+        (0.0, 16.0, None, [0.0], []),
+        (15.0, 16.0, 0.0, [0.0], []),
+        (15.0, 14.9, 14.95, [0.0, 15.0], [0.1]),
+    ],
+)
+def test_atspi_wait_for_uses_a_deadline_observation(
+    monkeypatch: pytest.MonkeyPatch,
+    timeout_s: float,
+    walk_duration_s: float,
+    ready_at_s: float | None,
+    expected_starts: list[float],
+    expected_sleeps: list[float],
+) -> None:
+    """A slow stale walk cannot establish failure without a deadline observation."""
+    clock = [0.0]
+    starts: list[float] = []
+    sleeps: list[float] = []
+    observed_texts: list[str | None] = []
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    def walk(self: AtspiOracle, app: str = "", max_depth: int = 64) -> list[AtspiNode]:
+        assert app == PROBE_APP_ID
+        assert max_depth == 3
+        starts.append(clock[0])
+        # Capture the independently scheduled entry state before the tree walk
+        # completes; its result can already be stale when delivered to the poller.
+        text = "ready" if ready_at_s is not None and clock[0] >= ready_at_s else "ready pending"
+        clock[0] += walk_duration_s
+        return [
+            AtspiNode(
+                app=app,
+                pid=1,
+                path=(0, 0),
+                depth=1,
+                role="text",
+                name="Keyboard Target",
+                description=None,
+                states=frozenset(),
+                screen=None,
+                window=None,
+                text=text,
+                value=None,
+                value_max=None,
+                actions=(),
+                child_count=0,
+                error=None,
+            )
+        ]
+
+    def has_ready_text(nodes: list[AtspiNode]) -> bool:
+        observed_texts.extend(node.text for node in nodes)
+        return any(node.name == "Keyboard Target" and node.text == "ready" for node in nodes)
+
+    monkeypatch.setattr(
+        atspi_oracle, "time", types.SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep)
+    )
+    monkeypatch.setattr(AtspiOracle, "walk", walk)
+    oracle = AtspiOracle("unix:path=/nonexistent-atspi-oracle-test-bus")
+    if ready_at_s is None:
+        with pytest.raises(AssertionError, match="AT-SPI tree never satisfied the predicate"):
+            oracle.wait_for(has_ready_text, app=PROBE_APP_ID, max_depth=3, timeout_s=timeout_s)
+        assert observed_texts == ["ready pending"] * len(expected_starts)
+    else:
+        nodes = oracle.wait_for(has_ready_text, app=PROBE_APP_ID, max_depth=3, timeout_s=timeout_s)
+        assert [node.text for node in nodes] == ["ready"]
+        assert observed_texts == ["ready pending"] * (len(expected_starts) - 1) + ["ready"]
+    assert starts == pytest.approx(expected_starts)
+    assert sleeps == pytest.approx(expected_sleeps)
 
 
 def test_atspi_oracle_reads_the_window_zoo_tree(live: LiveKWin, zoo: ZooProcess) -> None:

@@ -150,6 +150,8 @@ These tests simulate activation denial and stalled helpers; a successful contain
 
 The suite is organized by tool: one file per 1.0 tool for engine-level behavior, cross-cutting files for rules shared by several tools, and `test_mcp_*` files that drive the installed server over stdio through `mcp_harness.py`. Oracles are independent of the tool under test (`kwin_oracle.py` reads KWin through its own scripts, `atspi_oracle.py` reads AT-SPI2 directly, and the probes record the events they receive). Tests that cover a QA item carry `@pytest.mark.qa("QA-...")`; `tests/qa_trace.toml` maps every QA id to its tests.
 
+For each click-option case, including the held click, the input-option matrix checks exactly `count` alternating physical `button_press`/`button_release` pairs after a recorded event-sequence boundary, including their button and modifiers. GTK can group clicks across calls according to its multi-click settings; its synthetic `gtk_double_press` and `gtk_triple_press` events do not count as additional physical presses. The matrix retains visible button, modifier, and hold-duration checks and screenshot evidence. Separate isolated click golden comparisons still check GTK grouping and event timing.
+
 **Per-tool files**
 
 | Test file | Coverage |

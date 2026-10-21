@@ -33,6 +33,7 @@ from probe_session import (
     load_golden,
     point_field,
     probe_env,
+    read_events,
     start_probe_session,
 )
 from visual_harness import nested_visual_kwin
@@ -125,6 +126,34 @@ async def _wait_for_status(
             return current
         await anyio.sleep(POLL_INTERVAL_SECONDS)
     raise AssertionError(f"{message}: {current}")
+
+
+async def _wait_for_click_events(
+    log_path: Path, *, since: int, button: str, count: int, modifiers: str
+) -> None:
+    """Check physical click pairs without relying on GTK's cross-call grouping."""
+    expected_mods = [] if modifiers == "none" else sorted(modifiers.split("+"))
+    expected = [
+        (kind, button, expected_mods)
+        for _ in range(count)
+        for kind in ("button_press", "button_release")
+    ]
+    deadline = time.monotonic() + STATE_TIMEOUT_SECONDS
+    observed: list[tuple[str, str, list[str]]] = []
+    while time.monotonic() < deadline:
+        observed = [
+            (event["kind"], event["button"], event["mods"])
+            for event in read_events(log_path)
+            if event["seq"] > since and event["kind"] in {"button_press", "button_release"}
+        ]
+        if (
+            sum(kind == "button_press" for kind, _, _ in observed) >= count
+            and sum(kind == "button_release" for kind, _, _ in observed) >= count
+        ):
+            assert observed == expected, (since, expected, observed)
+            return
+        await anyio.sleep(POLL_INTERVAL_SECONDS)
+    raise AssertionError(f"Click events after seq {since}: expected {expected!r}, got {observed!r}")
 
 
 async def _keyboard_text(client: McpTestClient) -> str:
@@ -220,22 +249,26 @@ async def test_interaction_options_change_visible_probe_state_and_preserve_evide
                     ({"modifiers": "ctrl+shift"}, "left", 1, "ctrl+shift"),
                 ]
                 for arguments, button, count, modifiers in cases:
-                    await anyio.sleep(0.6)
+                    mark = max((event["seq"] for event in read_events(log_path)), default=0)
                     await client.call_structured("pointer_click", {"target": click, **arguments})
+                    await _wait_for_click_events(
+                        log_path, since=mark, button=button, count=count, modifiers=modifiers
+                    )
                     status = await _wait_for_status(
                         client,
                         "click_status:",
-                        lambda s, b=button, c=count, m=modifiers: (
-                            field(s, "button") == b
-                            and int_field(s, "count") == c
-                            and field(s, "modifiers") == m
+                        lambda s, b=button, m=modifiers: (
+                            field(s, "button") == b and field(s, "modifiers") == m
                         ),
                         f"{button} count={count} modifiers={modifiers} click was not observed",
                     )
                     evidence.append(status)
-                await anyio.sleep(0.6)
+                mark = max((event["seq"] for event in read_events(log_path)), default=0)
                 held_click, held_text = await client.call_structured(
                     "pointer_click", {"target": click, "hold_ms": 500, "capture": CAPTURE}
+                )
+                await _wait_for_click_events(
+                    log_path, since=mark, button="left", count=1, modifiers="none"
                 )
                 assert held_text.startswith(
                     f"Clicked left at ({click['x']}, {click['y']}) held 500ms"
@@ -245,7 +278,7 @@ async def test_interaction_options_change_visible_probe_state_and_preserve_evide
                     "click_status:",
                     lambda s: (
                         field(s, "button") == "left"
-                        and int_field(s, "count") == 1
+                        and field(s, "modifiers") == "none"
                         and int_field(s, "hold_ms") >= 400
                     ),
                     "held mouse click duration was not observed",

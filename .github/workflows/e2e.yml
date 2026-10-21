@@ -283,8 +283,8 @@ jobs:
   # Keeps the seven required check names `Virtual KWin session (<label>)`.
   virtual-session:
     name: Virtual KWin session (${{ matrix.row.label }})
-    needs: virtual-session-shard
-    # Required checks must run after shard failures: GitHub treats skipped checks as passing.
+    needs: [build-image, virtual-session-shard]
+    # Required checks must run after build and shard failures: GitHub treats skipped checks as passing.
     if: always()
     strategy:
       fail-fast: false

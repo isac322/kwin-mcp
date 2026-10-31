@@ -681,7 +681,7 @@ def screen_capture(
     region: Annotated[
         Rect | None,
         Field(
-            description="Crop rectangle in global logical px; null = whole workspace. Parts "
+            description="Crop rectangle in global logical px; omit = whole workspace. Parts "
             "outside the workspace are dropped."
         ),
     ] = None,
@@ -690,7 +690,7 @@ def screen_capture(
         Field(
             ge=0,
             description="Downscale so the longer side <= max_edge px; 0 = full resolution; "
-            "null = server --screenshot-max-edge.",
+            "omit = server --screenshot-max-edge.",
         ),
     ] = None,
     include_cursor: Annotated[bool, Field(description="Draw the pointer into the image.")] = False,
@@ -756,7 +756,7 @@ def window_list(
     filter: Annotated[  # noqa: A002
         WindowSelector | None,
         Field(
-            description="Same selector as the window mutators, used as a filter; null = "
+            description="Same selector as the window mutators, used as a filter; omit = "
             "every window."
         ),
     ] = None,

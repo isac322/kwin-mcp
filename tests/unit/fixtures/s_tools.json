@@ -225,13 +225,13 @@
      "name": "region",
      "required": false,
      "default": null,
-     "description": "Crop rectangle in global logical px; null = whole workspace. Parts outside the workspace are dropped."
+     "description": "Crop rectangle in global logical px; omit = whole workspace. Parts outside the workspace are dropped."
     },
     {
      "name": "max_edge",
      "required": false,
      "default": null,
-     "description": "Downscale so the longer side <= max_edge px; 0 = full resolution; null = server --screenshot-max-edge."
+     "description": "Downscale so the longer side <= max_edge px; 0 = full resolution; omit = server --screenshot-max-edge."
     },
     {
      "name": "include_cursor",
@@ -345,7 +345,7 @@
      "name": "filter",
      "required": false,
      "default": null,
-     "description": "Same selector as the window mutators, used as a filter; null = every window."
+     "description": "Same selector as the window mutators, used as a filter; omit = every window."
     }
    ],
    "output": [

@@ -164,13 +164,13 @@
     {
      "name": "command",
      "required": true,
-     "description": "Command line, e.g. \"kate --new\". Split with shlex; empty or unbalanced quotes is an error."
+     "description": "Command line, e.g. \"kate --new\". Split with shlex; empty, unbalanced quotes or a NUL byte is an error."
     },
     {
      "name": "env",
      "required": false,
      "default": null,
-     "description": "Extra environment variables for this process."
+     "description": "Extra environment variables for this process. Names must be non-empty without '='; no NUL bytes."
     }
    ],
    "output": [

@@ -644,13 +644,16 @@ def app_launch(
     command: Annotated[
         str,
         Field(
-            description='Command line, e.g. "kate --new". Split with shlex; empty or '
-            "unbalanced quotes is an error."
+            description='Command line, e.g. "kate --new". Split with shlex; empty, '
+            "unbalanced quotes or a NUL byte is an error."
         ),
     ],
     env: Annotated[
         dict[str, str] | None,
-        Field(description="Extra environment variables for this process."),
+        Field(
+            description="Extra environment variables for this process. Names must be "
+            "non-empty without '='; no NUL bytes."
+        ),
     ] = None,
 ) -> AppLaunchResult:
     """Launch a program in the session (shlex-split, no shell). stdout/stderr go to a log read with app_log. A failed launch keeps the session."""  # noqa: E501

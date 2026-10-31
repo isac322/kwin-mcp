@@ -51,7 +51,7 @@ from mcp.server.mcpserver import (
     MCPServer,
     Resolve,
 )
-from mcp.server.mcpserver.exceptions import ResourceError, ToolError
+from mcp.server.mcpserver.exceptions import ResourceError, ResourceNotFoundError, ToolError
 from mcp.server.mcpserver.tools import Tool
 from mcp.types import (
     CallToolResult,
@@ -1649,36 +1649,48 @@ class KwinServer(MCPServer[dict[str, Any]]):
         @self.resource(_APP_LOG_TEMPLATE, name="app_log", mime_type="text/plain")
         async def app_log_resource(pid: str) -> str:
             """The whole captured stdout/stderr of an app launched with app_launch."""
-            if not pid.isascii() or not pid.isdigit():
+            if not pid.isascii() or not pid.isdigit() or len(pid) > 10:
                 msg = f"Invalid pid {pid!r}: expected the decimal PID from app_launch."
-                raise ResourceError(msg)
-            return await self._read(
-                lambda: "\n".join(engine.app_log(pid=int(pid), last_n_lines=0).lines)
-            )
+                raise ResourceNotFoundError(msg)
+            return await self._read(lambda: self._app_log_text(pid))
 
         @self.resource("kwin://screenshots/{name}", name="screenshots", mime_type="image/png")
         async def screenshot_resource(name: str) -> bytes:
             """A PNG the session saved, as named in Frame.uri."""
+            if _SCREENSHOT_NAME.fullmatch(name) is None:
+                msg = f"Invalid screenshot name {name!r}: expected a PNG file name from Frame.uri."
+                raise ResourceNotFoundError(msg)
             return await self._read(lambda: self._screenshot_bytes(name))
 
-    async def _read[T](self, fn: Callable[[], T]) -> T:
+    async def _read[T](self, fn: Callable[[], T | ResourceNotFoundError]) -> T:
+        """Run a resource lookup on the tool thread; it returns, not raises, not-found.
+
+        The tool thread passes failures on as text only, so a lookup that finds no
+        instance hands back the unraised error, which reaches the client as -32602.
+        """
         try:
-            return await _on_tool_thread(fn)
+            result = await _on_tool_thread(fn)
         except _ToolThreadError as exc:
             raise ResourceError(str(exc)) from None
+        if isinstance(result, ResourceNotFoundError):
+            raise result
+        return result
 
-    def _screenshot_bytes(self, name: str) -> bytes:
-        if _SCREENSHOT_NAME.fullmatch(name) is None:
-            msg = f"Invalid screenshot name {name!r}: expected a PNG file name from Frame.uri."
-            raise ValueError(msg)
+    def _app_log_text(self, pid: str) -> str | ResourceNotFoundError:
+        try:
+            log = self.engine.app_log(pid=int(pid), last_n_lines=0)
+        except ValueError as exc:  # with last_n_lines=0, only an unknown pid
+            return ResourceNotFoundError(str(exc))
+        return "\n".join(log.lines)
+
+    def _screenshot_bytes(self, name: str) -> bytes | ResourceNotFoundError:
         session = self.engine._session
         info = None if session is None else session.info
         if info is None:
             raise RuntimeError(NO_SESSION_TEXT)
         path = info.screenshot_dir / name
         if not path.is_file():
-            msg = f"No screenshot named {name!r} in this session."
-            raise FileNotFoundError(msg)
+            return ResourceNotFoundError(f"No screenshot named {name!r} in this session.")
         return path.read_bytes()
 
     def _launched_pids(self) -> list[str]:

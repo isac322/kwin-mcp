@@ -2258,7 +2258,7 @@ slow = true
 mutants = []
 
 [items."QA-MCP-010"]
-title = "Resource path traversal rejected"
+title = "Resource path traversal, malformed and missing names rejected with -32602"
 priority = "P0"
 auto = "e2e-mcp"
 check = "pytest"

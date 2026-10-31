@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ResourceError, ResourceNotFoundError, ToolError
 from pydantic import BaseModel
 from tool_surface import REMOVED_TOOL_NAMES, TOOL_NAMES
 
@@ -286,3 +286,20 @@ def test_cli_command_set(capsys: pytest.CaptureFixture[str]) -> None:
         assert re.search(rf"^  {name}\s+{re.escape(first_line)}$", listed, re.MULTILINE), name
     for builtin in ("help <command>", "quit"):
         assert builtin in listed
+
+
+def test_resource_reads_without_a_session() -> None:
+    """A well-formed URI keeps -32603 and the no-session text; a malformed one is -32602."""
+    kwin = KwinServer(AutomationEngine(), ServerFlags())
+    for uri in ("kwin://apps/1/log", "kwin://screenshots/x.png"):
+        with pytest.raises(ResourceError) as caught:
+            asyncio.run(kwin.read_resource(uri))
+        assert not isinstance(caught.value, ResourceNotFoundError), uri
+        assert NO_SESSION_TEXT in str(caught.value), uri
+    for uri in (
+        "kwin://apps/abc/log",
+        "kwin://apps/" + "1" * 5000 + "/log",
+        "kwin://screenshots/x.txt",
+    ):
+        with pytest.raises(ResourceNotFoundError, match=r"^Invalid "):
+            asyncio.run(kwin.read_resource(uri))

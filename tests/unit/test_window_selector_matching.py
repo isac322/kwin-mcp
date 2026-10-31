@@ -190,12 +190,22 @@ def test_zero_matches_texts(selector: WindowSelector, expected: str) -> None:
 
 
 @pytest.mark.qa("QA-WIN-049")
-def test_empty_selector_is_refused_by_mutators() -> None:
+@pytest.mark.parametrize(
+    "selector",
+    [
+        pytest.param(WindowSelector(), id="no-fields"),
+        # An empty string is a substring of every caption and app_id: it must not
+        # select the window that happens to be alone.
+        pytest.param(WindowSelector(caption=""), id="empty-caption"),
+        pytest.param(WindowSelector(app_id="", id=""), id="empty-app-id-and-id"),
+    ],
+)
+def test_empty_selector_is_refused_by_mutators(selector: WindowSelector) -> None:
     with pytest.raises(ValueError) as excinfo:
-        geometry.select_one(POOL, WindowSelector())
+        geometry.select_one(POOL[:1], selector)
 
     assert str(excinfo.value) == (
-        "window needs at least one field (id, app_id, caption, active or kind)."
+        "window needs at least one non-empty field (id, app_id, caption, active or kind)."
         "\nUse window_list to find a window id."
     )
 

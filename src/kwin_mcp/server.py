@@ -132,6 +132,7 @@ from kwin_mcp.models import (
     WindowList,
     WindowPlaceResult,
     WindowSelector,
+    refuse_bool,
 )
 from kwin_mcp.session import LiveSession, process_registry
 
@@ -1398,15 +1399,6 @@ def _resolver_marker(annotation: object) -> Resolve | None:
     return next((m for m in typing.get_args(annotation)[1:] if isinstance(m, Resolve)), None)
 
 
-def _no_bool(value: object) -> object:
-    # Lax int validation turns true/false into 1/0; a count, size or pid was never
-    # meant to be a boolean, so refuse it before the engine sees 1 or 0.
-    if isinstance(value, bool):
-        msg = f"must be an integer, got {value!r}"
-        raise ValueError(msg)
-    return value
-
-
 def _strict_int(annotation: object) -> object:
     """``annotation`` refusing booleans when its type is ``int`` or ``int | None``.
 
@@ -1418,7 +1410,7 @@ def _strict_int(annotation: object) -> object:
     arms = set(typing.get_args(base)) if typing.get_origin(base) is not None else {base}
     if int in arms and arms <= {int, type(None)}:
         # Built at runtime (the annotation is only known here), hence getitem.
-        return operator.getitem(Annotated, (annotation, BeforeValidator(_no_bool)))
+        return operator.getitem(Annotated, (annotation, BeforeValidator(refuse_bool)))
     return annotation
 
 

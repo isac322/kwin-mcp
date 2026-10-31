@@ -12,10 +12,13 @@ import re
 from typing import TYPE_CHECKING
 
 import pytest
+from pydantic import ValidationError
 
-from kwin_mcp.models import ElementPoint, Point
+from kwin_mcp.models import Capture, ElementPoint, Point, Rect, Wait, Waypoint
 
 if TYPE_CHECKING:
+    from pydantic import BaseModel
+
     from ._fakes import FakeEngine
 
 GENERATION = 3
@@ -184,3 +187,21 @@ def test_ref_of_another_generation_is_stale_before_the_worker(engine: FakeEngine
         f"Stale ref {ref} (AT-SPI worker restarted); re-run element_query."
     )
     assert engine.atspi.calls == []
+
+
+@pytest.mark.parametrize(
+    ("model", "fields"),
+    [
+        pytest.param(Point, {"x": True, "y": 0}, id="point"),
+        pytest.param(ElementPoint, {"ref": "e1.1", "dx": False}, id="element-point"),
+        pytest.param(Rect, {"x": 0, "y": 0, "width": True, "height": 1}, id="rect"),
+        pytest.param(Waypoint, {"x": 0, "y": 0, "dwell_ms": True}, id="waypoint"),
+        pytest.param(Capture, {"delays_ms": [0, True]}, id="capture-delay"),
+        pytest.param(Capture, {"delays_ms": [0], "max_edge": True}, id="capture-max-edge"),
+        pytest.param(Wait, {"timeout_ms": False}, id="wait"),
+    ],
+)
+def test_integer_fields_refuse_booleans(model: type[BaseModel], fields: dict[str, object]) -> None:
+    # Lax validation would turn true/false into 1/0 and act on that position or delay.
+    with pytest.raises(ValidationError, match=r"must be an integer, got (True|False)"):
+        model.model_validate(fields)

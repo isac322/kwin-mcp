@@ -131,12 +131,31 @@ class SessionInfo:
     startup_warnings: list[str] = field(default_factory=list)
 
 
+def _mounts_below(path: Path) -> list[str]:
+    """The mount points under ``path``, from this process's mount table."""
+    prefix = f"{path}/"
+    lines = Path("/proc/self/mountinfo").read_text().splitlines()
+    return [m for m in (line.split()[4] for line in lines) if m.startswith(prefix)]
+
+
 def _remove_tree(path: Path, attempts: int = 3) -> None:
     """Remove a directory tree, retrying while stragglers finish writing.
 
     Silently ignoring errors here once hid a leaked isolated home for a whole
     session, so the last attempt reports what is left behind.
+
+    The session's document portal and gvfsd-fuse mount ``doc`` and ``gvfs`` in
+    its service dir. They are lazily unmounted first; a tree that still has a
+    mount is left alone, because removing it would delete files through the
+    mount (documents the portal exports, a remote share).
     """
+    for mount_point in _mounts_below(path):
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            unmount = ["fusermount3", "-u", "-z", mount_point]
+            subprocess.run(unmount, capture_output=True, timeout=5, check=False)
+    if left := _mounts_below(path):
+        msg = f"not removing {path}: still mounted: {', '.join(left)}"
+        raise OSError(msg)
     for attempt in range(attempts):
         shutil.rmtree(path, ignore_errors=attempt < attempts - 1)
         if not path.exists():
@@ -671,6 +690,7 @@ class Session:
         # stop() after the diagnostics it holds were consumed.
         self._stderr_file: IO[bytes] | None = None
         self._session_config_dir: Path | None = None
+        self._service_dir: Path | None = None
 
     @property
     def is_running(self) -> bool:
@@ -756,7 +776,21 @@ class Session:
             self._session_config_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-config-"))
             _write_deterministic_session_config(self._session_config_dir)
             process_registry.register_temp_dir(self._session_config_dir)
-        # Deliberately NOT isolating XDG_DATA_HOME / XDG_CACHE_HOME: qtbase
+        # The services the session bus activates (portals, the permission store,
+        # gvfs, the AT-SPI bus) get their own runtime dir, and with the host home
+        # their own data dir. In the host's they take over $XDG_RUNTIME_DIR/doc,
+        # at-spi/bus and gvfs, and the permission store rewrites
+        # ~/.local/share/flatpak/db. The bus, KWin and launched apps keep the
+        # host's, with every socket in it. Under /tmp: sockets in it must fit
+        # sun_path (108 bytes).
+        self._service_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-svc-", dir="/tmp"))
+        process_registry.register_temp_dir(self._service_dir)
+        if self._home_dir is None:
+            (self._service_dir / "data").mkdir()
+        # dconf-service flags changes in its runtime dir and apps watch theirs:
+        # share the apps' one, or they keep reading the values they replaced.
+        (self._service_dir / "dconf").symlink_to(Path(runtime_dir) / "dconf")
+        # KWin and apps keep the host's XDG_DATA_HOME / XDG_CACHE_HOME: qtbase
         # crash-logs a fatal qFatal when a nonexistent standard data dir is
         # set (reproduced on qt6-base 6.10), and existing dirs already
         # contain everything kwin/konsole need to start.
@@ -1020,6 +1054,10 @@ class Session:
             shutil.rmtree(self._session_config_dir, ignore_errors=True)
             process_registry.unregister_temp_dir(self._session_config_dir)
             self._session_config_dir = None
+        if self._service_dir is not None:
+            _remove_tree(self._service_dir)
+            process_registry.unregister_temp_dir(self._service_dir)
+            self._service_dir = None
 
         # Unregister the temp dirs this stop removed, so the registry stays
         # accurate across start/stop cycles and the server's exit path never
@@ -1052,6 +1090,11 @@ class Session:
             shutil.rmtree(self._session_config_dir, ignore_errors=True)
             process_registry.unregister_temp_dir(self._session_config_dir)
             self._session_config_dir = None
+        if self._service_dir is not None:
+            with contextlib.suppress(OSError):
+                _remove_tree(self._service_dir)
+                process_registry.unregister_temp_dir(self._service_dir)
+            self._service_dir = None
         if self._home_dir is None:
             return
         if self._config is None or not self._config.retention.home:
@@ -1189,6 +1232,12 @@ class Session:
             if direct_start
             else f"; set {ATSPI_DIRECT_START_ENV}=1 to start it directly from its service files"
         )
+        # The runtime and data dir of the bus's services (see start()). The bus
+        # and KWin keep the host's, so the bus still finds the user's services.
+        assert self._service_dir is not None
+        service_env = f"XDG_RUNTIME_DIR={shlex.quote(str(self._service_dir))}"
+        if self._home_dir is None:
+            service_env += f" XDG_DATA_HOME={shlex.quote(str(self._service_dir / 'data'))}"
         return f"""\
 # Keep every background child in the registered group, even with inherited monitor mode.
 set +m
@@ -1206,6 +1255,10 @@ cleanup() {{
     wait $KWIN_PID 2>/dev/null
 }}
 trap cleanup EXIT TERM INT HUP
+
+# Services the bus activates (portals, the permission store, gvfs, the AT-SPI
+# bus) get the session's own runtime and data dir, set before any is activated.
+dbus-update-activation-environment {service_env}
 
 # Bring up the AT-SPI accessibility bus via synchronous D-Bus activation.
 # Calling org.a11y.Bus.GetAddress makes dbus-daemon resolve a service file from
@@ -1289,13 +1342,13 @@ atspi_wait_for_name() {{
 atspi_start_directly() {{
     local address launcher_pid registry_pid
     [ "${{#ATSPI_HELPER[@]}}" -gt 0 ] || return 1
-    "${{ATSPI_HELPER[@]}}" "${{ATSPI_LAUNCHER_SERVICE[@]}}" >/dev/null &
+    {service_env} "${{ATSPI_HELPER[@]}}" "${{ATSPI_LAUNCHER_SERVICE[@]}}" >/dev/null &
     launcher_pid=$!
     if atspi_wait_for_name --session org.a11y.Bus "$launcher_pid" \\
         && address=$(dbus-send --session --print-reply=literal --reply-timeout=5000 \\
             --dest=org.a11y.Bus /org/a11y/bus org.a11y.Bus.GetAddress 2>/dev/null); then
         address=$(echo $address)
-        "${{ATSPI_HELPER[@]}}" "${{ATSPI_REGISTRY_SERVICE[@]}}" >/dev/null &
+        {service_env} "${{ATSPI_HELPER[@]}}" "${{ATSPI_REGISTRY_SERVICE[@]}}" >/dev/null &
         registry_pid=$!
         if atspi_wait_for_name "--bus=$address" org.a11y.atspi.Registry "$registry_pid"; then
             return 0
@@ -1339,8 +1392,10 @@ fi
 # When KWin triggers portal auto-activation, portal-kde will get
 # WAYLAND_DISPLAY pointing to our isolated compositor socket.
 # The socket doesn't exist yet, but portal-kde will be activated
-# only after KWin creates it.
-dbus-update-activation-environment WAYLAND_DISPLAY={self._socket_name} QT_QPA_PLATFORM=wayland
+# only after KWin creates it. The path is absolute: activated services
+# resolve a bare name against their own runtime dir, not KWin's.
+dbus-update-activation-environment WAYLAND_DISPLAY="$XDG_RUNTIME_DIR/{self._socket_name}" \\
+    QT_QPA_PLATFORM=wayland
 
 # Start KWin WITHOUT WAYLAND_DISPLAY to prevent nesting attempt.
 # KWin with --virtual creates its own compositor, it must not try

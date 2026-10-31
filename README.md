@@ -449,14 +449,16 @@ kwin-mcp server (29 tools)          kwin-mcp-cli (interactive REPL)
 
 kwin-mcp provides three layers of isolation from the host desktop:
 
-1. **D-Bus isolation** -- `dbus-run-session` creates a private session bus. The isolated session's services (KWin, AT-SPI2, portals) are invisible to the host.
+1. **D-Bus isolation** -- `dbus-run-session` creates a private session bus. The isolated session's services (KWin, AT-SPI2, portals) are invisible to the host. The services the bus activates (portals, the permission store, gvfs, the AT-SPI2 bus) run with their own `XDG_RUNTIME_DIR` (and, with the host home, `XDG_DATA_HOME`) in a temporary `/tmp/kwin-mcp-svc-*` directory, so they cannot take over the host's `$XDG_RUNTIME_DIR/doc`, `at-spi/bus` or `gvfs`, or rewrite its `~/.local/share/flatpak/db`.
 2. **Display isolation** -- `kwin_wayland --virtual` creates its own Wayland compositor with a virtual framebuffer. No windows appear on the host display.
 3. **Input isolation** -- Input events are injected through KWin's EIS interface into the isolated compositor only. The host desktop receives no input from kwin-mcp.
-4. **Home directory isolation** (optional) -- `session_start(home="isolated")` creates a temporary HOME directory with isolated XDG directories (`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME`). Apps that follow the XDG base directories read and write these instead of host user settings (e.g. `~/.config/kdeglobals`), improving test reproducibility. `XDG_RUNTIME_DIR` is intentionally not isolated because the Wayland socket resides there.
+4. **Home directory isolation** (optional) -- `session_start(home="isolated")` creates a temporary HOME directory with isolated XDG directories (`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME`). Apps that follow the XDG base directories read and write these instead of host user settings (e.g. `~/.config/kdeglobals`), improving test reproducibility. KWin and launched apps keep the host's `XDG_RUNTIME_DIR`: the Wayland socket resides there, and so do the host sockets apps may need (sound, `systemctl --user`, keyrings).
 
 #### Isolation scope
 
 These layers separate the session's bus, display, and input from the host desktop. They do not confine the processes: launched apps run as your user with your filesystem permissions and network access, and can still reach the original home directory by absolute path when `home="isolated"`. Run untrusted applications in a container or VM rather than relying on a virtual session.
+
+Apps and the services the session bus activates use different runtime dirs, so things they share through a path there instead of over D-Bus do not meet: GIO resolves the session's gvfs mounts to local paths under the host's `$XDG_RUNTIME_DIR/gvfs`, and activated portals (ScreenCast, Camera) find no PipeWire socket.
 
 ### Automatic Session Cleanup at Exit
 

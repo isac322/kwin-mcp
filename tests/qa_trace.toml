@@ -34,7 +34,10 @@ auto = "e2e"
 check = "pytest"
 file = "tests/e2e/test_app_launch_log.py"
 test = "test_env_reaches_only_this_process"
-extra_tests = ["tests/unit/test_session_input_validation.py::test_app_env_order_pinned"]
+extra_tests = [
+    "tests/unit/test_session_input_validation.py::test_app_env_order_pinned",
+    "tests/unit/test_session_input_validation.py::test_app_launch_env_validation",
+]
 slow = false
 mutants = []
 

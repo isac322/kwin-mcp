@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `app_launch` refuses a NUL byte in the command or an env value, and an env name that is empty or contains `=` or NUL, with an error naming the field, before the session is looked up. NUL bytes and `=` used to fail as a bare `embedded null byte` or `illegal environment variable name`, most of them after creating an empty app log; an empty name reached the program as a malformed `=value` entry.
 - The E2E input-option matrix counts the physical press/release pairs received for the tested click-option cases independently of GTK's multi-click settings, avoiding false failures when GTK groups clicks across calls.
 - E2E CI shares stable, same-run image and shard-status artifacts across partial reruns. Each row checks its latest build and shard job results before validating coverage, so an older success cannot hide a newer failure. Diagnostic archives remain attempt-specific.
 - The OpenCode integration uses the V2 `Plugin.define` and `plugins` configuration to register the `kwin-mcp` MCP server and bundled `kwin-desktop-automation` skill automatically while preserving existing user entries. OpenCode V1 is unsupported.

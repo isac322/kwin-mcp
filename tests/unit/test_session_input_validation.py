@@ -149,6 +149,11 @@ def test_app_launch_command_validation(
             id="empty-name",
         ),
         pytest.param(
+            {"A\0B": "1"},
+            "Invalid env name 'A\\x00B': it must be non-empty, without '=' or a NUL byte",
+            id="nul-in-name",
+        ),
+        pytest.param(
             {"A": "x\0y"}, "Invalid env value for A: it contains a NUL byte", id="nul-in-value"
         ),
     ],

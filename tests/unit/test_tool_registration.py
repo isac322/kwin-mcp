@@ -300,6 +300,7 @@ def test_resource_reads_without_a_session() -> None:
         "kwin://apps/abc/log",
         "kwin://apps/" + "1" * 5000 + "/log",
         "kwin://screenshots/x.txt",
+        "kwin://screenshots/" + "x" * 252 + ".png",
     ):
         with pytest.raises(ResourceNotFoundError, match=r"^Invalid "):
             asyncio.run(kwin.read_resource(uri))

@@ -1371,7 +1371,8 @@ def compact_output_schema(schema: _Schema) -> _Schema:
 # ── Server ───────────────────────────────────────────────────────────────
 
 # PNG files a session wrote, as named in Frame.uri.
-_SCREENSHOT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.png")
+# At most 255 bytes (NAME_MAX): a longer name makes Path.is_file() raise on Python 3.12.
+_SCREENSHOT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,250}\.png")
 _APP_LOG_TEMPLATE = "kwin://apps/{pid}/log"
 
 

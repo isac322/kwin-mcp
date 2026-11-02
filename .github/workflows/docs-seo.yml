@@ -57,7 +57,7 @@ jobs:
             echo "$CHANGED"
           fi
 
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: astral-sh/setup-uv@v10.3.3
         if: steps.changed.outputs.has_changes == 'true'
 
       - name: Run docs-seo consistency checks

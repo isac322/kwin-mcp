@@ -229,7 +229,7 @@ kwin-mcp --live-consent refuse
 ```text
 kwin-mcp> session_start
 kwin-mcp> app_launch command=kcalc
-kwin-mcp> element_query locator='{"app": "kcalc", "role": "push button"}'
+kwin-mcp> element_query locator='{"app": "kcalc", "role": "button"}'
 kwin-mcp> pointer_click target='{"ref": "e1.12"}'
 kwin-mcp> session_stop
 ```

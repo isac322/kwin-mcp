@@ -50,7 +50,7 @@ Each interaction is three steps. Cheap observation **before** action prevents ac
 **Observation tools, cheapest first:**
 
 1. `window_list` — KWin windows with `id`, `app_id`, `caption`, `kind`, `active`, and frame rects. `window_list(filter={"active": true})` answers "which window has focus?".
-2. `element_query` — AT-SPI2 elements. Always narrow it: `locator={"app": "kate", "role": "push button"}` and/or `max_depth=`. `locator={"query": "Save"}` searches name/role/description; `locator={"states": ["focused"]}` answers "what currently has focus?". `max_depth=1` lists applications and their top-level windows. Don't fetch the whole tree just to find one button.
+2. `element_query` — AT-SPI2 elements. Always narrow it: `locator={"app": "kate", "role": "button"}` and/or `max_depth=`. `locator={"query": "Save"}` searches name/role/description; `locator={"states": ["focused"]}` answers "what currently has focus?". `max_depth=1` lists applications and their top-level windows. Don't fetch the whole tree just to find one button.
 3. `element_query(..., wait={"timeout_ms": 5000})` — polls until a match appears; `wait={"until": "absent"}` waits for it to disappear. A timeout is not an error: the result says `satisfied: false` and starts with `NOT SATISFIED`. Use after launching an app or after any click that triggers async UI.
 4. `screen_capture` — last resort for visual inspection or when AT-SPI2 fails to expose an element (see Pitfalls).
 

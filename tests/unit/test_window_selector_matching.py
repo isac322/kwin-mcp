@@ -197,6 +197,9 @@ def test_zero_matches_texts(selector: WindowSelector, expected: str) -> None:
         # An empty string is a substring of every caption and app_id: it must not
         # select the window that happens to be alone.
         pytest.param(WindowSelector(caption=""), id="empty-caption"),
+        pytest.param(WindowSelector(app_id=""), id="empty-app-id"),
+        pytest.param(WindowSelector(id=""), id="empty-id"),
+        # Keep the combined empty-string case covered as well.
         pytest.param(WindowSelector(app_id="", id=""), id="empty-app-id-and-id"),
     ],
 )

@@ -808,7 +808,9 @@ def test_states_exact_case_sensitive_and_fields_anded(
         found = _wait_for(kcalc_session, Locator(states=["focused", "editable"]))
         expected = [n for n in atspi.walk(max_depth=15) if {"focused", "editable"} <= n.states]
         assert [e.name for e in found.elements] == [n.name for n in expected] == ["Long Entry"]
-        assert kcalc_session.element_query(Locator(states=["FOCUSED"])).elements == []
+        with pytest.raises(RuntimeError, match="Unknown AT-SPI state nick 'FOCUSED'") as exc:
+            kcalc_session.element_query(Locator(states=["FOCUSED"]))
+        assert "Did you mean 'focused'?" in str(exc.value)
 
     seven = kcalc_session.element_query(
         Locator(app="KCALC", query="SEVEN", role="BUTTON", states=["focusable"])
@@ -817,7 +819,9 @@ def test_states_exact_case_sensitive_and_fields_anded(
     assert "focusable" in node.states
     assert [(e.app, e.role, e.name) for e in seven.elements] == [("kcalc", "button", "Seven")]
     shouted = Locator(app="KCALC", query="SEVEN", role="BUTTON", states=["FOCUSABLE"])
-    assert kcalc_session.element_query(shouted).elements == []
+    with pytest.raises(RuntimeError, match="Unknown AT-SPI state nick 'FOCUSABLE'") as exc:
+        kcalc_session.element_query(shouted)
+    assert "Did you mean 'focusable'?" in str(exc.value)
 
     anded = kcalc_session.element_query(Locator(app="kcalc", role="button", query="seven"))
     assert [(e.depth, e.name) for e in anded.elements] == [(node.depth, "Seven")]

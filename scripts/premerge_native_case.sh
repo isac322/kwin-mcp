@@ -11,6 +11,10 @@ if [ "$CASE_KIND" = capture ]; then
         /probes/premerge_capture_gaps_probe.py --expect "$PROBE_EXPECT"
 fi
 
+if [ "$CASE_KIND" = outputs ]; then
+    exec /opt/kwin-mcp-venv/bin/python -I /qa/premerge_multi_output_qa.py
+fi
+
 cd /app
 original_log=/artifacts/topology-original.log
 set +e

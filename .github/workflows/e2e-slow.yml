@@ -109,6 +109,9 @@ jobs:
             case_kind: topology
             subject_sha: 55ff3d9525e11162702530cbba43a01e7b33eefb
             topology_expectation: pass
+          - case_id: outputs-candidate-5dd
+            case_kind: outputs
+            subject_sha: 5dd3cbc05d3d928bfd5a1a2edfd71b1efcf55e48
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     env:
@@ -287,6 +290,7 @@ jobs:
             --volume "$HOST_ARTIFACT_DIR:/artifacts"
             --volume "$GITHUB_WORKSPACE/qa/scripts/premerge_capture_gaps_probe.py:/probes/premerge_capture_gaps_probe.py:ro"
             --volume "$GITHUB_WORKSPACE/qa/scripts/premerge_native_case.sh:/qa/premerge_native_case.sh:ro"
+            --volume "$GITHUB_WORKSPACE/qa/scripts/premerge_multi_output_qa.py:/qa/premerge_multi_output_qa.py:ro"
             --device=/dev/udmabuf:/dev/udmabuf:rw
             --group-add "$UDMABUF_GID"
           )

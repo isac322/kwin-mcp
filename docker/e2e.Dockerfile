@@ -109,6 +109,7 @@ RUN apt-get update \
     && install -d -m 0700 -o tester -g tester /tmp/xdg-runtime
 
 FROM runtime-base AS venv-builder
+ARG DEBIAN_SNAPSHOT
 
 COPY --from=uv-bin /uv /usr/local/bin/uv
 RUN apt-get update \

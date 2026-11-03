@@ -113,6 +113,7 @@ RUN pacman -S --noconfirm --needed $KWIN_MCP_SYSTEM_PACKAGES \
     && install -d -m 0700 -o tester -g tester /tmp/xdg-runtime
 
 FROM runtime-base AS venv-builder
+ARG ARCH_ARCHIVE_DATE
 
 COPY --from=uv-bin /uv /usr/local/bin/uv
 RUN pacman -S --noconfirm --needed \

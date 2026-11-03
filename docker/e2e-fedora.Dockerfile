@@ -88,6 +88,7 @@ RUN dnf -y install --setopt=install_weak_deps=False $KWIN_MCP_SYSTEM_PACKAGES \
     && install -d -m 0700 -o tester -g tester /tmp/xdg-runtime
 
 FROM runtime-base AS venv-builder
+ARG FEDORA_IMAGE
 
 COPY --from=uv-bin /uv /usr/local/bin/uv
 RUN dnf -y install --setopt=install_weak_deps=False \

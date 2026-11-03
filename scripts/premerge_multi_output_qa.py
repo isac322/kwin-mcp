@@ -311,7 +311,7 @@ def _run_count(count: int, root: Path) -> dict[str, Any]:
                 locator={
                     "app": "interaction_probe.py",
                     "query": "Click Target",
-                    "role": "push button",
+                    "role": "button",
                 },
                 max_depth=15,
             )

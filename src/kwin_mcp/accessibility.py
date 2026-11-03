@@ -27,6 +27,7 @@ import sys
 import time
 from collections import OrderedDict
 from dataclasses import asdict, dataclass
+from difflib import get_close_matches
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -123,6 +124,30 @@ _REF_PATTERN = re.compile(r"e(\d+)\.(\d+)")
 # ── Locator matching ─────────────────────────────────────────────────────
 
 
+class _InvalidLocatorError(ValueError):
+    """A locator cannot be evaluated; the message is the caller-facing text."""
+
+
+def _validate_state_nicks(states: Sequence[str]) -> None:
+    """Reject unknown state nicks against the worker's installed AT-SPI enum."""
+    if not states:
+        return
+    # GI enum classes are not iterable on newer PyGObject versions.
+    valid = {state.value_nick for state in Atspi.StateType.__enum_values__.values()}
+    for state in states:
+        if state in valid:
+            continue
+        names = sorted(valid)
+        suggestions = get_close_matches(state.lower().replace("_", "-"), names, n=1)
+        hint = f" Did you mean {suggestions[0]!r}?" if suggestions else ""
+        msg = (
+            f"Unknown AT-SPI state nick {state!r}.{hint} "
+            f"State nicks are case-sensitive. Valid state nicks: {', '.join(names)}."
+        )
+        raise _InvalidLocatorError(msg)
+
+
+
 @dataclass(frozen=True)
 class _Criteria:
     """A Locator prepared for matching.
@@ -141,6 +166,7 @@ class _Criteria:
 
     @classmethod
     def from_locator(cls, locator: Locator) -> _Criteria:
+        _validate_state_nicks(locator.states or ())
         return cls(
             app=(locator.app or "").lower(),
             query=(
@@ -1226,12 +1252,15 @@ def _locator(request: dict[str, Any]) -> Locator:
 
 
 def _handle_request(request: dict[str, Any]) -> dict[str, Any]:
-    """Dispatch one JSON request to its operation.
+    """Return invalid locators and action refusals as caller errors, not worker failures."""
+    try:
+        return _dispatch_request(request)
+    except (_InvalidLocatorError, _ActionRefusedError) as exc:
+        return {"ok": False, "error": str(exc)}
 
-    Refusals (stale refs, missing actions, ambiguous or incomplete strict
-    searches) are answered ``{"ok": false, "error": <text>}``: the worker is
-    fine and the text is meant for the caller as it is.
-    """
+
+def _dispatch_request(request: dict[str, Any]) -> dict[str, Any]:
+    """Dispatch one JSON request to its operation."""
     op = request.get("op", "")
 
     if op == "query":
@@ -1252,12 +1281,7 @@ def _handle_request(request: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "result": resolve_refs([str(ref) for ref in request.get("refs", [])])}
 
     if op == "action":
-        try:
-            result = invoke_action(
-                dict(request.get("address") or {}), request.get("action_name", "")
-            )
-        except _ActionRefusedError as exc:
-            return {"ok": False, "error": str(exc)}
+        result = invoke_action(dict(request.get("address") or {}), request.get("action_name", ""))
         return {"ok": True, "result": result}
 
     return {"ok": False, "error": f"Unknown operation: {op}"}

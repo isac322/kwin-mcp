@@ -1246,7 +1246,7 @@ def capture_screenshot_dbus(
         # disagreement means KWin did not return the logical workspace.
         msg = f"{_dbus_mismatch(frame, topology)}; coordinate mapping cannot be proven"
         raise RuntimeError(msg)
-    img = _image_from_raw_frame(frame)
+    img = _mask_screenshot2_to_outputs(_image_from_raw_frame(frame), topology)
     img.save(output_path, "PNG")
     return output_path, mapping
 
@@ -1392,6 +1392,34 @@ def _image_from_raw_frame(frame: _RawFrame) -> Image:
     except (OSError, ValueError) as exc:
         msg = f"KWin ScreenShot2 returned malformed image data: {exc}"
         raise RuntimeError(msg) from exc
+
+
+def _mask_screenshot2_to_outputs(image: Image, topology: WorkspaceTopology) -> Image:
+    """Clear ScreenShot2 pixels outside the captured output rectangles.
+
+    CaptureWorkspace returns the bounding rectangle of the virtual workspace,
+    which can include gaps between outputs of different sizes. Those pixels do
+    not belong to any output and must remain transparent regardless of the raw
+    format's padding-byte semantics.
+    """
+    from PIL import Image as PILImage
+    from PIL import ImageDraw
+
+    vx, vy, _, _ = topology.virtual
+    width, height = image.size
+    mask = PILImage.new("L", image.size, 0)
+    draw = ImageDraw.Draw(mask)
+    for output in topology.outputs:
+        x, y, output_width, output_height = _output_rect(output)
+        left = max(0, x - vx)
+        top = max(0, y - vy)
+        right = min(width, x - vx + output_width)
+        bottom = min(height, y - vy + output_height)
+        if right <= left or bottom <= top:
+            continue
+        draw.rectangle((left, top, right - 1, bottom - 1), fill=255)
+    transparent = PILImage.new("RGBA", image.size, (0, 0, 0, 0))
+    return PILImage.composite(image.convert("RGBA"), transparent, mask)
 
 
 def capture_frame_burst(
@@ -1615,17 +1643,27 @@ def _capture_frame_burst_dbus(
             time.sleep(target_time - now)
 
         frame_path = private_dir / f"frame_{i:03d}.png"
+        topology_for_frame: WorkspaceTopology | None = None
+
+        def map_frame(topology: WorkspaceTopology, raw: _RawFrame) -> FrameMapping:
+            nonlocal topology_for_frame
+            mapping = _dbus_mapping(raw, topology)
+            if mapping is None:
+                return _unavailable("screenshot2", _dbus_mismatch(raw, topology))
+            topology_for_frame = topology
+            return mapping
+
         mapping, frame = _burst_frame(
             lambda: query_topology(dbus_address),
             lambda _: _capture_raw_frame(iface, options),
-            lambda topology, raw: (
-                _dbus_mapping(raw, topology)
-                or _unavailable("screenshot2", _dbus_mismatch(raw, topology))
-            ),
+            map_frame,
             "screenshot2",
             "output topology changed while this frame was captured",
         )
-        _image_from_raw_frame(frame).save(frame_path, "PNG")
+        image = _image_from_raw_frame(frame)
+        if topology_for_frame is not None:
+            image = _mask_screenshot2_to_outputs(image, topology_for_frame)
+        image.save(frame_path, "PNG")
         frames.append((frame_path, mapping))
         if on_frame is not None:
             on_frame(i, delay_ms)

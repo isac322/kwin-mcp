@@ -23,7 +23,7 @@ def test_output_count_rejected_before_session_construction(
         pytest.fail("invalid output_count constructed a session")
 
     monkeypatch.setattr(core, "Session", forbidden)
-    with pytest.raises(ValueError, match="^output_count must be a positive integer"):
+    with pytest.raises(ValueError, match=r"^output_count must be a positive integer"):
         AutomationEngine().session_start(output_count=count)
 
 

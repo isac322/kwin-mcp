@@ -17,6 +17,7 @@ on:
           - suite
           - outputs
           - geometry
+          - topology
 
 permissions:
   contents: read
@@ -105,6 +106,8 @@ jobs:
           '[{"case_id":"outputs-candidate-b6d85c5","case_kind":"outputs","subject_sha":"b6d85c59c510b01b69a69e62f8f12a8f3a7f7d0a"}]' ||
           inputs.native_case == 'geometry' &&
           '[{"case_id":"geometry-candidate-839cf56","case_kind":"geometry","subject_sha":"839cf56eb961c8e929fc951747084f9b5d834cf6"}]' ||
+          inputs.native_case == 'topology' &&
+          '[{"case_id":"topology-current-8ab7ba9","case_kind":"topology","subject_sha":"8ab7ba9a082fc65dc8afd69785c477f8ed6b8b31","topology_expectation":"pass"}]' ||
           inputs.native_case == 'suite' &&
           '[{"case_id":"capture-baseline-427","case_kind":"capture","subject_sha":"427798d8166e1e051055787b07fab531f17f5dac","probe_expect":"opaque","probe_dir":"baseline"},{"case_id":"capture-candidate-c6fd","case_kind":"capture","subject_sha":"c6fd2d53da85008df7f2c4532832ae0d4760a056","probe_expect":"transparent","probe_dir":"candidate"},{"case_id":"topology-baseline-427","case_kind":"topology","subject_sha":"427798d8166e1e051055787b07fab531f17f5dac","topology_expectation":"indexerror"},{"case_id":"topology-candidate-55ff","case_kind":"topology","subject_sha":"55ff3d9525e11162702530cbba43a01e7b33eefb","topology_expectation":"pass"},{"case_id":"outputs-candidate-b6d85c5","case_kind":"outputs","subject_sha":"b6d85c59c510b01b69a69e62f8f12a8f3a7f7d0a"}]' || '[]') }}
     runs-on: ubuntu-26.04

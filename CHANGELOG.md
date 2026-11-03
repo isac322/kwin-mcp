@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Element coordinates are withheld when AT-SPI does not report both `visible` and `showing`, or when the matched KWin window is on another virtual desktop. Hidden and off-desktop elements keep their refs and semantic actions; pointer and touch targets recheck the same policy at action time. Desktop membership and the current desktop are read with window geometry and included in the before/after stability check.
 - The hidden-menu E2E test uses the action name exposed by AT-SPI, covering providers that report either `ShowMenu` or `Show Menu`.
+- ScreenShot2 captures mask pixels outside the observed output rectangles as transparent RGBA while preserving opaque in-output pixels and `coverage: full` for complete workspace captures.
 - The E2E input-option matrix counts the physical press/release pairs received for the tested click-option cases independently of GTK's multi-click settings, avoiding false failures when GTK groups clicks across calls.
 - E2E CI shares stable, same-run image and shard-status artifacts across partial reruns. Each row checks its latest build and shard job results before validating coverage, so an older success cannot hide a newer failure. Diagnostic archives remain attempt-specific.
 - The OpenCode integration uses the V2 `Plugin.define` and `plugins` configuration to register the `kwin-mcp` MCP server and bundled `kwin-desktop-automation` skill automatically while preserving existing user entries. OpenCode V1 is unsupported.

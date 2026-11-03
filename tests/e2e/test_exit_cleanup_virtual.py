@@ -1773,6 +1773,7 @@ def test_sigkill_retained_artifacts_survive() -> None:
                 config_dirs = (
                     set(Path(tempfile.gettempdir()).glob("kwin-mcp-config-*")) - config_before
                 )
+
                 pgid = _session_pgid(server.pid)
                 assert pgid is not None, "session started but the wrapper group was not found"
                 pgids.append(pgid)

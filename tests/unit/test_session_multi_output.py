@@ -57,11 +57,11 @@ def started_engine(
     return AutomationEngine(), configs
 
 
-@pytest.mark.parametrize("kwargs", [{}, {"output_count": 1}])
+@pytest.mark.parametrize("count", [None, 1])
 def test_single_output_keeps_requested_size_without_querying_kwin(
     monkeypatch: pytest.MonkeyPatch,
     started_engine: tuple[AutomationEngine, list[SessionConfig]],
-    kwargs: dict[str, int],
+    count: int | None,
 ) -> None:
     engine, configs = started_engine
 
@@ -69,7 +69,10 @@ def test_single_output_keeps_requested_size_without_querying_kwin(
         pytest.fail("single-output startup queried workspace size")
 
     monkeypatch.setattr(engine, "_run_kwin_query", forbidden)
-    info = engine.session_start(screen_width=937, screen_height=613, **kwargs)
+    if count is None:
+        info = engine.session_start(screen_width=937, screen_height=613)
+    else:
+        info = engine.session_start(screen_width=937, screen_height=613, output_count=count)
     assert info.screen == ScreenSize(width=937, height=613)
     assert configs[0].output_count == 1
 

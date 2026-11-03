@@ -1740,32 +1740,25 @@ def test_virtual_keep_screenshots_busy_exit_keeps_screenshot_dir_removes_home() 
                 shutil.rmtree(artifacts_dir, ignore_errors=True)
 
 
-def _environ(pid: int) -> dict[str, str]:
-    """The environment of a live process (empty once it is gone)."""
-    try:
-        raw = (Path("/proc") / str(pid) / "environ").read_bytes()
-    except OSError:
-        return {}
-    pairs = (item.decode(errors="replace").partition("=") for item in raw.split(b"\0") if item)
-    return {name: value for name, _, value in pairs}
-
-
 @pytest.mark.qa("QA-SES-022")
 def test_sigkill_retained_artifacts_survive() -> None:
-    """SIGKILL of the server: retained artifacts survive; the unretained dir leaks.
+    """SIGKILL leaves the whole virtual session and its temporary dirs behind.
 
     SIGKILL runs no exit cleanup at all. A ``retention={artifacts:true}`` dir (with
-    the app log in it) is the caller's and survives. A ``retention={}`` dir leaks
-    (the documented known limit, README) and a later session never reuses it.
+    the app log in it) is the caller's and survives. Both artifact settings leave
+    the session group, launched app, and per-session config dir alive (the documented
+    known limit, README), and a later session never reuses the old directories.
     """
     leaked: list[Path] = []
     pgids: list[int] = []
+    app_pgids: list[int] = []
     try:
         dirs: dict[bool, Path] = {}
         for artifacts in (True, False):
             server = _spawn([sys.executable, "-m", "kwin_mcp"])
             reader = _LineReader(_stdout(server))
             try:
+                config_before = set(Path(tempfile.gettempdir()).glob("kwin-mcp-config-*"))
                 info = _start_server_session(
                     server, reader, {"retention": {"artifacts": artifacts}}
                 )
@@ -1774,10 +1767,14 @@ def test_sigkill_retained_artifacts_survive() -> None:
                 launched = _launch_server_app(
                     server, reader, 3, "sh -c 'echo kept; exec sleep 600'"
                 )
+                app_pgids.append(launched["pid"])
                 log_path = Path(launched["log_path"])
-                config_home = _environ(launched["pid"]).get("XDG_CONFIG_HOME", "")
-                if Path(config_home).name.startswith("kwin-mcp-config-"):
-                    leaked.append(Path(config_home))
+                config_dirs = (
+                    set(Path(tempfile.gettempdir()).glob("kwin-mcp-config-*")) - config_before
+                )
+                leaked.extend(config_dirs)
+                assert len(config_dirs) == 1, sorted(config_dirs)
+                config_dir = config_dirs.pop()
                 assert log_path.parent == artifacts_dir, launched
                 assert _wait_until(lambda p=log_path: p.read_text() == "kept\n", 5), log_path
                 pgid = _session_pgid(server.pid)
@@ -1787,7 +1784,12 @@ def test_sigkill_retained_artifacts_survive() -> None:
                 server.kill()
                 assert server.wait(timeout=SERVER_EXIT_TIMEOUT_SECONDS) == -signal.SIGKILL
                 assert artifacts_dir.is_dir(), f"{artifacts_dir} vanished after SIGKILL"
+                assert config_dir.is_dir(), f"{config_dir} vanished after SIGKILL"
                 assert log_path.read_text() == "kept\n", log_path
+                assert _wait_until(lambda p=pgid: bool(_group_pids(p)), 5), (
+                    f"session process group {pgid} was cleaned up after SIGKILL"
+                )
+                assert _is_live(launched["pid"]), f"launched app {launched['pid']} was cleaned up"
                 dirs[artifacts] = artifacts_dir
             finally:
                 if server.poll() is None:
@@ -1803,6 +1805,8 @@ def test_sigkill_retained_artifacts_survive() -> None:
             leaked.append(fresh)
             assert fresh not in dirs.values(), (fresh, dirs)
             assert dirs[False].is_dir(), "the leaked dir was reused or removed"
+            assert all(_group_pids(pgid) for pgid in pgids), "an old session group was cleaned up"
+            assert all(_is_live(pid) for pid in app_pgids), "an old launched app was cleaned up"
             _stdin(server).close()
             assert server.wait(timeout=SERVER_EXIT_TIMEOUT_SECONDS) == 0
             assert not fresh.exists(), f"the fresh unretained dir survived a clean exit: {fresh}"
@@ -1813,6 +1817,9 @@ def test_sigkill_retained_artifacts_survive() -> None:
                 server.wait()
     finally:
         for pgid in pgids:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(pgid, signal.SIGKILL)
+        for pgid in app_pgids:
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(pgid, signal.SIGKILL)
         for path in leaked:

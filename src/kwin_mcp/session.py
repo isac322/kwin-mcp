@@ -85,6 +85,7 @@ class SessionConfig:
     retention: Retention = NO_RETENTION
     socket_name: str = ""
     extra_env: dict[str, str] = field(default_factory=dict)
+    output_count: int = 1
 
 
 def _write_deterministic_session_config(config_dir: Path) -> None:
@@ -1356,6 +1357,7 @@ env -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM -u KDE_FULL_SESSION -u KDE_SESSION_VER
     KWIN_SCREENSHOT_NO_PERMISSION_CHECKS=1 \
     kwin_wayland --virtual --no-lockscreen \
     --width {config.screen_width} --height {config.screen_height} \
+    --output-count {config.output_count} \
     --socket {self._socket_name} &
 KWIN_PID=$!
 

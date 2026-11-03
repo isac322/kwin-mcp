@@ -8,6 +8,7 @@ input operation under test goes through ``kwin-mcp-cli``.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -23,15 +24,14 @@ from PIL import Image
 
 sys.path.insert(0, "/probes")
 sys.path.insert(0, "/app/tests/e2e")
-from kwin_oracle import KWinOracle  # noqa: E402
-from premerge_capture_gaps_probe import (  # noqa: E402
+from kwin_oracle import KWinOracle
+from premerge_capture_gaps_probe import (
     InstalledCli,
     _command,
     _installed_provenance,
     _subject_commit,
     _version,
 )
-
 
 ARTIFACT_DIR = Path(os.environ.get("KWIN_MCP_ARTIFACT_DIR", "/artifacts"))
 PYTHON = "/opt/kwin-mcp-venv/bin/python"
@@ -108,11 +108,19 @@ def _element_rect(rendered: str, name: str) -> tuple[int, int, int, int]:
     return tuple(int(value) for value in match.groups())  # type: ignore[return-value]
 
 
-def _capture(cli: InstalledCli, output_dir: Path, union: tuple[int, int, int, int]) -> dict[str, Any]:
+def _capture(
+    cli: InstalledCli, output_dir: Path, union: tuple[int, int, int, int]
+) -> dict[str, Any]:
     rendered = cli.run(_command("screen_capture", max_edge=0), timeout_s=180)
     match = re.search(r"^Screenshot saved: (.+?) \([0-9.]+ KB\)$", rendered, re.MULTILINE)
-    if match is None or "coverage full" not in rendered:
-        raise AssertionError(f"full native capture was not reported: {rendered}")
+    coordinate_lines = [
+        line for line in rendered.splitlines() if line.startswith("Coordinate space:")
+    ]
+    if match is None or len(coordinate_lines) != 1:
+        raise AssertionError(f"single native mapping was not reported: {rendered}")
+    coordinate_line = coordinate_lines[0]
+    if "backend screenshot2" not in coordinate_line or "coverage full" not in coordinate_line:
+        raise AssertionError(f"full native ScreenShot2 capture was not reported: {rendered}")
     source = Path(match.group(1))
     if not source.is_file():
         raise AssertionError(f"CLI capture path is not a file: {source}")
@@ -131,11 +139,12 @@ def _capture(cli: InstalledCli, output_dir: Path, union: tuple[int, int, int, in
                 nonblack += 1
     expected_size = (union[2], union[3])
     if (
-        f"origin ({union[0]}, {union[1]})" not in rendered
-        or "topology observed stable before/after capture" not in rendered
+        f"origin ({union[0]}, {union[1]})" not in coordinate_line
+        or "topology observed stable before/after capture" not in coordinate_line
     ):
         raise AssertionError(
-            f"CLI mapping origin/stability does not match independent KWin union {union}: {rendered}"
+            "CLI mapping origin/stability does not match independent KWin union "
+            f"{union}: {rendered}"
         )
     if actual_size != expected_size:
         raise AssertionError(f"PNG size {actual_size} does not match KWin union {expected_size}")
@@ -154,7 +163,9 @@ def _capture(cli: InstalledCli, output_dir: Path, union: tuple[int, int, int, in
     }
 
 
-def _assert_control_pixels(path: Path, rect: tuple[int, int, int, int], union: tuple[int, int, int, int]) -> dict[str, Any]:
+def _assert_control_pixels(
+    path: Path, rect: tuple[int, int, int, int], union: tuple[int, int, int, int]
+) -> dict[str, Any]:
     ux, uy, _, _ = union
     x, y, width, height = rect
     with Image.open(path) as image:
@@ -165,10 +176,16 @@ def _assert_control_pixels(path: Path, rect: tuple[int, int, int, int], union: t
         for red, green, blue_value, alpha in crop.getdata():
             if alpha == 255 and max(red, green, blue_value) > 0:
                 opaque += 1
-            if alpha == 255 and all(abs(actual - expected) <= 12 for actual, expected in zip((red, green, blue_value), EXPECTED_BLUE, strict=True)):
+            if alpha == 255 and all(
+                abs(actual - expected) <= 12
+                for actual, expected in zip((red, green, blue_value), EXPECTED_BLUE, strict=True)
+            ):
                 blue += 1
     if opaque == 0 or blue == 0:
-        raise AssertionError(f"output-2 control crop lacks rendered GUI content/blue control: opaque={opaque}, blue={blue}")
+        raise AssertionError(
+            "output-2 control crop lacks rendered GUI content/blue control: "
+            f"opaque={opaque}, blue={blue}"
+        )
     return {"rect": rect, "opaque_nonblack_pixels": opaque, "expected_blue_pixels": blue}
 
 
@@ -186,7 +203,9 @@ def _assert_input(
         if "button_press" in kinds and "button_release" in kinds:
             break
         time.sleep(0.1)
-    selected = [event for event in events if event.get("kind") in {"button_press", "button_release"}]
+    selected = [
+        event for event in events if event.get("kind") in {"button_press", "button_release"}
+    ]
     if [event.get("kind") for event in selected[-2:]] != ["button_press", "button_release"]:
         raise AssertionError(f"GUI probe did not receive click: {events!r}")
     local_expected = (click[0] - client_origin[0], click[1] - client_origin[1])
@@ -203,38 +222,55 @@ def _run_count(count: int, root: Path) -> dict[str, Any]:
     output_dir = root / f"output-count-{count}"
     output_dir.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
-    env.update({
-        "KWIN_MCP_ARTIFACT_DIR": str(output_dir),
-        "KWIN_MCP_X11_SCREENSHOT": "0",
-        "KWIN_MCP_E2E_SCREENSHOT": "1",
-        "PYTHONUNBUFFERED": "1",
-    })
+    env.update(
+        {
+            "KWIN_MCP_ARTIFACT_DIR": str(output_dir),
+            "KWIN_MCP_X11_SCREENSHOT": "0",
+            "KWIN_MCP_E2E_SCREENSHOT": "1",
+            "PYTHONUNBUFFERED": "1",
+        }
+    )
     env.pop("DISPLAY", None)
     env.pop("PYTHONPATH", None)
     cli = InstalledCli(env=env, stderr_path=output_dir / "kwin-mcp-cli.stderr.log")
     started = False
     try:
-        session = cli.run(_command(
-            "session_start", screen_width=1280, screen_height=800, output_count=count,
-            retention={"artifacts": True},
-        ), timeout_s=180)
+        session = cli.run(
+            _command(
+                "session_start",
+                screen_width=1280,
+                screen_height=800,
+                output_count=count,
+                retention={"artifacts": True},
+            ),
+            timeout_s=180,
+        )
         started = True
         dbus_address, info_size = _parse_session(session)
         oracle = KWinOracle(dbus_address)
         screens = _screens(oracle)
         if len(screens) != count:
-            raise AssertionError(f"independent KWin reports {len(screens)} outputs for count={count}: {screens}")
+            raise AssertionError(
+                f"independent KWin reports {len(screens)} outputs for count={count}: {screens}"
+            )
         union = _union(screens)
         if info_size != (union[2], union[3]):
-            raise AssertionError(f"public session size {info_size} != independent KWin union {union}")
-        launched = cli.run(_command(
-            "app_launch", command="python3 /app/tests/e2e/interaction_probe.py",
-            env={
-                "GDK_BACKEND": "wayland", "GTK_MODULES": "gail:atk-bridge",
-                "NO_AT_BRIDGE": "0", "XDG_SESSION_TYPE": "wayland",
-                "KWIN_MCP_PROBE_EVENT_LOG": str(output_dir / "interaction-events.jsonl"),
-            },
-        ))
+            raise AssertionError(
+                f"public session size {info_size} != independent KWin union {union}"
+            )
+        cli.run(
+            _command(
+                "app_launch",
+                command="python3 /app/tests/e2e/interaction_probe.py",
+                env={
+                    "GDK_BACKEND": "wayland",
+                    "GTK_MODULES": "gail:atk-bridge",
+                    "NO_AT_BRIDGE": "0",
+                    "XDG_SESSION_TYPE": "wayland",
+                    "KWIN_MCP_PROBE_EVENT_LOG": str(output_dir / "interaction-events.jsonl"),
+                },
+            )
+        )
         deadline = time.monotonic() + 20
         while True:
             try:
@@ -246,7 +282,9 @@ def _run_count(count: int, root: Path) -> dict[str, Any]:
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(0.1)
-        target_screen = screens[0] if count == 1 else max(screens, key=lambda screen: float(screen["x"]))
+        target_screen = (
+            screens[0] if count == 1 else max(screens, key=lambda screen: float(screen["x"]))
+        )
         if count > 1 and float(target_screen["x"]) == min(float(screen["x"]) for screen in screens):
             raise AssertionError(f"KWin did not expose a distinct non-left output: {screens}")
         target_frame = {
@@ -260,20 +298,35 @@ def _run_count(count: int, root: Path) -> dict[str, Any]:
             cli.run(_command("window_list", filter={"id": window_id})), "Interaction Probe"
         )
         if observed_id != window_id or observed_frame[:2] != (target_frame["x"], target_frame["y"]):
-            raise AssertionError(f"window_place was not independently observed: {placed}; {observed_frame}")
+            raise AssertionError(
+                f"window_place was not independently observed: {placed}; {observed_frame}"
+            )
         observed_window = oracle.window(window_id)
         if observed_window is None:
             raise AssertionError(f"KWin oracle cannot observe placed window {window_id}")
         client_origin = (round(observed_window.client.x), round(observed_window.client.y))
-        element = cli.run(_command(
-            "element_query",
-            locator={"app": "interaction_probe.py", "query": "Click Target", "role": "push button"},
-            max_depth=15,
-        ))
+        element = cli.run(
+            _command(
+                "element_query",
+                locator={
+                    "app": "interaction_probe.py",
+                    "query": "Click Target",
+                    "role": "push button",
+                },
+                max_depth=15,
+            )
+        )
         click_rect = _element_rect(element, "Click Target")
         click = (click_rect[0] + click_rect[2] // 2, click_rect[1] + click_rect[3] // 2)
-        if not any(float(screen["x"]) <= click[0] < float(screen["x"]) + float(screen["width"]) and float(screen["y"]) <= click[1] < float(screen["y"]) + float(screen["height"]) for screen in screens if float(screen["x"]) == float(target_screen["x"])):
-            raise AssertionError(f"Click Target is not on independently selected output: {click}, {target_screen}")
+        if not any(
+            float(screen["x"]) <= click[0] < float(screen["x"]) + float(screen["width"])
+            and float(screen["y"]) <= click[1] < float(screen["y"]) + float(screen["height"])
+            for screen in screens
+            if float(screen["x"]) == float(target_screen["x"])
+        ):
+            raise AssertionError(
+                f"Click Target is not on independently selected output: {click}, {target_screen}"
+            )
         before_capture = _capture(cli, output_dir, union)
         control = _assert_control_pixels(Path(before_capture["path"]), click_rect, union)
         input_proof: dict[str, Any] | None = None
@@ -284,17 +337,22 @@ def _run_count(count: int, root: Path) -> dict[str, Any]:
             )
         stop = cli.run("session_stop")
         return {
-            "count": count, "session": session, "screens": screens, "union": union,
-            "initial_frame": initial_frame, "window_frame": observed_frame,
-            "click_rect": click_rect, "capture": before_capture, "control": control,
-            "input": input_proof, "session_stop": stop,
+            "count": count,
+            "session": session,
+            "screens": screens,
+            "union": union,
+            "initial_frame": initial_frame,
+            "window_frame": observed_frame,
+            "click_rect": click_rect,
+            "capture": before_capture,
+            "control": control,
+            "input": input_proof,
+            "session_stop": stop,
         }
     finally:
         if started:
-            try:
+            with contextlib.suppress(Exception):
                 cli.run("session_stop", timeout_s=30)
-            except Exception:
-                pass
         cli.close()
 
 
@@ -313,15 +371,29 @@ def main() -> None:
                 json.dumps(record, indent=2, default=str) + "\n"
             )
         test_env = os.environ.copy()
-        test_env.update({"KWIN_MCP_E2E_SCREENSHOT": "1", "KWIN_MCP_ARTIFACT_DIR": str(ARTIFACT_DIR / "pytest")})
+        test_env.update(
+            {"KWIN_MCP_E2E_SCREENSHOT": "1", "KWIN_MCP_ARTIFACT_DIR": str(ARTIFACT_DIR / "pytest")}
+        )
         (ARTIFACT_DIR / "pytest").mkdir(parents=True, exist_ok=True)
         test_env.pop("DISPLAY", None)
         test_env.pop("PYTHONPATH", None)
         pytest_log = ARTIFACT_DIR / "multi-output-pytest.log"
         with pytest_log.open("w", encoding="utf-8") as stream:
             result = subprocess.run(
-                [PYTHON, "-m", "pytest", "tests/e2e/test_session_start.py::test_multiple_virtual_outputs_report_workspace_union", "-v", "--junitxml=/artifacts/multi-output-junit.xml"],
-                cwd="/app", env=test_env, stdout=stream, stderr=subprocess.STDOUT, timeout=1200, check=False,
+                [
+                    PYTHON,
+                    "-m",
+                    "pytest",
+                    "tests/e2e/test_session_start.py::test_multiple_virtual_outputs_report_workspace_union",
+                    "-v",
+                    "--junitxml=/artifacts/multi-output-junit.xml",
+                ],
+                cwd="/app",
+                env=test_env,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                timeout=1200,
+                check=False,
             )
         record["pytest_exit"] = result.returncode
         if result.returncode != 0:
@@ -332,7 +404,9 @@ def main() -> None:
         (ARTIFACT_DIR / "traceback.log").write_text(record["traceback"])
         raise
     finally:
-        (ARTIFACT_DIR / "outputs-proof.json").write_text(json.dumps(record, indent=2, default=str) + "\n")
+        (ARTIFACT_DIR / "outputs-proof.json").write_text(
+            json.dumps(record, indent=2, default=str) + "\n"
+        )
 
 
 if __name__ == "__main__":

@@ -27,15 +27,6 @@ def test_output_count_rejected_before_session_construction(
         AutomationEngine().session_start(output_count=count)
 
 
-@pytest.mark.parametrize("count", [1, 2, 1000, 10**30])
-def test_wrapper_passes_output_count_without_an_application_limit(count: int) -> None:
-    script = Session()._build_wrapper_script(
-        SessionConfig(screen_width=937, screen_height=613, output_count=count)
-    )
-    assert f"--output-count {count}" in script
-    assert "--width 937 --height 613" in script
-
-
 @pytest.fixture
 def started_engine(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path

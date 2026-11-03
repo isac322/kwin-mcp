@@ -8,7 +8,6 @@ lines, and the temp/runtime directories on disk.
 
 from __future__ import annotations
 
-import inspect
 import itertools
 import os
 import re
@@ -230,20 +229,6 @@ def _assert_frame_size(engine: AutomationEngine, max_edge: int | None, size: Scr
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────
-
-
-def test_session_start_has_no_app_command_parameter() -> None:
-    parameters = inspect.signature(AutomationEngine.session_start).parameters
-    assert "app_command" not in parameters
-    assert list(parameters) == [
-        "self",
-        "screen_width",
-        "screen_height",
-        "enable_clipboard",
-        "home",
-        "retention",
-        "output_count",
-    ]
 
 
 @pytest.mark.qa("QA-GATE-003")

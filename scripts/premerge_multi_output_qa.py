@@ -130,9 +130,12 @@ def _capture(cli: InstalledCli, output_dir: Path, union: tuple[int, int, int, in
             if pixel[3] > 0 and max(pixel[:3]) > 0:
                 nonblack += 1
     expected_size = (union[2], union[3])
-    if f"origin ({union[0]}, {union[1]})" not in rendered:
+    if (
+        f"origin ({union[0]}, {union[1]})" not in rendered
+        or "topology observed stable before/after capture" not in rendered
+    ):
         raise AssertionError(
-            f"CLI mapping origin does not match independent KWin union {union}: {rendered}"
+            f"CLI mapping origin/stability does not match independent KWin union {union}: {rendered}"
         )
     if actual_size != expected_size:
         raise AssertionError(f"PNG size {actual_size} does not match KWin union {expected_size}")

@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 import pytest
 from _asserts import frame_png
 from session_harness import live_kwin
+from test_screen_capture_visual import kwin_screens
 
 from kwin_mcp.core import SESSION_RUNNING_TEXT, AutomationEngine
 from kwin_mcp.models import NO_RETENTION, Retention, ScreenSize, SessionInfo
@@ -241,6 +242,7 @@ def test_session_start_has_no_app_command_parameter() -> None:
         "enable_clipboard",
         "home",
         "retention",
+        "output_count",
     ]
 
 
@@ -376,6 +378,32 @@ def test_custom_screen_geometry_is_reported_by_wayland(engine: AutomationEngine)
         rf".*?^\s+flags:.*\bcurrent\b"
     )
     assert re.search(expected_mode, wayland_output), wayland_output[:1000]
+
+
+@pytest.mark.parametrize("count", [2, 3])
+def test_multiple_virtual_outputs_report_workspace_union(
+    engine: AutomationEngine, count: int
+) -> None:
+    info = engine.session_start(screen_width=937, screen_height=613, output_count=count)
+    kwin_pid = _session_kwin_pid(info.dbus_address)
+    argv = _cmdline(kwin_pid)
+    assert ("--output-count", str(count)) in list(itertools.pairwise(argv)), argv
+    _assert_kwin_argv_size(info.dbus_address, 937, 613)
+    # Query KWin directly with the existing independent visual-test oracle,
+    # rather than trusting SessionInfo or inferring KWin's initial layout.
+    screens = kwin_screens(info.dbus_address)
+    assert len(screens) == count, screens
+    assert all(round(s["width"]) == 937 and round(s["height"]) == 613 for s in screens)
+    left = min(s["x"] for s in screens)
+    top = min(s["y"] for s in screens)
+    right = max(s["x"] + s["width"] for s in screens)
+    bottom = max(s["y"] + s["height"] for s in screens)
+    size = ScreenSize(width=round(right - left), height=round(bottom - top))
+    assert info.screen == size, (info, screens)
+    assert engine.session_info().session == info
+    _assert_frame_size(engine, 0, size)
+    assert engine.session_stop().stopped
+    assert _wait_until(lambda: not _is_live(kwin_pid))
 
 
 def test_accessibility_bus_is_owned_when_session_start_returns(

@@ -31,6 +31,38 @@ if TYPE_CHECKING:
     from ._fakes import FakeEngine
 
 
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        "output_count=2",
+        '{"output_count": 2}',
+        "output_count=1000000000000000000000000000000",
+        '{"output_count": 1000000000000000000000000000000}',
+    ],
+)
+def test_session_start_output_count_cli_integer_parsing(arguments: str) -> None:
+    parsed = _parse_args(AutomationEngine().session_start, arguments)
+    assert type(parsed["output_count"]) is int
+    assert parsed["output_count"] in (2, 10**30)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        "output_count=true",
+        "output_count=1.5",
+        '{"output_count": true}',
+        '{"output_count": 1.5}',
+        '{"output_count": 2.0}',
+        '{"output_count": "2"}',
+        '{"output_count": null}',
+    ],
+)
+def test_session_start_output_count_cli_rejects_nonintegers(arguments: str) -> None:
+    with pytest.raises(ValueError):
+        _parse_args(AutomationEngine().session_start, arguments)
+
+
 @pytest.mark.qa("QA-CLI-002")
 @pytest.mark.parametrize(
     ("command", "arguments", "expected"),

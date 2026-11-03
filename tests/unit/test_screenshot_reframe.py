@@ -89,7 +89,12 @@ def _format16_frame() -> _RawFrame:
     pixels = []
     for y in range(4):
         for x in range(5):
-            pixels.extend((255, 255, 255, 0) if (x, y) in {(0, 0), (0, 3)} else (0, 0, 0, 0))
+            if (x, y) == (4, 0):
+                pixels.extend((17, 34, 51, 0))
+            elif (x, y) in {(0, 0), (0, 3)}:
+                pixels.extend((255, 255, 255, 0))
+            else:
+                pixels.extend((0, 0, 0, 0))
     return _RawFrame(bytes(pixels), 5, 4, 20, 16, 1.0)
 
 
@@ -100,6 +105,7 @@ def test_screenshot2_format16_gap_is_transparent_after_topology_mask() -> None:
 
     assert image.mode == "RGBA"
     assert image.getpixel((0, 0)) == (255, 255, 255, 255)
+    assert image.getpixel((4, 0)) == (17, 34, 51, 255)
     assert image.getpixel((4, 3)) == (0, 0, 0, 255)
     assert image.getpixel((0, 3)) == (0, 0, 0, 0)
 
@@ -131,6 +137,7 @@ def test_screenshot2_capture_paths_mask_format16_gap(
     with Image.open(path) as image:
         assert image.mode == "RGBA"
         assert image.getpixel((0, 0)) == (255, 255, 255, 255)
+        assert image.getpixel((4, 0)) == (17, 34, 51, 255)
         assert image.getpixel((0, 3)) == (0, 0, 0, 0)
 
 

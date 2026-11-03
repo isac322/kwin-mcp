@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `session_start(output_count=1)` creates any positive number of virtual KWin outputs. `screen_width` and `screen_height` apply to each output; with multiple outputs, `session.screen` reports the KWin workspace union instead of one output's size.
+
 ### Fixed
 
 - Reading a `kwin://screenshots/{name}` or `kwin://apps/{pid}/log` resource whose name is malformed or names no screenshot or launched app now fails with `-32602` (Invalid params), the code MCP 2026-07-28 uses for a resource that is not found, instead of `-32603` (Internal error). Reading a well-formed URI without a running session still fails with `-32603` and the usual `No session running` text.

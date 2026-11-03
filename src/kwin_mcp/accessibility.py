@@ -147,7 +147,6 @@ def _validate_state_nicks(states: Sequence[str]) -> None:
         raise _InvalidLocatorError(msg)
 
 
-
 @dataclass(frozen=True)
 class _Criteria:
     """A Locator prepared for matching.

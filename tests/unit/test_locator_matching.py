@@ -425,9 +425,7 @@ def test_arbitrary_nonlocalized_roles_remain_valid(
     monkeypatch.setattr(
         button, "get_localized_role_name", lambda: "localized control", raising=False
     )
-    assert _names({"app": "kcalc", "role": "PROVIDER-SPECIFIC CONTROL"}) == [
-        (3, "kcalc", "Seven")
-    ]
+    assert _names({"app": "kcalc", "role": "PROVIDER-SPECIFIC CONTROL"}) == [(3, "kcalc", "Seven")]
     assert _names({"app": "kcalc", "role": "localized control"}) == []
     assert _names({"app": "kcalc", "role": "provider-specific"}) == []
     response = accessibility._handle_request(

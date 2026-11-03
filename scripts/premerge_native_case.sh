@@ -15,6 +15,15 @@ if [ "$CASE_KIND" = outputs ]; then
     exec /opt/kwin-mcp-venv/bin/python -I /qa/premerge_multi_output_qa.py
 fi
 
+if [ "$CASE_KIND" = geometry ]; then
+    exec /opt/kwin-mcp-venv/bin/python -I /qa/premerge_geometry_qa.py
+fi
+
+if [ "$CASE_KIND" != topology ]; then
+    printf 'Unknown native QA case kind: %s\n' "$CASE_KIND" >&2
+    exit 2
+fi
+
 cd /app
 original_log=/artifacts/topology-original.log
 set +e

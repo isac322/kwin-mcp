@@ -8,11 +8,15 @@ on:
     - cron: "0 3 * * 1"
   workflow_dispatch:
     inputs:
-      outputs_only:
-        description: "Run only the approved multi-output native proof case"
+      native_case:
+        description: "Native QA case to run"
         required: false
-        default: false
-        type: boolean
+        default: suite
+        type: choice
+        options:
+          - suite
+          - outputs
+          - geometry
 
 permissions:
   contents: read
@@ -97,9 +101,12 @@ jobs:
       fail-fast: false
       matrix:
         include: >-
-          ${{ fromJSON(inputs.outputs_only &&
+          ${{ fromJSON(inputs.native_case == 'outputs' &&
           '[{"case_id":"outputs-candidate-b6d85c5","case_kind":"outputs","subject_sha":"b6d85c59c510b01b69a69e62f8f12a8f3a7f7d0a"}]' ||
-          '[{"case_id":"capture-baseline-427","case_kind":"capture","subject_sha":"427798d8166e1e051055787b07fab531f17f5dac","probe_expect":"opaque","probe_dir":"baseline"},{"case_id":"capture-candidate-c6fd","case_kind":"capture","subject_sha":"c6fd2d53da85008df7f2c4532832ae0d4760a056","probe_expect":"transparent","probe_dir":"candidate"},{"case_id":"topology-baseline-427","case_kind":"topology","subject_sha":"427798d8166e1e051055787b07fab531f17f5dac","topology_expectation":"indexerror"},{"case_id":"topology-candidate-55ff","case_kind":"topology","subject_sha":"55ff3d9525e11162702530cbba43a01e7b33eefb","topology_expectation":"pass"},{"case_id":"outputs-candidate-b6d85c5","case_kind":"outputs","subject_sha":"b6d85c59c510b01b69a69e62f8f12a8f3a7f7d0a"}]') }}
+          inputs.native_case == 'geometry' &&
+          '[{"case_id":"geometry-candidate-839cf56","case_kind":"geometry","subject_sha":"839cf56eb961c8e929fc951747084f9b5d834cf6"}]' ||
+          inputs.native_case == 'suite' &&
+          '[{"case_id":"capture-baseline-427","case_kind":"capture","subject_sha":"427798d8166e1e051055787b07fab531f17f5dac","probe_expect":"opaque","probe_dir":"baseline"},{"case_id":"capture-candidate-c6fd","case_kind":"capture","subject_sha":"c6fd2d53da85008df7f2c4532832ae0d4760a056","probe_expect":"transparent","probe_dir":"candidate"},{"case_id":"topology-baseline-427","case_kind":"topology","subject_sha":"427798d8166e1e051055787b07fab531f17f5dac","topology_expectation":"indexerror"},{"case_id":"topology-candidate-55ff","case_kind":"topology","subject_sha":"55ff3d9525e11162702530cbba43a01e7b33eefb","topology_expectation":"pass"},{"case_id":"outputs-candidate-b6d85c5","case_kind":"outputs","subject_sha":"b6d85c59c510b01b69a69e62f8f12a8f3a7f7d0a"}]' || '[]') }}
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     env:
@@ -279,6 +286,7 @@ jobs:
             --volume "$GITHUB_WORKSPACE/qa/scripts/premerge_capture_gaps_probe.py:/probes/premerge_capture_gaps_probe.py:ro"
             --volume "$GITHUB_WORKSPACE/qa/scripts/premerge_native_case.sh:/qa/premerge_native_case.sh:ro"
             --volume "$GITHUB_WORKSPACE/qa/scripts/premerge_multi_output_qa.py:/qa/premerge_multi_output_qa.py:ro"
+            --volume "$GITHUB_WORKSPACE/qa/scripts/premerge_geometry_qa.py:/qa/premerge_geometry_qa.py:ro"
             --device=/dev/udmabuf:/dev/udmabuf:rw
             --group-add "$UDMABUF_GID"
           )

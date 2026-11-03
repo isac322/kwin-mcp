@@ -1752,6 +1752,7 @@ def test_sigkill_retained_artifacts_survive() -> None:
     leaked: list[Path] = []
     pgids: list[int] = []
     app_pgids: list[int] = []
+    config_dirs_by_artifacts: dict[bool, Path] = {}
     try:
         dirs: dict[bool, Path] = {}
         for artifacts in (True, False):
@@ -1772,14 +1773,15 @@ def test_sigkill_retained_artifacts_survive() -> None:
                 config_dirs = (
                     set(Path(tempfile.gettempdir()).glob("kwin-mcp-config-*")) - config_before
                 )
-                leaked.extend(config_dirs)
-                assert len(config_dirs) == 1, sorted(config_dirs)
-                config_dir = config_dirs.pop()
-                assert log_path.parent == artifacts_dir, launched
-                assert _wait_until(lambda p=log_path: p.read_text() == "kept\n", 5), log_path
                 pgid = _session_pgid(server.pid)
                 assert pgid is not None, "session started but the wrapper group was not found"
                 pgids.append(pgid)
+                leaked.extend(config_dirs)
+                assert len(config_dirs) == 1, sorted(config_dirs)
+                config_dir = config_dirs.pop()
+                config_dirs_by_artifacts[artifacts] = config_dir
+                assert log_path.parent == artifacts_dir, launched
+                assert _wait_until(lambda p=log_path: p.read_text() == "kept\n", 5), log_path
 
                 server.kill()
                 assert server.wait(timeout=SERVER_EXIT_TIMEOUT_SECONDS) == -signal.SIGKILL
@@ -1805,12 +1807,18 @@ def test_sigkill_retained_artifacts_survive() -> None:
             leaked.append(fresh)
             assert fresh not in dirs.values(), (fresh, dirs)
             assert dirs[False].is_dir(), "the leaked dir was reused or removed"
+            assert config_dirs_by_artifacts[False].is_dir(), (
+                "the leaked config dir was reused or removed"
+            )
             assert all(_group_pids(pgid) for pgid in pgids), "an old session group was cleaned up"
             assert all(_is_live(pid) for pid in app_pgids), "an old launched app was cleaned up"
             _stdin(server).close()
             assert server.wait(timeout=SERVER_EXIT_TIMEOUT_SECONDS) == 0
             assert not fresh.exists(), f"the fresh unretained dir survived a clean exit: {fresh}"
             assert dirs[False].is_dir(), "a later session's exit removed the leaked dir"
+            assert config_dirs_by_artifacts[False].is_dir(), (
+                "a later session's exit removed the leaked config dir"
+            )
         finally:
             if server.poll() is None:
                 server.kill()

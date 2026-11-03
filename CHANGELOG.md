@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Document that forcibly killed servers can leave virtual-session processes and temporary directories behind until manually removed.
+
 ### Fixed
 
 - The E2E input-option matrix counts the physical press/release pairs received for the tested click-option cases independently of GTK's multi-click settings, avoiding false failures when GTK groups clicks across calls.

@@ -16,6 +16,7 @@ ARG TUMBLEWEED_IMAGE=opensuse/tumbleweed:latest@sha256:8f013f32368a73422e03c4d73
 FROM ghcr.io/astral-sh/uv:0.12.19@sha256:04d046b13e60d6bcec73cbc5e1cad25d680dea90c8573340950a0ac2d1aef424 AS uv-bin
 
 FROM ${TUMBLEWEED_IMAGE} AS wheel-builder
+ARG TUMBLEWEED_IMAGE
 
 COPY --from=uv-bin /uv /usr/local/bin/uv
 RUN zypper --non-interactive install --no-recommends python313 \
@@ -24,10 +25,12 @@ RUN zypper --non-interactive install --no-recommends python313 \
 WORKDIR /build
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
-RUN --mount=type=cache,target=/root/.cache/uv \
+ARG TARGETARCH
+RUN --mount=type=cache,id=kwin-mcp-uv-opensuse-${TARGETARCH}-${TUMBLEWEED_IMAGE},target=/root/.cache/uv \
     uv build --wheel --out-dir /build/dist
 
 FROM ${TUMBLEWEED_IMAGE} AS runtime-base
+ARG TUMBLEWEED_IMAGE
 
 # The recorder in docker/e2e-environment.py reports the installed version of
 # every package named here, so this list is the single source for both.
@@ -87,6 +90,7 @@ RUN zypper --non-interactive install --no-recommends $KWIN_MCP_SYSTEM_PACKAGES \
     && install -d -m 0700 -o tester -g tester /tmp/xdg-runtime
 
 FROM runtime-base AS venv-builder
+ARG TUMBLEWEED_IMAGE
 
 COPY --from=uv-bin /uv /usr/local/bin/uv
 RUN zypper --non-interactive install --no-recommends \
@@ -100,7 +104,8 @@ RUN zypper --non-interactive install --no-recommends \
 
 COPY --from=wheel-builder /build/pyproject.toml /tmp/pyproject.toml
 COPY --from=wheel-builder /build/dist/ /tmp/wheels/
-RUN --mount=type=cache,target=/root/.cache/uv \
+ARG TARGETARCH
+RUN --mount=type=cache,id=kwin-mcp-uv-opensuse-${TARGETARCH}-${TUMBLEWEED_IMAGE},target=/root/.cache/uv \
     python3 -m venv --system-site-packages /opt/kwin-mcp-venv \
     && uv pip install \
         --python /opt/kwin-mcp-venv/bin/python \

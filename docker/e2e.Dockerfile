@@ -44,7 +44,8 @@ RUN apt-get update \
 WORKDIR /build
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
-RUN --mount=type=cache,target=/root/.cache/uv \
+ARG TARGETARCH
+RUN --mount=type=cache,id=kwin-mcp-uv-debian-${TARGETARCH}-a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a-${DEBIAN_SNAPSHOT},target=/root/.cache/uv \
     uv build --wheel --out-dir /build/dist
 
 FROM debian-snapshot AS runtime-base
@@ -108,6 +109,7 @@ RUN apt-get update \
     && install -d -m 0700 -o tester -g tester /tmp/xdg-runtime
 
 FROM runtime-base AS venv-builder
+ARG DEBIAN_SNAPSHOT
 
 COPY --from=uv-bin /uv /usr/local/bin/uv
 RUN apt-get update \
@@ -122,7 +124,8 @@ RUN apt-get update \
 
 COPY --from=wheel-builder /build/pyproject.toml /tmp/pyproject.toml
 COPY --from=wheel-builder /build/dist/ /tmp/wheels/
-RUN --mount=type=cache,target=/root/.cache/uv \
+ARG TARGETARCH
+RUN --mount=type=cache,id=kwin-mcp-uv-debian-${TARGETARCH}-a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a-${DEBIAN_SNAPSHOT},target=/root/.cache/uv \
     python3 -m venv --system-site-packages /opt/kwin-mcp-venv \
     && uv pip install \
         --python /opt/kwin-mcp-venv/bin/python \

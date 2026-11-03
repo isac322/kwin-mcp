@@ -1286,7 +1286,10 @@ def test_closed_menu_keeps_discovery_and_action_without_pointer_coordinates(
         "Help",
     )
     assert help_menu.rect is not None
-    assert engine.element_act(RefAddr(ref=help_menu.ref), "ShowMenu").dispatch == "confirmed"
+    show_menu = next(
+        action for action in help_menu.actions if action.casefold().replace(" ", "") == "showmenu"
+    )
+    assert engine.element_act(RefAddr(ref=help_menu.ref), show_menu).dispatch == "confirmed"
     atspi.wait_for(
         lambda nodes: any(
             n.name == "About KCalc" and {"visible", "showing"} <= n.states for n in nodes

@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Reading a `kwin://screenshots/{name}` or `kwin://apps/{pid}/log` resource whose name is malformed or names no screenshot or launched app now fails with `-32602` (Invalid params), the code MCP 2026-07-28 uses for a resource that is not found, instead of `-32603` (Internal error). Reading a well-formed URI without a running session still fails with `-32603` and the usual `No session running` text.
+- ScreenShot2 captures mask pixels outside the observed output rectangles as transparent RGBA while preserving opaque in-output pixels and `coverage: full` for complete workspace captures.
 - The E2E input-option matrix counts the physical press/release pairs received for the tested click-option cases independently of GTK's multi-click settings, avoiding false failures when GTK groups clicks across calls.
 - E2E CI shares stable, same-run image and shard-status artifacts across partial reruns. Each row checks its latest build and shard job results before validating coverage, so an older success cannot hide a newer failure. Diagnostic archives remain attempt-specific.
 - The OpenCode integration uses the V2 `Plugin.define` and `plugins` configuration to register the `kwin-mcp` MCP server and bundled `kwin-desktop-automation` skill automatically while preserving existing user entries. OpenCode V1 is unsupported.

@@ -24,6 +24,9 @@ from kwin_mcp.screenshot import (
     FrameMapping,
     OutputGeometry,
     WorkspaceTopology,
+    _image_from_raw_frame,
+    _mask_screenshot2_to_outputs,
+    _RawFrame,
     reframe_screenshot,
 )
 from kwin_mcp.server import KwinServer, ServerFlags
@@ -70,6 +73,72 @@ def _capture(
     path = tmp_path / "screenshot.png"
     image.save(path)
     return path
+
+
+def _mixed_height_topology() -> WorkspaceTopology:
+    return WorkspaceTopology(
+        outputs=(
+            OutputGeometry("left", 0, 0, 3, 2, 1.0),
+            OutputGeometry("right", 3, 0, 2, 4, 1.0),
+        ),
+        virtual=(0, 0, 5, 4),
+    )
+
+
+def _format16_frame() -> _RawFrame:
+    pixels = []
+    for y in range(4):
+        for x in range(5):
+            if (x, y) == (4, 0):
+                pixels.extend((17, 34, 51, 0))
+            elif (x, y) in {(0, 0), (0, 3)}:
+                pixels.extend((255, 255, 255, 0))
+            else:
+                pixels.extend((0, 0, 0, 0))
+    return _RawFrame(bytes(pixels), 5, 4, 20, 16, 1.0)
+
+
+def test_screenshot2_format16_gap_is_transparent_after_topology_mask() -> None:
+    topology = _mixed_height_topology()
+
+    image = _mask_screenshot2_to_outputs(_image_from_raw_frame(_format16_frame()), topology)
+
+    assert image.mode == "RGBA"
+    assert image.getpixel((0, 0)) == (255, 255, 255, 255)
+    assert image.getpixel((4, 0)) == (17, 34, 51, 255)
+    assert image.getpixel((4, 3)) == (0, 0, 0, 255)
+    assert image.getpixel((0, 3)) == (0, 0, 0, 0)
+
+
+@pytest.mark.parametrize("burst", [False, True])
+def test_screenshot2_capture_paths_mask_format16_gap(
+    burst: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    topology = _mixed_height_topology()
+    frame = _format16_frame()
+
+    class _Bus:
+        def get_object(self, *_args: object, **_kwargs: object) -> object:
+            return object()
+
+    monkeypatch.setattr(screenshot.dbus.bus, "BusConnection", lambda _address: _Bus())
+    monkeypatch.setattr(screenshot.dbus, "Interface", lambda *_args: object())
+    monkeypatch.setattr(screenshot.dbus, "Boolean", lambda value: value)
+    monkeypatch.setattr(screenshot, "query_topology", lambda _address: topology)
+    monkeypatch.setattr(screenshot, "_capture_raw_frame", lambda *_args: frame)
+
+    if burst:
+        [(path, mapping)] = screenshot._capture_frame_burst_dbus("", tmp_path, [0])
+    else:
+        path = tmp_path / "capture.png"
+        _, mapping = screenshot.capture_screenshot_dbus("", path)
+
+    assert mapping.coverage == "full"
+    with Image.open(path) as image:
+        assert image.mode == "RGBA"
+        assert image.getpixel((0, 0)) == (255, 255, 255, 255)
+        assert image.getpixel((4, 0)) == (17, 34, 51, 255)
+        assert image.getpixel((0, 3)) == (0, 0, 0, 0)
 
 
 def _logical_point(line: str, pixel: tuple[float, float]) -> tuple[float, float]:

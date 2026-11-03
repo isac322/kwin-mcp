@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `session_start(output_count=1)` creates any positive number of virtual KWin outputs. `screen_width` and `screen_height` apply to each output; with multiple outputs, `session.screen` reports the KWin workspace union instead of one output's size.
+
 ### Fixed
 
 - `app_launch` refuses a NUL byte in the command or an env value, and an env name that is empty or contains `=` or NUL, with an error naming the field, before the session is looked up. NUL bytes and `=` used to fail as a bare `embedded null byte` or `illegal environment variable name`, most of them after creating an empty app log; an empty name reached the program as a malformed `=value` entry.

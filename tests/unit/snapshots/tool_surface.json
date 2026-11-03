@@ -7,13 +7,13 @@
    "properties": {
     "screen_width": {
      "default": 1920,
-     "description": "Virtual screen width, logical px.",
+     "description": "Width of each virtual output, logical px.",
      "minimum": 1,
      "type": "integer"
     },
     "screen_height": {
      "default": 1080,
-     "description": "Virtual screen height, logical px.",
+     "description": "Height of each virtual output, logical px.",
      "minimum": 1,
      "type": "integer"
     },
@@ -49,6 +49,12 @@
       "artifacts": false,
       "home": false
      }
+    },
+    "output_count": {
+     "default": 1,
+     "description": "Number of virtual outputs; positive integer.",
+     "minimum": 1,
+     "type": "integer"
     }
    },
    "type": "object",

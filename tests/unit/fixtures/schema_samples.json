@@ -6,6 +6,7 @@
    {
     "screen_width": 1280,
     "screen_height": 800,
+    "output_count": 2,
     "enable_clipboard": true,
     "home": "isolated",
     "retention": {
@@ -642,6 +643,18 @@
    },
    {
     "screen_width": "wide"
+   },
+   {
+    "output_count": 0
+   },
+   {
+    "output_count": -1
+   },
+   {
+    "output_count": true
+   },
+   {
+    "output_count": 1.5
    }
   ],
   "session_connect": [

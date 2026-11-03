@@ -16,13 +16,13 @@
      "name": "screen_width",
      "required": false,
      "default": 1920,
-     "description": "Virtual screen width, logical px."
+     "description": "Width of each virtual output, logical px."
     },
     {
      "name": "screen_height",
      "required": false,
      "default": 1080,
-     "description": "Virtual screen height, logical px."
+     "description": "Height of each virtual output, logical px."
     },
     {
      "name": "enable_clipboard",
@@ -44,6 +44,12 @@
       "home": false
      },
      "description": "What survives the session end, decided now and honoured by session_stop and server exit."
+    },
+    {
+     "name": "output_count",
+     "required": false,
+     "default": 1,
+     "description": "Number of virtual outputs; positive integer."
     }
    ],
    "output": [

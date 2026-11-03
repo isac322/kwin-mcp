@@ -30,6 +30,7 @@ Every other tool except `session_info` requires a session. Two mutually exclusiv
 Opens an isolated `dbus-run-session + kwin_wayland --virtual` compositor. Nothing reaches the host display. Use when the user says "test", "headless", "CI", "isolated", or names a specific app to launch fresh. Then launch the app with `app_launch(command="kate")`; if the launch fails, the session keeps running, so call `session_stop` if you want to roll back.
 
 Useful arguments:
+- `output_count=2` creates two virtual outputs (default `1`, positive integer with no application limit). `screen_width` and `screen_height` size each output; `session.screen` reports the workspace union for multiple outputs, or `null` if unavailable. KWin controls their initial layout; this option does not set per-output positions or scales.
 - `enable_clipboard=true` — required for `clipboard_read` / `clipboard_write` (not for `keyboard_type(method="unicode")`). Off by default because `wl-copy` can hang on a freshly minted bus.
 - `home="isolated"` — temp HOME with isolated XDG dirs; apps use fresh settings but keep normal filesystem access.
 - `retention={"artifacts": true}` — keeps the `/tmp/kwin-mcp-screenshots-*` artifacts directory (screenshots, frames and launched apps' logs) after `session_stop`; `retention={"home": true}` (with `home="isolated"`) keeps the temp HOME. Delete kept directories yourself when done.

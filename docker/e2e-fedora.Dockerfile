@@ -14,6 +14,7 @@ ARG FEDORA_IMAGE=fedora:44@sha256:43b29f65a41eb9c35e1cd5323e3bdf3b655c2357a9f4f1
 FROM ghcr.io/astral-sh/uv:0.12.19@sha256:04d046b13e60d6bcec73cbc5e1cad25d680dea90c8573340950a0ac2d1aef424 AS uv-bin
 
 FROM ${FEDORA_IMAGE} AS wheel-builder
+ARG FEDORA_IMAGE
 
 COPY --from=uv-bin /uv /usr/local/bin/uv
 RUN dnf -y install --setopt=install_weak_deps=False python3 \
@@ -22,10 +23,12 @@ RUN dnf -y install --setopt=install_weak_deps=False python3 \
 WORKDIR /build
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
-RUN --mount=type=cache,target=/root/.cache/uv \
+ARG TARGETARCH
+RUN --mount=type=cache,id=kwin-mcp-uv-fedora-${TARGETARCH}-${FEDORA_IMAGE},target=/root/.cache/uv \
     uv build --wheel --out-dir /build/dist
 
 FROM ${FEDORA_IMAGE} AS runtime-base
+ARG FEDORA_IMAGE
 
 # The recorder in docker/e2e-environment.py reports the installed version of
 # every package named here, so this list is the single source for both.
@@ -99,7 +102,8 @@ RUN dnf -y install --setopt=install_weak_deps=False \
 
 COPY --from=wheel-builder /build/pyproject.toml /tmp/pyproject.toml
 COPY --from=wheel-builder /build/dist/ /tmp/wheels/
-RUN --mount=type=cache,target=/root/.cache/uv \
+ARG TARGETARCH
+RUN --mount=type=cache,id=kwin-mcp-uv-fedora-${TARGETARCH}-${FEDORA_IMAGE},target=/root/.cache/uv \
     python3 -m venv --system-site-packages /opt/kwin-mcp-venv \
     && uv pip install \
         --python /opt/kwin-mcp-venv/bin/python \

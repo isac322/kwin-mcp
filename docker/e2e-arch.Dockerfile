@@ -48,7 +48,8 @@ RUN pacman -S --noconfirm --needed python \
 WORKDIR /build
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
-RUN --mount=type=cache,target=/root/.cache/uv \
+ARG TARGETARCH
+RUN --mount=type=cache,id=kwin-mcp-uv-arch-${TARGETARCH}-f3691b4dde62ba4c4b6f0ae2c1fbf28e8c0c8c4b9a35c7e06dc1f70e21aa29f6-${ARCH_ARCHIVE_DATE},target=/root/.cache/uv \
     uv build --wheel --out-dir /build/dist
 
 FROM arch-base AS runtime-base
@@ -124,7 +125,8 @@ RUN pacman -S --noconfirm --needed \
 
 COPY --from=wheel-builder /build/pyproject.toml /tmp/pyproject.toml
 COPY --from=wheel-builder /build/dist/ /tmp/wheels/
-RUN --mount=type=cache,target=/root/.cache/uv \
+ARG TARGETARCH
+RUN --mount=type=cache,id=kwin-mcp-uv-arch-${TARGETARCH}-f3691b4dde62ba4c4b6f0ae2c1fbf28e8c0c8c4b9a35c7e06dc1f70e21aa29f6-${ARCH_ARCHIVE_DATE},target=/root/.cache/uv \
     python -m venv --system-site-packages /opt/kwin-mcp-venv \
     && uv pip install \
         --python /opt/kwin-mcp-venv/bin/python \

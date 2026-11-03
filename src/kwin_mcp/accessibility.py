@@ -796,26 +796,35 @@ def invoke_action(address: dict[str, Any], action_name: str | Sequence[str]) -> 
 def _finalize(info: ElementInfo, mapping: _WindowMapping) -> ElementInfo:
     """Turn window-local extents into screen coordinates, or mark unavailable.
 
-    Element-level problems (no extents at all, empty rectangle) win over
-    mapping problems: an element without a rectangle has no position to
-    translate regardless of whether its window was identified. ``window_id``
-    is the matched KWin window either way.
+    Element-level problems win over mapping problems. A positive offset is
+    usable only when the element is both visible and showing and its matched
+    window is on the current virtual desktop.
     """
     info.window_id = None if mapping.window is None else mapping.window["id"]
     if not info.has_extents:
-        info.mapped = False
-        info.unavailable = "no-extents"
+        reason = "no-extents"
     elif info.width <= 0 or info.height <= 0:
-        info.mapped = False
-        info.unavailable = "empty-extents"
-    elif mapping.offset is not None:
+        reason = "empty-extents"
+    elif mapping.offset is None or mapping.window is None:
+        reason = mapping.reason or "unmapped"
+    elif "showing" not in info.states:
+        reason = "not-showing"
+    elif "visible" not in info.states:
+        reason = "not-visible"
+    elif mapping.window["onAllDesktops"]:
+        reason = ""
+    elif not mapping.window["desktops"] or not mapping.window["currentDesktop"]:
+        reason = "desktop-unavailable"
+    elif mapping.window["currentDesktop"] not in mapping.window["desktops"]:
+        reason = "inactive-desktop"
+    else:
+        reason = ""
+    info.mapped = not reason
+    info.unavailable = reason
+    if info.mapped:
+        assert mapping.offset is not None
         info.x += mapping.offset[0]
         info.y += mapping.offset[1]
-        info.mapped = True
-        info.unavailable = ""
-    else:
-        info.mapped = False
-        info.unavailable = mapping.reason or "unmapped"
     return info
 
 
@@ -861,11 +870,14 @@ def _kwin_windows() -> tuple[list[KWinWindow], str]:
 
 
 def _window_key(window: KWinWindow) -> tuple[object, ...]:
-    """Identity + geometry of a KWin window for before/after comparison."""
+    """Identity, desktop membership and geometry for snapshot comparison."""
     return (
         window["id"],
         window["pid"],
         window["caption"],
+        window["currentDesktop"],
+        window["onAllDesktops"],
+        frozenset(window["desktops"]),
         *window["client"],
         *window["buffer"],
     )

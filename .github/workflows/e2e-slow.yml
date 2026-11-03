@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   slow-session:
-    name: Slow E2E (${{ matrix.label }})
+    if: ${{ github.event_name == 'schedule' }}
     strategy:
       fail-fast: false
       matrix:
@@ -82,4 +82,244 @@ jobs:
         with:
           name: e2e-slow-${{ matrix.label }}
           path: ${{ env.E2E_ARTIFACT_DIR }}
+          if-no-files-found: warn
+
+  native-visual-qa:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    name: Native visual QA (${{ matrix.case_id }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case_id: capture-baseline-427
+            case_kind: capture
+            subject_sha: 427798d8166e1e051055787b07fab531f17f5dac
+            probe_expect: opaque
+            probe_dir: baseline
+          - case_id: capture-candidate-c6fd
+            case_kind: capture
+            subject_sha: c6fd2d53da85008df7f2c4532832ae0d4760a056
+            probe_expect: transparent
+            probe_dir: candidate
+          - case_id: topology-baseline-427
+            case_kind: topology
+            subject_sha: 427798d8166e1e051055787b07fab531f17f5dac
+            topology_expectation: indexerror
+          - case_id: topology-candidate-55ff
+            case_kind: topology
+            subject_sha: 55ff3d9525e11162702530cbba43a01e7b33eefb
+            topology_expectation: pass
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    env:
+      CASE_ID: ${{ matrix.case_id }}
+      CASE_KIND: ${{ matrix.case_kind }}
+      GITHUB_SUBJECT_SHA: ${{ matrix.subject_sha }}
+      PROBE_EXPECT: ${{ matrix.probe_expect }}
+      PROBE_DIR: ${{ matrix.probe_dir }}
+      TOPOLOGY_EXPECTATION: ${{ matrix.topology_expectation }}
+      IMAGE_NAME: kwin-mcp-native-visual-${{ matrix.case_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+      VERSION_CONTAINER_NAME: kwin-mcp-native-version-${{ matrix.case_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+      TEST_CONTAINER_NAME: kwin-mcp-native-test-${{ matrix.case_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      # The workflow and probe come from this QA branch. The wheel and fixture
+      # sources are built separately from the exact subject SHA under test.
+      - name: Checkout QA branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref }}
+          path: qa
+          fetch-depth: 1
+
+      - name: Checkout tested subject
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ matrix.subject_sha }}
+          path: subject
+          fetch-depth: 1
+
+      - name: Create artifact directories and resource ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOST_ARTIFACT_ROOT="$RUNNER_TEMP/kwin-premerge-native-visual-qa"
+          export HOST_ARTIFACT_DIR="$HOST_ARTIFACT_ROOT/$CASE_ID"
+          export IMAGE_NAME="kwin-mcp-native-visual-$CASE_ID-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          export VERSION_CONTAINER_NAME="kwin-mcp-native-version-$CASE_ID-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          export TEST_CONTAINER_NAME="kwin-mcp-native-test-$CASE_ID-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          {
+            printf 'HOST_ARTIFACT_ROOT=%s\n' "$HOST_ARTIFACT_ROOT"
+            printf 'HOST_ARTIFACT_DIR=%s\n' "$HOST_ARTIFACT_DIR"
+            printf 'IMAGE_NAME=%s\n' "$IMAGE_NAME"
+            printf 'VERSION_CONTAINER_NAME=%s\n' "$VERSION_CONTAINER_NAME"
+            printf 'TEST_CONTAINER_NAME=%s\n' "$TEST_CONTAINER_NAME"
+          } >> "$GITHUB_ENV"
+          install -d -m 0777 "$HOST_ARTIFACT_DIR"
+          ledger="$HOST_ARTIFACT_ROOT/resource-ledger.tsv"
+          if [[ ! -e "$ledger" ]]; then
+            install -d -m 0777 "$HOST_ARTIFACT_ROOT"
+            printf '%s\n' 'kind<TAB>identifier<TAB>delete-command<TAB>created-utc' > "$ledger"
+          fi
+          created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          {
+            printf 'image\t%s\tdocker image rm %s (not executed; hosted-runner teardown)\t%s\n' "$IMAGE_NAME" "$IMAGE_NAME" "$created"
+            printf 'container\t%s\tdocker rm --force %s (not executed; hosted-runner teardown)\t%s\n' "$VERSION_CONTAINER_NAME" "$VERSION_CONTAINER_NAME" "$created"
+            printf 'container\t%s\tdocker rm --force %s (not executed; hosted-runner teardown)\t%s\n' "$TEST_CONTAINER_NAME" "$TEST_CONTAINER_NAME" "$created"
+            printf 'artifact-dir\t%s\trm -rf -- %s (not executed; hosted-runner teardown)\t%s\n' "$HOST_ARTIFACT_DIR" "$HOST_ARTIFACT_DIR" "$created"
+          } >> "$ledger"
+          cp "$ledger" "$HOST_ARTIFACT_DIR/resource-ledger.tsv"
+          cat > "$HOST_ARTIFACT_DIR/case.json" <<EOF
+          {
+            "case_id": "$CASE_ID",
+            "case_kind": "$CASE_KIND",
+            "subject_sha": "$GITHUB_SUBJECT_SHA",
+            "probe_expect": "$PROBE_EXPECT",
+            "probe_dir": "$PROBE_DIR",
+            "topology_expectation": "$TOPOLOGY_EXPECTATION",
+            "qa_ref": "${GITHUB_REF}",
+            "qa_sha": "${GITHUB_SHA}"
+          }
+          EOF
+
+      - name: Build installed openSUSE subject image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build \
+            --file "$GITHUB_WORKSPACE/subject/docker/e2e-opensuse.Dockerfile" \
+            --tag "$IMAGE_NAME" \
+            "$GITHUB_WORKSPACE/subject" \
+            2>&1 | tee "$HOST_ARTIFACT_DIR/docker-build.log"
+          docker image inspect "$IMAGE_NAME" \
+            > "$HOST_ARTIFACT_DIR/docker-image-inspect.json"
+
+      - name: Record and require KWin 6.8 or newer
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker create \
+            --name "$VERSION_CONTAINER_NAME" \
+            --entrypoint kwin_wayland \
+            "$IMAGE_NAME" --version \
+            > "$HOST_ARTIFACT_DIR/version-container-id.txt"
+          docker start --attach "$VERSION_CONTAINER_NAME" \
+            2>&1 | tee "$HOST_ARTIFACT_DIR/kwin-version.txt"
+          version_pair="$(
+            grep -Eo '[0-9]+\.[0-9]+' "$HOST_ARTIFACT_DIR/kwin-version.txt" \
+              | awk 'NR == 1 { print; exit }'
+          )"
+          if [[ -z "$version_pair" ]]; then
+            echo "could not parse the installed KWin version" >&2
+            exit 1
+          fi
+          version_major="${version_pair%%.*}"
+          version_minor="${version_pair#*.}"
+          if (( version_major < 6 || (version_major == 6 && version_minor < 8) )); then
+            echo "native visual QA requires KWin >= 6.8, got $version_pair" >&2
+            exit 1
+          fi
+          printf '{"version":"%s"}\n' "$version_pair" > "$HOST_ARTIFACT_DIR/kwin-version.json"
+          docker inspect "$VERSION_CONTAINER_NAME" \
+            > "$HOST_ARTIFACT_DIR/version-container-inspect.json"
+
+      # Keep this identical to the supported host preparation in e2e.yml.
+      # No host node is created, chmodded, or passed to any non-test container.
+      - name: Prepare and identify host udmabuf
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -c /dev/udmabuf ]]; then
+            if ! sudo -n modprobe udmabuf; then
+              echo "modprobe udmabuf returned non-zero; waiting for udev..." >&2
+            fi
+            if [[ ! -c /dev/udmabuf ]]; then
+              sudo -n udevadm settle --timeout=10
+            fi
+          fi
+          if [[ ! -c /dev/udmabuf ]]; then
+            echo "required character device /dev/udmabuf is unavailable" >&2
+            exit 1
+          fi
+          read -r major_hex minor_hex < <(stat -c '%t %T' /dev/udmabuf)
+          major=$((16#$major_hex))
+          minor=$((16#$minor_hex))
+          sysfs_device="/sys/dev/char/${major}:${minor}"
+          udmabuf_dev="/sys/class/misc/udmabuf/dev"
+          if [[ ! -r "$udmabuf_dev" ]]; then
+            echo "registered udmabuf identity is unavailable ($udmabuf_dev)" >&2
+            exit 1
+          fi
+          registered_device="$(<"$udmabuf_dev")"
+          if [[ "$registered_device" != "$major:$minor" ]]; then
+            echo "udmabuf identity mismatch: node=$major:$minor registered=$registered_device" >&2
+            exit 1
+          fi
+          if [[ ! -e "$sysfs_device" ]]; then
+            echo "sysfs identity is unavailable for /dev/udmabuf ($major:$minor)" >&2
+            exit 1
+          fi
+          {
+            printf 'node=%s\n' /dev/udmabuf
+            printf 'node_major_minor=%s:%s\n' "$major" "$minor"
+            printf 'registered_major_minor=%s\n' "$registered_device"
+            printf 'sysfs_identity=%s\n' "$(readlink -f "$sysfs_device")"
+            printf 'host_gid=%s\n' "$(stat -c '%g' /dev/udmabuf)"
+            stat -c 'type=%F mode=%04a uid=%u gid=%g major=%t minor=%T' /dev/udmabuf
+            cat "$sysfs_device/uevent"
+          } | tee "$HOST_ARTIFACT_DIR/udmabuf-identity.txt"
+          echo "UDMABUF_GID=$(stat -c '%g' /dev/udmabuf)" >> "$GITHUB_ENV"
+
+      - name: Run native visual QA subject
+        shell: bash
+        run: |
+          set -o pipefail
+          docker_args=(
+            --name "$TEST_CONTAINER_NAME"
+            --env CASE_ID
+            --env CASE_KIND
+            --env PROBE_EXPECT
+            --env PROBE_DIR
+            --env TOPOLOGY_EXPECTATION
+            --env KWIN_MCP_PROBE_COMMIT="$GITHUB_SUBJECT_SHA"
+            --env KWIN_MCP_ARTIFACT_DIR=/artifacts
+            --env KWIN_MCP_E2E_STRICT_SKIPS=1
+            --env KWIN_MCP_E2E_SCREENSHOT=1
+            --volume "$HOST_ARTIFACT_DIR:/artifacts"
+            --volume "$GITHUB_WORKSPACE/qa/scripts/premerge_capture_gaps_probe.py:/probes/premerge_capture_gaps_probe.py:ro"
+            --volume "$GITHUB_WORKSPACE/qa/scripts/premerge_native_case.sh:/qa/premerge_native_case.sh:ro"
+            --device=/dev/udmabuf:/dev/udmabuf:rw
+            --group-add "$UDMABUF_GID"
+          )
+          set +e
+          timeout --signal=INT --kill-after=1m 45m \
+            docker run "${docker_args[@]}" "$IMAGE_NAME" \
+              /bin/sh /qa/premerge_native_case.sh \
+            2>&1 | tee "$HOST_ARTIFACT_DIR/docker-test.log"
+          test_rc=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$test_rc" > "$HOST_ARTIFACT_DIR/docker-test.exit"
+          exit "$test_rc"
+
+      - name: Collect native QA diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker inspect "$TEST_CONTAINER_NAME" \
+            > "$HOST_ARTIFACT_DIR/test-container-inspect.json" 2> "$HOST_ARTIFACT_DIR/test-container-inspect.stderr" || true
+          docker logs --timestamps "$TEST_CONTAINER_NAME" \
+            > "$HOST_ARTIFACT_DIR/test-container.log" 2>&1 || true
+          docker top "$TEST_CONTAINER_NAME" -eo pid,ppid,user,stat,etime,args \
+            > "$HOST_ARTIFACT_DIR/test-container-processes.txt" 2>&1 || true
+          docker inspect "$VERSION_CONTAINER_NAME" \
+            > "$HOST_ARTIFACT_DIR/version-container-inspect-final.json" 2>&1 || true
+          find "$HOST_ARTIFACT_DIR" -type f -maxdepth 3 -print | sort \
+            > "$HOST_ARTIFACT_DIR/artifact-inventory.txt"
+
+      - name: Upload native visual QA evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-visual-qa-${{ matrix.case_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kwin-premerge-native-visual-qa/${{ matrix.case_id }}
           if-no-files-found: warn

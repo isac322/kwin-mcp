@@ -306,7 +306,7 @@ kwin-mcp registers 29 tools. Parameters are listed in schema order: a bare name 
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `app_launch` | `command`, `env?=null` | Launch a program in the session, split with `shlex` (no shell), in its own process group, with stdin closed. `env` adds environment variables for this process. stdout and stderr go to a log file read with `app_log`. An empty command, unbalanced quotes, a NUL byte, or an env name that is empty or contains `=` is an error. A failed launch keeps the session running; call `session_stop` to roll back. Returns `pid`, `log_path` and `log_uri`. |
+| `app_launch` | `command`, `env?=null` | Launch a program in the session, split with `shlex` (no shell), in its own process group, with stdin closed. `env` adds environment variables for this process. stdout and stderr go to a log file read with `app_log`. An empty command, unbalanced quotes, or a NUL byte in the command or an env value is an error; an env name that is empty or contains `=` is also invalid. A failed launch keeps the session running; call `session_stop` to roll back. Returns `pid`, `log_path` and `log_uri`. |
 | `app_log` | `pid`, `last_n_lines?=50` | Return the tail of the captured stdout/stderr of an app launched with `app_launch` (`session_info` lists the PIDs). `last_n_lines=0` returns the whole log. |
 
 ### Screen Capture (1 tool)

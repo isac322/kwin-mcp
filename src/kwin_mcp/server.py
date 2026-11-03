@@ -569,10 +569,10 @@ _RETENTION_DESCRIPTION = (
 def session_start(
     engine: AutomationEngine,
     screen_width: Annotated[
-        int, Field(ge=1, description="Virtual screen width, logical px.")
+        int, Field(ge=1, description="Width of each virtual output, logical px.")
     ] = 1920,
     screen_height: Annotated[
-        int, Field(ge=1, description="Virtual screen height, logical px.")
+        int, Field(ge=1, description="Height of each virtual output, logical px.")
     ] = 1080,
     enable_clipboard: Annotated[
         bool, Field(description="Serve clipboard_* (off: wl-clipboard may hang).")
@@ -585,6 +585,9 @@ def session_start(
         ),
     ] = "host",
     retention: Annotated[Retention, Field(description=_RETENTION_DESCRIPTION)] = NO_RETENTION,
+    output_count: Annotated[
+        int, Field(ge=1, strict=True, description="Number of virtual outputs; positive integer.")
+    ] = 1,
 ) -> SessionInfo:
     """Start an isolated virtual KWin Wayland session (one at a time). Then launch apps with app_launch."""  # noqa: E501
     return engine.session_start(
@@ -593,6 +596,7 @@ def session_start(
         enable_clipboard=enable_clipboard,
         home=home,
         retention=retention,
+        output_count=output_count,
     )
 
 

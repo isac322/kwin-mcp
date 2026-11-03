@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `session_start(output_count=1)` creates any positive number of virtual KWin outputs. `screen_width` and `screen_height` apply to each output; with multiple outputs, `session.screen` reports the KWin workspace union instead of one output's size.
+
 ### Fixed
 
 - Element coordinates are withheld when AT-SPI does not report both `visible` and `showing`, or when the matched KWin window is on another virtual desktop. Hidden and off-desktop elements keep their refs and semantic actions; pointer and touch targets recheck the same policy at action time. Desktop membership and the current desktop are read with window geometry and included in the before/after stability check.

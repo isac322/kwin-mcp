@@ -100,6 +100,7 @@ def test_enum_value_sets(listing: dict[str, dict[str, Any]]) -> None:
 _ALLOWED_BOUNDS = {
     ("screen_width", "minimum", 1),
     ("screen_height", "minimum", 1),
+    ("output_count", "minimum", 1),
     ("last_n_lines", "minimum", 0),
     ("max_edge", "minimum", 0),
     ("count", "minimum", 1),
@@ -145,6 +146,39 @@ def test_numeric_bounds_only_where_s_states(listing: dict[str, dict[str, Any]]) 
         assert not set(_BOUND_KEYWORDS) & set(wait[field]), field
     delays = _property(inputs["pointer_move"], "capture")["properties"]["delays_ms"]
     assert "minItems" not in delays
+
+
+def test_output_count_schema_is_positive_with_no_upper_bound(
+    listing: dict[str, dict[str, Any]],
+) -> None:
+    schema = _inputs(listing)["session_start"]
+    count = schema["properties"]["output_count"]
+    assert count["type"] == "integer"
+    assert count["default"] == 1
+    assert count["minimum"] == 1
+    assert "maximum" not in count
+    validator = Draft202012Validator(schema)
+    for value in (1, 2, 1000, 10**30):
+        assert validator.is_valid({"output_count": value}), value
+    for value in (0, -1, True, False, 1.5, "2", None):
+        assert not validator.is_valid({"output_count": value}), value
+
+
+@pytest.mark.parametrize("value", [0, -1, True, False, 1.5, 2.0, "2", None])
+def test_output_count_server_rejects_invalid_values_before_engine_dispatch(
+    fake_engine: FakeEngine, monkeypatch: pytest.MonkeyPatch, value: object
+) -> None:
+    calls: list[object] = []
+
+    def forbidden(**kwargs: object) -> None:
+        calls.append(kwargs)
+        pytest.fail("invalid output_count reached the engine")
+
+    monkeypatch.setattr(fake_engine.engine, "session_start", forbidden)
+    server = KwinServer(fake_engine.engine, ServerFlags())
+    with pytest.raises(ToolError, match="validation error"):
+        asyncio.run(server.call_tool("session_start", {"output_count": value}))
+    assert calls == []
 
 
 _DI_NAME = re.compile(

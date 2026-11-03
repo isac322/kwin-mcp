@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `session_start(output_count=1)` creates any positive number of virtual KWin outputs. `screen_width` and `screen_height` apply to each output; with multiple outputs, `session.screen` reports the KWin workspace union instead of one output's size.
+
 ### Fixed
 
 - `window_focus`, `window_place` and `window_close` refuse a selector of only empty strings, such as `{"caption": ""}`, like `{}`. It used to match the only open window, and `window_close` closed it.

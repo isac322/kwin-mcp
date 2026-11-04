@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Document that forcibly killed servers can leave virtual-session processes and temporary directories behind until manually removed.
+
 ### Added
 
 - `session_start(output_count=1)` creates any positive number of virtual KWin outputs. `screen_width` and `screen_height` apply to each output; with multiple outputs, `session.screen` reports the KWin workspace union instead of one output's size.

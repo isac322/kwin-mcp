@@ -83,6 +83,14 @@ def _is_live(pid: int | str) -> bool:
     return stat is not None and stat[0] not in ("Z", "X")
 
 
+def _argv0(pid: int) -> bytes:
+    """argv[0] of pid, or b"" when /proc cannot read it."""
+    try:
+        return (Path("/proc") / str(pid) / "cmdline").read_bytes().split(b"\0")[0]
+    except OSError:
+        return b""
+
+
 def _live_kwin_pids() -> set[int]:
     pids: set[int] = set()
     for entry in Path("/proc").iterdir():
@@ -144,9 +152,17 @@ def _app_pids(engine: AutomationEngine) -> set[int]:
 @pytest.mark.qa("QA-APP-001")
 def test_launch_returns_pid_command_log_path_uri(session: AutomationEngine) -> None:
     result = session.app_launch("kcalc")
-    cmdline = (Path("/proc") / str(result.pid) / "cmdline").read_bytes().split(b"\0")
-    assert Path(cmdline[0].decode()).name == "kcalc", (
-        cmdline,
+    # Popen returns mid-execve: cmdline can briefly be empty or still the test's own argv.
+    deadline = time.monotonic() + EXIT_TIMEOUT_S
+    while (
+        Path(_argv0(result.pid).decode()).name != "kcalc"
+        and _is_live(result.pid)
+        and time.monotonic() < deadline
+    ):
+        time.sleep(POLL_INTERVAL_S)
+    argv0 = _argv0(result.pid)
+    assert Path(argv0.decode()).name == "kcalc", (
+        argv0,
         _proc_stat(result.pid),
         Path(result.log_path).read_text(errors="replace")[-2000:],
     )

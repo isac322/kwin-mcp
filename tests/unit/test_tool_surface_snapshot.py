@@ -13,6 +13,7 @@ import collections
 import difflib
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -151,3 +152,30 @@ def test_descriptions_equal_shipped_text(listing: dict[str, dict[str, Any]]) -> 
             elif "properties" in published:
                 # A dropped restatement of an object type: the type's one-liner remains.
                 assert published.get("description"), (name, param["name"])
+
+
+def _null_mentions(schema: object, path: str) -> list[str]:
+    """Paths of input descriptions that mention null on a schema without a null arm."""
+    found: list[str] = []
+    if isinstance(schema, dict):
+        description = schema.get("description")
+        accepts_null = schema.get("type") == "null" or {"type": "null"} in schema.get("anyOf", [])
+        mentions_null = isinstance(description, str) and re.search(r"\bnull\b", description, re.I)
+        if mentions_null and not accepts_null:
+            found.append(path)
+        for key, value in schema.items():
+            found.extend(_null_mentions(value, f"{path}/{key}"))
+    elif isinstance(schema, list):
+        for index, value in enumerate(schema):
+            found.extend(_null_mentions(value, f"{path}/{index}"))
+    return found
+
+
+def test_input_descriptions_name_null_only_where_published(
+    listing: dict[str, dict[str, Any]],
+) -> None:
+    # Optional nullable fields are published without their null arm, so their
+    # descriptions say "omit", not "null".
+    assert [
+        path for name, tool in listing.items() for path in _null_mentions(tool["inputSchema"], name)
+    ] == []

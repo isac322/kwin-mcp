@@ -766,7 +766,7 @@
    "properties": {
     "region": {
      "additionalProperties": false,
-     "description": "Crop rectangle in global logical px; null = whole workspace. Parts outside the workspace are dropped. Global logical px.",
+     "description": "Crop rectangle in global logical px; omit = whole workspace. Parts outside the workspace are dropped. Global logical px.",
      "properties": {
       "x": {
        "type": "integer"
@@ -794,7 +794,7 @@
     "max_edge": {
      "minimum": 0,
      "type": "integer",
-     "description": "Downscale so the longer side <= max_edge px; 0 = full resolution; null = server --screenshot-max-edge."
+     "description": "Downscale so the longer side <= max_edge px; 0 = full resolution; omit = server --screenshot-max-edge."
     },
     "include_cursor": {
      "default": false,
@@ -1678,7 +1678,7 @@
    "properties": {
     "filter": {
      "additionalProperties": false,
-     "description": "Same selector as the window mutators, used as a filter; null = every window. AND-ed filters over all windows; mutators need exactly one match (errors list ids and kinds).",
+     "description": "Same selector as the window mutators, used as a filter; omit = every window. AND-ed filters over all windows; mutators need exactly one match (errors list ids and kinds).",
      "properties": {
       "id": {
        "type": "string"

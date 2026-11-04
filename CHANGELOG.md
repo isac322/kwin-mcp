@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Locator documentation now uses the AT-SPI `button` role reported by current desktop environments instead of the misleading `push button` example.
 - Locator queries, waits, and strict actions now reject unknown state nicks against the installed AT-SPI `StateType`, with spelling suggestions when available, instead of treating typos as non-matches or successful absent waits. State nicks remain case-sensitive; arbitrary provider-defined, non-localized role names remain supported without an allowlist.
 
+- `app_launch` refuses a NUL byte in the command or an env value, and an env name that is empty or contains `=` or NUL, with an error naming the field, before the session is looked up. NUL bytes and `=` used to fail as a bare `embedded null byte` or `illegal environment variable name`, most of them after creating an empty app log; an empty name reached the program as a malformed `=value` entry.
 - `window_focus`, `window_place` and `window_close` refuse a selector of only empty strings, such as `{"caption": ""}`, like `{}`. It used to match the only open window, and `window_close` closed it.
 - Integer fields inside tool arguments, such as `target.x` or `capture.delays_ms`, refuse `true`/`false`, as top-level integers and `frame` already did, instead of reading them as 1 and 0.
 - The `screen_capture` `region` and `max_edge` and the `window_list` `filter` descriptions say what omitting the field does instead of naming `null`, which their published schemas do not list.

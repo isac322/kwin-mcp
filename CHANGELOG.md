@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `session_start(output_count=1)` creates any positive number of virtual KWin outputs. `screen_width` and `screen_height` apply to each output; with multiple outputs, `session.screen` reports the KWin workspace union instead of one output's size.
 
 ### Fixed
+- Locator documentation now uses the AT-SPI `button` role reported by current desktop environments instead of the misleading `push button` example.
+- Locator queries, waits, and strict actions now reject unknown state nicks against the installed AT-SPI `StateType`, with spelling suggestions when available, instead of treating typos as non-matches or successful absent waits. State nicks remain case-sensitive; arbitrary provider-defined, non-localized role names remain supported without an allowlist.
 
 - `app_launch` refuses a NUL byte in the command or an env value, and an env name that is empty or contains `=` or NUL, with an error naming the field, before the session is looked up. NUL bytes and `=` used to fail as a bare `embedded null byte` or `illegal environment variable name`, most of them after creating an empty app log; an empty name reached the program as a malformed `=value` entry.
 - ScreenShot2 captures mask pixels outside the observed output rectangles as transparent RGBA while preserving opaque in-output pixels and `coverage: full` for complete workspace captures.

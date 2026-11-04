@@ -51,11 +51,13 @@ Each interaction is three steps. Cheap observation **before** action prevents ac
 **Observation tools, cheapest first:**
 
 1. `window_list` — KWin windows with `id`, `app_id`, `caption`, `kind`, `active`, and frame rects. `window_list(filter={"active": true})` answers "which window has focus?".
-2. `element_query` — AT-SPI2 elements. Always narrow it: `locator={"app": "kate", "role": "push button"}` and/or `max_depth=`. `locator={"query": "Save"}` searches name/role/description; `locator={"states": ["focused"]}` answers "what currently has focus?". `max_depth=1` lists applications and their top-level windows. Don't fetch the whole tree just to find one button.
+2. `element_query` — AT-SPI2 elements. Always narrow it: `locator={"app": "kate", "role": "button"}` and/or `max_depth=`. `locator={"query": "Save"}` searches name/role/description; `locator={"states": ["focused"]}` answers "what currently has focus?". `max_depth=1` lists applications and their top-level windows. Don't fetch the whole tree just to find one button.
 3. `element_query(..., wait={"timeout_ms": 5000})` — polls until a match appears; `wait={"until": "absent"}` waits for it to disappear. A timeout is not an error: the result says `satisfied: false` and starts with `NOT SATISFIED`. Use after launching an app or after any click that triggers async UI.
 4. `screen_capture` — last resort for visual inspection or when AT-SPI2 fails to expose an element (see Pitfalls).
 
 `Locator` supports `match: "substring" | "exact" | "spoken"` in both `element_query` (including waits) and `element_act` strict searches. The default, `"substring"`, searches name, role, and description. Use `{"app": "kate", "query": "Save", "match": "exact"}` for name-only equality after case folding and whitespace collapsing; punctuation stays significant. Use `match: "spoken"` for spoken labels: NFC and case folding, collapsed whitespace, and trailing `. , ! ? ; : …` ignored. A multi-word query can match a joined label (`save as` matches `SaveAs`), but a one-word query is not split into words. Other punctuation stays significant; this is not fuzzy matching. Distinct elements that normalize to the same label remain ambiguous for an action.
+
+Use exact, case-sensitive AT-SPI state nicks such as `visible`, `showing`, and `has-tooltip`. Unknown state names (for example, `Visible` or `has_tooltip`) are execution-time errors in queries, waits, and strict actions, with a spelling hint when available; they cannot satisfy an absent wait. A valid state that is not set remains a normal non-match. Roles compare case-insensitively with the provider's non-localized `get_role_name()` string, including custom names outside the role enum. Unmatched roles still select nothing; localized role names are not aliases.
 
 Pick the cheapest tool that answers the question. Do not start with `screen_capture` if `element_query(locator={"query": "Save"})` would suffice.
 

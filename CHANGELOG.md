@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `session_start(output_count=1)` creates any positive number of virtual KWin outputs. `screen_width` and `screen_height` apply to each output; with multiple outputs, `session.screen` reports the KWin workspace union instead of one output's size.
 
 ### Fixed
+- Locator documentation now uses the AT-SPI `button` role reported by current desktop environments instead of the misleading `push button` example.
+- Locator queries, waits, and strict actions now reject unknown state nicks against the installed AT-SPI `StateType`, with spelling suggestions when available, instead of treating typos as non-matches or successful absent waits. State nicks remain case-sensitive; arbitrary provider-defined, non-localized role names remain supported without an allowlist.
 
 - Element coordinates are withheld when AT-SPI does not report both `visible` and `showing`, or when the matched KWin window is on another virtual desktop. Hidden and off-desktop elements keep their refs and semantic actions; pointer and touch targets recheck the same policy at action time. Desktop membership and the current desktop are read with window geometry and included in the before/after stability check.
 - The hidden-menu E2E test uses the action name exposed by AT-SPI, covering providers that report either `ShowMenu` or `Show Menu`.

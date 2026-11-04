@@ -52,7 +52,7 @@ from session_harness import live_kwin
 from window_zoo import APP_ID as ZOO_APP
 from window_zoo import DEEP_BUTTON, DEEP_LABELS, MAIN_CAPTION, ZooProcess, zoo_env
 
-from kwin_mcp.models import ElementPoint, Locator, RefAddr, Wait, WindowSelector
+from kwin_mcp.models import ElementPoint, Locator, RefAddr, StrictAddr, Wait, WindowSelector
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -812,7 +812,9 @@ def test_states_exact_case_sensitive_and_fields_anded(
         found = _wait_for(kcalc_session, Locator(states=["focused", "editable"]))
         expected = [n for n in atspi.walk(max_depth=15) if {"focused", "editable"} <= n.states]
         assert [e.name for e in found.elements] == [n.name for n in expected] == ["Long Entry"]
-        assert kcalc_session.element_query(Locator(states=["FOCUSED"])).elements == []
+        with pytest.raises(RuntimeError, match="Unknown AT-SPI state nick 'FOCUSED'") as exc:
+            kcalc_session.element_query(Locator(states=["FOCUSED"]))
+        assert "Did you mean 'focused'?" in str(exc.value)
 
     seven = kcalc_session.element_query(
         Locator(app="KCALC", query="SEVEN", role="BUTTON", states=["focusable"])
@@ -821,7 +823,9 @@ def test_states_exact_case_sensitive_and_fields_anded(
     assert "focusable" in node.states
     assert [(e.app, e.role, e.name) for e in seven.elements] == [("kcalc", "button", "Seven")]
     shouted = Locator(app="KCALC", query="SEVEN", role="BUTTON", states=["FOCUSABLE"])
-    assert kcalc_session.element_query(shouted).elements == []
+    with pytest.raises(RuntimeError, match="Unknown AT-SPI state nick 'FOCUSABLE'") as exc:
+        kcalc_session.element_query(shouted)
+    assert "Did you mean 'focusable'?" in str(exc.value)
 
     anded = kcalc_session.element_query(Locator(app="kcalc", role="button", query="seven"))
     assert [(e.depth, e.name) for e in anded.elements] == [(node.depth, "Seven")]
@@ -1136,6 +1140,56 @@ def test_wait_absent_after_window_closes(
         assert stays.render().startswith("NOT SATISFIED: Timeout after 1000 ms (until=absent")
         assert [e.name for e in stays.elements] == ["Described"]
         assert atspi.find(app=FIXTURE, name="Described", max_depth=15)
+
+
+def test_invalid_state_diagnostics_preserve_valid_absence(kcalc_session: AutomationEngine) -> None:
+    """Runtime state typos are caller errors; a valid locator still reports absence."""
+    engine = kcalc_session
+    _wait_for(engine, Locator(app="kcalc", query="Seven", role="button"))
+    info = engine.session_info().session
+    assert info is not None
+    oracle = AtspiOracle(info.dbus_address)
+    seven = oracle.find(app="kcalc", name="Seven", role="button")
+    assert len(seven) == 1 and "visible" in seven[0].states, seven
+    assert "checked" not in seven[0].states, seven
+    labels_before = [node.name for node in oracle.find(app="kcalc", role="label")]
+    generation = engine._atspi_generation
+
+    for state, suggestion in [("Visible", "visible"), ("has_tooltip", "has-tooltip")]:
+        locator = Locator(app="kcalc", query="Seven", states=[state])
+        for wait in [None, Wait(until="present", timeout_ms=0), Wait(until="absent", timeout_ms=0)]:
+            with pytest.raises(RuntimeError, match="Unknown AT-SPI state nick") as exc:
+                engine.element_query(locator, wait=wait)
+            assert repr(state) in str(exc.value)
+            assert f"Did you mean {suggestion!r}?" in str(exc.value)
+            assert engine._atspi_generation == generation, "invalid locator restarted the worker"
+        with pytest.raises(RuntimeError, match="Unknown AT-SPI state nick"):
+            engine.element_act(StrictAddr(strict=locator), "Press")
+        assert engine._atspi_generation == generation
+
+    labels_after = [node.name for node in oracle.find(app="kcalc", role="label")]
+    assert labels_after == labels_before, "a refused action changed KCalc"
+    still_present = engine.element_query(
+        Locator(app="kcalc", query="Seven", role="button", states=["visible"]),
+        wait=Wait(until="absent", timeout_ms=0),
+    )
+    assert still_present.wait is not None and not still_present.wait.satisfied
+    assert [element.name for element in still_present.elements] == ["Seven"]
+    for locator in [
+        Locator(app="kcalc", query="Seven", role="button", states=["checked"]),
+        Locator(app="kcalc", query="Seven", role="push button"),
+    ]:
+        nonmatching = engine.element_query(locator, wait=Wait(until="absent", timeout_ms=0))
+        assert nonmatching.wait is not None and nonmatching.wait.satisfied
+        assert nonmatching.elements == []
+    missing = engine.element_query(
+        Locator(app="kcalc", query="no-such-control-zz", role="button", states=["visible"]),
+        wait=Wait(until="absent", timeout_ms=0),
+    )
+    assert missing.wait is not None and missing.wait.satisfied
+    assert missing.elements == []
+    assert oracle.find(app="kcalc", name="Seven", role="button")
+    assert engine._atspi_generation == generation
 
 
 @pytest.mark.qa("QA-ELEM-017")

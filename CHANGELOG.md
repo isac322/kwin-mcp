@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `session_start(output_count=1)` creates any positive number of virtual KWin outputs. `screen_width` and `screen_height` apply to each output; with multiple outputs, `session.screen` reports the KWin workspace union instead of one output's size.
 
 ### Fixed
+- Locator documentation now uses the AT-SPI `button` role reported by current desktop environments instead of the misleading `push button` example.
+- Locator queries, waits, and strict actions now reject unknown state nicks against the installed AT-SPI `StateType`, with spelling suggestions when available, instead of treating typos as non-matches or successful absent waits. State nicks remain case-sensitive; arbitrary provider-defined, non-localized role names remain supported without an allowlist.
 
 - The `screen_capture` `region` and `max_edge` and the `window_list` `filter` descriptions say what omitting the field does instead of naming `null`, which their published schemas do not list.
 - The Unicode held-Ctrl test waits for the probe to observe the initial key press in both the rejected-paste and successful-wtype paths before checking for additional input events.

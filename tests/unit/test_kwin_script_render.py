@@ -50,6 +50,7 @@ def _record(window_id: str, **overrides: object) -> dict[str, object]:
         "resizeable": True,
         "desktops": ["d1"],
         "onAllDesktops": False,
+        "currentDesktop": "d1",
         "transient": False,
         "transientFor": None,
         "modal": False,
@@ -162,6 +163,22 @@ def test_records_missing_a_field_are_skipped() -> None:
     assert geometry._parse_windows(json.dumps([record, _record("{ok}", normal=True)])) == [
         geometry._parse_windows(json.dumps([_record("{ok}", normal=True)]))[0]
     ]
+
+
+@pytest.mark.parametrize("current", ["d2", None, "", 12, False])
+def test_window_snapshot_preserves_or_marks_unusable_current_desktop(current: object) -> None:
+    record = _record("{window}", currentDesktop=current)
+    (window,) = geometry._parse_windows(json.dumps([record]))
+    assert window["currentDesktop"] == (current if isinstance(current, str) and current else None)
+    assert "currentDesktop" not in geometry.window_from_kwin(window).model_dump()
+
+
+def test_window_snapshot_without_current_desktop_keeps_window_identity() -> None:
+    record = _record("{window}")
+    del record["currentDesktop"]
+    (window,) = geometry._parse_windows(json.dumps([record]))
+    assert window["id"] == "{window}"
+    assert window["currentDesktop"] is None
 
 
 @pytest.mark.qa("QA-WIN-009")

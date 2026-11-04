@@ -319,6 +319,7 @@ def test_unicode_paste_chord_touching_held_ctrl_refused(
     probe = start_probe_session(engine, tmp_path / "paste", enable_clipboard=True)
     engine.clipboard_write("before-paste")
     engine.keyboard_hold("press", "ctrl")
+    probe.wait_status("raw_events:", lambda s: field(s, "held_mods") == "ctrl")
     mark = probe.mark()
     with pytest.raises(HeldControlError) as refused:
         engine.keyboard_type("한글", method="unicode")
@@ -338,6 +339,7 @@ def test_unicode_paste_chord_touching_held_ctrl_refused(
     monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
     probe = start_probe_session(engine, tmp_path / "wtype")
     engine.keyboard_hold("press", "ctrl")
+    probe.wait_status("raw_events:", lambda s: field(s, "held_mods") == "ctrl")
     mark = probe.mark()
     typed = engine.keyboard_type("한글", method="unicode")
     assert typed.route == "wtype" and typed.held == HeldInput(keys=["ctrl"])

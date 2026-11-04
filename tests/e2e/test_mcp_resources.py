@@ -17,6 +17,7 @@ import anyio
 import pytest
 from mcp.shared.exceptions import MCPError
 from mcp.types import (
+    INVALID_PARAMS,
     BlobResourceContents,
     ResourceTemplateReference,
     TextContent,
@@ -219,7 +220,7 @@ async def test_resources_list_static() -> None:
 @pytest.mark.anyio
 @pytest.mark.qa("QA-MCP-010")
 async def test_resource_path_traversal_refused() -> None:
-    """Traversal and malformed names are resource errors that return no content."""
+    """Traversal, malformed and missing names are -32602 errors that return no content."""
     async with running_mcp_server() as client:
         await _start_virtual(client)
         try:
@@ -232,9 +233,14 @@ async def test_resource_path_traversal_refused() -> None:
                 "kwin://screenshots/../x.png",
                 "kwin://apps/../log",
                 "kwin://apps/abc/log",
+                "kwin://screenshots/x.txt",
+                "kwin://screenshots/missing.png",
+                "kwin://apps/999999/log",
+                "kwin://nope",
             ):
                 with pytest.raises(MCPError) as caught:
                     await client.read_resource(uri)
+                assert caught.value.error.code == INVALID_PARAMS, (uri, caught.value.error)
                 message = caught.value.error.message
                 assert "root:" not in message, (uri, message)
         finally:

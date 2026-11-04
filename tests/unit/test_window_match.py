@@ -102,6 +102,7 @@ def _window(
         "resizeable": True,
         "desktops": ["d1"],
         "onAllDesktops": False,
+        "currentDesktop": "d1",
         "transient": False,
         "transientFor": None,
         "modal": False,
@@ -321,6 +322,7 @@ def test_geometry_report_carries_the_buffer_rect() -> None:
         ' "popup": false, "managed": true, "deleted": false, "desktop": false, "dock": false,'
         ' "notification": false, "active": true, "closeable": true, "moveable": true,'
         ' "resizeable": true, "desktops": ["d1"], "onAllDesktops": false,'
+        ' "currentDesktop": "d1",'
         ' "transient": false, "transientFor": null, "modal": false,'
         ' "frame": [131, 8, 1018, 738],'
         ' "client": [131, 8, 1018, 738], "buffer": [114.6, -2.4, 1050, 780]}]'
@@ -370,3 +372,161 @@ def test_a_window_from_a_new_flatpak_owner_during_the_walk(
     after = [*before, _window(owner, "w2", "Inbox - Betterbird", [500, 20, 1200, 800])]
 
     assert _stable_offsets(app, before, after, monkeypatch) == expected
+
+
+def _element_info(states: list[str]) -> accessibility.ElementInfo:
+    return accessibility.ElementInfo(
+        role="menu item",
+        name="About KCalc",
+        description="About the calculator",
+        states=states,
+        x=4,
+        y=61,
+        width=100,
+        height=20,
+        actions=["Press"],
+        text="About",
+        value=None,
+        value_max=None,
+        children_count=0,
+        depth=2,
+        has_extents=True,
+        mapped=False,
+        unavailable="",
+        ref="e1.7",
+        app="kcalc",
+    )
+
+
+@pytest.mark.parametrize(
+    ("states", "reason"),
+    [
+        ([], "not-showing"),
+        (["visible"], "not-showing"),
+        (["showing"], "not-visible"),
+        (["enabled", "sensitive"], "not-showing"),
+        (["visible", "showing"], ""),
+    ],
+)
+def test_click_rectangle_requires_visible_and_showing(states: list[str], reason: str) -> None:
+    from dataclasses import asdict
+
+    from kwin_mcp.models import UIElement
+
+    window = _window(42, "w1", "Calculator", [150, 120, 400, 500])
+    mapping = accessibility._WindowMapping(window, "", offset=(150, 120))
+    info = accessibility._finalize(_element_info(states), mapping)
+    public = UIElement.from_worker(asdict(info))
+
+    assert info.mapped is (not reason)
+    assert info.unavailable == reason
+    assert public.unavailable == (reason or None)
+    assert (public.rect is None) is bool(reason)
+    assert (info.x, info.y) == ((4, 61) if reason else (154, 181))
+    assert (public.name, public.role, public.ref, public.app, public.window_id) == (
+        "About KCalc",
+        "menu item",
+        "e1.7",
+        "kcalc",
+        "w1",
+    )
+    assert public.states == states
+    assert public.actions == ["Press"]
+    assert public.text == "About"
+
+
+@pytest.mark.parametrize(
+    ("desktops", "current", "all_desktops", "reason"),
+    [
+        (["d1"], "d1", False, ""),
+        (["d1", "d2"], "d1", False, ""),
+        (["d2"], "d1", False, "inactive-desktop"),
+        ([], "d1", True, ""),
+        ([], None, True, ""),
+        ([], "d1", False, "desktop-unavailable"),
+        (["d1"], None, False, "desktop-unavailable"),
+        (["d1"], "", False, "desktop-unavailable"),
+    ],
+)
+def test_click_rectangle_requires_current_desktop_membership(
+    desktops: list[str], current: str | None, all_desktops: bool, reason: str
+) -> None:
+    window = _window(42, "w1", "Calculator", [150, 120, 400, 500])
+    window["desktops"], window["currentDesktop"], window["onAllDesktops"] = (
+        desktops,
+        current,
+        all_desktops,
+    )
+    info = accessibility._finalize(
+        _element_info(["visible", "showing"]),
+        accessibility._WindowMapping(window, "", offset=(150, 120)),
+    )
+    assert info.mapped is (not reason)
+    assert info.unavailable == reason
+    assert info.window_id == "w1"
+    assert info.actions == ["Press"]
+
+
+@pytest.mark.parametrize(
+    "reason", ["ambiguous", "no-kwin-window", "windows-changed", "kwin-query-failed"]
+)
+@pytest.mark.parametrize("states", [[], ["visible", "showing"]])
+def test_mapping_failures_precede_visibility_and_desktop_reasons(
+    reason: str, states: list[str]
+) -> None:
+    info = accessibility._finalize(
+        _element_info(states), accessibility._WindowMapping(None, reason)
+    )
+    assert not info.mapped and info.unavailable == reason
+
+
+@pytest.mark.parametrize("has_extents", [False, True])
+@pytest.mark.parametrize("states", [[], ["showing"], ["visible", "showing"]])
+def test_extent_failures_precede_state_desktop_and_mapping_failures(
+    has_extents: bool, states: list[str]
+) -> None:
+    window = _window(42, "w1", "Calculator", [150, 120, 400, 500])
+    window["desktops"] = ["d2"]
+    for mapping in (
+        accessibility._WindowMapping(window, "", offset=(150, 120)),
+        accessibility._WindowMapping(None, "ambiguous"),
+    ):
+        info = _element_info(states)
+        info.has_extents, info.width = has_extents, 0
+        accessibility._finalize(info, mapping)
+        assert not info.mapped
+        assert info.unavailable == ("empty-extents" if has_extents else "no-extents")
+
+
+@pytest.mark.parametrize("states", [[], ["visible"], ["showing"]])
+def test_state_reason_precedes_inactive_desktop(states: list[str]) -> None:
+    window = _window(42, "w1", "Calculator", [150, 120, 400, 500])
+    window["desktops"] = ["d2"]
+    info = accessibility._finalize(
+        _element_info(states), accessibility._WindowMapping(window, "", offset=(150, 120))
+    )
+    assert info.unavailable == ("not-visible" if states == ["showing"] else "not-showing")
+
+
+@pytest.mark.parametrize("changed", ["current", "membership", "all-desktops"])
+def test_desktop_changes_during_the_walk_unmap_unchanged_geometry(
+    monkeypatch: pytest.MonkeyPatch, changed: str
+) -> None:
+    app = _App(42, [_TopLevel("Calculator", (400, 500))])
+    before = [_window(42, "w1", "Calculator", [150, 120, 400, 500])]
+    after = [_window(42, "w1", "Calculator", [150, 120, 400, 500])]
+    if changed == "current":
+        after[0]["currentDesktop"] = "d2"
+    elif changed == "membership":
+        after[0]["desktops"] = ["d2"]
+    else:
+        after[0]["onAllDesktops"] = True
+    assert _stable_offsets(app, before, after, monkeypatch) == [(None, "windows-changed")]
+
+
+def test_membership_order_is_not_a_desktop_change(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = _App(42, [_TopLevel("Calculator", (400, 500))])
+    before = [_window(42, "w1", "Calculator", [150, 120, 400, 500])]
+    after = [_window(42, "w1", "Calculator", [150, 120, 400, 500])]
+    before[0]["desktops"], after[0]["desktops"] = ["d1", "d2"], ["d2", "d1"]
+    assert _stable_offsets(app, before, after, monkeypatch) == [((150, 120), "")]

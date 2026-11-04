@@ -296,11 +296,11 @@ note = "Wait.timeout_ms gains Field(ge=0), publishing 'minimum: 0' in element_qu
 [[mutant.patch]]
 file = "src/kwin_mcp/models.py"
 search = '''
-    timeout_ms: int = 5000
-    poll_interval_ms: int = 200'''
+    timeout_ms: _Int = 5000
+    poll_interval_ms: _Int = 200'''
 replace = '''
-    timeout_ms: Annotated[int, Field(ge=0)] = 5000
-    poll_interval_ms: int = 200'''
+    timeout_ms: Annotated[int, Field(ge=0), _NO_BOOL] = 5000
+    poll_interval_ms: _Int = 200'''
 
 [[mutant]]
 id = "M11"
@@ -686,10 +686,10 @@ note = "Capture.delays_ms gains min_length=1 (minItems: 1); the corpus' valid wi
 [[mutant.patch]]
 file = "src/kwin_mcp/models.py"
 search = '''
-    delays_ms: list[int]
+    delays_ms: list[_Int]
     region: Rect | None = None'''
 replace = '''
-    delays_ms: Annotated[list[int], Field(min_length=1)]
+    delays_ms: Annotated[list[_Int], Field(min_length=1)]
     region: Rect | None = None'''
 
 [[mutant]]
@@ -1338,13 +1338,12 @@ note = "Realises the 'Target nested in Waypoint' variant (const->enum lives in s
 [[mutant.patch]]
 file = "src/kwin_mcp/models.py"
 search = '''
-    x: int
-    y: int
-    dwell_ms: int = 0'''
+    x: _Int
+    y: _Int
+    dwell_ms: _Int = 0'''
 replace = '''
     at: Target
-    dwell_ms: int = 0'''
-
+    dwell_ms: _Int = 0'''
 [[mutant]]
 id = "M57"
 module = "models.py"

@@ -100,6 +100,7 @@ def test_session_start_rejects_a_non_positive_screen_size_before_starting(
             id="\t\n-app_command must contain a command",
         ),
         pytest.param("'x", "Invalid command: No closing quotation", id="'x-No closing quotation"),
+        pytest.param("kcalc\0x", "Invalid command: it contains a NUL byte", id="nul-byte"),
         pytest.param(
             "kcalc 'unterminated",
             "Invalid command: No closing quotation",
@@ -130,6 +131,48 @@ def test_app_launch_command_validation(
 
     assert str(excinfo.value) == message
     assert str(excinfo.value) != NO_SESSION_TEXT
+    assert looked_up == []
+
+
+@pytest.mark.qa("QA-APP-003")
+@pytest.mark.parametrize(
+    ("env", "message"),
+    [
+        pytest.param(
+            {"A=B": "1"},
+            "Invalid env name 'A=B': it must be non-empty, without '=' or a NUL byte",
+            id="equals-in-name",
+        ),
+        pytest.param(
+            {"": "1"},
+            "Invalid env name '': it must be non-empty, without '=' or a NUL byte",
+            id="empty-name",
+        ),
+        pytest.param(
+            {"A\0B": "1"},
+            "Invalid env name 'A\\x00B': it must be non-empty, without '=' or a NUL byte",
+            id="nul-in-name",
+        ),
+        pytest.param(
+            {"A": "x\0y"}, "Invalid env value for A: it contains a NUL byte", id="nul-in-value"
+        ),
+    ],
+)
+def test_app_launch_env_validation(
+    monkeypatch: pytest.MonkeyPatch, env: dict[str, str], message: str
+) -> None:
+    """An env entry execve cannot pass is refused before the session lookup.
+
+    No log file is created and nothing is spawned.
+    """
+    engine = AutomationEngine()
+    looked_up: list[str] = []
+    monkeypatch.setattr(engine, "_require_session", lambda: looked_up.append("session"))
+
+    with pytest.raises(ValueError) as excinfo:
+        engine.app_launch("kcalc", env=env)
+
+    assert str(excinfo.value) == message
     assert looked_up == []
 
 

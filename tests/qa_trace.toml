@@ -16,7 +16,7 @@ mutants = []
 
 # stale-name-scan: allow-begin
 [items."QA-APP-002"]
-title = "shlex split: empty/whitespace/unbalanced are errors; quoted args preserved"
+title = "shlex split: empty/whitespace/unbalanced/NUL are errors; quoted args preserved"
 priority = "P1"
 auto = "e2e"
 check = "pytest"
@@ -28,13 +28,16 @@ mutants = []
 # stale-name-scan: allow-end
 
 [items."QA-APP-003"]
-title = "env applied after DISPLAY handling, before DBUS forcing (G1); WAYLAND_DISPLAY override pinned"
+title = "env applied after DISPLAY handling, before DBUS forcing (G1); WAYLAND_DISPLAY override pinned; bad names/NUL refused"
 priority = "P0"
 auto = "e2e"
 check = "pytest"
 file = "tests/e2e/test_app_launch_log.py"
 test = "test_env_reaches_only_this_process"
-extra_tests = ["tests/unit/test_session_input_validation.py::test_app_env_order_pinned"]
+extra_tests = [
+    "tests/unit/test_session_input_validation.py::test_app_env_order_pinned",
+    "tests/unit/test_session_input_validation.py::test_app_launch_env_validation",
+]
 slow = false
 mutants = []
 

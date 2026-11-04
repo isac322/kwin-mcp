@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
 EMPTY_SELECTOR = (
-    "window needs at least one field (id, app_id, caption, active or kind).",
+    "window needs at least one non-empty field (id, app_id, caption, active or kind).",
     "Use window_list to find a window id.",
 )
 PLACE_NEEDS_A_PART = (

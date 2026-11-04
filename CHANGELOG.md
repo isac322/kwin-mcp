@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `session_start(output_count=1)` creates any positive number of virtual KWin outputs. `screen_width` and `screen_height` apply to each output; with multiple outputs, `session.screen` reports the KWin workspace union instead of one output's size.
 
 ### Fixed
+- Locator documentation now uses the AT-SPI `button` role reported by current desktop environments instead of the misleading `push button` example.
+- Locator queries, waits, and strict actions now reject unknown state nicks against the installed AT-SPI `StateType`, with spelling suggestions when available, instead of treating typos as non-matches or successful absent waits. State nicks remain case-sensitive; arbitrary provider-defined, non-localized role names remain supported without an allowlist.
 
 - Reading a `kwin://screenshots/{name}` or `kwin://apps/{pid}/log` resource whose name is malformed or names no screenshot or launched app now fails with `-32602` (Invalid params), the code MCP 2026-07-28 uses for a resource that is not found, instead of `-32603` (Internal error). Reading a well-formed URI without a running session still fails with `-32603` and the usual `No session running` text.
 - ScreenShot2 captures mask pixels outside the observed output rectangles as transparent RGBA while preserving opaque in-output pixels and `coverage: full` for complete workspace captures.

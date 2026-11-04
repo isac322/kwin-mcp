@@ -310,15 +310,21 @@ source = "QX §18"
 qa = ["QA-ELEM-006"]
 tier = "e2e"
 kill = ["tests/e2e/test_element_query.py::test_states_exact_case_sensitive_and_fields_anded"]
-note = "_Criteria.matches_states lowercases both sides, so states ['FOCUSED'] / ['FOCUSABLE'] match lowercase AT-SPI nicks; the test expects [] for upper-case nicks."
+note = "_Criteria.from_locator lowercases requested state nicks before both runtime validation and matching, so ['FOCUSED'] / ['FOCUSABLE'] become valid lowercase filters. The test requires RuntimeError with the unknown nick and lowercase spelling suggestion. Mutating matches_states alone is now equivalent on public paths: runtime validation rejects uppercase nicks before the matcher sees them."
 
 [[mutant.patch]]
 file = "src/kwin_mcp/accessibility.py"
 search = '''
-        return all(state in states for state in self.states)'''
+        _validate_state_nicks(locator.states or ())'''
 replace = '''
-        present = {nick.lower() for nick in states}
-        return all(state.lower() in present for state in self.states)'''
+        _validate_state_nicks([state.lower() for state in locator.states or ()])'''
+
+[[mutant.patch]]
+file = "src/kwin_mcp/accessibility.py"
+search = '''
+            states=tuple(locator.states or ()),'''
+replace = '''
+            states=tuple(state.lower() for state in locator.states or ()),'''
 
 [[mutant]]
 id = "M12"

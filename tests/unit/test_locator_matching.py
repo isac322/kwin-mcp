@@ -70,8 +70,9 @@ def _info(
         pytest.param(
             Locator(states=["focused", "enabled"]), _info(), True, id="states-all-order-free"
         ),
-        pytest.param(Locator(states=["Focused"]), _info(), False, id="states-case-sensitive"),
-        pytest.param(Locator(states=["focus"]), _info(), False, id="states-not-substring"),
+        pytest.param(
+            Locator(states=["focusable"]), _info(states=("focused",)), False, id="states-exact"
+        ),
         pytest.param(
             Locator(states=["focused", "checked"]), _info(), False, id="states-all-must-hold"
         ),
@@ -221,7 +222,8 @@ def desktop(monkeypatch: pytest.MonkeyPatch) -> list[_FakeNode]:
         accessibility,
         "Atspi",
         types.SimpleNamespace(
-            get_desktop=lambda _index: _FakeNode("desktop", "desktop frame", apps)
+            StateType=accessibility.Atspi.StateType,
+            get_desktop=lambda _index: _FakeNode("desktop", "desktop frame", apps),
         ),
     )
     monkeypatch.setattr(accessibility, "_kwin_windows", lambda: ([], "no KWin in unit tests"))
@@ -258,7 +260,12 @@ def test_walk_is_one_filtered_pre_order_walk(desktop: list[_FakeNode]) -> None:
     assert _names({"role": "PUSH BUTTON"}) == [(3, "kcalc", "Seven"), (3, "kcalc", "Eight")]
     assert _names({"query": "seven", "app": "KCALC"}) == [(3, "kcalc", "Seven")]
     assert _names({"query": "seven", "states": ["focused"]}) == [(3, "kcalc", "Seven")]
-    assert _names({"query": "seven", "states": ["FOCUSED"]}) == []
+    response = accessibility._handle_request(
+        {"op": "query", "locator": {"query": "seven", "states": ["FOCUSED"]}}
+    )
+    assert response["ok"] is False
+    assert "Unknown AT-SPI state nick 'FOCUSED'" in response["error"]
+    assert "Did you mean 'focused'?" in response["error"]
 
 
 @pytest.mark.qa("QA-ELEM-041")
@@ -306,6 +313,131 @@ def test_wait_until_present_absent_and_timeout_as_data(desktop: list[_FakeNode])
     # The element disappears: absence is satisfied.
     del desktop[0].children[0].children[0].children[1]
     assert wait(locator={"query": "Eight"}, until="absent", timeout_ms=0)["satisfied"] is True
+
+
+@pytest.mark.parametrize(
+    "state",
+    [state.value_nick for state in accessibility.Atspi.StateType.__enum_values__.values()],
+)
+def test_every_runtime_state_nick_is_valid(state: str) -> None:
+    # Enum sentinels are valid names too, even though providers normally never set them.
+    assert _Criteria.from_locator(Locator(states=[state])).states == (state,)
+
+
+@pytest.mark.parametrize("op", ["query", "wait-present", "wait-absent", "action"])
+@pytest.mark.parametrize(
+    ("state", "suggestion"),
+    [
+        ("Visible", "visible"),
+        ("has_tooltip", "has-tooltip"),
+        ("Enabled", "enabled"),
+        ("focus", "focused"),
+        ("not-a-state-zz", None),
+        ("", None),
+    ],
+)
+def test_invalid_state_is_a_refusal_before_discovery(
+    desktop: list[_FakeNode],
+    monkeypatch: pytest.MonkeyPatch,
+    op: str,
+    state: str,
+    suggestion: str | None,
+) -> None:
+    del desktop
+
+    def unexpected_discovery(_index: int) -> None:
+        pytest.fail("invalid state must be refused before any tree reads or actions")
+
+    monkeypatch.setattr(accessibility.Atspi, "get_desktop", unexpected_discovery)
+    locator = {"app": "kcalc", "query": "Seven", "states": ["enabled", state]}
+    request: dict[str, Any]
+    if op == "action":
+        request = {"op": op, "address": {"strict": locator}, "action_name": "Press"}
+    elif op.startswith("wait-"):
+        request = {"op": "wait", "locator": locator, "until": op[5:], "timeout_ms": 0}
+    else:
+        request = {"op": op, "locator": locator}
+    response = accessibility._handle_request(request)
+    assert response["ok"] is False
+    assert f"Unknown AT-SPI state nick {state!r}" in response["error"]
+    assert "result" not in response
+    assert "worker_error" not in response
+    if suggestion is not None:
+        assert f"Did you mean {suggestion!r}?" in response["error"]
+
+
+def test_state_validation_uses_runtime_enum_not_a_fixed_vocabulary(
+    desktop: list[_FakeNode], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_nick = "provider-runtime-state"
+    monkeypatch.setattr(
+        accessibility.Atspi,
+        "StateType",
+        types.SimpleNamespace(__enum_values__={1: _FakeState(runtime_nick)}),
+    )
+    button = desktop[0].children[0].children[0].children[0]
+    button.states = [runtime_nick]
+    assert _names({"app": "kcalc", "query": "Seven", "states": [runtime_nick]}) == [
+        (3, "kcalc", "Seven")
+    ]
+    response = accessibility._handle_request(
+        {"op": "wait", "locator": {"states": ["enabled"]}, "until": "absent", "timeout_ms": 0}
+    )
+    assert response["ok"] is False
+    assert "Unknown AT-SPI state nick 'enabled'" in response["error"]
+
+
+def test_valid_state_wait_distinguishes_presence_from_absence(desktop: list[_FakeNode]) -> None:
+    del desktop
+    for query, satisfied in [("Seven", False), ("Nine", True)]:
+        response = accessibility._handle_request(
+            {
+                "op": "wait",
+                "locator": {"app": "kcalc", "query": query, "states": ["enabled"]},
+                "until": "absent",
+                "timeout_ms": 0,
+            }
+        )
+        assert response["ok"] is True
+        assert response["result"]["satisfied"] is satisfied
+        assert [e["name"] for e in response["result"]["elements"]] == (
+            [] if satisfied else ["Seven"]
+        )
+    # A valid state that is not set is a legitimate non-match, not an invalid locator.
+    response = accessibility._handle_request(
+        {
+            "op": "wait",
+            "locator": {"app": "kcalc", "query": "Seven", "states": ["checked"]},
+            "until": "absent",
+            "timeout_ms": 0,
+        }
+    )
+    assert response["ok"] is True
+    assert response["result"]["satisfied"] is True
+    assert response["result"]["elements"] == []
+
+
+def test_arbitrary_nonlocalized_roles_remain_valid(
+    desktop: list[_FakeNode], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    button = desktop[0].children[0].children[0].children[0]
+    button.role = "provider-specific control"
+    monkeypatch.setattr(
+        button, "get_localized_role_name", lambda: "localized control", raising=False
+    )
+    assert _names({"app": "kcalc", "role": "PROVIDER-SPECIFIC CONTROL"}) == [(3, "kcalc", "Seven")]
+    assert _names({"app": "kcalc", "role": "localized control"}) == []
+    assert _names({"app": "kcalc", "role": "provider-specific"}) == []
+    response = accessibility._handle_request(
+        {
+            "op": "wait",
+            "locator": {"app": "kcalc", "role": "another provider role"},
+            "until": "absent",
+            "timeout_ms": 0,
+        }
+    )
+    assert response["ok"] is True
+    assert response["result"]["satisfied"] is True
 
 
 @pytest.mark.parametrize(

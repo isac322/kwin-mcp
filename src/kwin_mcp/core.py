@@ -347,6 +347,9 @@ def _split_command(text: str, field: str) -> list[str]:
     ``field`` names the argument in the ValueError, so the caller sees
     which input to fix.
     """
+    if "\0" in text:
+        msg = f"Invalid {field}: it contains a NUL byte"
+        raise ValueError(msg)
     try:
         argv = shlex.split(text)
     except ValueError as exc:
@@ -356,6 +359,17 @@ def _split_command(text: str, field: str) -> list[str]:
         msg = f"{field} must contain a command to launch"
         raise ValueError(msg)
     return argv
+
+
+def _check_env(env: dict[str, str] | None) -> None:
+    """Refuse environment entries that execve cannot pass on, before anything spawns."""
+    for name, value in (env or {}).items():
+        if not name or "=" in name or "\0" in name:
+            msg = f"Invalid env name {name!r}: it must be non-empty, without '=' or a NUL byte"
+            raise ValueError(msg)
+        if "\0" in value:
+            msg = f"Invalid env value for {name}: it contains a NUL byte"
+            raise ValueError(msg)
 
 
 def _check_selector(window: WindowSelector) -> None:
@@ -1157,6 +1171,7 @@ class AutomationEngine:
     def app_launch(self, command: str, env: dict[str, str] | None = None) -> AppLaunchResult:
         """Launch a program in the session (shlex-split, no shell); output goes to a log."""
         argv = _split_command(command, "command")
+        _check_env(env)
         session = self._require_session()
         try:
             app = session.launch_app(argv, extra_env=env)

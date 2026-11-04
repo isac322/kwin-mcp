@@ -16,7 +16,7 @@ and the AT-SPI worker can all import it.
 import json
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, Field, JsonValue, field_validator, model_validator
+from pydantic import BaseModel, BeforeValidator, Field, JsonValue, field_validator, model_validator
 
 from kwin_mcp.spoken_name import normalize_spoken_name
 
@@ -63,19 +63,34 @@ class _Input(BaseModel, extra="forbid", frozen=True):
     """Base of every tool input object: unknown keys are rejected."""
 
 
+def refuse_bool(value: object) -> object:
+    # Lax int validation turns true/false into 1/0; no count, coordinate, size or
+    # delay is a boolean. Also used for top-level integer parameters (server.py).
+    if isinstance(value, bool):
+        msg = f"must be an integer, got {value!r}"
+        raise ValueError(msg)
+    return value
+
+
+# Constraints go before it in the same Annotated: after it, pydantic publishes
+# them as non-standard keywords (``"gt"`` instead of ``"exclusiveMinimum"``).
+_NO_BOOL = BeforeValidator(refuse_bool)
+_Int = Annotated[int, _NO_BOOL]
+
+
 class Point(_Input):
     """Global logical px."""
 
-    x: int
-    y: int
+    x: _Int
+    y: _Int
 
 
 class ElementPoint(_Input):
     """Centre of a ref's live rect + offset."""
 
     ref: str
-    dx: int = 0
-    dy: int = 0
+    dx: _Int = 0
+    dy: _Int = 0
 
 
 # A point on screen: either arm forbids extra keys, so {x, y, ref} matches neither.
@@ -85,10 +100,10 @@ Target = Point | ElementPoint
 class Rect(_Input):
     """Global logical px."""
 
-    x: int
-    y: int
-    width: Annotated[int, Field(gt=0)]
-    height: Annotated[int, Field(gt=0)]
+    x: _Int
+    y: _Int
+    width: Annotated[int, Field(gt=0), _NO_BOOL]
+    height: Annotated[int, Field(gt=0), _NO_BOOL]
 
 
 class PartialRect(_Input):
@@ -120,17 +135,17 @@ class PartialRect(_Input):
 class Waypoint(_Input):
     """Intermediate drag point; the pointer pauses dwell_ms there."""
 
-    x: int
-    y: int
-    dwell_ms: int = 0
+    x: _Int
+    y: _Int
+    dwell_ms: _Int = 0
 
 
 class Capture(_Input):
     """Frames taken delays_ms after the action ends; same options as screen_capture."""
 
-    delays_ms: list[int]
+    delays_ms: list[_Int]
     region: Rect | None = None
-    max_edge: Annotated[int | None, Field(ge=0)] = None
+    max_edge: Annotated[int | None, Field(ge=0), _NO_BOOL] = None
     include_cursor: bool = False
 
 
@@ -138,8 +153,8 @@ class Wait(_Input):
     """Poll until true; timeout returns satisfied=false."""
 
     until: WaitUntil = "present"
-    timeout_ms: int = 5000
-    poll_interval_ms: int = 200
+    timeout_ms: _Int = 5000
+    poll_interval_ms: _Int = 200
 
 
 class Retention(_Input):
@@ -223,11 +238,13 @@ class WindowSelector(_Input):
     kind: Annotated[list[WindowKind] | None, Field(min_length=1)] = None
 
     def is_empty(self) -> bool:
-        """Whether no field is set (``{}``), which no mutator accepts."""
+        """Whether no field is set (``{}``), which no mutator accepts.
+
+        A selector of only empty strings counts too: ``caption=""`` is a substring of
+        every caption, so it would otherwise select whatever window happens to be alone.
+        """
         return (
-            self.id is None
-            and self.app_id is None
-            and self.caption is None
+            not (self.id or self.app_id or self.caption)
             and self.active is None
             and self.kind is None
         )

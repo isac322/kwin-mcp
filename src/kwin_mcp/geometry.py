@@ -622,7 +622,7 @@ _EMPTY_KIND = (
     "\nOmit kind to match every kind."
 )
 _EMPTY_SELECTOR = (
-    "window needs at least one field (id, app_id, caption, active or kind)."
+    "window needs at least one non-empty field (id, app_id, caption, active or kind)."
     "\nUse window_list to find a window id."
 )
 

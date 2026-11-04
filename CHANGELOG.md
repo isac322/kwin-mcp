@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The `screen_capture` `region` and `max_edge` and the `window_list` `filter` descriptions say what omitting the field does instead of naming `null`, which their published schemas do not list.
 - The Unicode held-Ctrl test waits for the probe to observe the initial key press in both the rejected-paste and successful-wtype paths before checking for additional input events.
+- The E2E `app_launch` test waits for the launched program's argv before checking it. `Popen` returns while `execve` is still running, so under CPU load `/proc/<pid>/cmdline` sometimes read empty and the test failed about once in 100 runs.
 - ScreenShot2 captures mask pixels outside the observed output rectangles as transparent RGBA while preserving opaque in-output pixels and `coverage: full` for complete workspace captures.
 - The E2E input-option matrix counts the physical press/release pairs received for the tested click-option cases independently of GTK's multi-click settings, avoiding false failures when GTK groups clicks across calls.
 - E2E CI shares stable, same-run image and shard-status artifacts across partial reruns. Each row checks its latest build and shard job results before validating coverage, so an older success cannot hide a newer failure. Diagnostic archives remain attempt-specific.

@@ -244,6 +244,7 @@ def kwin_record(window: Window) -> KWinWindow:
         "resizeable": window.resizeable,
         "desktops": list(window.desktops),
         "onAllDesktops": window.on_all_desktops,
+        "currentDesktop": "d1",
         "transient": False,
         "transientFor": None,
         "modal": False,

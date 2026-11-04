@@ -59,6 +59,9 @@ class KWinWindow(TypedDict):
     the client's whole surface, including the shadow a client-side decorated
     window (Chromium, for example) draws around itself. ``desktops`` holds the
     virtual desktop ids (empty in KWin 6 when ``onAllDesktops``).
+    ``currentDesktop`` is the current desktop id from the same KWin snapshot,
+    or None when KWin reports no current desktop. An empty ``desktops`` list
+    means all desktops only when ``onAllDesktops`` is true.
     ``transientFor`` is the id of the window this one is transient for, or
     None; ``transient`` without ``transientFor`` is an X11 group transient,
     whose main windows a script cannot see.
@@ -83,6 +86,7 @@ class KWinWindow(TypedDict):
     resizeable: bool
     desktops: list[str]
     onAllDesktops: bool
+    currentDesktop: str | None
     transient: bool
     transientFor: str | None
     modal: bool
@@ -99,6 +103,8 @@ class KWinWindow(TypedDict):
 # query inside the AT-SPI subprocess cannot collide with a concurrent one.
 _SCRIPT_TEMPLATE = """
 var out = [];
+var current = workspace.currentDesktop;
+var currentId = current ? String(current.id) : null;
 var windows = workspace.windowList();
 for (var i = 0; i < windows.length; i++) {
     var w = windows[i];
@@ -119,6 +125,7 @@ for (var i = 0; i < windows.length; i++) {
         active: w === workspace.activeWindow,
         closeable: w.closeable, moveable: w.moveable, resizeable: w.resizeable,
         desktops: desktopIds, onAllDesktops: w.onAllDesktops,
+        currentDesktop: currentId,
         transient: w.transient,
         transientFor: w.transientFor ? String(w.transientFor.internalId) : null,
         modal: w.modal,
@@ -441,6 +448,7 @@ def _parse_windows(payload: str) -> list[KWinWindow]:
     for record in raw:
         try:
             transient_for = record["transientFor"]
+            current = record.get("currentDesktop")
             windows.append(
                 KWinWindow(
                     pid=int(record["pid"]),
@@ -462,6 +470,7 @@ def _parse_windows(payload: str) -> list[KWinWindow]:
                     resizeable=bool(record["resizeable"]),
                     desktops=[str(d) for d in record["desktops"]],
                     onAllDesktops=bool(record["onAllDesktops"]),
+                    currentDesktop=current if isinstance(current, str) and current else None,
                     transient=bool(record["transient"]),
                     transientFor=None if transient_for is None else str(transient_for),
                     modal=bool(record["modal"]),

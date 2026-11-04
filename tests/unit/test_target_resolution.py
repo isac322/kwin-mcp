@@ -139,6 +139,23 @@ def test_element_without_rect_is_an_error_quoting_unavailable(engine: FakeEngine
 
 
 @pytest.mark.qa("QA-INP-008")
+@pytest.mark.parametrize(
+    "reason", ["not-showing", "not-visible", "inactive-desktop", "desktop-unavailable"]
+)
+@pytest.mark.parametrize("operation", ["pointer_click", "pointer_move"])
+def test_hidden_or_inactive_ref_sends_no_input(
+    engine: FakeEngine, reason: str, operation: str
+) -> None:
+    ref = f"e{GENERATION}.4"
+    engine.atspi.respond("resolve", _resolve_reply(_unmapped(ref, reason)))
+
+    with pytest.raises(RuntimeError, match=re.escape(f"(unavailable: {reason})")):
+        getattr(engine.engine, operation)(target=ElementPoint(ref=ref))
+
+    assert engine.eis.events == []
+
+
+@pytest.mark.qa("QA-INP-008")
 def test_element_without_rect_sends_no_input(engine: FakeEngine) -> None:
     ref = f"e{GENERATION}.4"
     engine.atspi.respond("resolve", _resolve_reply(_unmapped(ref, "no KWin window")))

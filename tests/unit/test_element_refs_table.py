@@ -16,7 +16,9 @@ import pytest
 
 from kwin_mcp import accessibility
 from kwin_mcp.accessibility import _RefEntry, _RefTable
-from kwin_mcp.models import Locator, StrictAddr
+from kwin_mcp.models import Locator, Rect, StrictAddr, UIElement, Window
+
+from ._fakes import kwin_record
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -370,3 +372,72 @@ def test_invoke_ipc_failure_after_send_not_retried(
         )
     assert "The action may still have run; check the UI before retrying." in str(excinfo.value)
     assert calls == [("action", False)]
+
+
+@pytest.mark.parametrize("hidden", [True, False])
+def test_query_and_old_ref_resolution_share_click_geometry_policy(
+    atspi: _FakeAtspi, monkeypatch: pytest.MonkeyPatch, hidden: bool
+) -> None:
+    """A toolkit may retain positive extents for a closed menu or off-desktop widget."""
+    button = _button()
+    button.states = ["enabled", "visible", "showing"]
+    atspi.apps[:] = [_kcalc(button)]
+    window = kwin_record(
+        Window(
+            id="w1",
+            app_id="kcalc",
+            caption="KCalc",
+            kind="normal",
+            active=True,
+            frame=Rect(x=150, y=120, width=400, height=500),
+            client=Rect(x=150, y=120, width=400, height=500),
+            moveable=True,
+            resizeable=True,
+            closeable=True,
+            desktops=["d1"],
+            on_all_desktops=False,
+        )
+    )
+    monkeypatch.setattr(_FakeNode, "get_process_id", lambda _self: 100)
+    monkeypatch.setattr(
+        _FakeNode,
+        "get_component_iface",
+        lambda _self: types.SimpleNamespace(
+            get_extents=lambda _coord: types.SimpleNamespace(x=0, y=0, width=400, height=500)
+        ),
+    )
+    monkeypatch.setattr(
+        accessibility.Atspi, "CoordType", types.SimpleNamespace(WINDOW="window"), raising=False
+    )
+    monkeypatch.setattr(accessibility, "_kwin_windows", lambda: ([window], ""))
+    (original,) = _query(query="Seven")
+    old_ref = original["ref"]
+    assert UIElement.from_worker(original).rect is not None
+
+    if hidden:
+        button.states = ["enabled", "sensitive"]
+        reason = "not-showing"
+    else:
+        window["desktops"] = ["d2"]
+        reason = "inactive-desktop"
+
+    (queried,) = _query(query="Seven")
+    (resolved,) = _resolve(old_ref)
+    for payload in (queried, resolved["element"]):
+        element = UIElement.from_worker(payload)
+        assert element.rect is None and element.unavailable == reason
+        assert element.actions == ["Press"]
+        assert element.window_id == "w1"
+        assert element.states == button.states
+    assert queried["ref"] != old_ref
+    assert resolved["element"]["ref"] == old_ref
+
+    acted = _request("action", address={"ref": old_ref}, action_name="Press")
+    assert acted["ok"] is True and acted["result"]["invoked"] is True
+    assert atspi.dispatched == [("Seven", "Press")]
+    assert acted["result"]["element"]["unavailable"] == reason
+
+    button.states = ["enabled", "visible", "showing"]
+    window["desktops"] = ["d1"]
+    (restored,) = _resolve(old_ref)
+    assert UIElement.from_worker(restored["element"]).rect is not None

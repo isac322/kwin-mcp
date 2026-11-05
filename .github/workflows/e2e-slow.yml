@@ -1,6 +1,6 @@
-name: Fedora drag diagnostic
+name: ORIGINAL Fedora shard 2/5 diagnostic
 
-# One approved, manual, native-amd64 diagnostic for the exact historical failure.
+# One approved, manual native-amd64 ORIGINAL shard 2/5 diagnostic; no retry loop.
 # This workflow is intentionally not part of the normal E2E matrix and has no
 # write permission for repository contents or actions.
 on:
@@ -11,8 +11,8 @@ permissions:
   actions: read
 
 jobs:
-  native-fedora-drag:
-    name: Native Fedora drag diagnostic (68a4aad)
+  native-fedora-original-shard2:
+    name: ORIGINAL native Fedora shard 2/5 (68a4aad)
     runs-on: ubuntu-26.04
     timeout-minutes: 40
     env:
@@ -40,11 +40,12 @@ jobs:
       - name: Create remote resource ledger before resources
         shell: bash
         run: |
-          resource_root="$RUNNER_TEMP/kwin-premerge-fedora-drag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          image_name="kwin-mcp-fedora-drag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          container_name="kwin-mcp-fedora-drag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          set -euo pipefail
+          resource_root="$RUNNER_TEMP/kwin-premerge-fedora-original-shard2-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          image_name="kwin-mcp-fedora-original-shard2-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          container_name="kwin-mcp-fedora-original-shard2-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           artifact_dir="$resource_root/artifacts"
-          ledger="$RUNNER_TEMP/kwin-premerge-fedora-drag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-resource-ledger.tsv"
+          ledger="$RUNNER_TEMP/kwin-premerge-fedora-original-shard2-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-resource-ledger.tsv"
           {
             printf 'RESOURCE_ROOT=%s\n' "$resource_root"
             printf 'IMAGE_NAME=%s\n' "$image_name"
@@ -60,10 +61,10 @@ jobs:
           created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           printf '%s\n' 'kind	identifier	delete-command	created-utc	owner' > "$LEDGER"
           {
-            printf 'image-dir\t%s\trm -rf -- %s\t%s\tpremerge-fedora-drag\n' "$RESOURCE_ROOT/image" "$RESOURCE_ROOT/image" "$created"
-            printf 'artifact-dir\t%s\trm -rf -- %s\t%s\tpremerge-fedora-drag\n' "$ARTIFACT_DIR" "$ARTIFACT_DIR" "$created"
-            printf 'image-tag\t%s\tdocker image rm --force %s\t%s\tpremerge-fedora-drag\n' "$IMAGE_NAME" "$IMAGE_NAME" "$created"
-            printf 'container\t%s\tdocker rm --force %s\t%s\tpremerge-fedora-drag\n' "$CONTAINER_NAME" "$CONTAINER_NAME" "$created"
+            printf 'image-dir\t%s\trm -rf -- %s\t%s\tpremerge-fedora-original-shard2\n' "$RESOURCE_ROOT/image" "$RESOURCE_ROOT/image" "$created"
+            printf 'artifact-dir\t%s\trm -rf -- %s\t%s\tpremerge-fedora-original-shard2\n' "$ARTIFACT_DIR" "$ARTIFACT_DIR" "$created"
+            printf 'image-tag\t%s\tdocker image rm --force %s\t%s\tpremerge-fedora-original-shard2\n' "$IMAGE_NAME" "$IMAGE_NAME" "$created"
+            printf 'container\t%s\tdocker rm --force %s\t%s\tpremerge-fedora-original-shard2\n' "$CONTAINER_NAME" "$CONTAINER_NAME" "$created"
           } >> "$LEDGER"
           install -d -m 0777 "$ARTIFACT_DIR"
           cp "$LEDGER" "$ARTIFACT_DIR/resource-ledger.tsv"
@@ -83,7 +84,11 @@ jobs:
             "source_image_id": "$SOURCE_IMAGE_ID",
             "source_image_architecture": "$SOURCE_IMAGE_ARCH",
             "source_artifact_digest": "$SOURCE_ARTIFACT_DIGEST",
-            "test": "tests/e2e/test_mcp_scenarios.py::test_t4_drag_file_to_editor",
+            "diagnostic_scope": "ORIGINAL Fedora shard 2/5 exactly once",
+            "pytest_selection": ["tests", "-v", "-m", "not slow", "--kwin-shard=2/5"],
+            "expected_selected_tests": 614,
+            "full_matrix_or_main_ci_rerun": false,
+            "trace_correlation": "Multiple server PIDs are expected; correlate each PID/time interval to its per-test raw probe logs, never concatenate all PIDs as one drag.",
             "qa_branch": "${GITHUB_REF}",
             "qa_sha": "${GITHUB_SHA}",
             "resource_ledger": "$LEDGER",
@@ -118,7 +123,7 @@ jobs:
           run-id: ${{ env.SOURCE_RUN_ID }}
           artifact-ids: "13382757906"
           merge-multiple: true
-          path: ${{ runner.temp }}/kwin-premerge-fedora-drag-${{ github.run_id }}-${{ github.run_attempt }}/image
+          path: ${{ runner.temp }}/kwin-premerge-fedora-original-shard2-${{ github.run_id }}-${{ github.run_attempt }}/image
 
       - name: Load and verify original image before test
         shell: bash
@@ -154,6 +159,7 @@ jobs:
           import json
           import pathlib
           import sys
+          import os
 
           spec = importlib.util.find_spec("kwin_mcp.input")
           if spec is None or spec.origin is None:
@@ -164,7 +170,10 @@ jobs:
               raise SystemExit(f"unexpected installed module path: {path}")
           data = path.read_bytes()
           json.dump(
-              {"path": str(path), "sha256": hashlib.sha256(data).hexdigest(), "python": sys.version},
+              {"path": str(path), "sha256": hashlib.sha256(data).hexdigest(), "python": sys.version,
+               "runtime_uid": os.getuid(), "runtime_euid": os.geteuid(),
+               "runtime_gid": os.getgid(), "runtime_egid": os.getegid(),
+               "runtime_groups": os.getgroups()},
               sys.stdout,
           )
           print()
@@ -203,13 +212,13 @@ jobs:
           } | tee "$ARTIFACT_DIR/udmabuf-identity.txt"
           printf '%s\n' "$(stat -c '%g' /dev/udmabuf)" > "$ARTIFACT_DIR/udmabuf-gid.txt"
 
-      - name: Run exactly one focused native test
+      - name: Run ORIGINAL Fedora shard 2/5 exactly once
         shell: bash
         run: |
           set -o pipefail
           hook_sha="$(cut -d' ' -f1 "$ARTIFACT_DIR/trace-hook.sha256")"
           {
-            printf '{"image_id":"%s","image_arch":"%s","artifact_digest":"%s","image_tar_zst_sha256":"%s","target_sha":"%s","trace_hook_sha256":"%s"}\n' \
+            printf '{"diagnostic_scope":"ORIGINAL Fedora shard 2/5 exactly once","expected_selected_tests":614,"image_id":"%s","image_arch":"%s","artifact_digest":"%s","image_tar_zst_sha256":"%s","target_sha":"%s","trace_hook_sha256":"%s"}\n' \
               "$SOURCE_IMAGE_ID" "$SOURCE_IMAGE_ARCH" "$SOURCE_ARTIFACT_DIGEST" "$(cut -d' ' -f1 "$ARTIFACT_DIR/image-tar-zst.sha256")" "$TARGET_SHA" "$hook_sha"
           } > "$ARTIFACT_DIR/provenance.json"
           set +e
@@ -230,10 +239,9 @@ jobs:
               /bin/sh -c 'set -eu
                 /opt/kwin-mcp-venv/bin/python /artifacts/installed-module.py > /artifacts/installed-module.json
                 env | sort > /artifacts/container-environment.txt
-                exec /opt/kwin-mcp-venv/bin/python -m pytest \
-                  tests/e2e/test_mcp_scenarios.py::test_t4_drag_file_to_editor \
-                  -v --showlocals \
-                  --basetemp=/artifacts/focused-pytest-tmp \
+                exec /opt/kwin-mcp-venv/bin/python -m pytest tests -v \
+                  -m "not slow" --kwin-shard=2/5 --showlocals \
+                  --basetemp=/artifacts/shard2-pytest-tmp \
                   --junitxml=/artifacts/junit.xml
               ' \
             2>&1 | tee "$ARTIFACT_DIR/pytest.log"
@@ -274,7 +282,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: fedora-drag-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/kwin-premerge-fedora-drag-${{ github.run_id }}-${{ github.run_attempt }}/artifacts
+          name: fedora-original-shard2-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kwin-premerge-fedora-original-shard2-${{ github.run_id }}-${{ github.run_attempt }}/artifacts
           if-no-files-found: error
           retention-days: 14

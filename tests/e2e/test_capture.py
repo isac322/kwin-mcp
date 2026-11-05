@@ -479,10 +479,7 @@ def test_capture_failure_after_commit_is_warning_not_error(
 @pytest.mark.timeout(600)
 def test_topology_shift_mid_burst(monkeypatch: pytest.MonkeyPatch) -> None:
     with nested_visual_kwin() as visual:
-        for key, value in {
-            "DISPLAY": visual.x_display,
-            "KWIN_MCP_X11_SCREENSHOT": "1",
-        }.items():
+        for key, value in visual.capture_env.items():
             monkeypatch.setenv(key, value)
         home = visual.artifact_dir / "home"
         isolated_home = {
@@ -492,9 +489,10 @@ def test_topology_shift_mid_burst(monkeypatch: pytest.MonkeyPatch) -> None:
             "XDG_STATE_HOME": str(home / ".local" / "state"),
         }
         real_scrot = screenshot._capture_via_scrot
+        real_raw_frame = screenshot._capture_raw_frame
         calls: list[float] = []
 
-        def scrot_with_rescale(output_path: Path, *, include_cursor: bool = False) -> None:
+        def rescale_on_second_frame() -> None:
             calls.append(time.monotonic())
             if len(calls) == 2:
                 # KWin's output scale changes while the second frame is captured.
@@ -505,9 +503,28 @@ def test_topology_shift_mid_burst(monkeypatch: pytest.MonkeyPatch) -> None:
                     log_path=visual.artifact_dir / "kscreen-doctor-mid-burst.log",
                     isolated_home=isolated_home,
                 )
+
+        def scrot_with_rescale(output_path: Path, *, include_cursor: bool = False) -> None:
+            rescale_on_second_frame()
             real_scrot(output_path, include_cursor=include_cursor)
 
-        monkeypatch.setattr(screenshot, "_capture_via_scrot", scrot_with_rescale)
+        def screenshot2_with_rescale(iface: Any, options: Any) -> screenshot._RawFrame:
+            rescale_on_second_frame()
+            return real_raw_frame(iface, options)
+
+        def unavailable(*_args: object, **_kwargs: object) -> None:
+            msg = "unavailable in this test"
+            raise RuntimeError(msg)
+
+        if visual.capture_backend == "x11-scrot":
+            monkeypatch.setattr(screenshot, "_capture_via_scrot", scrot_with_rescale)
+            changed = "output topology or windows changed"
+        else:
+            assert visual.capture_backend == "screenshot2", visual.capture_backend
+            monkeypatch.setattr(screenshot, "_capture_raw_frame", screenshot2_with_rescale)
+            changed = "output topology changed"
+        # Spectacle would recapture both frames at the new, stable scale.
+        monkeypatch.setattr(screenshot, "_capture_via_spectacle", unavailable)
         engine = AutomationEngine()
         try:
             engine.session_connect(
@@ -523,9 +540,11 @@ def test_topology_shift_mid_burst(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls[1] - calls[0] >= 0.45, calls
     assert first.mapping is not None, first
     assert second.mapping is None, second
+    # The exact reason is the guard: on ScreenShot2 a frame taken at 1.25 is
+    # unavailable even without the before/after topology check.
     assert second.coordinate_space == (
-        "Coordinate space: unavailable (output topology or windows changed while this frame "
-        "was captured); backend x11-scrot"
+        f"Coordinate space: unavailable ({changed} while this frame was captured); "
+        f"backend {visual.capture_backend}"
     ), second.coordinate_space
     text = result.render()
     assert f"    {second.coordinate_space}" in text.splitlines(), text

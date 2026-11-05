@@ -258,7 +258,7 @@ The screen-capture visual tests also drive frame-producing pointer, keyboard, to
 
 The native scale-1 exact-backend probe compares the product PNG's RGB pixels with an independent `/usr/bin/spectacle` PNG. Fractional-scale tests check logical geometry and pixel behavior without assuming that Spectacle's device-pixel grid equals ScreenShot2's logical grid. Both visual backends retain crop, retention, and coordinate-mapping failure checks.
 
-The physical-X11 transparent-gap, output-window-resize, and mid-burst scale-change cases (QA-CAP-009 and QA-CAP-016) keep their existing setup and assertions in the Debian 6.3 amd64/arm64 slow lane.
+The physical-X11 transparent-gap and output-window-resize case (QA-CAP-009) keeps its existing setup and assertions in the Debian 6.3 amd64/arm64 slow lane. The mid-burst scale-change case (QA-CAP-016) runs on both backends: X11/scrot there, and ScreenShot2 on KWin 6.8 or later (run locally with `scripts/run-e2e-docker.sh`; the CI slow lane builds only the Debian 6.3 image).
 
 ## Evidence layout
 

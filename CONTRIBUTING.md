@@ -273,6 +273,7 @@ tests/
     ├── test_atspi_service_acquisition.py # Bounded service-file acquisition, descriptor guards, preflight
     ├── test_atspi_exec_security.py       # Literal argv execution; no implicit PATH or shell fallback
     ├── test_session_atspi_direct_start.py # Explicit opt-in, activation denial, rollback, and XDG roots
+    ├── test_host_isolation.py            # Session services keep off the host's portal, permission db, gvfs and a11y bus
     └── transient_probe.py               # GTK parent, child, and nested transient-window test fixture
                         #   Harnesses: mcp_harness.py, session_harness.py, visual_harness.py
                         #   Oracles: kwin_oracle.py, atspi_oracle.py; other per-tool files omitted here

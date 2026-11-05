@@ -74,6 +74,7 @@ ENV KWIN_MCP_SYSTEM_PACKAGES="\
         libegl-mesa0 \
         libei1 \
         libgirepository-2.0-0 \
+        libglib2.0-bin \
         libgl1-mesa-dri \
         libglx-mesa0 \
         libkscreen-bin \
@@ -91,6 +92,7 @@ ENV KWIN_MCP_SYSTEM_PACKAGES="\
         wtype \
         x11-utils \
         xauth \
+        xdg-desktop-portal \
         xdotool \
         xvfb \
         xwayland"

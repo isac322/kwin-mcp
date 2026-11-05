@@ -19,6 +19,8 @@ if TYPE_CHECKING:
 STRICT_SKIPS_ENV: Final = "KWIN_MCP_E2E_STRICT_SKIPS"
 REQUIRE_ENV: Final = "KWIN_MCP_E2E_REQUIRE"
 VIRTUAL_SCREENSHOT_SKIP_PREFIX: Final = "set KWIN_MCP_E2E_SCREENSHOT=1 to run"
+HOST_SERVICE_MISSING_SKIP_PREFIX: Final = "host desktop service not installed"
+HOST_FUSE_UNAVAILABLE_SKIP_PREFIX: Final = "no FUSE for host desktop mounts"
 
 # The only skip reasons allowed when KWIN_MCP_E2E_STRICT_SKIPS=1. A skip reason
 # must start with one of these verbatim; any other skip (including
@@ -27,6 +29,11 @@ KNOWN_LIMIT_PREFIXES: Final[tuple[str, ...]] = (
     # test_virtual_session_smoke.py: legacy KWin 6.3/6.7 virtual backends
     # never answer a ScreenShot2 capture; the only expected skip in CI.
     VIRTUAL_SCREENSHOT_SKIP_PREFIX,
+    # test_host_isolation.py: the stand-in desktop lacks a service the image does
+    # not install, or the container cannot make FUSE mounts (no /dev/fuse and
+    # CAP_SYS_ADMIN), so the document portal and gvfs cases cannot run.
+    HOST_SERVICE_MISSING_SKIP_PREFIX,
+    HOST_FUSE_UNAVAILABLE_SKIP_PREFIX,
     # test_exit_cleanup*.py: directory-permission cases cannot fail as root.
     "root ignores directory permissions",
     # window_zoo could not create a layer-shell surface (GtkLayerShell missing or

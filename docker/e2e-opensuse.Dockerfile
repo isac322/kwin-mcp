@@ -70,6 +70,8 @@ ENV KWIN_MCP_SYSTEM_PACKAGES="\
         wl-clipboard \
         wtype \
         xauth \
+        xdg-desktop-portal \
+        xdg-desktop-portal-gtk \
         xdotool \
         xdpyinfo \
         xorg-x11-server-Xvfb \

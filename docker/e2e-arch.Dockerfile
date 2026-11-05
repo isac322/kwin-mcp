@@ -88,6 +88,8 @@ ENV KWIN_MCP_SYSTEM_PACKAGES="\
         wayland-utils \
         wl-clipboard \
         wtype \
+        xdg-desktop-portal \
+        xdg-desktop-portal-gtk \
         xdotool \
         xorg-server-xvfb \
         xorg-xauth \

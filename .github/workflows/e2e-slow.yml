@@ -1,85 +1,280 @@
-name: E2E slow
+name: Fedora drag diagnostic
 
-# Tests marked `@pytest.mark.slow` are excluded from the PR shards in e2e.yml.
-# This workflow runs them weekly and on demand; one green dispatch run on the
-# release commit is required before the version tag is pushed.
+# One approved, manual, native-amd64 diagnostic for the exact historical failure.
+# This workflow is intentionally not part of the normal E2E matrix and has no
+# write permission for repository contents or actions.
 on:
-  schedule:
-    - cron: "0 3 * * 1"
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
-  slow-session:
-    name: Slow E2E (${{ matrix.label }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - label: amd64
-            runner: ubuntu-26.04
-          - label: arm64
-            runner: ubuntu-26.04-arm
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+  native-fedora-drag:
+    name: Native Fedora drag diagnostic (68a4aad)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 40
     env:
-      E2E_ARTIFACT_DIR: artifacts/e2e-slow/${{ matrix.label }}
-      E2E_CONTAINER_NAME: kwin-mcp-e2e-slow-${{ matrix.label }}
+      TARGET_SHA: 68a4aad47380331e3c355ec080f9182123730c41
+      SOURCE_ARTIFACT_DIGEST: sha256:ceb019d3f5b6ed8bfe9084ab48fc419c8dbf2419dcf9cf0c5595c3e553e4306b
+      SOURCE_RUN_ID: "41954812317"
+      SOURCE_IMAGE_ID: sha256:1d5c3bcee006d1f6514356aeb40d1c33d9db9b7b5d5c7f25201512ae786f68fe
+      SOURCE_IMAGE_ARCH: amd64
+
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout diagnostic workflow branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref }}
+          path: qa
+          fetch-depth: 1
 
-      - name: Create the artifact directory
-        run: install -d -m 0777 "$E2E_ARTIFACT_DIR"
+      - name: Checkout immutable target source for provenance
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TARGET_SHA }}
+          path: subject
+          fetch-depth: 1
 
-      - name: Build the KWin test image
-        run: docker build --file docker/e2e.Dockerfile --tag kwin-mcp-e2e .
+      - name: Create remote resource ledger before resources
+        shell: bash
+        run: |
+          resource_root="$RUNNER_TEMP/kwin-premerge-fedora-drag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          image_name="kwin-mcp-fedora-drag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          container_name="kwin-mcp-fedora-drag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          artifact_dir="$resource_root/artifacts"
+          ledger="$RUNNER_TEMP/kwin-premerge-fedora-drag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-resource-ledger.tsv"
+          {
+            printf 'RESOURCE_ROOT=%s\n' "$resource_root"
+            printf 'IMAGE_NAME=%s\n' "$image_name"
+            printf 'CONTAINER_NAME=%s\n' "$container_name"
+            printf 'ARTIFACT_DIR=%s\n' "$artifact_dir"
+            printf 'LEDGER=%s\n' "$ledger"
+          } >> "$GITHUB_ENV"
+          RESOURCE_ROOT="$resource_root"
+          IMAGE_NAME="$image_name"
+          CONTAINER_NAME="$container_name"
+          ARTIFACT_DIR="$artifact_dir"
+          LEDGER="$ledger"
+          created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          printf '%s\n' 'kind	identifier	delete-command	created-utc	owner' > "$LEDGER"
+          {
+            printf 'image-dir\t%s\trm -rf -- %s\t%s\tpremerge-fedora-drag\n' "$RESOURCE_ROOT/image" "$RESOURCE_ROOT/image" "$created"
+            printf 'artifact-dir\t%s\trm -rf -- %s\t%s\tpremerge-fedora-drag\n' "$ARTIFACT_DIR" "$ARTIFACT_DIR" "$created"
+            printf 'image-tag\t%s\tdocker image rm --force %s\t%s\tpremerge-fedora-drag\n' "$IMAGE_NAME" "$IMAGE_NAME" "$created"
+            printf 'container\t%s\tdocker rm --force %s\t%s\tpremerge-fedora-drag\n' "$CONTAINER_NAME" "$CONTAINER_NAME" "$created"
+          } >> "$LEDGER"
+          install -d -m 0777 "$ARTIFACT_DIR"
+          cp "$LEDGER" "$ARTIFACT_DIR/resource-ledger.tsv"
+          cat > "$ARTIFACT_DIR/runner-before.txt" <<EOF
+          uname=$(uname -r)
+          nproc=$(nproc)
+          docker_info=$(docker info --format '{{json .}}')
+          pressure_io=$(cat /proc/pressure/io)
+          pressure_memory=$(cat /proc/pressure/memory)
+          pressure_cpu=$(cat /proc/pressure/cpu)
+          EOF
+          cp "$LEDGER" "$ARTIFACT_DIR/resource-ledger.tsv"
+          cat > "$ARTIFACT_DIR/case.json" <<EOF
+          {
+            "target_sha": "$TARGET_SHA",
+            "source_run_id": "$SOURCE_RUN_ID",
+            "source_image_id": "$SOURCE_IMAGE_ID",
+            "source_image_architecture": "$SOURCE_IMAGE_ARCH",
+            "source_artifact_digest": "$SOURCE_ARTIFACT_DIGEST",
+            "test": "tests/e2e/test_mcp_scenarios.py::test_t4_drag_file_to_editor",
+            "qa_branch": "${GITHUB_REF}",
+            "qa_sha": "${GITHUB_SHA}",
+            "resource_ledger": "$LEDGER",
+            "automatic_cleanup": false
+          }
+          EOF
 
-      - name: Run slow end-to-end tests
+      - name: Verify immutable target checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git -C "$GITHUB_WORKSPACE/subject" rev-parse HEAD)"
+          test "$actual" = "$TARGET_SHA"
+          printf '%s\n' "$actual" > "$ARTIFACT_DIR/target-head.txt"
+          git -C "$GITHUB_WORKSPACE/subject" status --short > "$ARTIFACT_DIR/target-status.txt"
+
+      - name: Verify original artifact digest before download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/13382757906" --jq '.digest')"
+          printf '%s\n' "$actual" | tee "$ARTIFACT_DIR/source-artifact-digest.txt"
+          test "$actual" = "$SOURCE_ARTIFACT_DIGEST"
+
+      - name: Download original Fedora amd64 image artifact
+        uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          artifact-ids: "13382757906"
+          merge-multiple: true
+          path: ${{ runner.temp }}/kwin-premerge-fedora-drag-${{ github.run_id }}-${{ github.run_attempt }}/image
+
+      - name: Load and verify original image before test
+        shell: bash
+        run: |
+          set -euo pipefail
+          image_dir="$RESOURCE_ROOT/image"
+          archive="$image_dir/image.tar.zst"
+          test -f "$archive"
+          zstd --decompress --stdout "$archive" | docker load | tee "$ARTIFACT_DIR/docker-load.log"
+          loaded_image="kwin-mcp-e2e:latest"
+          actual="$(docker image inspect --format '{{.Id}} {{.Architecture}} {{.Os}}' "$loaded_image")"
+          printf '%s\n' "$actual" | tee "$ARTIFACT_DIR/image-identity.txt"
+          expected="$SOURCE_IMAGE_ID $SOURCE_IMAGE_ARCH linux"
+          test "$actual" = "$expected"
+          # Ledger the unique tag before creating it; the generic loaded tag is
+          # owned by this run's downloaded artifact and is never removed here.
+          docker tag "$loaded_image" "$IMAGE_NAME"
+          docker image inspect "$IMAGE_NAME" > "$ARTIFACT_DIR/image-inspect.json"
+          sha256sum "$archive" | tee "$ARTIFACT_DIR/image-tar-zst.sha256"
+
+      - name: Validate diagnostic hook and record its hash
+        shell: bash
+        run: |
+          set -euo pipefail
+          hook="$GITHUB_WORKSPACE/qa/.github/diagnostics/fedora-drag/sitecustomize.py"
+          test -s "$hook"
+          grep -F 'KWIN_MCP_DIAG_TRACE' "$hook" >/dev/null
+          grep -F 'InputBackend' "$hook" >/dev/null
+          sha256sum "$hook" | tee "$ARTIFACT_DIR/trace-hook.sha256"
+          cat > "$ARTIFACT_DIR/installed-module.py" <<'PY'
+          import hashlib
+          import importlib.util
+          import json
+          import pathlib
+          import sys
+
+          spec = importlib.util.find_spec("kwin_mcp.input")
+          if spec is None or spec.origin is None:
+              raise SystemExit("kwin_mcp.input is not importable")
+          path = pathlib.Path(spec.origin).resolve()
+          root = pathlib.Path("/opt/kwin-mcp-venv").resolve()
+          if root not in path.parents:
+              raise SystemExit(f"unexpected installed module path: {path}")
+          data = path.read_bytes()
+          json.dump(
+              {"path": str(path), "sha256": hashlib.sha256(data).hexdigest(), "python": sys.version},
+              sys.stdout,
+          )
+          print()
+          PY
+
+      - name: Prepare and identify native udmabuf
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -c /dev/udmabuf ]]; then
+            if ! sudo -n modprobe udmabuf; then
+              echo 'modprobe udmabuf returned non-zero; waiting for udev...' >&2
+            fi
+            if [[ ! -c /dev/udmabuf ]]; then
+              sudo -n udevadm settle --timeout=10
+            fi
+          fi
+          if [[ ! -c /dev/udmabuf ]]; then
+            echo 'required native /dev/udmabuf is unavailable' >&2
+            exit 1
+          fi
+          read -r major_hex minor_hex < <(stat -c '%t %T' /dev/udmabuf)
+          major=$((16#$major_hex))
+          minor=$((16#$minor_hex))
+          registered="$(cat /sys/class/misc/udmabuf/dev)"
+          test "$registered" = "$major:$minor"
+          sysfs="/sys/dev/char/${major}:${minor}"
+          test -e "$sysfs"
+          {
+            printf 'node=/dev/udmabuf\n'
+            printf 'node_major_minor=%s:%s\n' "$major" "$minor"
+            printf 'registered_major_minor=%s\n' "$registered"
+            printf 'sysfs_identity=%s\n' "$(readlink -f "$sysfs")"
+            stat -c 'type=%F mode=%04a uid=%u gid=%g major=%t minor=%T' /dev/udmabuf
+            cat "$sysfs/uevent"
+          } | tee "$ARTIFACT_DIR/udmabuf-identity.txt"
+          printf '%s\n' "$(stat -c '%g' /dev/udmabuf)" > "$ARTIFACT_DIR/udmabuf-gid.txt"
+
+      - name: Run exactly one focused native test
         shell: bash
         run: |
           set -o pipefail
-          timeout --signal=INT --kill-after=1m 80m \
+          hook_sha="$(cut -d' ' -f1 "$ARTIFACT_DIR/trace-hook.sha256")"
+          {
+            printf '{"image_id":"%s","image_arch":"%s","artifact_digest":"%s","image_tar_zst_sha256":"%s","target_sha":"%s","trace_hook_sha256":"%s"}\n' \
+              "$SOURCE_IMAGE_ID" "$SOURCE_IMAGE_ARCH" "$SOURCE_ARTIFACT_DIGEST" "$(cut -d' ' -f1 "$ARTIFACT_DIR/image-tar-zst.sha256")" "$TARGET_SHA" "$hook_sha"
+          } > "$ARTIFACT_DIR/provenance.json"
+          set +e
+          timeout --signal=INT --kill-after=1m 20m \
             docker run \
-              --name "$E2E_CONTAINER_NAME" \
+              --pull=never \
+              --name "$CONTAINER_NAME" \
               --env KWIN_MCP_E2E_STRICT_SKIPS=1 \
               --env KWIN_MCP_E2E_REQUIRE=layer-shell \
-              --volume "$PWD/$E2E_ARTIFACT_DIR:/artifacts" \
-              kwin-mcp-e2e \
-              /opt/kwin-mcp-venv/bin/python -m pytest tests -v \
-                -m slow \
-                --junitxml=/artifacts/junit.xml \
-            2>&1 | tee "$E2E_ARTIFACT_DIR/pytest.log"
+              --env KWIN_MCP_E2E_SCREENSHOT=1 \
+              --env PYTHONPATH=/diagnostics \
+              --env KWIN_MCP_DIAG_TRACE=/artifacts/sender-trace.tsv \
+              --volume "$ARTIFACT_DIR:/artifacts" \
+              --volume "$GITHUB_WORKSPACE/qa/.github/diagnostics/fedora-drag/sitecustomize.py:/diagnostics/sitecustomize.py:ro" \
+              --device=/dev/udmabuf:/dev/udmabuf:rw \
+              --group-add "$(cat "$ARTIFACT_DIR/udmabuf-gid.txt")" \
+              "$IMAGE_NAME" \
+              /bin/sh -c 'set -eu
+                /opt/kwin-mcp-venv/bin/python /artifacts/installed-module.py > /artifacts/installed-module.json
+                env | sort > /artifacts/container-environment.txt
+                exec /opt/kwin-mcp-venv/bin/python -m pytest \
+                  tests/e2e/test_mcp_scenarios.py::test_t4_drag_file_to_editor \
+                  -v --showlocals \
+                  --basetemp=/artifacts/focused-pytest-tmp \
+                  --junitxml=/artifacts/junit.xml
+              ' \
+            2>&1 | tee "$ARTIFACT_DIR/pytest.log"
+          test_rc=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$test_rc" > "$ARTIFACT_DIR/docker-test.exit"
+          exit "$test_rc"
 
-      - name: Collect container diagnostics
-        if: failure()
+      - name: Normalize artifact permissions and record post-run pressure
+        if: always()
         shell: bash
         run: |
-          docker inspect "$E2E_CONTAINER_NAME" \
-            > "$E2E_ARTIFACT_DIR/docker-inspect.json" \
-            2> "$E2E_ARTIFACT_DIR/docker-inspect.stderr" || true
-          docker logs --timestamps "$E2E_CONTAINER_NAME" \
-            > "$E2E_ARTIFACT_DIR/docker.log" 2>&1 || true
-          docker top "$E2E_CONTAINER_NAME" -eo pid,ppid,user,stat,etime,args \
-            > "$E2E_ARTIFACT_DIR/docker-processes.txt" 2>&1 || true
-
-      - name: Remove the test container
-        if: always()
-        run: docker rm --force "$E2E_CONTAINER_NAME" || true
-
-      - name: Normalize artifact permissions
-        if: always()
-        shell: bash
-        run: |
-          if [[ -d "$E2E_ARTIFACT_DIR" ]]; then
-            sudo chmod -R a+rX "$E2E_ARTIFACT_DIR"
+          set -euo pipefail
+          if [[ -d "$ARTIFACT_DIR" ]]; then
+            sudo chmod -R a+rX "$ARTIFACT_DIR"
+            cat > "$ARTIFACT_DIR/runner-after.txt" <<EOF
+          uname=$(uname -r)
+          nproc=$(nproc)
+          docker_info=$(docker info --format '{{json .}}')
+          pressure_io=$(cat /proc/pressure/io)
+          pressure_memory=$(cat /proc/pressure/memory)
+          pressure_cpu=$(cat /proc/pressure/cpu)
+          EOF
           fi
 
-      - name: Upload slow E2E artifacts
+      - name: Collect retained native diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker inspect "$CONTAINER_NAME" > "$ARTIFACT_DIR/test-container-inspect.json" 2> "$ARTIFACT_DIR/test-container-inspect.stderr" || true
+          docker logs --timestamps "$CONTAINER_NAME" > "$ARTIFACT_DIR/test-container.log" 2> "$ARTIFACT_DIR/test-container-log.stderr" || true
+          docker top "$CONTAINER_NAME" -eo pid,ppid,user,stat,etime,args > "$ARTIFACT_DIR/test-container-processes.txt" 2>&1 || true
+          find "$ARTIFACT_DIR" -maxdepth 5 -type f -print | sort > "$ARTIFACT_DIR/artifact-inventory.txt"
+          cp "$LEDGER" "$ARTIFACT_DIR/resource-ledger.tsv"
+
+      - name: Upload diagnostic artifacts
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: e2e-slow-${{ matrix.label }}
-          path: ${{ env.E2E_ARTIFACT_DIR }}
-          if-no-files-found: warn
+          name: fedora-drag-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kwin-premerge-fedora-drag-${{ github.run_id }}-${{ github.run_attempt }}/artifacts
+          if-no-files-found: error
+          retention-days: 14

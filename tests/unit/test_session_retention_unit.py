@@ -10,6 +10,7 @@ fresh ``OwnedProcessRegistry`` replaces the module's, so the registered dirs
 
 from __future__ import annotations
 
+import shutil
 import sys
 import tempfile
 import time
@@ -254,6 +255,64 @@ def test_failed_spawn_follows_retention_home(harness: _Harness, keep_home: bool)
     assert len(homes) == (1 if keep_home else 0)
     assert harness.registered() == set()
     assert session.info is None
+
+
+@pytest.mark.qa("QA-SES-017")
+@pytest.mark.parametrize("keep_home", [False, True])
+def test_overlay_setup_failure_follows_retention_home(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch, keep_home: bool
+) -> None:
+    original_mkdir = session_module.Path.mkdir
+
+    def fail_overlay_mkdir(
+        path: Path, mode: int = 0o777, parents: bool = False, exist_ok: bool = False
+    ) -> None:
+        if path.name == "share" and path.parent.name == ".local":
+            msg = "simulated blocked HOME overlay filesystem"
+            raise OSError(msg)
+        original_mkdir(path, mode, parents, exist_ok)
+
+    monkeypatch.setattr(session_module.Path, "mkdir", fail_overlay_mkdir)
+    session = Session()
+    config = SessionConfig(
+        socket_name=SOCKET_NAME, home="isolated", retention=Retention(home=keep_home)
+    )
+
+    with pytest.raises(OSError, match="blocked HOME overlay"):
+        session.start(config)
+
+    assert session.stop() == KeptPaths()
+    homes = harness.temp_dirs("kwin-mcp-home-")
+    assert len(homes) == (1 if keep_home else 0)
+    assert harness.registered() == set()
+    if keep_home:
+        assert homes[0].is_dir()
+        shutil.rmtree(homes[0])
+    else:
+        assert homes == []
+
+
+@pytest.mark.qa("QA-SES-017")
+def test_overlay_setup_cancellation_cleans_home(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_mkdir = session_module.Path.mkdir
+
+    def cancel_overlay_mkdir(
+        path: Path, mode: int = 0o777, parents: bool = False, exist_ok: bool = False
+    ) -> None:
+        if path.name == "share" and path.parent.name == ".local":
+            raise KeyboardInterrupt("simulated cancellation during HOME overlay")
+        original_mkdir(path, mode, parents, exist_ok)
+
+    monkeypatch.setattr(session_module.Path, "mkdir", cancel_overlay_mkdir)
+    session = Session()
+
+    with pytest.raises(KeyboardInterrupt, match="cancellation during HOME overlay"):
+        session.start(SessionConfig(socket_name=SOCKET_NAME, home="isolated"))
+
+    assert harness.temp_dirs("kwin-mcp-home-") == []
+    assert harness.registered() == set()
 
 
 @pytest.mark.qa("QA-SES-015")

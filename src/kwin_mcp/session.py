@@ -722,41 +722,48 @@ class Session:
 
         self._socket_name = config.socket_name or f"wayland-mcp-{os.getpid()}-{int(time.time())}"
 
-        # home="isolated": launched apps get a private temporary HOME.
-        if config.home == "isolated":
-            self._home_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-home-"))
-            for subdir in (
-                ".config",
-                Path(".local") / "share",
-                Path(".local") / "state",
-                ".cache",
-            ):
-                (self._home_dir / subdir).mkdir(parents=True, exist_ok=True)
-            # Record the home when session_stop would remove it, so the exit path
-            # (when it cannot run session_stop) mirrors session_stop's retention
-            # semantics: retention.home alone decides whether the home survives.
-            # The screenshot dir lives outside the home and follows
-            # retention.artifacts.
-            if not config.retention.home:
-                process_registry.register_temp_dir(self._home_dir)
+        try:
+            # home="isolated": launched apps get a private temporary HOME.
+            if config.home == "isolated":
+                self._home_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-home-"))
+                for subdir in (
+                    ".config",
+                    Path(".local") / "share",
+                    Path(".local") / "state",
+                    ".cache",
+                ):
+                    (self._home_dir / subdir).mkdir(parents=True, exist_ok=True)
+                # Record the home when session_stop would remove it, so the exit path
+                # (when it cannot run session_stop) mirrors session_stop's retention
+                # semantics: retention.home alone decides whether the home survives.
+                # The screenshot dir lives outside the home and follows
+                # retention.artifacts.
+                if not config.retention.home:
+                    process_registry.register_temp_dir(self._home_dir)
 
-        # Clean up any stale socket files
-        runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
-        for suffix in ("", ".lock"):
-            path = Path(runtime_dir) / f"{self._socket_name}{suffix}"
-            path.unlink(missing_ok=True)
+            # Clean up any stale socket files
+            runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+            for suffix in ("", ".lock"):
+                path = Path(runtime_dir) / f"{self._socket_name}{suffix}"
+                path.unlink(missing_ok=True)
 
-        # The compositor must not read the host's config dir: a wallet-enabled
-        # kwalletrc there lets the kwallet popup steal focus from the app under
-        # automation. An isolated home already gives it a private .config; seed
-        # that one, otherwise create a throwaway dir that _build_env points
-        # XDG_CONFIG_HOME at. The keymap is pinned separately in _build_env.
-        if self._home_dir is not None:
-            _write_deterministic_session_config(self._home_dir / ".config")
-        else:
-            self._session_config_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-config-"))
-            _write_deterministic_session_config(self._session_config_dir)
-            process_registry.register_temp_dir(self._session_config_dir)
+            # The compositor must not read the host's config dir: a wallet-enabled
+            # kwalletrc there lets the kwallet popup steal focus from the app under
+            # automation. An isolated home already gives it a private .config; seed
+            # that one, otherwise create a throwaway dir that _build_env points
+            # XDG_CONFIG_HOME at. The keymap is pinned separately in _build_env.
+            if self._home_dir is not None:
+                _write_deterministic_session_config(self._home_dir / ".config")
+            else:
+                self._session_config_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-config-"))
+                _write_deterministic_session_config(self._session_config_dir)
+                process_registry.register_temp_dir(self._session_config_dir)
+        except BaseException:
+            # A cancellation or interrupt can arrive during filesystem setup before
+            # the wrapper exists, so clean every resource acquired so far here.
+            self._cleanup_start_dirs()
+            raise
+
         # Deliberately NOT isolating XDG_DATA_HOME / XDG_CACHE_HOME: qtbase
         # crash-logs a fatal qFatal when a nonexistent standard data dir is
         # set (reproduced on qt6-base 6.10), and existing dirs already
@@ -961,6 +968,10 @@ class Session:
         still exist).
         """
         if self._process is None:
+            # Startup can fail after acquiring HOME/config resources but before
+            # spawning the wrapper. Keep the rollback path identical to the
+            # failed-Popen path instead of returning with those resources live.
+            self._cleanup_start_dirs()
             return KeptPaths()
 
         # Apps started by launch_app are children of this process, not of the

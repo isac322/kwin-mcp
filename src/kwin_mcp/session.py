@@ -758,27 +758,19 @@ class Session:
                 self._session_config_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-config-"))
                 _write_deterministic_session_config(self._session_config_dir)
                 process_registry.register_temp_dir(self._session_config_dir)
-        except BaseException:
-            # A cancellation or interrupt can arrive during filesystem setup before
-            # the wrapper exists, so clean every resource acquired so far here.
-            self._cleanup_start_dirs()
-            raise
 
-        # Deliberately NOT isolating XDG_DATA_HOME / XDG_CACHE_HOME: qtbase
-        # crash-logs a fatal qFatal when a nonexistent standard data dir is
-        # set (reproduced on qt6-base 6.10), and existing dirs already
-        # contain everything kwin/konsole need to start.
+            # Deliberately NOT isolating XDG_DATA_HOME / XDG_CACHE_HOME: qtbase
+            # crash-logs a fatal qFatal when a nonexistent standard data dir is
+            # set (reproduced on qt6-base 6.10), and existing dirs already
+            # contain everything kwin/konsole need to start.
 
-        # Build the wrapper script that runs inside dbus-run-session
-        wrapper_script = self._build_wrapper_script(config)
+            # Build the wrapper script that runs inside dbus-run-session
+            wrapper_script = self._build_wrapper_script(config)
 
-        # Start the isolated session in its own process group. stderr goes to a
-        # file, not a pipe: a pipe would let a descendant block forever once
-        # the parent stops draining it, and it re-opens the "process wedged on
-        # a full stderr buffer" failure this call is supposed to survive. The
-        # file is also the diagnostic sink read when startup fails.
-        self._stderr_file = tempfile.TemporaryFile()  # noqa: SIM115
-        try:
+            # stderr goes to a file, not a pipe: a descendant could otherwise
+            # block forever once the parent stops draining it. Keep its creation
+            # inside the same rollback boundary as the HOME/config setup.
+            self._stderr_file = tempfile.TemporaryFile()  # noqa: SIM115
             # stdin is the MCP server's JSON-RPC transport; no descendant of
             # the session (compositor, AT-SPI bus, apps) may read from it.
             # Spawn through the registry so the wrapper's group is registered
@@ -792,10 +784,11 @@ class Session:
                 start_new_session=True,
             )
         except BaseException:
-            self._stderr_file.close()
-            self._stderr_file = None
-            # _process is still None, so stop() would return early; undo the
-            # resource acquisition this method already performed.
+            if self._stderr_file is not None:
+                self._stderr_file.close()
+                self._stderr_file = None
+            # No wrapper was spawned, so release the directories acquired before
+            # the filesystem failure, cancellation, or failed spawn.
             self._cleanup_start_dirs()
             raise
         progress.report(1, progress_total, "Starting KWin")
@@ -1056,8 +1049,8 @@ class Session:
     def _cleanup_start_dirs(self) -> None:
         """Release the directories created by start() when no session exists.
 
-        Only used on the Popen-failure path, where _process is None and stop()
-        cannot run; the home follows retention.home as in stop(). The screenshot dir
+        Used by pre-spawn failure rollback and stop() when no wrapper exists.
+        The home follows retention.home as in stop(). The screenshot directory
         is created only after KWin starts, so it does not exist yet here.
         """
         if self._session_config_dir is not None:

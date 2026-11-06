@@ -315,6 +315,108 @@ def test_overlay_setup_cancellation_cleans_home(
     assert harness.registered() == set()
 
 
+@pytest.mark.qa("QA-SES-017")
+@pytest.mark.parametrize("failure", [OSError, KeyboardInterrupt])
+def test_host_config_setup_failure_cleans_config(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch, failure: type[BaseException]
+) -> None:
+    original_write_text = session_module.Path.write_text
+
+    def fail_config_write(
+        path: Path,
+        data: str,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ) -> int:
+        if path.name == "kwalletrc":
+            raise failure("config preparation failed")
+        return original_write_text(path, data, encoding=encoding, errors=errors, newline=newline)
+
+    monkeypatch.setattr(session_module.Path, "write_text", fail_config_write)
+    session = Session()
+
+    with pytest.raises(failure, match="config preparation failed"):
+        session.start(SessionConfig(socket_name=SOCKET_NAME))
+
+    assert harness.temp_dirs("kwin-mcp-config-") == []
+    assert harness.registered() == set()
+    assert harness.spawn_env == []
+    assert session.stop() == KeptPaths()
+
+
+@pytest.mark.qa("QA-SES-017")
+def test_overlay_setup_failure_allows_healthy_retry(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sentinel = harness.temp_root / "kwin-mcp-home-pre-existing"
+    sentinel.mkdir()
+    sentinel_file = sentinel / "keep.txt"
+    sentinel_file.write_text("not owned by the failed session")
+    original_mkdir = session_module.Path.mkdir
+    failed_homes: list[Path] = []
+
+    def fail_once(
+        path: Path, mode: int = 0o777, parents: bool = False, exist_ok: bool = False
+    ) -> None:
+        if not failed_homes and path.name == "share" and path.parent.name == ".local":
+            failed_homes.append(path.parent.parent)
+            raise OSError("first HOME preparation failed")
+        return original_mkdir(path, mode, parents, exist_ok)
+
+    monkeypatch.setattr(session_module.Path, "mkdir", fail_once)
+    session = Session()
+    config = SessionConfig(socket_name=SOCKET_NAME, home="isolated")
+
+    with pytest.raises(OSError, match="first HOME preparation failed"):
+        session.start(config)
+
+    assert len(failed_homes) == 1
+    assert not failed_homes[0].exists()
+    assert harness.registered() == set()
+    assert harness.spawn_env == []
+
+    info = session.start(config)
+    try:
+        assert info.home_dir is not None
+        assert info.home_dir != failed_homes[0]
+        assert harness.registered() == {info.home_dir, info.screenshot_dir}
+        assert sentinel_file.read_text() == "not owned by the failed session"
+    finally:
+        session.stop()
+
+    assert harness.temp_dirs("kwin-mcp-home-") == [sentinel]
+    assert harness.registered() == set()
+
+
+@pytest.mark.qa("QA-SES-017")
+@pytest.mark.parametrize(("home", "retention"), RETENTION_MATRIX)
+@pytest.mark.parametrize("failure", [OSError, KeyboardInterrupt])
+def test_stderr_file_failure_cleans_start_dirs(
+    harness: _Harness,
+    monkeypatch: pytest.MonkeyPatch,
+    home: HomeMode,
+    retention: Retention,
+    failure: type[BaseException],
+) -> None:
+    def fail_temporary_file() -> None:
+        raise failure("stderr file preparation failed")
+
+    monkeypatch.setattr(session_module.tempfile, "TemporaryFile", fail_temporary_file)
+    session = Session()
+
+    with pytest.raises(failure, match="stderr file preparation failed"):
+        session.start(SessionConfig(socket_name=SOCKET_NAME, home=home, retention=retention))
+
+    homes = harness.temp_dirs("kwin-mcp-home-")
+    assert len(homes) == (1 if retention.home else 0)
+    assert harness.temp_dirs("kwin-mcp-config-") == []
+    assert harness.registered() == set()
+    assert harness.spawn_env == []
+    assert session._stderr_file is None
+    assert session.stop() == KeptPaths()
+
+
 @pytest.mark.qa("QA-SES-015")
 @pytest.mark.parametrize("artifacts", [False, True])
 def test_live_stop_honours_retention_from_connect(

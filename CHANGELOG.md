@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `session_start(output_count=1)` creates any positive number of virtual KWin outputs. `screen_width` and `screen_height` apply to each output; with multiple outputs, `session.screen` reports the KWin workspace union instead of one output's size.
 
 ### Fixed
+- A failed or interrupted `session_start` now removes its temporary HOME and compositor config directory even when preparation fails before the session process is spawned. `retention.home=true` still preserves the isolated HOME.
 - Locator documentation now uses the AT-SPI `button` role reported by current desktop environments instead of the misleading `push button` example.
 - Locator queries, waits, and strict actions now reject unknown state nicks against the installed AT-SPI `StateType`, with spelling suggestions when available, instead of treating typos as non-matches or successful absent waits. State nicks remain case-sensitive; arbitrary provider-defined, non-localized role names remain supported without an allowlist.
 

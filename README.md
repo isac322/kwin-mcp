@@ -470,6 +470,8 @@ When the MCP server process ends — on stdio EOF, `SIGTERM`, `SIGHUP`, or `SIGI
 
 The final stop runs on the same single thread as tool calls, serialized with any in-flight tool. If a running tool still holds that thread after a 2 s drain, the server instead terminates the process groups it spawned directly and removes the temporary directories `session_stop` would remove for the session's `retention`. `kwin-mcp-cli` stops the session on `SIGTERM`/`SIGHUP` through the same path as Ctrl-C, and on exit also terminates any owned process group that was never attached to a session.
 
+Startup failures and interrupts also remove the temporary HOME and compositor config directory when preparation fails before a session process exists. `retention.home=true` preserves an isolated HOME, including a partially prepared one.
+
 Known limits: `SIGKILL` runs no cleanup. The private session bus, its `dbus-run-session` wrapper, KWin, the AT-SPI launcher and registry, and every launched app can remain running. The session's `/tmp/kwin-mcp-config-*` directory leaks, and when `retention.artifacts=false`, its `/tmp/kwin-mcp-screenshots-*` artifacts directory leaks too; remove the processes, sockets, and directories by hand. A later session does not clean up an earlier session's leftovers. The next session never reuses those directories and creates fresh ones. A descendant that leaves its launched process group (a double-fork or `setsid` daemon) escapes; and a process group whose leader was already reaped is left alone, because ownership can no longer be proven.
 
 ### Input Injection

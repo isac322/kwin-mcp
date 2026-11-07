@@ -226,31 +226,37 @@ def fetch_sources() -> tuple[Path, Path]:
 def build_wheel(source: Path, name: str) -> Path:
     wheel_dir = OUT / "wheels" / name
     wheel_dir.mkdir(parents=True)
+    context = OUT / "wheel-builders" / name
+    source_copy = context / "src"
+    context.mkdir(parents=True)
+    shutil.copytree(source, source_copy)
+    (context / "Dockerfile").write_text(
+        f"""FROM {UV_IMAGE} AS uv\nFROM {IMAGE_NAME}\nUSER root\nCOPY --from=uv /uv /usr/local/bin/uv\nCOPY src /src\nRUN mkdir /out && cd /src && uv build --wheel --out-dir /out\n""",
+        encoding="utf-8",
+    )
+    builder_tag = f"kwin-mcp-e2e:pr139-wheel-builder-{name}"
     capture(
         f"wheel-{name}",
-        [
-            "docker",
-            "run",
-            "--rm",
-            "-v",
-            f"{source}:/src:ro",
-            "-v",
-            f"{wheel_dir}:/out",
-            UV_IMAGE,
-            "build",
-            "--wheel",
-            "--out-dir",
-            "/out",
-            "/src",
-        ],
+        ["docker", "build", "--platform", "linux/amd64", "-t", builder_tag, str(context)],
         OUT / f"wheel-{name}.log",
     )
+    container = f"kwin-mcp-pr139-wheel-builder-{name}"
+    run("wheel-create", ["docker", "create", "--name", container, builder_tag])
+    capture(
+        "wheel-copy",
+        ["docker", "cp", f"{container}:/out/.", str(wheel_dir)],
+        OUT / f"wheel-copy-{name}.log",
+    )
+    subprocess.run(["docker", "rm", container], stdout=subprocess.DEVNULL, check=False)
+    subprocess.run(["docker", "rmi", builder_tag], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
     wheels = sorted(wheel_dir.glob("*.whl"))
     if len(wheels) != 1:
         raise RuntimeError(f"expected one {name} wheel, found {wheels}")
-    write_json(wheel_dir / "manifest.json", {"sha": sha256(wheels[0]), "path": str(wheels[0]), "bytes": wheels[0].stat().st_size})
+    write_json(
+        wheel_dir / "manifest.json",
+        {"sha": sha256(wheels[0]), "path": str(wheels[0]), "bytes": wheels[0].stat().st_size},
+    )
     return wheels[0]
-
 
 def build_derivative(wheel: Path, name: str) -> str:
     context = OUT / "derivatives" / name
@@ -273,7 +279,9 @@ def mount_args(pr_source: Path) -> list[str]:
     return args
 
 
-def run_case(tag: str, name: str, node: str, pr_source: Path) -> int:
+def run_case(
+    tag: str, name: str, node: str, pr_source: Path, extra_args: list[str] | None = None
+) -> int:
     case = OUT / "cases" / name
     case.mkdir(parents=True)
     container = f"kwin-mcp-pr139-diag-{name}"
@@ -288,6 +296,7 @@ def run_case(tag: str, name: str, node: str, pr_source: Path) -> int:
         *mount_args(pr_source),
         tag,
         "/opt/kwin-mcp-venv/bin/python", "-m", "pytest", "-vv", node,
+        *(extra_args or []),
         "--junitxml=/artifacts/junit.xml",
     ]
     started = time.monotonic()
@@ -316,15 +325,17 @@ def main() -> int:
         main_tag = build_derivative(main_wheel, "main")
         pr_tag = build_derivative(pr_wheel, "pr139")
         cases = [
-            (main_tag, "main-kcalc-fallback", "tests/e2e/test_element_act.py::test_element_act_fallback_actions_on_kcalc", pr_source),
-            (pr_tag, "pr139-kcalc-fallback", "tests/e2e/test_element_act.py::test_element_act_fallback_actions_on_kcalc", pr_source),
-            (main_tag, "main-host-isolation", "tests/e2e/test_host_isolation.py", pr_source),
-            (pr_tag, "pr139-host-isolation", "tests/e2e/test_host_isolation.py", pr_source),
-            (pr_tag, "pr139-session-start", "tests/e2e/test_session_start.py", pr_source),
+            (main_tag, "main-kcalc-fallback", "tests/e2e/test_element_act.py::test_element_act_fallback_actions_on_kcalc", pr_source, []),
+            (pr_tag, "pr139-kcalc-fallback", "tests/e2e/test_element_act.py::test_element_act_fallback_actions_on_kcalc", pr_source, []),
+            (main_tag, "main-shard-2", "tests", pr_source, ["--kwin-shard=2/5"]),
+            (pr_tag, "pr139-shard-2", "tests", pr_source, ["--kwin-shard=2/5"]),
+            (main_tag, "main-host-isolation", "tests/e2e/test_host_isolation.py", pr_source, []),
+            (pr_tag, "pr139-host-isolation", "tests/e2e/test_host_isolation.py", pr_source, []),
+            (pr_tag, "pr139-session-start", "tests/e2e/test_session_start.py", pr_source, []),
         ]
         results = []
-        for tag, name, node, tests in cases:
-            code = run_case(tag, name, node, tests)
+        for tag, name, node, tests, extra_args in cases:
+            code = run_case(tag, name, node, tests, extra_args)
             results.append({"name": name, "returncode": code})
             overall |= int(code != 0)
         write_json(OUT / "summary.json", {"status": "completed", "results": results, "overall_exit": overall})

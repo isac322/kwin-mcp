@@ -284,7 +284,7 @@ def run_case(
 ) -> int:
     case = OUT / "cases" / name
     case.mkdir(parents=True)
-    container = f"kwin-mcp-pr139-diag-{name}"
+    case.chmod(0o777)
     group = str((Path("/dev/udmabuf").stat().st_gid))
     args = [
         "docker", "run", "--name", container,

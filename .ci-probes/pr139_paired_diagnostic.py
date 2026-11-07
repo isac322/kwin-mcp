@@ -106,20 +106,27 @@ def download_image() -> None:
         [
             "gh",
             "api",
+            "--paginate",
+            "--slurp",
             f"repos/{REPO}/actions/runs/{os.environ['SOURCE_RUN']}/artifacts?per_page=100",
         ],
         metadata,
     )
-    artifact_page = json.loads(metadata.read_text(encoding="utf-8"))
+    artifact_pages = json.loads(metadata.read_text(encoding="utf-8"))
+    artifacts = [
+        item
+        for page in artifact_pages
+        for item in page.get("artifacts", [])
+    ]
     candidates = [
         item
-        for item in artifact_page.get("artifacts", [])
+        for item in artifacts
         if item["id"] == int(os.environ["SOURCE_ARTIFACT_ID"])
         and item["name"] == "e2e-image-opensuse-amd64"
         and not item["expired"]
     ]
     if len(candidates) != 1:
-        raise RuntimeError(f"unexpected source artifact list: {artifact_page}")
+        raise RuntimeError(f"unexpected source artifact list: {artifact_pages}")
     write_json(OUT / "source-artifact.json", candidates[0])
     image_dir = OUT / "image-download"
     image_dir.mkdir()

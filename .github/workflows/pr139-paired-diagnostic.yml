@@ -1,0 +1,47 @@
+name: PR 139 paired diagnostic
+
+on:
+  push:
+    branches:
+      - diag/pr139-gh-actions-qa-20261108
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  paired-opensuse-amd64:
+    name: PR 139 paired OpenSUSE amd64 diagnostic
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    env:
+      BASE_SHA: 68a4aad47380331e3c355ec080f9182123730c41
+      PR_SHA: 5d46cf7ca910679722ce7cdcf7a0d49493fea641
+      SOURCE_RUN: "42068889371"
+      SOURCE_ARTIFACT_ID: "13435730352"
+      EXPECTED_IMAGE_ID: sha256:c112f7f5ee341229189d4346ec9a5aa13e886a6efdc0785a3d6d0eb493cd444a
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run exact-image paired diagnostic
+        run: python3 .ci-probes/pr139_paired_diagnostic.py
+
+      - name: Preserve readable diagnostics
+        if: always()
+        run: |
+          if [ -d "$RUNNER_TEMP/pr139-paired-diagnostic" ]; then
+            sudo chmod -R a+rX "$RUNNER_TEMP/pr139-paired-diagnostic"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pr139-paired-diagnostic-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pr139-paired-diagnostic
+          retention-days: 14
+          if-no-files-found: error

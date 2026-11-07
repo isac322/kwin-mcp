@@ -100,59 +100,82 @@ def prepare_udmabuf() -> None:
 
 
 def download_image() -> None:
-    metadata = OUT / "source-artifacts.json"
-    capture(
-        "artifact-metadata",
-        [
-            "gh",
-            "api",
-            "--paginate",
-            "--slurp",
-            f"repos/{REPO}/actions/runs/{os.environ['SOURCE_RUN']}/artifacts?per_page=100",
-        ],
-        metadata,
-    )
-    artifact_pages = json.loads(metadata.read_text(encoding="utf-8"))
-    artifacts = [
-        item
-        for page in artifact_pages
-        for item in page.get("artifacts", [])
-    ]
-    candidates = [
-        item
-        for item in artifacts
-        if item["id"] == int(os.environ["SOURCE_ARTIFACT_ID"])
-        and item["name"] == "e2e-image-opensuse-amd64"
-        and not item["expired"]
-    ]
-    if len(candidates) != 1:
-        raise RuntimeError(f"unexpected source artifact list: {artifact_pages}")
-    write_json(OUT / "source-artifact.json", candidates[0])
     image_dir = OUT / "image-download"
     image_dir.mkdir()
-    capture(
-        "artifact-download",
-        [
-            "gh",
-            "run",
-            "download",
-            os.environ["SOURCE_RUN"],
-            "--repo",
-            REPO,
-            "--name",
-            "e2e-image-opensuse-amd64",
-            "--dir",
-            str(image_dir),
-        ],
-        OUT / "artifact-download.log",
-    )
-    archive = image_dir / "image.tar.zst"
-    if not archive.is_file():
-        raise RuntimeError(f"artifact did not contain {archive}")
-    write_json(
-        OUT / "source-archive.json",
-        {"path": str(archive), "sha256": sha256(archive), "bytes": archive.stat().st_size},
-    )
+    staged = Path(".ci-probes/original-opensuse-image-chunks")
+    chunks = sorted(staged.glob("image.tar.zst.part-*"))
+    if chunks:
+        manifest = json.loads((staged / "manifest.json").read_text(encoding="utf-8"))
+        archive = image_dir / "image.tar.zst"
+        with archive.open("wb") as output:
+            for chunk in chunks:
+                with chunk.open("rb") as input_stream:
+                    shutil.copyfileobj(input_stream, output)
+        if sha256(archive) != os.environ["EXPECTED_IMAGE_TAR_SHA"]:
+            raise RuntimeError(f"staged image stream SHA256 mismatch: {sha256(archive)}")
+        write_json(OUT / "source-artifact.json", manifest)
+        write_json(
+            OUT / "source-archive.json",
+            {
+                "path": str(archive),
+                "sha256": sha256(archive),
+                "bytes": archive.stat().st_size,
+                "source": "committed diagnostic chunks",
+                "artifact_zip_digest": manifest["source_artifact_zip_digest"],
+            },
+        )
+    else:
+        metadata = OUT / "source-artifacts.json"
+        capture(
+            "artifact-metadata",
+            [
+                "gh",
+                "api",
+                "--paginate",
+                "--slurp",
+                f"repos/{REPO}/actions/runs/{os.environ['SOURCE_RUN']}/artifacts?per_page=100",
+            ],
+            metadata,
+        )
+        artifact_pages = json.loads(metadata.read_text(encoding="utf-8"))
+        artifacts = [
+            item
+            for page in artifact_pages
+            for item in page.get("artifacts", [])
+        ]
+        candidates = [
+            item
+            for item in artifacts
+            if item["id"] == int(os.environ["SOURCE_ARTIFACT_ID"])
+            and item["name"] == "e2e-image-opensuse-amd64"
+            and not item["expired"]
+        ]
+        if len(candidates) != 1:
+            raise RuntimeError(f"unexpected source artifact list: {artifact_pages}")
+        write_json(OUT / "source-artifact.json", candidates[0])
+        capture(
+            "artifact-download",
+            [
+                "gh",
+                "run",
+                "download",
+                os.environ["SOURCE_RUN"],
+                "--repo",
+                REPO,
+                "--name",
+                "e2e-image-opensuse-amd64",
+                "--dir",
+                str(image_dir),
+            ],
+            OUT / "artifact-download.log",
+        )
+        archive = image_dir / "image.tar.zst"
+        if not archive.is_file():
+            raise RuntimeError(f"artifact did not contain {archive}")
+        write_json(
+            OUT / "source-archive.json",
+            {"path": str(archive), "sha256": sha256(archive), "bytes": archive.stat().st_size},
+        )
     started = time.monotonic()
     decompressor = subprocess.Popen(
         ["zstd", "--decompress", "--stdout", str(archive)], stdout=subprocess.PIPE

@@ -21,7 +21,7 @@ jobs:
       SOURCE_RUN: "42068889371"
       SOURCE_ARTIFACT_ID: "13435730352"
       EXPECTED_IMAGE_ID: sha256:c112f7f5ee341229189d4346ec9a5aa13e886a6efdc0785a3d6d0eb493cd444a
-      GH_TOKEN: ${{ github.token }}
+      EXPECTED_IMAGE_TAR_SHA: 4e5c1c9a4988576ac99b76e1a7e8d855834079ef5cd9164f9d92c7fb275f635b
     steps:
       - uses: actions/checkout@v7
         with:

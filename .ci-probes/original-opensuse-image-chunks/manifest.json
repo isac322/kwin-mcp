@@ -1,0 +1,10 @@
+{
+  "source_run": 42068889371,
+  "source_artifact_id": 13435730352,
+  "source_artifact_name": "e2e-image-opensuse-amd64",
+  "source_artifact_zip_digest": "sha256:11aa57c789569e14f18b6c4d0352d17b53949072222f021e522e2779df7e5a9f",
+  "extracted_image_tar_zst_sha256": "4e5c1c9a4988576ac99b76e1a7e8d855834079ef5cd9164f9d92c7fb275f635b",
+  "extracted_image_tar_zst_bytes": 552814240,
+  "loaded_image_id": "sha256:c112f7f5ee341229189d4346ec9a5aa13e886a6efdc0785a3d6d0eb493cd444a",
+  "archive_note": "The GitHub artifact digest is for the ZIP artifact. gh run download extracted image.tar.zst, whose inner stream has the separate SHA256 recorded above."
+}

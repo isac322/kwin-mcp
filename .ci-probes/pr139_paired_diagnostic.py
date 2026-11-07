@@ -100,15 +100,27 @@ def prepare_udmabuf() -> None:
 
 
 def download_image() -> None:
-    metadata = OUT / "source-artifact.json"
+    metadata = OUT / "source-artifacts.json"
     capture(
         "artifact-metadata",
-        ["gh", "api", f"repos/{REPO}/actions/artifacts/{os.environ['SOURCE_ARTIFACT_ID']}"],
+        [
+            "gh",
+            "api",
+            f"repos/{REPO}/actions/runs/{os.environ['SOURCE_RUN']}/artifacts?per_page=100",
+        ],
         metadata,
     )
-    artifact = json.loads(metadata.read_text(encoding="utf-8"))
-    if artifact["expired"] or artifact["name"] != "e2e-image-opensuse-amd64":
-        raise RuntimeError(f"unexpected source artifact metadata: {artifact}")
+    artifact_page = json.loads(metadata.read_text(encoding="utf-8"))
+    candidates = [
+        item
+        for item in artifact_page.get("artifacts", [])
+        if item["id"] == int(os.environ["SOURCE_ARTIFACT_ID"])
+        and item["name"] == "e2e-image-opensuse-amd64"
+        and not item["expired"]
+    ]
+    if len(candidates) != 1:
+        raise RuntimeError(f"unexpected source artifact list: {artifact_page}")
+    write_json(OUT / "source-artifact.json", candidates[0])
     image_dir = OUT / "image-download"
     image_dir.mkdir()
     capture(

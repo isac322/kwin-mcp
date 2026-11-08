@@ -7,13 +7,13 @@
    "properties": {
     "screen_width": {
      "default": 1920,
-     "description": "Virtual screen width, logical px.",
+     "description": "Width of each virtual output, logical px.",
      "minimum": 1,
      "type": "integer"
     },
     "screen_height": {
      "default": 1080,
-     "description": "Virtual screen height, logical px.",
+     "description": "Height of each virtual output, logical px.",
      "minimum": 1,
      "type": "integer"
     },
@@ -49,6 +49,12 @@
       "artifacts": false,
       "home": false
      }
+    },
+    "output_count": {
+     "default": 1,
+     "description": "Number of virtual outputs; positive integer.",
+     "minimum": 1,
+     "type": "integer"
     }
    },
    "type": "object",
@@ -644,7 +650,7 @@
   "inputSchema": {
    "properties": {
     "command": {
-     "description": "Command line, e.g. \"kate --new\". Split with shlex; empty or unbalanced quotes is an error.",
+     "description": "Command line, e.g. \"kate --new\". Split with shlex; empty, unbalanced quotes or a NUL byte is an error.",
      "type": "string"
     },
     "env": {
@@ -652,7 +658,7 @@
       "type": "string"
      },
      "type": "object",
-     "description": "Extra environment variables for this process."
+     "description": "Extra environment variables for this process. Names must be non-empty without '='; no NUL bytes."
     }
    },
    "required": [
@@ -760,7 +766,7 @@
    "properties": {
     "region": {
      "additionalProperties": false,
-     "description": "Crop rectangle in global logical px; null = whole workspace. Parts outside the workspace are dropped. Global logical px.",
+     "description": "Crop rectangle in global logical px; omit = whole workspace. Parts outside the workspace are dropped. Global logical px.",
      "properties": {
       "x": {
        "type": "integer"
@@ -788,7 +794,7 @@
     "max_edge": {
      "minimum": 0,
      "type": "integer",
-     "description": "Downscale so the longer side <= max_edge px; 0 = full resolution; null = server --screenshot-max-edge."
+     "description": "Downscale so the longer side <= max_edge px; 0 = full resolution; omit = server --screenshot-max-edge."
     },
     "include_cursor": {
      "default": false,
@@ -1672,7 +1678,7 @@
    "properties": {
     "filter": {
      "additionalProperties": false,
-     "description": "Same selector as the window mutators, used as a filter; null = every window. AND-ed filters over all windows; mutators need exactly one match (errors list ids and kinds).",
+     "description": "Same selector as the window mutators, used as a filter; omit = every window. AND-ed filters over all windows; mutators need exactly one match (errors list ids and kinds).",
      "properties": {
       "id": {
        "type": "string"

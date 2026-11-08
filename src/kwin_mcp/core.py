@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
+from pydantic import StrictInt
+
 from kwin_mcp import progress
 from kwin_mcp.geometry import select_one, select_windows, window_from_kwin
 from kwin_mcp.input import (
@@ -345,6 +347,9 @@ def _split_command(text: str, field: str) -> list[str]:
     ``field`` names the argument in the ValueError, so the caller sees
     which input to fix.
     """
+    if "\0" in text:
+        msg = f"Invalid {field}: it contains a NUL byte"
+        raise ValueError(msg)
     try:
         argv = shlex.split(text)
     except ValueError as exc:
@@ -354,6 +359,17 @@ def _split_command(text: str, field: str) -> list[str]:
         msg = f"{field} must contain a command to launch"
         raise ValueError(msg)
     return argv
+
+
+def _check_env(env: dict[str, str] | None) -> None:
+    """Refuse environment entries that execve cannot pass on, before anything spawns."""
+    for name, value in (env or {}).items():
+        if not name or "=" in name or "\0" in name:
+            msg = f"Invalid env name {name!r}: it must be non-empty, without '=' or a NUL byte"
+            raise ValueError(msg)
+        if "\0" in value:
+            msg = f"Invalid env value for {name}: it contains a NUL byte"
+            raise ValueError(msg)
 
 
 def _check_selector(window: WindowSelector) -> None:
@@ -861,6 +877,7 @@ class AutomationEngine:
         enable_clipboard: bool = False,
         home: HomeMode = "host",
         retention: Retention = NO_RETENTION,
+        output_count: StrictInt = 1,
     ) -> SessionInfo:
         """Start an isolated virtual KWin Wayland session (one at a time).
 
@@ -868,7 +885,11 @@ class AutomationEngine:
         partly started session is stopped (with the usual retention rules) and
         the original exception propagates, so no session is left behind.
         """
-        for name, value in (("screen_width", screen_width), ("screen_height", screen_height)):
+        for name, value in (
+            ("screen_width", screen_width),
+            ("screen_height", screen_height),
+            ("output_count", output_count),
+        ):
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 msg = f"{name} must be a positive integer, got {value!r}"
                 raise ValueError(msg)
@@ -894,6 +915,7 @@ class AutomationEngine:
             config = SessionConfig(
                 screen_width=screen_width,
                 screen_height=screen_height,
+                output_count=output_count,
                 enable_clipboard=enable_clipboard,
                 home=home,
                 retention=retention,
@@ -924,6 +946,12 @@ class AutomationEngine:
                 except AccessibilityError as exc:
                     accessibility = "unavailable"
                     warnings.append(f"org.a11y.Status unavailable ({exc})")
+
+            screen = (
+                ScreenSize(width=screen_width, height=screen_height)
+                if output_count == 1
+                else self._workspace_screen_size(warnings)
+            )
         except Exception as exc:
             # Roll back everything started so far. Exception, not BaseException:
             # CLI interrupts are cleaned up by its own exit path.
@@ -934,12 +962,25 @@ class AutomationEngine:
             raise
 
         self._retention = retention
-        self._screen = ScreenSize(width=screen_width, height=screen_height)
+        self._screen = screen
         self._accessibility = accessibility
         self._session_warnings = warnings
         self._eis_lost = False
         progress.report(total_steps, total_steps, "Input backend ready")
         return self._session_info_model()
+
+    def _workspace_screen_size(self, warnings: list[str]) -> ScreenSize | None:
+        """Read the KWin workspace union, with the same semantics for virtual and live sessions."""
+        outputs = self._run_kwin_query({"op": "outputs"})
+        if not outputs["ok"]:
+            warnings.append(f"workspace size unavailable ({outputs['error']})")
+            return None
+        workspace = outputs["result"].get("virtual")
+        return (
+            None
+            if workspace is None
+            else ScreenSize(width=round(workspace[2]), height=round(workspace[3]))
+        )
 
     def session_connect(
         self,
@@ -1049,17 +1090,7 @@ class AutomationEngine:
             session, dbus_addr, enable=enable_accessibility, warnings=warnings
         )
 
-        outputs = self._run_kwin_query({"op": "outputs"})
-        if not outputs["ok"]:
-            self._screen = None
-            warnings.append(f"workspace size unavailable ({outputs['error']})")
-        else:
-            workspace = outputs["result"].get("virtual")
-            self._screen = (
-                None
-                if workspace is None
-                else ScreenSize(width=round(workspace[2]), height=round(workspace[3]))
-            )
+        self._screen = self._workspace_screen_size(warnings)
         self._session_warnings = warnings
 
         progress.report(3, 3, "Input backend ready")
@@ -1140,6 +1171,7 @@ class AutomationEngine:
     def app_launch(self, command: str, env: dict[str, str] | None = None) -> AppLaunchResult:
         """Launch a program in the session (shlex-split, no shell); output goes to a log."""
         argv = _split_command(command, "command")
+        _check_env(env)
         session = self._require_session()
         try:
             app = session.launch_app(argv, extra_env=env)

@@ -52,7 +52,7 @@ from session_harness import live_kwin
 from window_zoo import APP_ID as ZOO_APP
 from window_zoo import DEEP_BUTTON, DEEP_LABELS, MAIN_CAPTION, ZooProcess, zoo_env
 
-from kwin_mcp.models import Locator, RefAddr, Wait, WindowSelector
+from kwin_mcp.models import ElementPoint, Locator, RefAddr, StrictAddr, Wait, WindowSelector
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -92,6 +92,10 @@ UNAVAILABLE_REASONS = frozenset(
         "ambiguous",
         "ambiguous-window-match",
         "windows-changed",
+        "not-showing",
+        "not-visible",
+        "inactive-desktop",
+        "desktop-unavailable",
         "unmapped",
     }
 )
@@ -808,7 +812,9 @@ def test_states_exact_case_sensitive_and_fields_anded(
         found = _wait_for(kcalc_session, Locator(states=["focused", "editable"]))
         expected = [n for n in atspi.walk(max_depth=15) if {"focused", "editable"} <= n.states]
         assert [e.name for e in found.elements] == [n.name for n in expected] == ["Long Entry"]
-        assert kcalc_session.element_query(Locator(states=["FOCUSED"])).elements == []
+        with pytest.raises(RuntimeError, match="Unknown AT-SPI state nick 'FOCUSED'") as exc:
+            kcalc_session.element_query(Locator(states=["FOCUSED"]))
+        assert "Did you mean 'focused'?" in str(exc.value)
 
     seven = kcalc_session.element_query(
         Locator(app="KCALC", query="SEVEN", role="BUTTON", states=["focusable"])
@@ -817,7 +823,9 @@ def test_states_exact_case_sensitive_and_fields_anded(
     assert "focusable" in node.states
     assert [(e.app, e.role, e.name) for e in seven.elements] == [("kcalc", "button", "Seven")]
     shouted = Locator(app="KCALC", query="SEVEN", role="BUTTON", states=["FOCUSABLE"])
-    assert kcalc_session.element_query(shouted).elements == []
+    with pytest.raises(RuntimeError, match="Unknown AT-SPI state nick 'FOCUSABLE'") as exc:
+        kcalc_session.element_query(shouted)
+    assert "Did you mean 'focusable'?" in str(exc.value)
 
     anded = kcalc_session.element_query(Locator(app="kcalc", role="button", query="seven"))
     assert [(e.depth, e.name) for e in anded.elements] == [(node.depth, "Seven")]
@@ -1134,6 +1142,56 @@ def test_wait_absent_after_window_closes(
         assert atspi.find(app=FIXTURE, name="Described", max_depth=15)
 
 
+def test_invalid_state_diagnostics_preserve_valid_absence(kcalc_session: AutomationEngine) -> None:
+    """Runtime state typos are caller errors; a valid locator still reports absence."""
+    engine = kcalc_session
+    _wait_for(engine, Locator(app="kcalc", query="Seven", role="button"))
+    info = engine.session_info().session
+    assert info is not None
+    oracle = AtspiOracle(info.dbus_address)
+    seven = oracle.find(app="kcalc", name="Seven", role="button")
+    assert len(seven) == 1 and "visible" in seven[0].states, seven
+    assert "checked" not in seven[0].states, seven
+    labels_before = [node.name for node in oracle.find(app="kcalc", role="label")]
+    generation = engine._atspi_generation
+
+    for state, suggestion in [("Visible", "visible"), ("has_tooltip", "has-tooltip")]:
+        locator = Locator(app="kcalc", query="Seven", states=[state])
+        for wait in [None, Wait(until="present", timeout_ms=0), Wait(until="absent", timeout_ms=0)]:
+            with pytest.raises(RuntimeError, match="Unknown AT-SPI state nick") as exc:
+                engine.element_query(locator, wait=wait)
+            assert repr(state) in str(exc.value)
+            assert f"Did you mean {suggestion!r}?" in str(exc.value)
+            assert engine._atspi_generation == generation, "invalid locator restarted the worker"
+        with pytest.raises(RuntimeError, match="Unknown AT-SPI state nick"):
+            engine.element_act(StrictAddr(strict=locator), "Press")
+        assert engine._atspi_generation == generation
+
+    labels_after = [node.name for node in oracle.find(app="kcalc", role="label")]
+    assert labels_after == labels_before, "a refused action changed KCalc"
+    still_present = engine.element_query(
+        Locator(app="kcalc", query="Seven", role="button", states=["visible"]),
+        wait=Wait(until="absent", timeout_ms=0),
+    )
+    assert still_present.wait is not None and not still_present.wait.satisfied
+    assert [element.name for element in still_present.elements] == ["Seven"]
+    for locator in [
+        Locator(app="kcalc", query="Seven", role="button", states=["checked"]),
+        Locator(app="kcalc", query="Seven", role="push button"),
+    ]:
+        nonmatching = engine.element_query(locator, wait=Wait(until="absent", timeout_ms=0))
+        assert nonmatching.wait is not None and nonmatching.wait.satisfied
+        assert nonmatching.elements == []
+    missing = engine.element_query(
+        Locator(app="kcalc", query="no-such-control-zz", role="button", states=["visible"]),
+        wait=Wait(until="absent", timeout_ms=0),
+    )
+    assert missing.wait is not None and missing.wait.satisfied
+    assert missing.elements == []
+    assert oracle.find(app="kcalc", name="Seven", role="button")
+    assert engine._atspi_generation == generation
+
+
 @pytest.mark.qa("QA-ELEM-017")
 def test_timeout_ms_zero_polls_once(
     kcalc_session: AutomationEngine, monkeypatch: pytest.MonkeyPatch
@@ -1269,3 +1327,102 @@ def test_huge_locator_query(kcalc_session: AutomationEngine) -> None:
     alive = kcalc_session.element_query(Locator(app="kcalc", query="seven", role="button"))
     assert [e.name for e in alive.elements] == ["Seven"]
     assert kcalc_session.session_info().session is not None
+
+
+@pytest.mark.qa("QA-ELEM-007")
+def test_closed_menu_keeps_discovery_and_action_without_pointer_coordinates(
+    kcalc_session: AutomationEngine,
+) -> None:
+    engine = kcalc_session
+    atspi = _atspi(engine)
+    help_menu = _one_named(
+        engine.element_query(Locator(app="kcalc", query="Help", role="menu item", match="exact")),
+        "Help",
+    )
+    assert help_menu.rect is not None
+    show_menu = next(
+        action for action in help_menu.actions if action.casefold().replace(" ", "") == "showmenu"
+    )
+    assert engine.element_act(RefAddr(ref=help_menu.ref), show_menu).dispatch == "confirmed"
+    atspi.wait_for(
+        lambda nodes: any(
+            n.name == "About KCalc" and {"visible", "showing"} <= n.states for n in nodes
+        ),
+        app="kcalc",
+    )
+    opened = _one_named(
+        engine.element_query(
+            Locator(app="kcalc", query="About KCalc", role="menu item", match="exact")
+        ),
+        "About KCalc",
+    )
+    assert opened.rect is not None, opened
+    engine.keyboard_press(keys="escape")
+
+    found = engine.element_query(
+        Locator(app="kcalc", query="About KCalc", role="menu item", match="exact")
+    )
+    about = _one_named(found, "About KCalc")
+    (raw,) = atspi.find(app="kcalc", name="About KCalc", role="menu item")
+    assert raw.window is not None and raw.window[2] > 0 and raw.window[3] > 0, raw
+    assert not {"visible", "showing"} <= raw.states, raw
+    assert about.rect is None and about.unavailable == "not-showing", about
+    assert set(about.states) == raw.states
+    assert "Press" in about.actions and about.window_id == _kcalc_window_id(engine)
+    for operation in (engine.pointer_move, engine.pointer_click):
+        with pytest.raises(RuntimeError, match=r"unavailable: not-showing"):
+            operation(ElementPoint(ref=opened.ref))
+
+    pressed = engine.element_act(RefAddr(ref=opened.ref), "Press")
+    assert pressed.dispatch == "confirmed", pressed.render()
+
+
+@pytest.mark.qa("QA-ELEM-007")
+def test_off_desktop_control_keeps_action_but_old_ref_cannot_move_or_click_pointer(
+    engine: AutomationEngine,
+    start_session: Callable[..., SessionInfo],
+    launch: Callable[..., AppLaunchResult],
+) -> None:
+    info = start_session()
+    launch(f"{shlex.quote(sys.executable)} {shlex.quote(str(GUI_PROBE))}", env=GTK_ENV)
+    atspi, kwin = AtspiOracle(info.dbus_address), KWinOracle(info.dbus_address)
+    locator = Locator(app="gui_probe.py", query="Animation Target", role="button", match="exact")
+    control = _one_named(_wait_for(engine, locator), "Animation Target")
+    assert control.rect is not None and control.window_id is not None, control
+    original_ref, window_id = control.ref, control.window_id
+    current = kwin.current_desktop().id
+    kwin.run("workspace.createDesktop(1, 'Geometry Other'); report(true);")
+    other = next(d.id for d in kwin.desktops() if d.id != current)
+    moved = engine.window_place(WindowSelector(id=window_id), desktop=other)
+    assert moved.applied.desktop is True, moved.render()
+    parked = kwin.window(window_id)
+    assert parked is not None and parked.desktops == (other,), parked
+    assert kwin.current_desktop().id == current
+
+    (raw,) = atspi.find(app="gui_probe.py", name="Animation Target", role="button")
+    assert {"visible", "showing"} <= raw.states, raw
+    assert raw.window is not None and raw.window[2] > 0 and raw.window[3] > 0, raw
+    inactive = _one_named(engine.element_query(locator), "Animation Target")
+    assert inactive.rect is None and inactive.unavailable == "inactive-desktop", inactive
+    assert inactive.window_id == window_id and inactive.actions == control.actions
+    for operation in (engine.pointer_move, engine.pointer_click):
+        with pytest.raises(RuntimeError, match=r"unavailable: inactive-desktop"):
+            operation(ElementPoint(ref=original_ref))
+
+    pressed = engine.element_act(RefAddr(ref=original_ref), "click")
+    assert pressed.dispatch == "confirmed", pressed.render()
+    atspi.wait_for(
+        lambda nodes: any(
+            n.name is not None
+            and n.name.startswith("animation_status:")
+            and n.name != "animation_status: 0"
+            for n in nodes
+        ),
+        app="gui_probe.py",
+    )
+    assert kwin.current_desktop().id == current
+    returned = engine.window_place(WindowSelector(id=window_id), desktop=current)
+    assert returned.applied.desktop is True, returned.render()
+    present = _one_named(engine.element_query(locator), "Animation Target")
+    assert present.rect is not None and present.unavailable is None, present
+    assert engine.pointer_move(ElementPoint(ref=original_ref)).element is not None

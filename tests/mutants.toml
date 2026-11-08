@@ -296,11 +296,11 @@ note = "Wait.timeout_ms gains Field(ge=0), publishing 'minimum: 0' in element_qu
 [[mutant.patch]]
 file = "src/kwin_mcp/models.py"
 search = '''
-    timeout_ms: int = 5000
-    poll_interval_ms: int = 200'''
+    timeout_ms: _Int = 5000
+    poll_interval_ms: _Int = 200'''
 replace = '''
-    timeout_ms: Annotated[int, Field(ge=0)] = 5000
-    poll_interval_ms: int = 200'''
+    timeout_ms: Annotated[int, Field(ge=0), _NO_BOOL] = 5000
+    poll_interval_ms: _Int = 200'''
 
 [[mutant]]
 id = "M11"
@@ -310,15 +310,21 @@ source = "QX §18"
 qa = ["QA-ELEM-006"]
 tier = "e2e"
 kill = ["tests/e2e/test_element_query.py::test_states_exact_case_sensitive_and_fields_anded"]
-note = "_Criteria.matches_states lowercases both sides, so states ['FOCUSED'] / ['FOCUSABLE'] match lowercase AT-SPI nicks; the test expects [] for upper-case nicks."
+note = "_Criteria.from_locator lowercases requested state nicks before both runtime validation and matching, so ['FOCUSED'] / ['FOCUSABLE'] become valid lowercase filters. The test requires RuntimeError with the unknown nick and lowercase spelling suggestion. Mutating matches_states alone is now equivalent on public paths: runtime validation rejects uppercase nicks before the matcher sees them."
 
 [[mutant.patch]]
 file = "src/kwin_mcp/accessibility.py"
 search = '''
-        return all(state in states for state in self.states)'''
+        _validate_state_nicks(locator.states or ())'''
 replace = '''
-        present = {nick.lower() for nick in states}
-        return all(state.lower() in present for state in self.states)'''
+        _validate_state_nicks([state.lower() for state in locator.states or ()])'''
+
+[[mutant.patch]]
+file = "src/kwin_mcp/accessibility.py"
+search = '''
+            states=tuple(locator.states or ()),'''
+replace = '''
+            states=tuple(state.lower() for state in locator.states or ()),'''
 
 [[mutant]]
 id = "M12"
@@ -680,10 +686,10 @@ note = "Capture.delays_ms gains min_length=1 (minItems: 1); the corpus' valid wi
 [[mutant.patch]]
 file = "src/kwin_mcp/models.py"
 search = '''
-    delays_ms: list[int]
+    delays_ms: list[_Int]
     region: Rect | None = None'''
 replace = '''
-    delays_ms: Annotated[list[int], Field(min_length=1)]
+    delays_ms: Annotated[list[_Int], Field(min_length=1)]
     region: Rect | None = None'''
 
 [[mutant]]
@@ -1332,13 +1338,12 @@ note = "Realises the 'Target nested in Waypoint' variant (const->enum lives in s
 [[mutant.patch]]
 file = "src/kwin_mcp/models.py"
 search = '''
-    x: int
-    y: int
-    dwell_ms: int = 0'''
+    x: _Int
+    y: _Int
+    dwell_ms: _Int = 0'''
 replace = '''
     at: Target
-    dwell_ms: int = 0'''
-
+    dwell_ms: _Int = 0'''
 [[mutant]]
 id = "M57"
 module = "models.py"

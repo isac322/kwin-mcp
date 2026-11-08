@@ -51,7 +51,7 @@ from mcp.server.mcpserver import (
     MCPServer,
     Resolve,
 )
-from mcp.server.mcpserver.exceptions import ResourceError, ToolError
+from mcp.server.mcpserver.exceptions import ResourceError, ResourceNotFoundError, ToolError
 from mcp.server.mcpserver.tools import Tool
 from mcp.types import (
     CallToolResult,
@@ -132,6 +132,7 @@ from kwin_mcp.models import (
     WindowList,
     WindowPlaceResult,
     WindowSelector,
+    refuse_bool,
 )
 from kwin_mcp.session import LiveSession, process_registry
 
@@ -569,10 +570,10 @@ _RETENTION_DESCRIPTION = (
 def session_start(
     engine: AutomationEngine,
     screen_width: Annotated[
-        int, Field(ge=1, description="Virtual screen width, logical px.")
+        int, Field(ge=1, description="Width of each virtual output, logical px.")
     ] = 1920,
     screen_height: Annotated[
-        int, Field(ge=1, description="Virtual screen height, logical px.")
+        int, Field(ge=1, description="Height of each virtual output, logical px.")
     ] = 1080,
     enable_clipboard: Annotated[
         bool, Field(description="Serve clipboard_* (off: wl-clipboard may hang).")
@@ -585,6 +586,9 @@ def session_start(
         ),
     ] = "host",
     retention: Annotated[Retention, Field(description=_RETENTION_DESCRIPTION)] = NO_RETENTION,
+    output_count: Annotated[
+        int, Field(ge=1, strict=True, description="Number of virtual outputs; positive integer.")
+    ] = 1,
 ) -> SessionInfo:
     """Start an isolated virtual KWin Wayland session (one at a time). Then launch apps with app_launch."""  # noqa: E501
     return engine.session_start(
@@ -593,6 +597,7 @@ def session_start(
         enable_clipboard=enable_clipboard,
         home=home,
         retention=retention,
+        output_count=output_count,
     )
 
 
@@ -644,13 +649,16 @@ def app_launch(
     command: Annotated[
         str,
         Field(
-            description='Command line, e.g. "kate --new". Split with shlex; empty or '
-            "unbalanced quotes is an error."
+            description='Command line, e.g. "kate --new". Split with shlex; empty, '
+            "unbalanced quotes or a NUL byte is an error."
         ),
     ],
     env: Annotated[
         dict[str, str] | None,
-        Field(description="Extra environment variables for this process."),
+        Field(
+            description="Extra environment variables for this process. Names must be "
+            "non-empty without '='; no NUL bytes."
+        ),
     ] = None,
 ) -> AppLaunchResult:
     """Launch a program in the session (shlex-split, no shell). stdout/stderr go to a log read with app_log. A failed launch keeps the session."""  # noqa: E501
@@ -681,7 +689,7 @@ def screen_capture(
     region: Annotated[
         Rect | None,
         Field(
-            description="Crop rectangle in global logical px; null = whole workspace. Parts "
+            description="Crop rectangle in global logical px; omit = whole workspace. Parts "
             "outside the workspace are dropped."
         ),
     ] = None,
@@ -690,7 +698,7 @@ def screen_capture(
         Field(
             ge=0,
             description="Downscale so the longer side <= max_edge px; 0 = full resolution; "
-            "null = server --screenshot-max-edge.",
+            "omit = server --screenshot-max-edge.",
         ),
     ] = None,
     include_cursor: Annotated[bool, Field(description="Draw the pointer into the image.")] = False,
@@ -756,7 +764,7 @@ def window_list(
     filter: Annotated[  # noqa: A002
         WindowSelector | None,
         Field(
-            description="Same selector as the window mutators, used as a filter; null = "
+            description="Same selector as the window mutators, used as a filter; omit = "
             "every window."
         ),
     ] = None,
@@ -1371,7 +1379,8 @@ def compact_output_schema(schema: _Schema) -> _Schema:
 # ── Server ───────────────────────────────────────────────────────────────
 
 # PNG files a session wrote, as named in Frame.uri.
-_SCREENSHOT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.png")
+# At most 255 bytes (NAME_MAX): a longer name makes Path.is_file() raise on Python 3.12.
+_SCREENSHOT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,250}\.png")
 _APP_LOG_TEMPLATE = "kwin://apps/{pid}/log"
 
 
@@ -1398,15 +1407,6 @@ def _resolver_marker(annotation: object) -> Resolve | None:
     return next((m for m in typing.get_args(annotation)[1:] if isinstance(m, Resolve)), None)
 
 
-def _no_bool(value: object) -> object:
-    # Lax int validation turns true/false into 1/0; a count, size or pid was never
-    # meant to be a boolean, so refuse it before the engine sees 1 or 0.
-    if isinstance(value, bool):
-        msg = f"must be an integer, got {value!r}"
-        raise ValueError(msg)
-    return value
-
-
 def _strict_int(annotation: object) -> object:
     """``annotation`` refusing booleans when its type is ``int`` or ``int | None``.
 
@@ -1418,7 +1418,7 @@ def _strict_int(annotation: object) -> object:
     arms = set(typing.get_args(base)) if typing.get_origin(base) is not None else {base}
     if int in arms and arms <= {int, type(None)}:
         # Built at runtime (the annotation is only known here), hence getitem.
-        return operator.getitem(Annotated, (annotation, BeforeValidator(_no_bool)))
+        return operator.getitem(Annotated, (annotation, BeforeValidator(refuse_bool)))
     return annotation
 
 
@@ -1649,36 +1649,48 @@ class KwinServer(MCPServer[dict[str, Any]]):
         @self.resource(_APP_LOG_TEMPLATE, name="app_log", mime_type="text/plain")
         async def app_log_resource(pid: str) -> str:
             """The whole captured stdout/stderr of an app launched with app_launch."""
-            if not pid.isascii() or not pid.isdigit():
+            if not pid.isascii() or not pid.isdigit() or len(pid) > 10:
                 msg = f"Invalid pid {pid!r}: expected the decimal PID from app_launch."
-                raise ResourceError(msg)
-            return await self._read(
-                lambda: "\n".join(engine.app_log(pid=int(pid), last_n_lines=0).lines)
-            )
+                raise ResourceNotFoundError(msg)
+            return await self._read(lambda: self._app_log_text(pid))
 
         @self.resource("kwin://screenshots/{name}", name="screenshots", mime_type="image/png")
         async def screenshot_resource(name: str) -> bytes:
             """A PNG the session saved, as named in Frame.uri."""
+            if _SCREENSHOT_NAME.fullmatch(name) is None:
+                msg = f"Invalid screenshot name {name!r}: expected a PNG file name from Frame.uri."
+                raise ResourceNotFoundError(msg)
             return await self._read(lambda: self._screenshot_bytes(name))
 
-    async def _read[T](self, fn: Callable[[], T]) -> T:
+    async def _read[T](self, fn: Callable[[], T | ResourceNotFoundError]) -> T:
+        """Run a resource lookup on the tool thread; it returns, not raises, not-found.
+
+        The tool thread passes failures on as text only, so a lookup that finds no
+        instance hands back the unraised error, which reaches the client as -32602.
+        """
         try:
-            return await _on_tool_thread(fn)
+            result = await _on_tool_thread(fn)
         except _ToolThreadError as exc:
             raise ResourceError(str(exc)) from None
+        if isinstance(result, ResourceNotFoundError):
+            raise result
+        return result
 
-    def _screenshot_bytes(self, name: str) -> bytes:
-        if _SCREENSHOT_NAME.fullmatch(name) is None:
-            msg = f"Invalid screenshot name {name!r}: expected a PNG file name from Frame.uri."
-            raise ValueError(msg)
+    def _app_log_text(self, pid: str) -> str | ResourceNotFoundError:
+        try:
+            log = self.engine.app_log(pid=int(pid), last_n_lines=0)
+        except ValueError as exc:  # with last_n_lines=0, only an unknown pid
+            return ResourceNotFoundError(str(exc))
+        return "\n".join(log.lines)
+
+    def _screenshot_bytes(self, name: str) -> bytes | ResourceNotFoundError:
         session = self.engine._session
         info = None if session is None else session.info
         if info is None:
             raise RuntimeError(NO_SESSION_TEXT)
         path = info.screenshot_dir / name
         if not path.is_file():
-            msg = f"No screenshot named {name!r} in this session."
-            raise FileNotFoundError(msg)
+            return ResourceNotFoundError(f"No screenshot named {name!r} in this session.")
         return path.read_bytes()
 
     def _launched_pids(self) -> list[str]:

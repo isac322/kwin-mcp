@@ -223,7 +223,7 @@ For each click-option case, including the held click, the input-option matrix ch
 | `test_mcp_annotations.py` | The per-tool annotation profiles, titles, and the server icon. |
 | `test_mcp_progress.py` | Progress notifications: `session_start`, `session_connect`, `element_query` with `wait`, `pointer_drag`, `keyboard_type`, touch gestures, capture bursts and holds; monotonic and never past the total. |
 | `test_mcp_images_flag.py` | Under `--screenshot-images`, one `image/png` block per frame in order, byte-equal to the frame's file, for `screen_capture` and each of the 15 carriers; none without the flag or on errors. |
-| `test_mcp_resources.py` | `kwin://session`, `kwin://windows`, `kwin://desktops`, `kwin://apps/{pid}/log` with completion, `kwin://screenshots/{name}` with path traversal refused. |
+| `test_mcp_resources.py` | `kwin://session`, `kwin://windows`, `kwin://desktops`, `kwin://apps/{pid}/log` with completion, `kwin://screenshots/{name}`; path traversal, malformed and missing names refused with `-32602`. |
 | `test_mcp_errors.py` | The unified no-session and no-input texts for every gated tool, and the shutdown gate. |
 | `test_mcp_schema_wire.py` | The stdio `tools/list` equal to the committed snapshot, with the listing budget and forbidden strings re-checked on the wire bytes. |
 | `test_mcp_unknown_args.py` | Per tool: an unknown key is an `isError` naming it plus the closest key; each removed argument names its replacement. |
@@ -258,7 +258,7 @@ The screen-capture visual tests also drive frame-producing pointer, keyboard, to
 
 The native scale-1 exact-backend probe compares the product PNG's RGB pixels with an independent `/usr/bin/spectacle` PNG. Fractional-scale tests check logical geometry and pixel behavior without assuming that Spectacle's device-pixel grid equals ScreenShot2's logical grid. Both visual backends retain crop, retention, and coordinate-mapping failure checks.
 
-The physical-X11 transparent-gap, output-window-resize, and mid-burst scale-change cases (QA-CAP-009 and QA-CAP-016) keep their existing setup and assertions in the Debian 6.3 amd64/arm64 slow lane.
+The physical-X11 transparent-gap and output-window-resize case (QA-CAP-009) keeps its existing setup and assertions in the Debian 6.3 amd64/arm64 slow lane. The mid-burst scale-change case (QA-CAP-016) runs on both backends: X11/scrot there, and ScreenShot2 on KWin 6.8 or later (run locally with `scripts/run-e2e-docker.sh`; the CI slow lane builds only the Debian 6.3 image).
 
 ## Evidence layout
 

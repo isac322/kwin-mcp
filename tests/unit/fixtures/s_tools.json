@@ -16,13 +16,13 @@
      "name": "screen_width",
      "required": false,
      "default": 1920,
-     "description": "Virtual screen width, logical px."
+     "description": "Width of each virtual output, logical px."
     },
     {
      "name": "screen_height",
      "required": false,
      "default": 1080,
-     "description": "Virtual screen height, logical px."
+     "description": "Height of each virtual output, logical px."
     },
     {
      "name": "enable_clipboard",
@@ -44,6 +44,12 @@
       "home": false
      },
      "description": "What survives the session end, decided now and honoured by session_stop and server exit."
+    },
+    {
+     "name": "output_count",
+     "required": false,
+     "default": 1,
+     "description": "Number of virtual outputs; positive integer."
     }
    ],
    "output": [
@@ -164,13 +170,13 @@
     {
      "name": "command",
      "required": true,
-     "description": "Command line, e.g. \"kate --new\". Split with shlex; empty or unbalanced quotes is an error."
+     "description": "Command line, e.g. \"kate --new\". Split with shlex; empty, unbalanced quotes or a NUL byte is an error."
     },
     {
      "name": "env",
      "required": false,
      "default": null,
-     "description": "Extra environment variables for this process."
+     "description": "Extra environment variables for this process. Names must be non-empty without '='; no NUL bytes."
     }
    ],
    "output": [
@@ -225,13 +231,13 @@
      "name": "region",
      "required": false,
      "default": null,
-     "description": "Crop rectangle in global logical px; null = whole workspace. Parts outside the workspace are dropped."
+     "description": "Crop rectangle in global logical px; omit = whole workspace. Parts outside the workspace are dropped."
     },
     {
      "name": "max_edge",
      "required": false,
      "default": null,
-     "description": "Downscale so the longer side <= max_edge px; 0 = full resolution; null = server --screenshot-max-edge."
+     "description": "Downscale so the longer side <= max_edge px; 0 = full resolution; omit = server --screenshot-max-edge."
     },
     {
      "name": "include_cursor",
@@ -345,7 +351,7 @@
      "name": "filter",
      "required": false,
      "default": null,
-     "description": "Same selector as the window mutators, used as a filter; null = every window."
+     "description": "Same selector as the window mutators, used as a filter; omit = every window."
     }
    ],
    "output": [

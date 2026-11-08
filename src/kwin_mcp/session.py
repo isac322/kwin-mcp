@@ -722,56 +722,55 @@ class Session:
 
         self._socket_name = config.socket_name or f"wayland-mcp-{os.getpid()}-{int(time.time())}"
 
-        # home="isolated": launched apps get a private temporary HOME.
-        if config.home == "isolated":
-            self._home_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-home-"))
-            for subdir in (
-                ".config",
-                Path(".local") / "share",
-                Path(".local") / "state",
-                ".cache",
-            ):
-                (self._home_dir / subdir).mkdir(parents=True, exist_ok=True)
-            # Record the home when session_stop would remove it, so the exit path
-            # (when it cannot run session_stop) mirrors session_stop's retention
-            # semantics: retention.home alone decides whether the home survives.
-            # The screenshot dir lives outside the home and follows
-            # retention.artifacts.
-            if not config.retention.home:
-                process_registry.register_temp_dir(self._home_dir)
-
-        # Clean up any stale socket files
-        runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
-        for suffix in ("", ".lock"):
-            path = Path(runtime_dir) / f"{self._socket_name}{suffix}"
-            path.unlink(missing_ok=True)
-
-        # The compositor must not read the host's config dir: a wallet-enabled
-        # kwalletrc there lets the kwallet popup steal focus from the app under
-        # automation. An isolated home already gives it a private .config; seed
-        # that one, otherwise create a throwaway dir that _build_env points
-        # XDG_CONFIG_HOME at. The keymap is pinned separately in _build_env.
-        if self._home_dir is not None:
-            _write_deterministic_session_config(self._home_dir / ".config")
-        else:
-            self._session_config_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-config-"))
-            _write_deterministic_session_config(self._session_config_dir)
-            process_registry.register_temp_dir(self._session_config_dir)
-        # Deliberately NOT isolating XDG_DATA_HOME / XDG_CACHE_HOME: qtbase
-        # crash-logs a fatal qFatal when a nonexistent standard data dir is
-        # set (reproduced on qt6-base 6.10), and existing dirs already
-        # contain everything kwin/konsole need to start.
-
-        # Build the wrapper script that runs inside dbus-run-session
-        wrapper_script = self._build_wrapper_script(config)
-
-        # Start the isolated session in its own process group. stderr goes to a
-        # file, not a pipe: a pipe would let a descendant block forever once
-        # the parent stops draining it, and it re-opens the "process wedged on
-        # a full stderr buffer" failure this call is supposed to survive. The
-        # file is also the diagnostic sink read when startup fails.
-        self._stderr_file = tempfile.TemporaryFile()  # noqa: SIM115
         try:
+            # home="isolated": launched apps get a private temporary HOME.
+            if config.home == "isolated":
+                self._home_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-home-"))
+                for subdir in (
+                    ".config",
+                    Path(".local") / "share",
+                    Path(".local") / "state",
+                    ".cache",
+                ):
+                    (self._home_dir / subdir).mkdir(parents=True, exist_ok=True)
+                # Record the home when session_stop would remove it, so the exit path
+                # (when it cannot run session_stop) mirrors session_stop's retention
+                # semantics: retention.home alone decides whether the home survives.
+                # The screenshot dir lives outside the home and follows
+                # retention.artifacts.
+                if not config.retention.home:
+                    process_registry.register_temp_dir(self._home_dir)
+
+            # Clean up any stale socket files
+            runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+            for suffix in ("", ".lock"):
+                path = Path(runtime_dir) / f"{self._socket_name}{suffix}"
+                path.unlink(missing_ok=True)
+
+            # The compositor must not read the host's config dir: a wallet-enabled
+            # kwalletrc there lets the kwallet popup steal focus from the app under
+            # automation. An isolated home already gives it a private .config; seed
+            # that one, otherwise create a throwaway dir that _build_env points
+            # XDG_CONFIG_HOME at. The keymap is pinned separately in _build_env.
+            if self._home_dir is not None:
+                _write_deterministic_session_config(self._home_dir / ".config")
+            else:
+                self._session_config_dir = Path(tempfile.mkdtemp(prefix="kwin-mcp-config-"))
+                _write_deterministic_session_config(self._session_config_dir)
+                process_registry.register_temp_dir(self._session_config_dir)
+
+            # Deliberately NOT isolating XDG_DATA_HOME / XDG_CACHE_HOME: qtbase
+            # crash-logs a fatal qFatal when a nonexistent standard data dir is
+            # set (reproduced on qt6-base 6.10), and existing dirs already
+            # contain everything kwin/konsole need to start.
+
+            # Build the wrapper script that runs inside dbus-run-session
+            wrapper_script = self._build_wrapper_script(config)
+
+            # stderr goes to a file, not a pipe: a descendant could otherwise
+            # block forever once the parent stops draining it. Keep its creation
+            # inside the same rollback boundary as the HOME/config setup.
+            self._stderr_file = tempfile.TemporaryFile()  # noqa: SIM115
             # stdin is the MCP server's JSON-RPC transport; no descendant of
             # the session (compositor, AT-SPI bus, apps) may read from it.
             # Spawn through the registry so the wrapper's group is registered
@@ -785,10 +784,11 @@ class Session:
                 start_new_session=True,
             )
         except BaseException:
-            self._stderr_file.close()
-            self._stderr_file = None
-            # _process is still None, so stop() would return early; undo the
-            # resource acquisition this method already performed.
+            if self._stderr_file is not None:
+                self._stderr_file.close()
+                self._stderr_file = None
+            # No wrapper was spawned, so release the directories acquired before
+            # the filesystem failure, cancellation, or failed spawn.
             self._cleanup_start_dirs()
             raise
         progress.report(1, progress_total, "Starting KWin")
@@ -961,6 +961,10 @@ class Session:
         still exist).
         """
         if self._process is None:
+            # Startup can fail after acquiring HOME/config resources but before
+            # spawning the wrapper. Keep the rollback path identical to the
+            # failed-Popen path instead of returning with those resources live.
+            self._cleanup_start_dirs()
             return KeptPaths()
 
         # Apps started by launch_app are children of this process, not of the
@@ -1045,8 +1049,8 @@ class Session:
     def _cleanup_start_dirs(self) -> None:
         """Release the directories created by start() when no session exists.
 
-        Only used on the Popen-failure path, where _process is None and stop()
-        cannot run; the home follows retention.home as in stop(). The screenshot dir
+        Used by pre-spawn failure rollback and stop() when no wrapper exists.
+        The home follows retention.home as in stop(). The screenshot directory
         is created only after KWin starts, so it does not exist yet here.
         """
         if self._session_config_dir is not None:

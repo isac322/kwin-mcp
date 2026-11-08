@@ -61,6 +61,11 @@ class _Harness:
     def temp_dirs(self, prefix: str) -> list[Path]:
         return sorted(self.temp_root.glob(f"{prefix}*"))
 
+    def service_dir(self) -> Path:
+        # Always under /tmp, not temp_root: sockets in it must fit sun_path.
+        [path] = [p for p in self.registry._temp_dirs if p.name.startswith("kwin-mcp-svc-")]
+        return path
+
 
 @pytest.fixture
 def harness(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _Harness:
@@ -119,9 +124,13 @@ def _start(home: HomeMode, retention: Retention) -> Session:
 
 
 def _expected_registered(
-    home_dir: Path | None, screenshot_dir: Path, config_dirs: list[Path], retention: Retention
+    home_dir: Path | None,
+    screenshot_dir: Path,
+    config_dirs: list[Path],
+    service_dir: Path,
+    retention: Retention,
 ) -> set[Path]:
-    expected = set(config_dirs)
+    expected = {*config_dirs, service_dir}
     if not retention.artifacts:
         expected.add(screenshot_dir)
     if home_dir is not None and not retention.home:
@@ -141,9 +150,10 @@ def test_stop_keeps_exactly_the_retained_dirs(
     assert (home_dir is not None) == (home == "isolated")
     config_dirs = harness.temp_dirs("kwin-mcp-config-")
     assert len(config_dirs) == (1 if home == "host" else 0)
+    service_dir = harness.service_dir()
     # Decided at start: the exit path's registry holds exactly what stop removes.
     assert harness.registered() == _expected_registered(
-        home_dir, screenshot_dir, config_dirs, retention
+        home_dir, screenshot_dir, config_dirs, service_dir, retention
     )
     (screenshot_dir / "frame.png").write_bytes(b"png")
 
@@ -159,6 +169,7 @@ def test_stop_keeps_exactly_the_retained_dirs(
     if home_dir is not None:
         assert home_dir.is_dir() == retention.home
     assert all(not path.exists() for path in config_dirs)
+    assert not service_dir.exists()
     assert harness.registered() == set()
     assert session.stop() == KeptPaths()
 
@@ -176,6 +187,7 @@ def test_exit_path_keeps_the_same_dirs_as_stop(
     assert leader is not None
     screenshot_dir, home_dir = info.screenshot_dir, info.home_dir
     config_dirs = harness.temp_dirs("kwin-mcp-config-")
+    service_dir = harness.service_dir()
 
     # The server exit path (stdin EOF or SIGTERM while a tool is busy) cannot
     # run session_stop: it closes the registry and sweeps what is registered.
@@ -187,6 +199,7 @@ def test_exit_path_keeps_the_same_dirs_as_stop(
         if home_dir is not None:
             assert home_dir.is_dir() == retention.home
         assert all(not path.exists() for path in config_dirs)
+        assert not service_dir.exists()
     finally:
         leader.wait(timeout=10)
         if leader.stdout is not None:
@@ -210,10 +223,12 @@ def test_host_home_gets_a_private_config_dir_with_kwalletrc(
         assert env["HOME"] == "/home/host-user"
         assert env["XDG_CONFIG_HOME"] == str(config_dir)
         assert "Enabled=false" in (config_dir / "kwalletrc").read_text()
-        assert harness.registered_at_spawn == [[config_dir]]
+        service_dir = harness.service_dir()
+        assert harness.registered_at_spawn == [[config_dir, service_dir]]
     finally:
         session.stop()
     assert not config_dir.exists()
+    assert not service_dir.exists()
 
 
 @pytest.mark.qa("QA-SES-002")
@@ -232,10 +247,12 @@ def test_isolated_home_has_xdg_dirs_and_kwalletrc(harness: _Harness) -> None:
         assert env["HOME"] == str(home_dir)
         assert env["XDG_CONFIG_HOME"] == str(home_dir / ".config")
         assert harness.temp_dirs("kwin-mcp-config-") == []
-        assert harness.registered_at_spawn == [[home_dir]]
+        service_dir = harness.service_dir()
+        assert harness.registered_at_spawn == [[home_dir, service_dir]]
     finally:
         session.stop()
     assert not home_dir.exists()
+    assert not service_dir.exists()
 
 
 @pytest.mark.qa("QA-SES-017")
@@ -349,3 +366,34 @@ def test_app_registry_lists_launches_and_tails_logs(harness: _Harness, tmp_path:
         live.stop()
     assert all(entry.running is False for entry in live.apps())
     assert not screenshot_dir.exists()
+
+
+def test_remove_tree_leaves_a_tree_that_is_still_mounted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A mount that survives the unmount attempt: removing the tree would delete
+    # the files behind it (documents a portal exports, a remote share).
+    tree = tmp_path / "kwin-mcp-svc-unit"
+    (tree / "doc").mkdir(parents=True)
+    (tree / "doc" / "exported.txt").write_text("host file")
+    monkeypatch.setattr(session_module, "_mounts_below", lambda path: [f"{path}/doc"])
+    with pytest.raises(OSError, match="still mounted"):
+        session_module._remove_tree(tree)
+    assert (tree / "doc" / "exported.txt").read_text() == "host file"
+
+
+def test_remove_tree_unmounts_then_removes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    tree = tmp_path / "kwin-mcp-svc-unit"
+    (tree / "doc").mkdir(parents=True)
+    mounted = [f"{tree}/doc"]
+    calls: list[list[str]] = []
+
+    def fusermount(argv: list[str], **_kwargs: object) -> None:
+        calls.append(argv)
+        mounted.clear()
+
+    monkeypatch.setattr(session_module, "_mounts_below", lambda _path: list(mounted))
+    monkeypatch.setattr(session_module.subprocess, "run", fusermount)
+    session_module._remove_tree(tree)
+    assert calls == [["fusermount3", "-u", "-z", f"{tree}/doc"]]
+    assert not tree.exists()

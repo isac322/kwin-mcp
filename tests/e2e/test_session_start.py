@@ -43,8 +43,14 @@ SESSION_PROCESS_NAMES = frozenset(
         "at-spi2-registryd",
     }
 )
-# Temp-dir prefixes a virtual session creates under tempfile.gettempdir().
-SESSION_TEMP_PREFIXES = ("kwin-mcp-config-", "kwin-mcp-screenshots-", "kwin-mcp-home-")
+# Temp-dir prefixes a virtual session creates under tempfile.gettempdir()
+# (the service dir always under /tmp, which is the same dir in the E2E image).
+SESSION_TEMP_PREFIXES = (
+    "kwin-mcp-config-",
+    "kwin-mcp-screenshots-",
+    "kwin-mcp-home-",
+    "kwin-mcp-svc-",
+)
 
 # Golden environment of a launched app, from 0.11.0 ``Session.launch_app``
 # (src/kwin_mcp/session.py:818-834): host environ plus these values, minus DISPLAY,

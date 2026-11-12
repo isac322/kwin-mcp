@@ -301,48 +301,63 @@ class _Found:
     entry: _RefEntry
 
 
-def _walk(criteria: _Criteria, max_depth: int) -> list[_Found]:
+def _walk(criteria: _Criteria, max_depth: int) -> tuple[list[_Found], bool]:
     """One filtered pre-order walk from the application nodes (depth 0).
 
     Elements deeper than ``max_depth`` are not visited (``<= 0``: application
     nodes only). Non-matching elements are hidden but their children are
     still searched. A node that cannot be read is skipped with its subtree;
-    applications without children are included.
+    applications without children are included. Also returns whether every
+    application in scope answered: one that did not (a busy app) may still
+    hold matches.
     """
     kwin_before, kwin_error = _kwin_windows()
     found: list[_Found] = []
     mappings_by_app: dict[frozenset[int], list[_WindowMapping]] = {}
-    desktop = Atspi.get_desktop(0)
-    for app in _children(desktop):
-        try:
-            app_name = app.get_name() or ""
-        except Exception:
-            continue
-        if not criteria.matches_app(app_name):
-            continue
+
+    def collect_app(app: Atspi.Accessible, app_name: str) -> None:
         try:
             app_info = _extract_info(app, 0)
+        except _NoReplyError:
+            raise
         except Exception:
-            continue
+            return
         if criteria.matches(app_info):
             entry = _RefEntry(app, app_info.role, app_name, 0, app, None)
             found.append(_Found(app_info, _UNMAPPED, entry))
         if max_depth < 1:
-            continue
+            return
         try:
             pids, mappings, toplevels = _resolve_app(app, kwin_before, kwin_error)
+        except _NoReplyError:
+            raise
         except Exception:
-            continue
+            return
         mappings_by_app.setdefault(pids, []).extend(mappings)
         for toplevel, mapping in zip(toplevels, mappings, strict=True):
             if toplevel is not None:
                 scope = _Scope(app, app_name, toplevel, mapping)
                 _collect(toplevel, scope, 1, max_depth, criteria, found)
 
+    answered = True
+    desktop = Atspi.get_desktop(0)
+    for app in _children(desktop):
+        try:
+            app_name = _app_name(app)
+            if criteria.matches_app(app_name):
+                collect_app(app, app_name)
+                # Reads after the app turned busy returned plausible values,
+                # not errors: one more count read catches it still busy.
+                _child_count(app)
+        except _NoReplyError:
+            answered = False
+        except Exception:
+            continue
+
     _apply_stability(mappings_by_app, kwin_before, kwin_error)
     for item in found:
         _finalize(item.info, item.mapping)
-    return found
+    return found, answered
 
 
 @dataclass(frozen=True)
@@ -363,11 +378,18 @@ def _collect(
     criteria: _Criteria,
     found: list[_Found],
 ) -> None:
-    """Add ``element`` (when it matches) and its matching descendants to ``found``."""
+    """Add ``element`` (when it matches) and its matching descendants to ``found``.
+
+    Raises ``_NoReplyError`` when an element did not answer, which ends the
+    walk of its app: a skipped silent node could hide a match, and every later
+    read would wait out the timeout too.
+    """
     if depth > max_depth:
         return
     try:
         info = _extract_info(element, depth)
+    except _NoReplyError:
+        raise
     except Exception:
         return
     if criteria.matches(info):
@@ -375,6 +397,60 @@ def _collect(
         found.append(_Found(info, scope.mapping, entry))
     for child in _children(element, info.children_count):
         _collect(child, scope, depth + 1, max_depth, criteria, found)
+
+
+class _NoReplyError(Exception):
+    """An element did not answer within libatspi's call timeout."""
+
+
+# The error texts of a call that timed out, neither translated: libdbus's on the
+# bus (Qt, GTK 4), dbind's on the peer-to-peer link atk-bridge apps get (GTK 3).
+_NO_REPLY_TEXTS = ("Did not receive a reply", "timeout from dbind")
+
+
+def _is_no_reply(exc: BaseException | None) -> bool:
+    """Whether ``exc`` is a call the application did not answer in time."""
+    return isinstance(exc, _NoReplyError) or any(text in str(exc) for text in _NO_REPLY_TEXTS)
+
+
+def _child_count(element: Atspi.Accessible) -> int:
+    """The child count of ``element``; raises ``_NoReplyError`` when it did not answer.
+
+    libatspi reports a failed property read as a plausible value instead of an
+    error: "" for a name, -1 for a child count, both for a busy app that did
+    not reply in time (800 ms by default) and for an element that is gone.
+    The role read does raise, so it tells the two apart: a gone element raises
+    an ordinary error and is skipped like any unreadable node.
+    """
+    # shortcut: libatspi drops the D-Bus error of property reads ("TODO: throw
+    # exception" in _atspi_dbus_get_property), so a -1 is classified by the
+    # role read's message; read the count's own error once libatspi sets it.
+    count = element.get_child_count()
+    if count >= 0:
+        return count
+    msg = "no reply within the AT-SPI call timeout"
+    try:
+        element.get_role_name()
+    except Exception as exc:
+        if not _is_no_reply(exc):
+            raise
+        raise _NoReplyError(msg) from exc
+    # It answers now: the count's timeout was a busy spell that just ended.
+    raise _NoReplyError(msg)
+
+
+def _app_name(app: Atspi.Accessible) -> str:
+    """The name of ``app``; raises ``_NoReplyError`` when the app did not answer.
+
+    An app that does not answer reads as named "", so an app filter would drop
+    it as some other app. An empty name is re-read once the app answers: the ""
+    may be the timeout of an app that became free right after it.
+    """
+    name = app.get_name() or ""
+    if not name:
+        _child_count(app)
+        name = app.get_name() or ""
+    return name
 
 
 def _children(element: Atspi.Accessible, count: int | None = None) -> list[Atspi.Accessible]:
@@ -404,7 +480,8 @@ def _mint(item: _Found) -> dict[str, Any]:
 
 def query_elements(locator: Locator, max_depth: int = 15) -> list[dict[str, Any]]:
     """Every element matching ``locator`` down to ``max_depth``, in pre-order, with refs."""
-    return [_mint(item) for item in _walk(_Criteria.from_locator(locator), max_depth)]
+    found, _ = _walk(_Criteria.from_locator(locator), max_depth)
+    return [_mint(item) for item in found]
 
 
 def wait_elements(
@@ -429,10 +506,10 @@ def wait_elements(
     deadline = start + max(timeout_ms, 0) / 1000.0
     settle_deadline: float | None = None
     while True:
-        found = _walk(criteria, max_depth)
+        found, answered = _walk(criteria, max_depth)
         now = time.monotonic()
         if until == "absent":
-            satisfied = not found
+            satisfied = not found and answered
         else:
             satisfied = bool(found)
             if satisfied and any(item.info.unavailable == "windows-changed" for item in found):
@@ -507,6 +584,9 @@ def _resolve_refs(refs: list[str]) -> list[_Resolved]:
             continue
         try:
             info = _extract_info(entry.accessible, entry.depth)
+        except _NoReplyError as exc:
+            results.append(_Resolved(ref, entry, error=f"Ref {ref} did not answer: {exc}."))
+            continue
         except Exception:
             info = None
         if info is None or "defunct" in info.states:
@@ -562,6 +642,13 @@ class _ActionRefusedError(Exception):
 
 def _incomplete_discovery_message(exc: _IncompleteDiscoveryError, app_filter: str) -> str:
     """Refusal text naming the incompletely read application and how to get around it."""
+    if _is_no_reply(exc.__cause__):
+        where = f" in application '{exc.application}'" if exc.application else ""
+        hint = "The application is not answering; retry when it is idle"
+        if app_filter:
+            # A busy app outside the scope blocks the search too; a ref skips it.
+            hint += ", or find the element with element_query and act on its ref"
+        return f"Incomplete discovery{where}: {exc}.\n{hint}."
     if not exc.application:
         return f"Incomplete discovery: {exc}"
     message = f"Incomplete discovery in application '{exc.application}': {exc}."
@@ -655,7 +742,7 @@ def _strict_candidates(
                     candidates.append(_Candidate(entry, name, chosen))
 
         try:
-            child_count = element.get_child_count()
+            child_count = _child_count(element)
         except Exception as exc:
             raise _IncompleteDiscoveryError(f"could not read child count: {exc}") from exc
         for index in range(child_count):
@@ -681,13 +768,19 @@ def _strict_candidates(
         # The app filter decides scope, so the name of every application is
         # needed even when a filter would later exclude it.
         try:
-            app_name = app.get_name() or ""
+            app_name = _app_name(app)
         except Exception as exc:
-            raise _IncompleteDiscoveryError(f"could not read application name: {exc}") from exc
+            error = _IncompleteDiscoveryError(f"could not read application name: {exc}")
+            error.application = _process_name(app)
+            raise error from exc
         if not criteria.matches_app(app_name):
             continue
         try:
             visit(app, app, app_name, None, 0)
+            try:
+                _child_count(app)  # catches an app that turned busy partway
+            except _NoReplyError as exc:
+                raise _IncompleteDiscoveryError(f"application stopped answering: {exc}") from exc
         except _IncompleteDiscoveryError as exc:
             # An application that stopped answering (e.g. a stopped process) can
             # report an empty name instead of failing; name it by its process so
@@ -1041,7 +1134,7 @@ def _resolve_app(
         pid = None
 
     children: list[_AccessibleTopLevel | None] = []
-    for j in range(app.get_child_count()):
+    for j in range(_child_count(app)):
         children.append(app.get_child_at_index(j))
 
     def _unmapped(reason: str) -> list[_WindowMapping]:
@@ -1173,6 +1266,8 @@ def _window_rect(element: _AccessibleTopLevel) -> tuple[int, int, int, int] | No
 
 def _extract_info(element: Atspi.Accessible, depth: int) -> ElementInfo:
     """Extract information from an AT-SPI accessible element."""
+    # First: when the app is busy, the reads below return plausible values.
+    children_count = _child_count(element)
     role = element.get_role_name() or "unknown"
     name = element.get_name() or ""
     description = element.get_description() or ""
@@ -1247,7 +1342,7 @@ def _extract_info(element: Atspi.Accessible, depth: int) -> ElementInfo:
         text=text,
         value=value,
         value_max=value_max,
-        children_count=element.get_child_count(),
+        children_count=children_count,
         depth=depth,
         has_extents=has_extents,
         mapped=False,

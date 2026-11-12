@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import types
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import pytest
 
@@ -55,25 +55,38 @@ class _FakeActions:
 
 @dataclass(eq=False)
 class _FakeNode:
-    """Minimal ``Atspi.Accessible`` double: mutable name, role, states and children."""
+    """Minimal ``Atspi.Accessible`` double: mutable name, role, states and children.
+
+    ``busy`` answers like libatspi when the app does not reply in time, ``gone``
+    like it does for an element the app destroyed.
+    """
 
     name: str
     role: str = "panel"
     children: list[_FakeNode] = field(default_factory=list)
     states: list[str] = field(default_factory=lambda: ["enabled", "visible"])
     actions: list[str] | None = None
+    busy: bool = False
+    gone: bool = False
+    # libdbus's text on the bus; atk-bridge apps on a peer-to-peer link get dbind's.
+    no_reply: ClassVar[str] = "atspi_error: Did not receive a reply."
 
     def get_name(self) -> str:
-        return self.name
+        return "" if self.busy or self.gone else self.name
 
     def get_role_name(self) -> str:
+        if self.busy:
+            raise RuntimeError(self.no_reply)
+        if self.gone:
+            msg = "atspi_error: Object does not exist at path"
+            raise RuntimeError(msg)
         return self.role
 
     def get_description(self) -> str:
         return ""
 
     def get_state_set(self) -> _FakeStateSet:
-        return _FakeStateSet(self.states)
+        return _FakeStateSet(["defunct"] if self.busy else self.states)
 
     def get_component_iface(self) -> None:
         return None
@@ -88,10 +101,10 @@ class _FakeNode:
         return None
 
     def get_child_count(self) -> int:
-        return len(self.children)
+        return -1 if self.busy or self.gone else len(self.children)
 
-    def get_child_at_index(self, index: int) -> _FakeNode:
-        return self.children[index]
+    def get_child_at_index(self, index: int) -> _FakeNode | None:
+        return None if self.busy or self.gone else self.children[index]
 
     def get_process_id(self) -> int:
         return 0
@@ -441,3 +454,127 @@ def test_query_and_old_ref_resolution_share_click_geometry_policy(
     window["desktops"] = ["d1"]
     (restored,) = _resolve(old_ref)
     assert UIElement.from_worker(restored["element"]).rect is not None
+
+
+def _set_busy(node: _FakeNode, busy: bool) -> None:
+    node.busy = busy
+    for child in node.children:
+        _set_busy(child, busy)
+
+
+@pytest.mark.qa("QA-ELEM-023")
+@pytest.mark.parametrize(
+    "no_reply", ["atspi_error: Did not receive a reply.", "atspi_error: timeout from dbind (1)"]
+)
+def test_an_app_that_does_not_answer_is_not_read_as_gone(
+    atspi: _FakeAtspi, monkeypatch: pytest.MonkeyPatch, no_reply: str
+) -> None:
+    monkeypatch.setattr(_FakeNode, "no_reply", no_reply)
+    app = _kcalc(_button())
+    atspi.apps[:] = [app]
+    (ref,) = [element["ref"] for element in _query(query="Seven")]
+
+    _set_busy(app, True)
+    for locator in ({"query": "Seven", "app": "kcalc"}, {"query": "Seven"}):
+        response = _request("wait", locator=locator, max_depth=15, until="absent", timeout_ms=0)
+        assert response["result"]["satisfied"] is False, locator
+    strict = {"strict": {"query": "Seven", "app": "kcalc"}}
+    monkeypatch.setattr(accessibility, "_process_name", lambda _app: "kcalc")
+    response = _request("action", address=strict, action_name="Press")
+    assert response["ok"] is False
+    assert response["error"].startswith("Incomplete discovery in application 'kcalc'")
+    assert "no reply within the AT-SPI call timeout" in response["error"]
+    assert response["error"].endswith(
+        "retry when it is idle, or find the element with element_query and act on its ref."
+    )
+    (resolved,) = _resolve(ref)
+    assert resolved["error"].startswith(f"Ref {ref} did not answer")
+    assert atspi.dispatched == []
+
+    # The name read times out, and the app answers right after it: still kcalc.
+    def name_then_answer() -> str:
+        timed_out = app.busy
+        _set_busy(app, False)
+        return "" if timed_out else app.name
+
+    with monkeypatch.context() as patch:
+        patch.setattr(app, "get_name", name_then_answer)
+        scoped = {"query": "Seven", "app": "kcalc"}
+        response = _request("wait", locator=scoped, max_depth=15, until="absent", timeout_ms=0)
+    assert [element["name"] for element in response["result"]["elements"]] == ["Seven"]
+
+    # The app turns busy after the button's count read: its name and children
+    # read as "" and none, and only a later count check notices.
+    button = app.children[0].children[0]
+
+    def name_turns_busy() -> str:
+        _set_busy(app, True)
+        return ""
+
+    with monkeypatch.context() as patch:
+        patch.setattr(button, "get_name", name_turns_busy)
+        response = _request("wait", locator=scoped, max_depth=15, until="absent", timeout_ms=0)
+        assert response["result"]["satisfied"] is False
+        _set_busy(app, False)
+        response = _request("action", address=strict, action_name="Press")
+        assert "The application is not answering; retry when it is idle" in response["error"]
+    assert atspi.dispatched == []
+
+    # Busy between two siblings: the second reads as None, and only the check
+    # after the app's walk notices.
+    _set_busy(app, False)
+    app.children[0].children.append(_button("Eight"))
+
+    def count_then_busy() -> int:
+        _set_busy(app, True)
+        return 0
+
+    with monkeypatch.context() as patch:
+        patch.setattr(button, "get_child_count", count_then_busy)
+        response = _request("action", address={"strict": {"query": "Eight"}}, action_name="Press")
+    assert "application stopped answering" in response["error"]
+    _set_busy(app, False)
+
+    # One count read times out and the app answers right after: not gone.
+    def one_timeout() -> int:
+        return next(replies, 1 if node is app else 0)
+
+    for node, counts in ((button, [-1]), (app, [-1]), (app, [1, -1])):
+        replies = iter(counts)
+        with monkeypatch.context() as patch:
+            patch.setattr(node, "get_child_count", one_timeout)
+            response = _request("wait", locator=scoped, max_depth=15, until="absent", timeout_ms=0)
+        assert response["result"]["satisfied"] is False, node.name
+    assert atspi.dispatched == []
+    app.children[0].children.pop()
+
+    # Answering again, without the button: now it is gone.
+    _set_busy(app, False)
+    app.children[0].children.clear()
+    response = _request("wait", locator={"query": "Seven"}, max_depth=15, until="absent")
+    assert response["result"]["satisfied"] is True
+
+
+@pytest.mark.qa("QA-ELEM-036")
+def test_a_destroyed_element_is_gone_not_busy(
+    atspi: _FakeAtspi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # libatspi reads a destroyed element's child count as -1 too, like a busy
+    # app's, but its role read fails with an ordinary error.
+    seven, eight = _button("Seven"), _button("Eight")
+    exited = _FakeNode("exited", "application")
+
+    def no_longer_exists() -> str:
+        msg = "atspi_error: The application no longer exists (0)"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(exited, "get_name", no_longer_exists)
+    atspi.apps[:] = [exited, _kcalc(seven, eight)]
+    (ref,) = [element["ref"] for element in _query(query="Seven")]
+    seven.gone = True
+
+    assert [element["name"] for element in _query(query="Eight")] == ["Eight"]
+    response = _request("wait", locator={"query": "Seven"}, max_depth=15, until="absent")
+    assert response["result"]["satisfied"] is True
+    (resolved,) = _resolve(ref)
+    assert resolved["error"].startswith(f"Stale ref {ref}")

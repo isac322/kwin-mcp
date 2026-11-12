@@ -70,7 +70,7 @@ def _scripted_walk(
     calls: list[str] = []
     monkeypatch.setattr(accessibility, "_REFS", _RefTable(generation=1))
 
-    def walk(_criteria: object, _max_depth: int) -> list[_Found]:
+    def walk(_criteria: object, _max_depth: int) -> tuple[list[_Found], bool]:
         index = len(calls)
         if index >= len(answers):
             assert repeat_last, calls
@@ -78,7 +78,7 @@ def _scripted_walk(
         calls.append(answers[index])
         node = object()
         entry = _RefEntry(node, "push button", "kcalc", 2, node, node)
-        return [_Found(_element(answers[index]), accessibility._UNMAPPED, entry)]
+        return [_Found(_element(answers[index]), accessibility._UNMAPPED, entry)], True
 
     monkeypatch.setattr(accessibility, "_walk", walk)
     return calls

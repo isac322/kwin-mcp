@@ -17,7 +17,7 @@ from kwin_mcp.input import (
 
 # evdev keycodes used below.
 SHIFT, CTRL, ALT, SUPER = 42, 29, 56, 125
-KEY_A, KEY_C, KEY_T, KEY_1 = 30, 46, 20, 2
+KEY_A, KEY_C, KEY_T, KEY_1, KEY_SLASH = 30, 46, 20, 2, 53
 KEY_RETURN, KEY_F4, KEY_F11, KEY_LEFT, KEY_PAGE_UP = 28, 62, 87, 105, 104
 
 
@@ -27,6 +27,13 @@ KEY_RETURN, KEY_F4, KEY_F11, KEY_LEFT, KEY_PAGE_UP = 28, 62, 87, 105, 104
     [
         # Modifiers first, in chord order, then the main key.
         ("ctrl+shift+t", [CTRL, SHIFT, KEY_T]),
+        # Shifted symbols press shift with their base key.
+        ("?", [SHIFT, KEY_SLASH]),
+        ("!", [SHIFT, KEY_1]),
+        ("ctrl+?", [CTRL, SHIFT, KEY_SLASH]),
+        ("shift+?", [SHIFT, KEY_SLASH]),
+        ("?+shift", [SHIFT, KEY_SLASH]),
+        ("/", [KEY_SLASH]),
         ("shift+ctrl+t", [SHIFT, CTRL, KEY_T]),
         ("alt+F4", [ALT, KEY_F4]),
         # Aliases, case-insensitive.

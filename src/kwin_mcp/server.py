@@ -948,8 +948,8 @@ def keyboard_press(
     keys: Annotated[
         KeyChord,
         Field(
-            description='e.g. "Return", "ctrl+c", "alt+F4", "shift+ctrl+z"; unknown key names '
-            "are an error."
+            description='e.g. "Return", "ctrl+c", "alt+F4", "shift+ctrl+z"; a shifted symbol '
+            'adds shift ("?" is "shift+/", "+" is "shift+="); unknown key names are an error.'
         ),
     ],
     capture: Capture | None = None,
@@ -983,7 +983,7 @@ def keyboard_hold(
         KeyChord,
         Field(
             description='Any key or full chord, modifiers then key, e.g. "shift", '
-            '"ctrl+shift", "a", "ctrl+Return".'
+            '"ctrl+shift", "a", "ctrl+Return"; a shifted symbol holds shift too ("?" is "shift+/").'
         ),
     ],
     capture: Capture | None = None,

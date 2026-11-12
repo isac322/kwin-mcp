@@ -123,8 +123,8 @@ def test_keychord_grammar_ctrl_shift_t(probe: Probe) -> None:
 
 
 # The 0.11 key map (F101): names are case-insensitive, aliases share a keycode,
-# a single character is its unshifted key, modifier-only chords press the
-# modifier alone.
+# modifier-only chords press the modifier alone. A single character is its key; a
+# shifted symbol also presses shift (0.11 sent its unshifted key).
 _CHORDS: list[tuple[str, list[tuple[int, str]]]] = [
     ("Return", [(28 + _X, "Return")]),
     ("enter", [(28 + _X, "Return")]),
@@ -136,7 +136,7 @@ _CHORDS: list[tuple[str, list[tuple[int, str]]]] = [
     ("meta", [SUPER]),
     ("super", [SUPER]),
     ("A", [(30 + _X, "a")]),
-    ("!", [(2 + _X, "1")]),
+    ("!", [SHIFT, (2 + _X, "exclam")]),
     ("a", [(30 + _X, "a")]),
     ("CTRL+Shift+T", [CTRL, SHIFT, (20 + _X, "T")]),
     ("shift", [SHIFT]),
@@ -145,7 +145,7 @@ _CHORDS: list[tuple[str, list[tuple[int, str]]]] = [
 
 @pytest.mark.qa("QA-INP-052")
 def test_return_tab_real_keys(probe: Probe) -> None:
-    """Every name reaches the probe as the 0.11 keysym; malformed chords press nothing."""
+    """Every name reaches the probe as its keysym; malformed chords press nothing."""
     for keys, expected in _CHORDS:
         result, events = _press(probe, keys)
         assert result.render() == f"Pressed: {keys}"

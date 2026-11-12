@@ -206,18 +206,17 @@ def key_name(keycode: int) -> str:
     return _KEY_NAMES.get(keycode, f"keycode {keycode}")
 
 
-def _key_name_to_evdev(name: str) -> int | None:
-    """Convert a key name to its Linux evdev keycode."""
+def _key_name_to_evdev(name: str) -> tuple[int, bool] | None:
+    """Convert a key name to its Linux evdev keycode and whether it needs shift."""
     lower = name.lower()
 
     if lower in _EVDEV_KEY_MAP:
-        return _EVDEV_KEY_MAP[lower]
+        return _EVDEV_KEY_MAP[lower], False
 
-    # Single character → look up in character map
+    # Single character → look up in character map; like named keys, letters
+    # ignore case ("A" is the "a" key), while a shifted symbol keeps its shift.
     if len(name) == 1:
-        entry = _CHAR_KEY_MAP.get(name)
-        if entry:
-            return entry[0]
+        return _CHAR_KEY_MAP.get(lower)
 
     return None
 
@@ -245,25 +244,30 @@ def chord_keycodes(chord: str) -> list[int]:
     Names are ``+``-joined and case-insensitive (``ctrl``/``control``,
     ``super``/``meta``, ``return``, ``f4``, ``a``). A chord of modifiers only
     uses its last modifier as the main key (``ctrl+shift``). When several
-    non-modifier names are given, the last one is the main key, as before.
+    non-modifier names are given, the last one is the main key.
+    A shifted symbol as the main key adds shift (``?`` is ``shift+/``).
     Raises ValueError ``Unknown key: <chord>`` for any unknown or empty name,
     before any input is sent.
     """
     modifiers: list[int] = []
     keycode: int | None = None
+    shifted = False
     for part in chord.split("+"):
         name = part.strip()
         modifier = _MODIFIER_KEYS.get(name.lower())
         if modifier is not None:
             modifiers.append(modifier)
             continue
-        keycode = _key_name_to_evdev(name)
-        if keycode is None:
+        key = _key_name_to_evdev(name)
+        if key is None:
             msg = f"Unknown key: {chord}"
             raise ValueError(msg)
+        keycode, shifted = key
     if keycode is None:
         # Every name was a modifier (split always yields at least one part).
         keycode = modifiers.pop()
+    if shifted and _SHIFT_KEYCODE not in modifiers:
+        modifiers.append(_SHIFT_KEYCODE)
     return [*modifiers, keycode]
 
 

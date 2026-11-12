@@ -435,8 +435,24 @@ def _child_count(element: Atspi.Accessible) -> int:
         if not _is_no_reply(exc):
             raise
         raise _NoReplyError(msg) from exc
-    # It answers now: the count's timeout was a busy spell that just ended.
+    # The role answered: a busy spell just ended, or the app exited and libatspi
+    # returned its last role because the call could not be sent (GTK 3's closed
+    # peer-to-peer link). The process tells.
+    if not _process_alive(element):
+        gone = "the application exited"
+        raise RuntimeError(gone)
     raise _NoReplyError(msg)
+
+
+def _process_alive(element: Atspi.Accessible) -> bool:
+    """Whether the process behind ``element`` still runs (a zombie does not)."""
+    # shortcut: assumes kwin-mcp shares the apps' pid namespace; a KWin in
+    # another namespace (session_connect into a container) would need its /proc.
+    try:
+        stat = Path(f"/proc/{int(element.get_process_id())}/stat").read_text()
+    except Exception:
+        return False
+    return stat.rsplit(")", 1)[1].split()[0] not in ("Z", "X")
 
 
 def _app_name(app: Atspi.Accessible) -> str:
@@ -584,12 +600,17 @@ def _resolve_refs(refs: list[str]) -> list[_Resolved]:
             continue
         try:
             info = _extract_info(entry.accessible, entry.depth)
+            if "defunct" in info.states:
+                # A state read that timed out reads as defunct too: only an
+                # element that answers (or fails ordinarily) is really gone.
+                _child_count(entry.accessible)
+                info = None
         except _NoReplyError as exc:
             results.append(_Resolved(ref, entry, error=f"Ref {ref} did not answer: {exc}."))
             continue
         except Exception:
             info = None
-        if info is None or "defunct" in info.states:
+        if info is None:
             error = f"Stale ref {ref} (element no longer exists); re-run element_query."
             results.append(_Resolved(ref, entry, error=error))
             continue
@@ -778,9 +799,10 @@ def _strict_candidates(
         try:
             visit(app, app, app_name, None, 0)
             try:
-                _child_count(app)  # catches an app that turned busy partway
-            except _NoReplyError as exc:
-                raise _IncompleteDiscoveryError(f"application stopped answering: {exc}") from exc
+                _child_count(app)  # catches an app that turned busy or exited partway
+            except Exception as exc:
+                msg = f"could not read the application again: {exc}"
+                raise _IncompleteDiscoveryError(msg) from exc
         except _IncompleteDiscoveryError as exc:
             # An application that stopped answering (e.g. a stopped process) can
             # report an empty name instead of failing; name it by its process so
@@ -816,6 +838,8 @@ def _action_by_ref(
                 for index in range(action_iface.get_n_actions())
             ]
     except Exception as exc:
+        if _is_no_reply(exc):
+            raise _ActionRefusedError(f"Ref {ref} did not answer: {exc}.") from exc
         msg = f"Stale ref {ref} (element no longer exists); re-run element_query."
         raise _ActionRefusedError(msg) from exc
     requested = [action_name] if isinstance(action_name, str) else list(action_name)
@@ -824,6 +848,13 @@ def _action_by_ref(
         if action_iface is not None and indexes:
             index = next((i for i in indexes if names[i] == wanted), indexes[0])
             return entry, info, action_iface, index, names[index]
+    # A timed-out action read lists no actions too: confirm the app answers.
+    try:
+        _child_count(entry.accessible)
+    except _NoReplyError as exc:
+        raise _ActionRefusedError(f"Ref {ref} did not answer: {exc}.") from exc
+    except Exception:
+        pass  # gone: the missing action is real
     action_desc = (
         f"no AT-SPI action {requested[0]!r}"
         if len(requested) == 1
@@ -1268,7 +1299,13 @@ def _extract_info(element: Atspi.Accessible, depth: int) -> ElementInfo:
     """Extract information from an AT-SPI accessible element."""
     # First: when the app is busy, the reads below return plausible values.
     children_count = _child_count(element)
-    role = element.get_role_name() or "unknown"
+    try:
+        role = element.get_role_name() or "unknown"
+    except Exception as exc:
+        # The app can turn busy right after the count read answered.
+        if _is_no_reply(exc):
+            raise _NoReplyError(str(exc)) from exc
+        raise
     name = element.get_name() or ""
     description = element.get_description() or ""
 

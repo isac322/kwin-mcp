@@ -1747,7 +1747,7 @@ note = "Disables the whole 'element no longer exists' guard in _resolve_refs, so
 [[mutant.patch]]
 file = "src/kwin_mcp/accessibility.py"
 search = '''
-        if info is None or "defunct" in info.states:'''
+        if info is None:'''
 replace = '''
         if False:'''
 

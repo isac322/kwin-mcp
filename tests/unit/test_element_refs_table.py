@@ -8,6 +8,8 @@ without affecting refs or actions.
 
 from __future__ import annotations
 
+import os
+import subprocess
 import types
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -47,9 +49,11 @@ class _FakeActions:
         self.names = names
 
     def get_n_actions(self) -> int:
-        return len(self.names)
+        return 0 if self.owner._busy() else len(self.names)
 
     def get_action_name(self, index: int) -> str:
+        if self.owner._busy():
+            raise RuntimeError(self.owner.no_reply)
         return self.names[index]
 
 
@@ -70,12 +74,18 @@ class _FakeNode:
     gone: bool = False
     # libdbus's text on the bus; atk-bridge apps on a peer-to-peer link get dbind's.
     no_reply: ClassVar[str] = "atspi_error: Did not receive a reply."
+    # Called once per read of an app's element; True makes that read time out.
+    clock: ClassVar[Callable[[], bool] | None] = None
+
+    def _busy(self) -> bool:
+        clock = _FakeNode.clock
+        return self.busy or (clock is not None and self.role != "desktop frame" and clock())
 
     def get_name(self) -> str:
-        return "" if self.busy or self.gone else self.name
+        return "" if self._busy() or self.gone else self.name
 
     def get_role_name(self) -> str:
-        if self.busy:
+        if self._busy():
             raise RuntimeError(self.no_reply)
         if self.gone:
             msg = "atspi_error: Object does not exist at path"
@@ -86,13 +96,15 @@ class _FakeNode:
         return ""
 
     def get_state_set(self) -> _FakeStateSet:
-        return _FakeStateSet(["defunct"] if self.busy else self.states)
+        return _FakeStateSet(["defunct"] if self._busy() else self.states)
 
     def get_component_iface(self) -> None:
         return None
 
     def get_action_iface(self) -> _FakeActions | None:
-        return None if self.actions is None else _FakeActions(self, self.actions)
+        if self._busy() or self.actions is None:
+            return None
+        return _FakeActions(self, self.actions)
 
     def get_text_iface(self) -> None:
         return None
@@ -101,13 +113,13 @@ class _FakeNode:
         return None
 
     def get_child_count(self) -> int:
-        return -1 if self.busy or self.gone else len(self.children)
+        return -1 if self._busy() or self.gone else len(self.children)
 
     def get_child_at_index(self, index: int) -> _FakeNode | None:
-        return None if self.busy or self.gone else self.children[index]
+        return None if self._busy() or self.gone else self.children[index]
 
     def get_process_id(self) -> int:
-        return 0
+        return os.getpid()
 
 
 @dataclass
@@ -532,7 +544,7 @@ def test_an_app_that_does_not_answer_is_not_read_as_gone(
     with monkeypatch.context() as patch:
         patch.setattr(button, "get_child_count", count_then_busy)
         response = _request("action", address={"strict": {"query": "Eight"}}, action_name="Press")
-    assert "application stopped answering" in response["error"]
+    assert "could not read the application again" in response["error"]
     _set_busy(app, False)
 
     # One count read times out and the app answers right after: not gone.
@@ -547,6 +559,37 @@ def test_an_app_that_does_not_answer_is_not_read_as_gone(
         assert response["result"]["satisfied"] is False, node.name
     assert atspi.dispatched == []
     app.children[0].children.pop()
+
+    # The count read answers, then the role read times out: still not gone.
+    def role_times_out() -> str:
+        raise RuntimeError(no_reply)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(button, "get_role_name", role_times_out)
+        response = _request("wait", locator=scoped, max_depth=15, until="absent", timeout_ms=0)
+        assert response["result"]["satisfied"] is False
+        (resolved,) = _resolve(ref)
+        assert resolved["error"].startswith(f"Ref {ref} did not answer")
+
+    # The app exits right after the strict walk: a refusal, not a worker error.
+    def no_longer_exists() -> str:
+        msg = "atspi_error: The application no longer exists (0)"
+        raise RuntimeError(msg)
+
+    with monkeypatch.context() as patch:
+        counts = iter([1])
+
+        def count_then_exit() -> int:
+            count = next(counts, -1)
+            if count < 0:
+                patch.setattr(app, "get_role_name", no_longer_exists)
+            return count
+
+        patch.setattr(app, "get_child_count", count_then_exit)
+        response = _request("action", address=strict, action_name="Press")
+    assert response["ok"] is False
+    assert "could not read the application again" in response["error"]
+    assert atspi.dispatched == []
 
     # Answering again, without the button: now it is gone.
     _set_busy(app, False)
@@ -578,3 +621,74 @@ def test_a_destroyed_element_is_gone_not_busy(
     assert response["result"]["satisfied"] is True
     (resolved,) = _resolve(ref)
     assert resolved["error"].startswith(f"Stale ref {ref}")
+
+    # A GTK 3 app that exited: the count is -1, libatspi returns the last role,
+    # and only the dead process tells it from a busy app.
+    (ref,) = [element["ref"] for element in _query(query="Eight")]
+    monkeypatch.setattr(eight, "get_child_count", lambda: -1)
+    monkeypatch.setattr(accessibility, "_process_alive", lambda _element: False)
+    (resolved,) = _resolve(ref)
+    assert resolved["error"].startswith(f"Stale ref {ref}")
+
+
+@pytest.mark.qa("QA-ELEM-023")
+@pytest.mark.parametrize("op", ["absent", "ref", "strict"])
+def test_an_app_that_turns_busy_at_any_read_is_not_read_as_gone(
+    atspi: _FakeAtspi, monkeypatch: pytest.MonkeyPatch, op: str
+) -> None:
+    atspi.apps[:] = [_kcalc(_button("Seven"), _button("Eight"))]
+    (ref,) = [element["ref"] for element in _query(query="Seven")]
+    reads = 0
+
+    def run() -> dict[str, Any]:
+        if op == "absent":
+            locator = {"query": "Seven", "app": "kcalc"}
+            return _request("wait", locator=locator, max_depth=15, until="absent", timeout_ms=0)
+        if op == "ref":
+            return _request("resolve", refs=[ref])
+        strict = {"strict": {"query": "Seven", "app": "kcalc"}}
+        return _request("action", address=strict, action_name="Press")
+
+    def count() -> bool:
+        nonlocal reads
+        reads += 1
+        return False
+
+    monkeypatch.setattr(_FakeNode, "clock", count)
+    run()
+    total = reads
+    for first_silent in range(1, total + 1):
+        reads = 0
+        atspi.dispatched.clear()
+
+        def busy_from_here(first_silent: int = first_silent) -> bool:
+            nonlocal reads
+            reads += 1
+            return reads >= first_silent
+
+        monkeypatch.setattr(_FakeNode, "clock", busy_from_here)
+        response = run()
+        where = f"busy from read {first_silent} of {total}: {response}"
+        if op == "absent":
+            assert response["result"]["satisfied"] is False, where
+        elif op == "ref":
+            assert not response["result"][0].get("error", "").startswith("Stale"), where
+        elif not response["ok"]:
+            # Refused during the search, or the chosen element stopped answering.
+            error = response["error"]
+            assert error.startswith("Incomplete discovery") or "did not answer" in error, where
+        else:
+            assert atspi.dispatched == [("Seven", "Press")], where
+
+
+def test_process_alive_counts_a_zombie_as_dead() -> None:
+    # An app kwin-mcp launched stays a zombie until kwin-mcp's process registry reaps it.
+    child = subprocess.Popen(["true"])
+    try:
+        os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOWAIT)
+        zombie = types.SimpleNamespace(get_process_id=lambda: child.pid)
+        alive = types.SimpleNamespace(get_process_id=os.getpid)
+        assert accessibility._process_alive(zombie) is False
+        assert accessibility._process_alive(alive) is True
+    finally:
+        child.wait()

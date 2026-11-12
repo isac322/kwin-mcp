@@ -770,9 +770,8 @@ def test_session_stop_recovers_after_leader_is_killed(
 ) -> None:
     """stop() must clean up the group even when the leader was reaped.
 
-    is_running polls (reaps) the leader, after which getpgid(pid) would raise
-    ESRCH; the group must still be signalled. An unrelated neighboring process
-    group must survive.
+    Once the leader is reaped, getpgid(pid) would raise ESRCH; the group must still
+    be signalled. An unrelated neighboring process group must survive.
     """
     neighbor = _spawn_neighbor(f"neighbor48-stop-{os.getpid()}")
     pre_existing_kwin = _live_kwin_pids()
@@ -792,6 +791,9 @@ def test_session_stop_recovers_after_leader_is_killed(
         while session.is_running and time.monotonic() < exit_deadline:
             time.sleep(0.05)
         assert not session.is_running, "session leader did not exit after SIGKILL"
+        # is_running leaves the exited leader unreaped; reap it so stop() below still
+        # runs against a reaped leader.
+        session_module.process_registry.wait(leader, timeout=PROCESS_EXIT_TIMEOUT_SECONDS)
         _wait_for_process_exit(leader.pid)
 
         started = time.monotonic()

@@ -135,6 +135,9 @@ class SessionInfo:
 def _remove_tree(path: Path, attempts: int = 3) -> None:
     """Remove a directory tree, retrying while stragglers finish writing.
 
+    Between attempts the tree's dirs are made writable, so dirs an app left
+    read-only or unreadable do not block the removal.
+
     Silently ignoring errors here once hid a leaked isolated home for a whole
     session, so the last attempt reports what is left behind.
     """
@@ -142,7 +145,26 @@ def _remove_tree(path: Path, attempts: int = 3) -> None:
         shutil.rmtree(path, ignore_errors=attempt < attempts - 1)
         if not path.exists():
             return
+        # Apps may leave dirs rmtree cannot enter or empty (Go's module cache is
+        # 0555): open them up top-down. An app may have swapped any dir, the root
+        # too, for a symlink out of the tree; fwalk does not descend into one but
+        # still lists it in dirs, so the helper refuses symlinks itself.
+        with contextlib.suppress(OSError):
+            _make_dir_writable(path)
+            for _, dirs, _, dir_fd in os.fwalk(path):
+                for name in dirs:
+                    with contextlib.suppress(OSError):
+                        _make_dir_writable(name, dir_fd)
         time.sleep(0.3)
+
+
+def _make_dir_writable(path: Path | str, dir_fd: int | None = None) -> None:
+    """chmod 0700 a dir, refusing a symlink (Linux has no lchmod; this is glibc's way)."""
+    fd = os.open(path, os.O_PATH | os.O_NOFOLLOW | os.O_DIRECTORY, dir_fd=dir_fd)
+    try:
+        os.chmod(f"/proc/self/fd/{fd}", 0o700)
+    finally:
+        os.close(fd)
 
 
 # Grace periods for launched-app process-group teardown: how long to wait
@@ -287,15 +309,15 @@ class OwnedProcessRegistry:
     """Thread-safe registry of the process groups and temp dirs kwin-mcp owns.
 
     The server's exit path cannot always run ``session_stop`` (the engine is not
-    thread-safe and the tool thread may be busy with a long tool), so on that
-    path the main thread cleans up the owned resources directly. This registry
-    records, at spawn time, the process groups kwin-mcp owns — the virtual
-    session's ``dbus-run-session`` wrapper group and every launched app group,
-    virtual or live — plus the temp dirs a session creates that ``session_stop``
-    would remove (an isolated home unless ``retention.home``, the per-session
-    config dir, and the screenshot dir unless ``retention.artifacts``).
-    KWin of a live session and any pre-existing process are never recorded, so
-    they are never signalled.
+    thread-safe and the tool thread may be busy with a long tool), and a stop can
+    leave something behind, so every exit (server and CLI) also sweeps the owned
+    resources directly. This registry records, at spawn time, the process groups
+    kwin-mcp owns — the virtual session's ``dbus-run-session`` wrapper group and
+    every launched app group, virtual or live — plus the temp dirs a session
+    creates that ``session_stop`` would remove (an isolated home unless
+    ``retention.home``, the per-session config dir, and the screenshot dir unless
+    ``retention.artifacts``). KWin of a live session and any pre-existing process
+    are never recorded, so they are never signalled.
 
     An entry exists if and only if its leader is an unreaped child of this
     process: the registry holds the owned ``subprocess.Popen`` (the leader), not
@@ -643,8 +665,8 @@ class OwnedProcessRegistry:
         with self._lock:
             dirs = list(self._temp_dirs)
         for path in dirs:
-            # One dir that cannot be removed (an app may leave an inaccessible
-            # subdirectory) must not stop the removal of the others.
+            # One dir that cannot be removed (a mount point, an immutable file, files
+            # of another uid) must not stop the removal of the others.
             with contextlib.suppress(OSError):
                 _remove_tree(path)
 
@@ -1005,8 +1027,6 @@ class Session:
         retention = NO_RETENTION if self._config is None else self._config.retention
         keep_home = retention.home
         keep_artifacts = retention.artifacts
-        if self._home_dir is not None and not keep_home:
-            _remove_tree(self._home_dir)
         if not keep_artifacts and self._info is not None:
             shutil.rmtree(self._info.screenshot_dir, ignore_errors=True)
 
@@ -1029,17 +1049,21 @@ class Session:
         # reaped above, so they need no explicit drop here.
         if self._info is not None and not keep_artifacts:
             process_registry.unregister_temp_dir(self._info.screenshot_dir)
-        if self._home_dir is not None and not keep_home:
-            process_registry.unregister_temp_dir(self._home_dir)
 
         screenshot_dir = None if self._info is None else self._info.screenshot_dir
+        home_dir = self._home_dir
         kept = KeptPaths(
             artifacts_dir=_kept_dir(screenshot_dir, keep=keep_artifacts),
-            home_dir=_kept_dir(self._home_dir, keep=keep_home),
+            home_dir=_kept_dir(home_dir, keep=keep_home),
         )
         self._process = None
         self._info = None
         self._home_dir = None
+        # Last, as the one step an app's leftovers can fail: a failure skips no
+        # other cleanup, and the home stays registered for the exit sweep to retry.
+        if home_dir is not None and not keep_home:
+            _remove_tree(home_dir)
+            process_registry.unregister_temp_dir(home_dir)
         return kept
 
     def _cleanup_start_dirs(self) -> None:

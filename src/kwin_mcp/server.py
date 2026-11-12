@@ -1810,11 +1810,21 @@ def _signal_watcher() -> NoReturn:
 
 
 def _exit_cleanup() -> str:
-    """Stop the session (or terminate the owned groups) at server exit; return the outcome."""
-    server = _server
-    if server is None:
+    """Stop the session, then sweep the owned groups and dirs; return the outcome."""
+    try:
+        return _stop_session_for_exit()
+    finally:
+        # Every path ends here, like the CLI exit: terminate what the stop did not or
+        # could not release (an isolated home it failed to remove, the groups of a stop
+        # cancelled behind a busy tool); retained dirs are never registered.
         process_registry.close()
         process_registry.terminate_all()
+
+
+def _stop_session_for_exit() -> str:
+    """Run the final session_stop on the tool thread when it can start; return the outcome."""
+    server = _server
+    if server is None:
         return "owned-process registry path (no server was built)"
     engine = server.engine
     # The engine is not thread-safe and is owned by the single tool thread, so the
@@ -1843,10 +1853,8 @@ def _exit_cleanup() -> str:
     # thread the stop stays queued: cancel it before it runs, then terminate the
     # owned process groups and temp dirs directly, without touching the engine.
     if not stop_started.wait(timeout=EXIT_DRAIN_SECONDS) and stop.cancel():
-        # The stop is still pending behind the in-flight tool, so it never runs.
-        # Clean up the owned groups and dirs directly, without touching the engine.
-        process_registry.close()
-        process_registry.terminate_all()
+        # The stop is still pending behind the in-flight tool, so it never runs; the
+        # caller's sweep cleans up the owned groups and dirs without the engine.
         return "owned-process registry path (stop cancelled before it ran; owned groups terminated)"
     # The stop started (or started in the race just after the drain). Wait for it to
     # finish on the tool thread; session_stop's own waits are bounded.

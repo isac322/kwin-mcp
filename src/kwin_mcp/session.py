@@ -1074,6 +1074,11 @@ class Session:
             return
         _signal_process_group(self._process.pid, sig)
 
+    @property
+    def processes_alive(self) -> bool:
+        """Whether the session's group (KWin, its buses) still runs; checked without reaping."""
+        return self._group_alive()
+
     def _group_alive(self) -> bool:
         """Return True while any live (non-zombie) member of the session group exists."""
         if self._process is None:

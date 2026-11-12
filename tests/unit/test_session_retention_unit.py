@@ -394,7 +394,7 @@ def _alive(pid: int) -> bool:
     return stat.rsplit(")", 1)[1].split()[0] != "Z"
 
 
-def test_session_start_stops_the_group_of_a_dead_wrapper(
+def test_session_start_leaves_a_kwin_that_outlived_its_wrapper_to_session_stop(
     harness: _Harness, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     # The wrapper leaves a child in its group, like KWin outliving dbus-run-session.
@@ -410,19 +410,28 @@ def test_session_start_stops_the_group_of_a_dead_wrapper(
     assert leader is not None
     _wait_for(lambda: child_file.exists() and child_file.stat().st_size > 0)
     child = int(child_file.read_text())
+    app = session.launch_app(["sleep", "300"])
 
     try:
         os.kill(leader.pid, signal.SIGKILL)
         _wait_for(lambda: not session.is_running)
-        assert _alive(child)
-
         engine = AutomationEngine()
         engine._session = session
-        engine._require_no_session()
 
-        assert engine._session is None
+        with pytest.raises(RuntimeError, match=r"^The previous session exited, but its processes"):
+            engine._require_no_session()
+        assert engine._session is session
+        assert _alive(child)
+        assert _alive(app.pid)
+
+        # KWin is gone: the start stops the session, its app, socket and dirs.
+        os.kill(child, signal.SIGKILL)
         _wait_for(lambda: not _alive(child))
+        engine._require_no_session()
+        assert engine._session is None
+        _wait_for(lambda: not _alive(app.pid))
         assert not (harness.runtime_dir / SOCKET_NAME).exists()
     finally:
-        if _alive(child):
-            os.kill(child, signal.SIGKILL)
+        for pid in (child, app.pid):
+            if _alive(pid):
+                os.kill(pid, signal.SIGKILL)

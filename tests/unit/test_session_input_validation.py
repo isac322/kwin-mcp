@@ -33,13 +33,14 @@ class _ForbiddenSession:
         raise AssertionError("Session was constructed although validation should refuse")
 
 
-class _FakeSession:
+class _FakeSession(Session):
     """A ``core.Session`` stand-in whose ``start()`` raises ``start_error``."""
 
     start_error: ClassVar[Exception] = RuntimeError("KWin failed to start")
     instances: ClassVar[list[_FakeSession]] = []
 
     def __init__(self) -> None:
+        super().__init__()
         self.stop_calls = 0
         _FakeSession.instances.append(self)
 
@@ -47,7 +48,9 @@ class _FakeSession:
     def is_running(self) -> bool:
         return False
 
-    def start(self, config: SessionConfig, *, progress_total: int | None = None) -> SessionInfo:
+    def start(
+        self, config: SessionConfig | None = None, *, progress_total: int | None = None
+    ) -> SessionInfo:
         raise self.start_error
 
     def stop(self) -> KeptPaths:
@@ -254,7 +257,7 @@ def test_session_start_stops_a_dead_session_before_replacing_it(
     monkeypatch.setattr(core, "Session", _FakeSession)
     engine = AutomationEngine()
     dead = _FakeSession()  # its KWin exited: is_running is False, stop() never ran
-    engine._session = cast("Session", dead)
+    engine._session = dead
 
     with pytest.raises(RuntimeError, match=r"^KWin failed to start$"):
         engine.session_start()
@@ -265,7 +268,7 @@ def test_session_start_stops_a_dead_session_before_replacing_it(
 def test_session_connect_stops_a_dead_session_before_replacing_it() -> None:
     engine = AutomationEngine()
     dead = _FakeSession()
-    engine._session = cast("Session", dead)
+    engine._session = dead
 
     # An address nothing listens on: the connect fails after the gate, off the host bus.
     with pytest.raises(RuntimeError, match=r"^Cannot reach KWin on D-Bus"):
@@ -281,7 +284,7 @@ def test_cli_exit_stops_a_dead_session(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli, "process_registry", session.OwnedProcessRegistry())
     engine = AutomationEngine()
     dead = _FakeSession()  # its KWin exited: the sockets and dirs are still to remove
-    engine._session = cast("Session", dead)
+    engine._session = dead
 
     cli.KwinMcpShell(engine)._cleanup()
 
@@ -298,7 +301,7 @@ def test_failed_stop_does_not_block_later_starts(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(core, "Session", _FakeSession)
     engine = AutomationEngine()
     stuck = _StuckSession()
-    engine._session = cast("Session", stuck)
+    engine._session = stuck
 
     with pytest.raises(RuntimeError, match=r"^Stopping the previous session, which had exited"):
         engine.session_start()

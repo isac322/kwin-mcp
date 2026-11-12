@@ -123,6 +123,10 @@ from kwin_mcp.session import (
 # ── Gate texts (the server's resolvers import these, so both layers agree) ──
 
 SESSION_RUNNING_TEXT = "Session already running.\nCall session_stop first."
+SESSION_EXITED_TEXT = (
+    "The previous session exited, but its processes (KWin, its buses) still run.\n"
+    "Call session_stop first."
+)
 NO_SESSION_TEXT = (
     "No session running.\nCall session_start (virtual) or session_connect (live desktop)."
 )
@@ -447,7 +451,11 @@ class AutomationEngine:
         if self._session is not None:
             if self._session.is_running:
                 raise RuntimeError(SESSION_RUNNING_TEXT)
-            # The previous session died without session_stop; reclaim what it left.
+            # Ending a KWin that outlived its wrapper is session_stop's job, the
+            # destructive tool. Once KWin is gone its apps have lost their display,
+            # and stopping the session reclaims them, its socket and its dirs.
+            if isinstance(self._session, Session) and self._session.processes_alive:
+                raise RuntimeError(SESSION_EXITED_TEXT)
             try:
                 self.session_stop()
             except Exception as exc:

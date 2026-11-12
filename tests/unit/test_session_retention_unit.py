@@ -14,13 +14,21 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import IO, TYPE_CHECKING
 
 import pytest
 
+from kwin_mcp import server as server_module
 from kwin_mcp import session as session_module
 from kwin_mcp.models import KeptPaths, Retention
-from kwin_mcp.session import LiveSession, OwnedProcessRegistry, Session, SessionConfig
+from kwin_mcp.session import (
+    LiveSession,
+    OwnedProcessRegistry,
+    Session,
+    SessionConfig,
+    _remove_tree,
+)
 
 if TYPE_CHECKING:
     import subprocess
@@ -349,3 +357,79 @@ def test_app_registry_lists_launches_and_tails_logs(harness: _Harness, tmp_path:
         live.stop()
     assert all(entry.running is False for entry in live.apps())
     assert not screenshot_dir.exists()
+
+
+def test_failed_home_removal_skips_no_other_cleanup(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = _start("isolated", Retention())
+    info = session.info
+    assert info is not None and info.home_dir is not None
+
+    def stuck(path: Path, attempts: int = 3) -> None:
+        raise PermissionError(f"cannot remove {path}")
+
+    monkeypatch.setattr(session_module, "_remove_tree", stuck)
+
+    with pytest.raises(PermissionError):
+        session.stop()
+
+    assert not info.screenshot_dir.exists()
+    assert not (harness.runtime_dir / SOCKET_NAME).exists()
+    # The home stays registered, so the registry's exit sweep can retry it.
+    assert harness.registered() == {info.home_dir}
+    assert session.stop() == KeptPaths()
+
+
+def test_server_exit_sweeps_a_home_the_stop_could_not_remove(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = _start("isolated", Retention())
+    info = session.info
+    assert info is not None and info.home_dir is not None
+    real_remove_tree = session_module._remove_tree
+    calls = []
+
+    def stuck_once(path: Path, attempts: int = 3) -> None:
+        calls.append(path)
+        if len(calls) == 1:
+            raise PermissionError(f"cannot remove {path}")
+        real_remove_tree(path, attempts)
+
+    monkeypatch.setattr(session_module, "_remove_tree", stuck_once)
+    monkeypatch.setattr(server_module, "process_registry", harness.registry)
+    monkeypatch.setattr(server_module, "abort_waits", lambda: None)
+    monkeypatch.setattr(
+        server_module, "_server", SimpleNamespace(engine=SimpleNamespace(session_stop=session.stop))
+    )
+
+    outcome = server_module._exit_cleanup()
+
+    assert "raised: PermissionError" in outcome
+    assert not info.home_dir.exists()
+
+
+def test_remove_tree_opens_dirs_apps_left_read_only(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep").touch()
+    outside.chmod(0o555)
+    home = tmp_path / "home"
+    mod = home / "go" / "pkg" / "mod" / "x"  # Go's module cache is 0555
+    mod.mkdir(parents=True)
+    (mod / "f").touch()
+    locked = home / "locked" / "inner"  # unreadable, so rmtree cannot enter it
+    locked.mkdir(parents=True)
+    (locked / "f").touch()
+    (mod / "link").symlink_to(outside)  # inside a 0555 dir, so it survives the first rmtree
+    for path in (mod, mod.parent, locked.parent):
+        path.chmod(0o555)
+    locked.parent.chmod(0)
+
+    _remove_tree(home)
+
+    assert not home.exists()
+    # The symlink was not followed out of the tree.
+    assert (outside / "keep").exists()
+    assert outside.stat().st_mode & 0o777 == 0o555
+    outside.chmod(0o755)

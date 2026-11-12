@@ -1200,21 +1200,20 @@ def test_virtual_keep_screen_captures_busy_exit_keeps_screen_capture_dir_removes
         shutil.rmtree(screenshot_dir, ignore_errors=True)
 
 
-# The app locks a subdirectory of its isolated home, so the busy-exit registry path
-# cannot remove that home: the removal error must not cost the bounded exit.
+# The app locks a subdirectory of its isolated home; the busy exit must still remove
+# that home within the bound.
 _LOCKING_APP_COMMAND = (
     'sh -c \'mkdir -p "$HOME/locked/inner" && chmod 0 "$HOME/locked" && exec sleep 600\''
 )
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
-def test_busy_exit_with_undeletable_home_dir_still_exits_bounded() -> None:
-    """A temp dir the registry cannot remove does not block the bounded busy exit.
+def test_busy_exit_removes_a_home_an_app_locked() -> None:
+    """The bounded busy exit removes an isolated home with an inaccessible subdirectory.
 
     The launched app leaves an inaccessible subdirectory in the isolated home. On the
-    busy-exit registry path the home's removal fails; the server must still terminate
-    the owned groups and exit 0 within the bound instead of letting the error escape
-    past the forced exit (interpreter shutdown would then wait the 40 s tool out).
+    busy-exit registry path the server must terminate the owned groups, open up and
+    remove the home, and exit 0 within the bound.
     """
     server = _spawn_with_stderr([sys.executable, "-m", "kwin_mcp"])
     reader = _LineReader(_stdout(server))
@@ -1250,6 +1249,7 @@ def test_busy_exit_with_undeletable_home_dir_still_exits_bounded() -> None:
             f"expected the stderr outcome line to name the registry path, got: {stderr!r}"
         )
         _assert_session_gone(pgid, app_pid)
+        assert not home_dir.exists(), f"the locked isolated home {home_dir} was left behind"
     finally:
         if server.poll() is None:
             server.kill()
@@ -1270,9 +1270,11 @@ def test_registry_terminate_all_removes_remaining_dirs_past_a_failing_one(
     """
     from kwin_mcp.session import OwnedProcessRegistry
 
-    stuck = tmp_path / "stuck"
-    (stuck / "locked" / "inner").mkdir(parents=True)
-    (stuck / "locked").chmod(0)
+    # A dir in a read-only parent cannot be removed even after its own tree is opened up.
+    sealed = tmp_path / "sealed"
+    stuck = sealed / "stuck"
+    (stuck / "inner").mkdir(parents=True)
+    sealed.chmod(0o555)
     removable = tmp_path / "removable"
     removable.mkdir()
     registry = OwnedProcessRegistry()
@@ -1281,9 +1283,10 @@ def test_registry_terminate_all_removes_remaining_dirs_past_a_failing_one(
     try:
         registry.close()
         registry.terminate_all()
+        assert stuck.exists(), "the dir in the read-only parent was expected to stay"
         assert not removable.exists(), "a dir after the failing one was not removed"
     finally:
-        (stuck / "locked").chmod(0o700)
+        sealed.chmod(0o755)
 
 
 _FAILING_CLEANUP_SERVER = """

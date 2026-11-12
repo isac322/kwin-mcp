@@ -8,8 +8,6 @@ without affecting refs or actions.
 
 from __future__ import annotations
 
-import os
-import subprocess
 import types
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -72,6 +70,7 @@ class _FakeNode:
     actions: list[str] | None = None
     busy: bool = False
     gone: bool = False
+    pid: int = 0
     # libdbus's text on the bus; atk-bridge apps on a peer-to-peer link get dbind's.
     no_reply: ClassVar[str] = "atspi_error: Did not receive a reply."
     # Called once per read of an app's element; True makes that read time out.
@@ -119,7 +118,7 @@ class _FakeNode:
         return None if self._busy() or self.gone else self.children[index]
 
     def get_process_id(self) -> int:
-        return os.getpid()
+        return self.pid
 
 
 @dataclass
@@ -151,6 +150,7 @@ def atspi(monkeypatch: pytest.MonkeyPatch) -> _FakeAtspi:
     )
     monkeypatch.setattr(accessibility, "_kwin_windows", lambda: ([], "no KWin in unit tests"))
     monkeypatch.setattr(accessibility, "_REFS", _RefTable(generation=1))
+    monkeypatch.setattr(accessibility, "_APP_NAMES", {})
     return fake
 
 
@@ -483,6 +483,7 @@ def test_an_app_that_does_not_answer_is_not_read_as_gone(
 ) -> None:
     monkeypatch.setattr(_FakeNode, "no_reply", no_reply)
     app = _kcalc(_button())
+    app.pid = 2
     atspi.apps[:] = [app]
     (ref,) = [element["ref"] for element in _query(query="Seven")]
 
@@ -491,11 +492,9 @@ def test_an_app_that_does_not_answer_is_not_read_as_gone(
         response = _request("wait", locator=locator, max_depth=15, until="absent", timeout_ms=0)
         assert response["result"]["satisfied"] is False, locator
     strict = {"strict": {"query": "Seven", "app": "kcalc"}}
-    monkeypatch.setattr(accessibility, "_process_name", lambda _app: "kcalc")
     response = _request("action", address=strict, action_name="Press")
     assert response["ok"] is False
     assert response["error"].startswith("Incomplete discovery in application 'kcalc'")
-    assert "no reply within the AT-SPI call timeout" in response["error"]
     assert response["error"].endswith(
         "retry when it is idle, or find the element with element_query and act on its ref."
     )
@@ -511,6 +510,7 @@ def test_an_app_that_does_not_answer_is_not_read_as_gone(
 
     with monkeypatch.context() as patch:
         patch.setattr(app, "get_name", name_then_answer)
+        patch.setattr(accessibility, "_APP_NAMES", {})  # not remembered yet
         scoped = {"query": "Seven", "app": "kcalc"}
         response = _request("wait", locator=scoped, max_depth=15, until="absent", timeout_ms=0)
     assert [element["name"] for element in response["result"]["elements"]] == ["Seven"]
@@ -551,7 +551,8 @@ def test_an_app_that_does_not_answer_is_not_read_as_gone(
     def one_timeout() -> int:
         return next(replies, 1 if node is app else 0)
 
-    for node, counts in ((button, [-1]), (app, [-1]), (app, [1, -1])):
+    frame = app.children[0]
+    for node, counts in ((button, [-1]), (frame, [-1]), (app, [-1]), (app, [1, -1])):
         replies = iter(counts)
         with monkeypatch.context() as patch:
             patch.setattr(node, "get_child_count", one_timeout)
@@ -622,14 +623,6 @@ def test_a_destroyed_element_is_gone_not_busy(
     (resolved,) = _resolve(ref)
     assert resolved["error"].startswith(f"Stale ref {ref}")
 
-    # A GTK 3 app that exited: the count is -1, libatspi returns the last role,
-    # and only the dead process tells it from a busy app.
-    (ref,) = [element["ref"] for element in _query(query="Eight")]
-    monkeypatch.setattr(eight, "get_child_count", lambda: -1)
-    monkeypatch.setattr(accessibility, "_process_alive", lambda _element: False)
-    (resolved,) = _resolve(ref)
-    assert resolved["error"].startswith(f"Stale ref {ref}")
-
 
 @pytest.mark.qa("QA-ELEM-023")
 @pytest.mark.parametrize("op", ["absent", "ref", "strict"])
@@ -681,14 +674,130 @@ def test_an_app_that_turns_busy_at_any_read_is_not_read_as_gone(
             assert atspi.dispatched == [("Seven", "Press")], where
 
 
-def test_process_alive_counts_a_zombie_as_dead() -> None:
-    # An app kwin-mcp launched stays a zombie until kwin-mcp's process registry reaps it.
-    child = subprocess.Popen(["true"])
-    try:
-        os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOWAIT)
-        zombie = types.SimpleNamespace(get_process_id=lambda: child.pid)
-        alive = types.SimpleNamespace(get_process_id=os.getpid)
-        assert accessibility._process_alive(zombie) is False
-        assert accessibility._process_alive(alive) is True
-    finally:
-        child.wait()
+@pytest.mark.qa("QA-ELEM-023")
+def test_a_busy_app_outside_the_scope_stays_out_of_the_search(
+    atspi: _FakeAtspi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    zoo = _FakeNode("window-zoo", "application", [_FakeNode("Zoo", "frame")], pid=1)
+    kcalc = _kcalc(_button())
+    kcalc.pid = 2
+    atspi.apps[:] = [zoo, kcalc]
+    scoped = {"strict": {"query": "Seven", "app": "kcalc"}}
+    unscoped = {"strict": {"query": "Seven"}}
+
+    # Never read, a busy app's name is unknown: it might be the scope, and
+    # scoping cannot get around it, so neither refusal suggests app=.
+    _set_busy(zoo, True)
+    monkeypatch.setattr(accessibility, "_process_name", lambda _app: "zoo-process")
+    for address in (scoped, unscoped):
+        response = _request("action", address=address, action_name="Press")
+        assert response["error"].startswith("Incomplete discovery in application 'zoo-process'")
+        assert "retry when it is idle" in response["error"], response
+        assert "Set app=" not in response["error"], response
+    assert atspi.dispatched == []
+
+    # Once read, its name keeps it out of a search scoped to another app.
+    _set_busy(zoo, False)
+    assert {element["app"] for element in _query()} == {"window-zoo", "kcalc"}
+    _set_busy(zoo, True)
+    absent = _request(
+        "wait",
+        locator={"query": "Nine", "app": "kcalc"},
+        max_depth=15,
+        until="absent",
+        timeout_ms=0,
+    )
+    assert absent["result"]["satisfied"] is True
+    response = _request("action", address=scoped, action_name="Press")
+    assert response["ok"] is True, response
+    assert atspi.dispatched == [("Seven", "Press")]
+    response = _request("action", address=unscoped, action_name="Press")
+    assert response["error"].startswith("Incomplete discovery in application 'window-zoo'")
+    assert response["error"].endswith("\nSet app='window-zoo' to scope the search.")
+
+    # Just exited, it still reads as -1 with an ordinary role error: its known
+    # name keeps it out of the scoped search too.
+    atspi.dispatched.clear()
+    _set_busy(zoo, False)
+    zoo.gone = True
+    response = _request("action", address=scoped, action_name="Press")
+    assert response["ok"] is True, response
+
+
+@pytest.mark.qa("QA-ELEM-023")
+def test_apps_without_a_pid_do_not_share_a_remembered_name(atspi: _FakeAtspi) -> None:
+    # libatspi reports a pid it could not read as -1 (4294967295 unsigned).
+    one = _FakeNode("one", "application", [_FakeNode("One", "frame", [_button()])], pid=2**32 - 1)
+    two = _FakeNode("two", "application", [_FakeNode("Two", "frame")], pid=2**32 - 1)
+    atspi.apps[:] = [one, two]
+    assert {element["app"] for element in _query()} == {"one", "two"}
+
+    _set_busy(one, True)
+    response = _request(
+        "action", address={"strict": {"query": "Seven", "app": "one"}}, action_name="Press"
+    )
+    assert response["error"].startswith("Incomplete discovery"), response
+
+
+@pytest.mark.qa("QA-ELEM-023")
+def test_an_app_that_turns_busy_deep_in_its_tree_is_not_read_again(
+    atspi: _FakeAtspi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    leaf = _button()
+    node = leaf
+    for _ in range(10):
+        node = _FakeNode("", "panel", [node])
+    app = _kcalc(node)
+    atspi.apps[:] = [app]
+    busy_counts = 0
+    real_count = app.get_child_count
+
+    def counted() -> int:
+        nonlocal busy_counts
+        busy_counts += app.busy
+        return real_count()
+
+    def leaf_turns_busy() -> int:
+        _set_busy(app, True)
+        return -1
+
+    _query(query="Seven")
+    monkeypatch.setattr(app, "get_child_count", counted)
+    monkeypatch.setattr(leaf, "get_child_count", leaf_turns_busy)
+    locator = {"query": "Seven"}
+    response = _request("wait", locator=locator, max_depth=15, until="absent", timeout_ms=0)
+    assert response["result"]["satisfied"] is False
+    # The silent element ends the app's walk: no further reads of the app.
+    assert busy_counts == 0
+
+
+@pytest.mark.qa("QA-ELEM-023")
+def test_a_strict_search_refuses_when_a_count_read_times_out_once(
+    atspi: _FakeAtspi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = _kcalc(_button())
+    atspi.apps[:] = [app]
+    replies = iter([-1])
+    frame = app.children[0]
+    monkeypatch.setattr(frame, "get_child_count", lambda: next(replies, 1))
+    response = _request("action", address={"strict": {"query": "Seven"}}, action_name="Press")
+    assert response["error"].startswith("Incomplete discovery"), response
+    assert atspi.dispatched == []
+
+
+def test_an_unreadable_app_name_does_not_suggest_scoping(
+    atspi: _FakeAtspi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Every app's name is read before the filter applies, so app= cannot help.
+    broken = _FakeNode("broken", "application", pid=3)
+
+    def name_error() -> str:
+        msg = "atspi_error: org.freedesktop.DBus.Error.Failed"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(broken, "get_name", name_error)
+    monkeypatch.setattr(accessibility, "_process_name", lambda _app: "broken-process")
+    atspi.apps[:] = [broken, _kcalc(_button())]
+    response = _request("action", address={"strict": {"query": "Seven"}}, action_name="Press")
+    assert response["error"].startswith("Incomplete discovery in application 'broken-process'")
+    assert response["error"].endswith("\nFind the element with element_query, then act on its ref.")

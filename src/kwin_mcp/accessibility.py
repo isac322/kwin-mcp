@@ -381,8 +381,7 @@ def _collect(
     """Add ``element`` (when it matches) and its matching descendants to ``found``.
 
     Raises ``_NoReplyError`` when an element did not answer, which ends the
-    walk of its app: a skipped silent node could hide a match, and every later
-    read would wait out the timeout too.
+    walk of its app: every later read of it would wait out the timeout too.
     """
     if depth > max_depth:
         return
@@ -416,13 +415,13 @@ def _is_no_reply(exc: BaseException | None) -> bool:
 def _child_count(element: Atspi.Accessible) -> int:
     """The child count of ``element``; raises ``_NoReplyError`` when it did not answer.
 
-    libatspi reports a failed property read as a plausible value instead of an
-    error: "" for a name, -1 for a child count, both for a busy app that did
-    not reply in time (800 ms by default) and for an element that is gone.
-    The role read does raise, so it tells the two apart: a gone element raises
-    an ordinary error and is skipped like any unreadable node.
+    libatspi reports a property read that got no reply as a plausible value
+    instead of an error: "" for a name, -1 for a child count. That covers a
+    busy app (no reply within 800 ms by default) and, on the bus, an element
+    that is gone. The role read does raise, so it tells the two apart: a gone
+    element raises an ordinary error and is skipped like any unreadable node.
     """
-    # shortcut: libatspi drops the D-Bus error of property reads ("TODO: throw
+    # shortcut: libatspi drops a missing reply to a property read ("TODO: throw
     # exception" in _atspi_dbus_get_property), so a -1 is classified by the
     # role read's message; read the count's own error once libatspi sets it.
     count = element.get_child_count()
@@ -435,38 +434,46 @@ def _child_count(element: Atspi.Accessible) -> int:
         if not _is_no_reply(exc):
             raise
         raise _NoReplyError(msg) from exc
-    # The role answered: a busy spell just ended, or the app exited and libatspi
-    # returned its last role because the call could not be sent (GTK 3's closed
-    # peer-to-peer link). The process tells.
-    if not _process_alive(element):
-        gone = "the application exited"
-        raise RuntimeError(gone)
+    # The role answered: a busy spell just ended. (An exited GTK 3 app also gets
+    # here until libatspi drops it, as a call on its closed link returns the last
+    # role; "did not answer" is the safe reading then.)
     raise _NoReplyError(msg)
 
 
-def _process_alive(element: Atspi.Accessible) -> bool:
-    """Whether the process behind ``element`` still runs (a zombie does not)."""
-    # shortcut: assumes kwin-mcp shares the apps' pid namespace; a KWin in
-    # another namespace (session_connect into a container) would need its /proc.
-    try:
-        stat = Path(f"/proc/{int(element.get_process_id())}/stat").read_text()
-    except Exception:
-        return False
-    return stat.rsplit(")", 1)[1].split()[0] not in ("Z", "X")
+# The last name read for each application, by process id (the bus daemon or
+# libatspi's cache answers the pid even while the app is busy).
+_APP_NAMES: dict[int, str] = {}
 
 
 def _app_name(app: Atspi.Accessible) -> str:
-    """The name of ``app``; raises ``_NoReplyError`` when the app did not answer.
+    """The name of ``app``; raises like ``_child_count`` when it reads empty and is unknown.
 
     An app that does not answer reads as named "", so an app filter would drop
-    it as some other app. An empty name is re-read once the app answers: the ""
-    may be the timeout of an app that became free right after it.
+    it as some other app. Its last known name decides instead: a busy app the
+    filter excludes stays out of the search, one it covers is then found not
+    answering. An empty name is re-read once the app answers: the "" may be
+    the timeout of an app that became free right after it.
     """
+    pid = _pid(app)
     name = app.get_name() or ""
     if not name:
-        _child_count(app)
+        known = _APP_NAMES.get(pid) if pid else None
+        if known is not None:
+            return known
+        _child_count(app)  # never named: raises _NoReplyError while it is busy
         name = app.get_name() or ""
+    if name:
+        _APP_NAMES[pid] = name
     return name
+
+
+def _pid(app: Atspi.Accessible) -> int:
+    """The app's process id, or 0 when unknown (libatspi reports a failed read as -1)."""
+    try:
+        pid = int(app.get_process_id())
+    except Exception:
+        return 0
+    return pid if 0 < pid < 2**32 - 1 else 0
 
 
 def _children(element: Atspi.Accessible, count: int | None = None) -> list[Atspi.Accessible]:
@@ -655,6 +662,8 @@ class _IncompleteDiscoveryError(Exception):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.application = ""
+        # False when scoping cannot get around it: the application's name is unknown.
+        self.scope_helps = True
 
 
 class _ActionRefusedError(Exception):
@@ -663,18 +672,18 @@ class _ActionRefusedError(Exception):
 
 def _incomplete_discovery_message(exc: _IncompleteDiscoveryError, app_filter: str) -> str:
     """Refusal text naming the incompletely read application and how to get around it."""
-    if _is_no_reply(exc.__cause__):
+    if _is_no_reply(exc.__cause__) and (app_filter or not exc.scope_helps):
         where = f" in application '{exc.application}'" if exc.application else ""
-        hint = "The application is not answering; retry when it is idle"
-        if app_filter:
-            # A busy app outside the scope blocks the search too; a ref skips it.
-            hint += ", or find the element with element_query and act on its ref"
-        return f"Incomplete discovery{where}: {exc}.\n{hint}."
+        return (
+            f"Incomplete discovery{where}: {exc}.\n"
+            "The application is not answering; retry when it is idle, "
+            "or find the element with element_query and act on its ref."
+        )
     if not exc.application:
         return f"Incomplete discovery: {exc}"
     message = f"Incomplete discovery in application '{exc.application}': {exc}."
-    if app_filter:
-        # Already scoped: only a ref, which skips the search, gets past it.
+    if app_filter or not exc.scope_helps:
+        # Scoping cannot help (already scoped, or the name is unknown): a ref can.
         return message + "\nFind the element with element_query, then act on its ref."
     return message + f"\nSet app='{exc.application}' to scope the search."
 
@@ -793,6 +802,7 @@ def _strict_candidates(
         except Exception as exc:
             error = _IncompleteDiscoveryError(f"could not read application name: {exc}")
             error.application = _process_name(app)
+            error.scope_helps = False
             raise error from exc
         if not criteria.matches_app(app_name):
             continue

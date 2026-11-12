@@ -1093,11 +1093,11 @@ def test_registry_terminate_all_does_not_signal_a_reaped_leader(
     Unit-level, no KWin (F6): the registry must never signal a group whose leader is
     no longer an unreaped child of the process, because the kernel may have recycled
     that pgid into an unrelated group. Spawn a short-lived child through the registry,
-    reap it through the same path ``Session.is_running`` uses (registry.poll), then run
-    ``terminate_all`` and assert no signal was attempted for that pgid.
+    reap it with ``registry.poll``, then run ``terminate_all`` and assert no signal was
+    attempted for that pgid.
     """
     import kwin_mcp.session as session_module
-    from kwin_mcp.session import OwnedProcessRegistry, Session
+    from kwin_mcp.session import OwnedProcessRegistry
 
     registry = OwnedProcessRegistry()
     signals: list[tuple[int, int]] = []
@@ -1108,16 +1108,14 @@ def test_registry_terminate_all_does_not_signal_a_reaped_leader(
         lambda pgid, sig: signals.append((pgid, sig)),
     )
 
-    session = Session()
     proc = registry.spawn(["true"], start_new_session=True)
-    session._process = proc
     pid = proc.pid
 
-    # Reap it through the same path Session.is_running uses, until it exits.
+    # Reap it through the registry, until it exits.
     deadline = time.monotonic() + 5
-    while time.monotonic() < deadline and session.is_running:
+    while time.monotonic() < deadline and registry.poll(proc) is None:
         time.sleep(0.01)
-    assert not session.is_running, "the reaped leader still reports as running"
+    assert proc.returncode is not None, "the leader was not reaped"
 
     registry.close()
     registry.terminate_all()

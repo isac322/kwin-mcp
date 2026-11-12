@@ -396,7 +396,8 @@ class KwinMcpShell(cmd.Cmd):
     def _cleanup(self) -> None:
         """Clean up the session and sweep any owned processes left outside it on exit."""
         try:
-            if self.engine._session is not None and self.engine._session.is_running:
+            # A session whose KWin died still owns its sockets and dirs; stop it too.
+            if self.engine._session is not None:
                 print("Stopping session...")
                 # A signal must not interrupt the teardown (it would skip launched apps).
                 with _defer_shutdown_signals():

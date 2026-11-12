@@ -10,21 +10,31 @@ fresh ``OwnedProcessRegistry`` replaces the module's, so the registered dirs
 
 from __future__ import annotations
 
+import os
+import signal
+import subprocess
 import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import IO, TYPE_CHECKING
 
 import pytest
 
 from kwin_mcp import session as session_module
+from kwin_mcp.core import AutomationEngine
 from kwin_mcp.models import KeptPaths, Retention
-from kwin_mcp.session import LiveSession, OwnedProcessRegistry, Session, SessionConfig
+from kwin_mcp.session import (
+    LiveSession,
+    OwnedProcessRegistry,
+    Session,
+    SessionConfig,
+    _leader_reaped,
+)
 
 if TYPE_CHECKING:
-    import subprocess
-    from pathlib import Path
+    from collections.abc import Callable
 
     from kwin_mcp.models import AppEntry, HomeMode
 
@@ -349,3 +359,70 @@ def test_app_registry_lists_launches_and_tails_logs(harness: _Harness, tmp_path:
         live.stop()
     assert all(entry.running is False for entry in live.apps())
     assert not screenshot_dir.exists()
+
+
+def test_is_running_leaves_an_exited_wrapper_unreaped() -> None:
+    wrapper = subprocess.Popen(["true"])
+    deadline = time.monotonic() + 5
+    while os.waitid(os.P_PID, wrapper.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    session = Session()
+    session._process = wrapper
+
+    assert not session.is_running
+    # Still a zombie child: its pid, the session's process-group id, cannot be
+    # recycled before stop() signals the group and reaps it.
+    assert not _leader_reaped(wrapper.pid)
+    wrapper.wait()
+
+
+def _wait_for(condition: Callable[[], bool], timeout: float = 10) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.02)
+
+
+def _alive(pid: int) -> bool:
+    # A killed orphan stays a zombie when pytest is PID 1 (the e2e container), so
+    # signal 0 alone would still find it.
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return False
+    return stat.rsplit(")", 1)[1].split()[0] != "Z"
+
+
+def test_session_start_stops_the_group_of_a_dead_wrapper(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The wrapper leaves a child in its group, like KWin outliving dbus-run-session.
+    child_file = tmp_path / "child"
+    monkeypatch.setitem(
+        globals(),
+        "FAKE_WRAPPER",
+        f"printf 'DBUS_SESSION_BUS_ADDRESS={FAKE_DBUS_ADDRESS}\\nREADY\\n'; "
+        f"sleep 300 & echo $! > {child_file}; exec sleep 60",
+    )
+    session = _start("host", Retention())
+    leader = session._process
+    assert leader is not None
+    _wait_for(lambda: child_file.exists() and child_file.stat().st_size > 0)
+    child = int(child_file.read_text())
+
+    try:
+        os.kill(leader.pid, signal.SIGKILL)
+        _wait_for(lambda: not session.is_running)
+        assert _alive(child)
+
+        engine = AutomationEngine()
+        engine._session = session
+        engine._require_no_session()
+
+        assert engine._session is None
+        _wait_for(lambda: not _alive(child))
+        assert not (harness.runtime_dir / SOCKET_NAME).exists()
+    finally:
+        if _alive(child):
+            os.kill(child, signal.SIGKILL)

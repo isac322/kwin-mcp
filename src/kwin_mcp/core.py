@@ -444,8 +444,19 @@ class AutomationEngine:
         return self._session
 
     def _require_no_session(self) -> None:
-        if self._session is not None and self._session.is_running:
-            raise RuntimeError(SESSION_RUNNING_TEXT)
+        if self._session is not None:
+            if self._session.is_running:
+                raise RuntimeError(SESSION_RUNNING_TEXT)
+            # The previous session died without session_stop; reclaim what it left.
+            try:
+                self.session_stop()
+            except Exception as exc:
+                # The server reports only str(exc), so name what failed in the message.
+                msg = (
+                    f"Stopping the previous session, which had exited, failed: {exc}\n"
+                    "Call session_start or session_connect again."
+                )
+                raise RuntimeError(msg) from exc
 
     def _require_input(self) -> InputBackend:
         self._require_session()
@@ -901,10 +912,6 @@ class AutomationEngine:
             raise ValueError(msg)
         self._require_no_session()
 
-        # Any worker left over from an earlier session (crashed or never stopped)
-        # is bound to that session's bus.
-        self._teardown_atspi_worker()
-
         total_steps = 4
         warnings: list[str] = []
         accessibility: AccessibilityState = "on"
@@ -1001,10 +1008,6 @@ class AutomationEngine:
             )
             raise ValueError(msg)
         self._require_no_session()
-
-        # Any worker left over from an earlier session (crashed or never stopped)
-        # is bound to that session's bus.
-        self._teardown_atspi_worker()
 
         dbus_addr = dbus_address or os.environ.get("DBUS_SESSION_BUS_ADDRESS", "")
         wayland_disp = wayland_display or os.environ.get("WAYLAND_DISPLAY", "")
@@ -1139,8 +1142,11 @@ class AutomationEngine:
         # The AT-SPI worker is bound to this session's bus; stop it before the bus goes away.
         self._teardown_atspi_worker()
 
-        kept = session.stop()
-        self._reset_session_state()
+        try:
+            kept = session.stop()
+        finally:
+            # A failed stop must not leave a session that blocks every later start.
+            self._reset_session_state()
         return SessionStopResult(
             stopped=True,
             kind=kind,

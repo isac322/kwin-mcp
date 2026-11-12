@@ -631,7 +631,8 @@ class OwnedProcessRegistry:
         If a leader was already reaped while its descendants still hold the
         group, that group is left unsignalled — ownership can no longer be
         proven, so signalling it could reach a recycled pgid (the same floor
-        PR2 accepted; reachable only if the wrapper exits on its own first).
+        PR2 accepted; reachable when a startup wait reaped the wrapper, or when app
+        polling reaped an app leader whose descendants outlive it).
         """
         with self._lock:
             leaders = list(self._processes.values())
@@ -675,12 +676,18 @@ class Session:
 
     @property
     def is_running(self) -> bool:
-        if self._process is None:
+        # One read: stop() on the tool thread may clear _process meanwhile.
+        process = self._process
+        if process is None or process.returncode is not None:
             return False
-        # Poll through the registry so a finished wrapper is reaped and
-        # unregistered here, not left as a stale entry for a later stop or
-        # session replacement (core.py replaces a dead session without stop).
-        return process_registry.poll(self._process) is None
+        # Probe without reaping: the exited wrapper stays a zombie, so its pid (the
+        # session's process-group id) cannot be recycled before stop() signals the
+        # group and reaps it (core.py stops a dead session before replacing it).
+        try:
+            exited = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except ChildProcessError:
+            return False
+        return exited is None
 
     @property
     def info(self) -> SessionInfo | None:

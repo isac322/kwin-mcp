@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, ClassVar, cast
 
 import pytest
 
-from kwin_mcp import core, session
+from kwin_mcp import cli, core, session
 from kwin_mcp.core import NO_SESSION_TEXT, AutomationEngine
 from kwin_mcp.models import KeptPaths
 from kwin_mcp.session import Session, SessionInfo
@@ -211,7 +211,7 @@ def test_app_env_order_pinned(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
         spawned.append(env)
         return _SpawnedApp()
 
-    monkeypatch.setattr(session.process_registry, "poll", lambda _proc: None)
+    monkeypatch.setattr(Session, "is_running", property(lambda _self: True))
     monkeypatch.setattr(session.process_registry, "spawn", _spawn)
     monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.delenv("FOO", raising=False)
@@ -245,3 +245,65 @@ def test_app_env_order_pinned(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
     assert "FOO" not in without_env
     assert without_env["WAYLAND_DISPLAY"] == "wayland-session"
     assert without_env["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/session-bus"
+
+
+def test_session_start_stops_a_dead_session_before_replacing_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_FakeSession, "instances", [])
+    monkeypatch.setattr(core, "Session", _FakeSession)
+    engine = AutomationEngine()
+    dead = _FakeSession()  # its KWin exited: is_running is False, stop() never ran
+    engine._session = cast("Session", dead)
+
+    with pytest.raises(RuntimeError, match=r"^KWin failed to start$"):
+        engine.session_start()
+
+    assert dead.stop_calls == 1
+
+
+def test_session_connect_stops_a_dead_session_before_replacing_it() -> None:
+    engine = AutomationEngine()
+    dead = _FakeSession()
+    engine._session = cast("Session", dead)
+
+    # An address nothing listens on: the connect fails after the gate, off the host bus.
+    with pytest.raises(RuntimeError, match=r"^Cannot reach KWin on D-Bus"):
+        engine.session_connect(
+            dbus_address="unix:path=/nonexistent/kwin-mcp-unit-test-bus",
+            wayland_display="wayland-kwin-mcp-unit-none",
+        )
+
+    assert dead.stop_calls == 1
+
+
+def test_cli_exit_stops_a_dead_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "process_registry", session.OwnedProcessRegistry())
+    engine = AutomationEngine()
+    dead = _FakeSession()  # its KWin exited: the sockets and dirs are still to remove
+    engine._session = cast("Session", dead)
+
+    cli.KwinMcpShell(engine)._cleanup()
+
+    assert dead.stop_calls == 1
+
+
+def test_failed_stop_does_not_block_later_starts(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _StuckSession(_FakeSession):
+        def stop(self) -> KeptPaths:
+            super().stop()
+            raise PermissionError("cannot remove the isolated home")
+
+    monkeypatch.setattr(_FakeSession, "instances", [])
+    monkeypatch.setattr(core, "Session", _FakeSession)
+    engine = AutomationEngine()
+    stuck = _StuckSession()
+    engine._session = cast("Session", stuck)
+
+    with pytest.raises(RuntimeError, match=r"^Stopping the previous session, which had exited"):
+        engine.session_start()
+    assert engine._session is None
+    # The next start gets past the gate to its own start.
+    with pytest.raises(RuntimeError, match=r"^KWin failed to start$"):
+        engine.session_start()
+    assert stuck.stop_calls == 1

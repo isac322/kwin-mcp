@@ -357,7 +357,7 @@ def _kwin_server(ctx: Context) -> "KwinServer":
 async def require_no_session(ctx: Context) -> None:
     """Gate of session_start/session_connect: no session may be running."""
     session = _kwin_server(ctx).engine._session
-    # The engine lets a new session replace one whose compositor already exited.
+    # The engine stops a session whose wrapper already exited, then replaces it.
     if session is not None and session.is_running:
         raise ToolError(SESSION_RUNNING_TEXT)
 

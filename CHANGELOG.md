@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `session_start(output_count=1)` creates any positive number of virtual KWin outputs. `screen_width` and `screen_height` apply to each output; with multiple outputs, `session.screen` reports the KWin workspace union instead of one output's size.
 
 ### Fixed
+- `session_start` and `session_connect` after a virtual session died without `session_stop` (KWin crashed, or the `dbus-run-session` wrapper exited) now stop it first. Its launched apps, Wayland socket and lock in `XDG_RUNTIME_DIR`, and temporary directories used to stay, and after a wrapper exit a second nested KWin ran beside the old one. The CLI exit stops a dead session too, and a dead session's process group is no longer signalled after its id could have been reused.
 - Locator documentation now uses the AT-SPI `button` role reported by current desktop environments instead of the misleading `push button` example.
 - Locator queries, waits, and strict actions now reject unknown state nicks against the installed AT-SPI `StateType`, with spelling suggestions when available, instead of treating typos as non-matches or successful absent waits. State nicks remain case-sensitive; arbitrary provider-defined, non-localized role names remain supported without an allowlist.
 

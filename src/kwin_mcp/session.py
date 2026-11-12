@@ -146,16 +146,25 @@ def _remove_tree(path: Path, attempts: int = 3) -> None:
         if not path.exists():
             return
         # Apps may leave dirs rmtree cannot enter or empty (Go's module cache is
-        # 0555): open them up top-down, never following a symlink out of the tree.
+        # 0555): open them up top-down. An app may have swapped any dir, the root
+        # too, for a symlink out of the tree; fwalk does not descend into one but
+        # still lists it in dirs, so the helper refuses symlinks itself.
         with contextlib.suppress(OSError):
-            path.chmod(0o700)
-        for root, dirs, _ in os.walk(path):
-            for name in dirs:
-                sub = os.path.join(root, name)
-                if not os.path.islink(sub):
+            _make_dir_writable(path)
+            for _, dirs, _, dir_fd in os.fwalk(path):
+                for name in dirs:
                     with contextlib.suppress(OSError):
-                        os.chmod(sub, 0o700)
+                        _make_dir_writable(name, dir_fd)
         time.sleep(0.3)
+
+
+def _make_dir_writable(path: Path | str, dir_fd: int | None = None) -> None:
+    """chmod 0700 a dir, refusing a symlink (Linux has no lchmod; this is glibc's way)."""
+    fd = os.open(path, os.O_PATH | os.O_NOFOLLOW | os.O_DIRECTORY, dir_fd=dir_fd)
+    try:
+        os.chmod(f"/proc/self/fd/{fd}", 0o700)
+    finally:
+        os.close(fd)
 
 
 # Grace periods for launched-app process-group teardown: how long to wait

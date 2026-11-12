@@ -433,3 +433,19 @@ def test_remove_tree_opens_dirs_apps_left_read_only(tmp_path: Path) -> None:
     assert (outside / "keep").exists()
     assert outside.stat().st_mode & 0o777 == 0o555
     outside.chmod(0o755)
+
+
+def test_remove_tree_leaves_the_target_of_a_symlinked_root_alone(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    (outside / "inner").mkdir(parents=True)
+    for path in (outside / "inner", outside):
+        path.chmod(0o555)
+    home = tmp_path / "home"
+    home.symlink_to(outside)  # an app replaced its home with a symlink
+
+    with pytest.raises(OSError):
+        _remove_tree(home)
+
+    assert outside.stat().st_mode & 0o777 == 0o555
+    assert (outside / "inner").stat().st_mode & 0o777 == 0o555
+    outside.chmod(0o755)

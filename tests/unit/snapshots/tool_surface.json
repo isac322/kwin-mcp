@@ -1175,6 +1175,10 @@
      },
      "type": "array"
     },
+    "complete": {
+     "default": true,
+     "type": "boolean"
+    },
     "wait": {
      "anyOf": [
       {

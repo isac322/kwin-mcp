@@ -9,6 +9,7 @@ calls; ``/proc`` is a temporary tree.
 
 from __future__ import annotations
 
+import types
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -154,6 +155,33 @@ def test_two_chromium_windows_of_one_size_are_told_apart_by_caption() -> None:
     ]
 
     assert _offsets(app, kwin) == [((115, -2), ""), ((384, 290), "")]
+
+
+@pytest.mark.parametrize("read", ["get_name", "get_component_iface"])
+def test_a_top_level_that_does_not_answer_is_not_matched_by_its_placeholder(
+    monkeypatch: pytest.MonkeyPatch, read: str
+) -> None:
+    # libatspi answers a read that timed out with "" or no interface, after the
+    # timeout: matching on that could map the wrong window.
+    clock = [0.0]
+    clocks = types.SimpleNamespace(monotonic=lambda: clock[0], time=lambda: clock[0])
+    monkeypatch.setattr(accessibility, "time", clocks)
+    silent = _TopLevel("Hello Probe - Chromium", (1050, 780))
+
+    def timed_out() -> str | None:
+        clock[0] += accessibility._CALL_TIMEOUT_MS / 1000
+        return "" if read == "get_name" else None
+
+    # Through the worker's wrapper, as the class method it stands in for.
+    monkeypatch.setattr(silent, read, accessibility._timed(timed_out))
+    app = _App(3675, [_TopLevel("example.org - Chromium", (1050, 780)), silent])
+    kwin = [
+        _chromium_window("w1", "example.org - Chromium"),
+        _window(3675, "w2", "Hello Probe - Chromium", [400, 300, 1018, 738], [384, 290, 1050, 780]),
+    ]
+
+    with pytest.raises(accessibility._NoReplyError):
+        _resolve_app(app, kwin, "")
 
 
 def test_same_caption_and_size_still_unmaps_the_whole_app() -> None:

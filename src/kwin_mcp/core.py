@@ -1244,7 +1244,8 @@ class AutomationEngine:
         if wait is None:
             resp = self._run_atspi("query", locator=locator.model_dump(), max_depth=max_depth)
             elements = [UIElement.from_worker(el) for el in self._atspi_result(resp)]
-            return ElementList(locator=locator, elements=elements)
+            complete = bool(resp.get("complete", True))
+            return ElementList(locator=locator, elements=elements, complete=complete)
 
         timeout_ms = wait.timeout_ms
         description = f"Waiting for {locator.describe()}"
@@ -1278,6 +1279,7 @@ class AutomationEngine:
         return ElementList(
             locator=locator,
             elements=[UIElement.from_worker(el) for el in result["elements"]],
+            complete=bool(result.get("complete", True)),
             wait=ElementWaitResult(
                 until=wait.until,
                 timeout_ms=timeout_ms,

@@ -11,13 +11,13 @@ import itertools
 import types
 from typing import TYPE_CHECKING
 
+import pytest
+
 from kwin_mcp import core, progress
 from kwin_mcp.models import Locator, Wait
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-    import pytest
 
     from ._fakes import FakeEngine
 
@@ -71,3 +71,22 @@ def test_element_query_wait_progress_never_exceeds_total(
     assert all(total == TIMEOUT_MS and value <= total for value, total, _ in events), events
     # The worker request itself may run past the wait's own deadline.
     assert requests[0]["timeout_s"] == TIMEOUT_MS / 1000 + core._ATSPI_TIMEOUT_S
+
+
+@pytest.mark.qa("QA-ELEM-023")
+def test_element_query_says_when_an_application_did_not_answer(
+    fake_engine: FakeEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = fake_engine.engine
+
+    def run_atspi(op: str, **_kwargs: object) -> dict:
+        if op == "query":
+            return {"ok": True, "result": [], "complete": False}
+        result = {"elements": [], "satisfied": False, "complete": False, "elapsed_ms": 0}
+        return {"ok": True, "result": result}
+
+    monkeypatch.setattr(engine, "_run_atspi", run_atspi)
+    for wait in (None, Wait(until="absent", timeout_ms=0)):
+        result = engine.element_query(Locator(query="Seven"), wait=wait)
+        assert result.complete is False, wait
+        assert "INCOMPLETE: an application in scope did not answer" in result.render(), wait

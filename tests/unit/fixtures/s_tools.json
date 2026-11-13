@@ -293,6 +293,7 @@
    "output": [
     "locator",
     "elements",
+    "complete",
     "wait"
    ]
   },

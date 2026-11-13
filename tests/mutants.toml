@@ -138,9 +138,9 @@ class _StaleRefError(Exception):'''
 [[mutant.patch]]
 file = "src/kwin_mcp/accessibility.py"
 search = '''
-            entry = _RefEntry(app, app_info.role, app_name, 0, app, None)'''
+        entry = _RefEntry(app, app_info.role, app_name, 0, app, None)'''
 replace = '''
-            entry = _RefEntry(app, app_info.role, app_name, 0, app, None, name=app_info.name)'''
+        entry = _RefEntry(app, app_info.role, app_name, 0, app, None, name=app_info.name)'''
 
 [[mutant.patch]]
 file = "src/kwin_mcp/accessibility.py"

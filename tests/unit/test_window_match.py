@@ -164,14 +164,16 @@ def test_a_top_level_that_does_not_answer_is_not_matched_by_its_placeholder(
     # libatspi answers a read that timed out with "" or no interface, after the
     # timeout: matching on that could map the wrong window.
     clock = [0.0]
-    monkeypatch.setattr(accessibility, "time", types.SimpleNamespace(monotonic=lambda: clock[0]))
+    clocks = types.SimpleNamespace(monotonic=lambda: clock[0], time=lambda: clock[0])
+    monkeypatch.setattr(accessibility, "time", clocks)
     silent = _TopLevel("Hello Probe - Chromium", (1050, 780))
 
     def timed_out() -> str | None:
         clock[0] += accessibility._CALL_TIMEOUT_MS / 1000
         return "" if read == "get_name" else None
 
-    monkeypatch.setattr(silent, read, timed_out)
+    # Through the worker's wrapper, as the class method it stands in for.
+    monkeypatch.setattr(silent, read, accessibility._timed(timed_out))
     app = _App(3675, [_TopLevel("example.org - Chromium", (1050, 780)), silent])
     kwin = [
         _chromium_window("w1", "example.org - Chromium"),

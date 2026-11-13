@@ -15,18 +15,22 @@ Operations (``op``):
 
 Every element a response returns carries a ref ``e<generation>.<n>`` that
 names its ``Atspi.Accessible`` in this worker's LRU ref table.
+
+In the worker every libatspi ``get_*`` call raises ``_NoReplyError`` when the
+application did not answer in time, instead of returning libatspi's
+placeholder (see ``_time_reads``).
 """
 
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import re
 import sys
 import time
 from collections import OrderedDict
-from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from difflib import get_close_matches
 from pathlib import Path
@@ -38,7 +42,7 @@ from kwin_mcp.models import Locator, MatchMode
 from kwin_mcp.spoken_name import SpokenNameKey, normalize_spoken_name, spoken_name_matches
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
+    from collections.abc import Callable, Sequence
 
     from kwin_mcp.geometry import KWinWindow
 
@@ -348,10 +352,7 @@ def _collect_app(
 ) -> None:
     """``_collect`` for an application node; raises ``_NoReplyError`` like it."""
     try:
-        with _answered():
-            app_info = _extract_info(app, 0)
-    except _NoReplyError:
-        raise
+        app_info = _extract_info(app, 0)
     except Exception:
         return
     if criteria.matches(app_info):
@@ -361,8 +362,6 @@ def _collect_app(
         return
     try:
         pids, mappings, toplevels = _resolve_app(app, *kwin)
-    except _NoReplyError:
-        raise
     except Exception:
         return
     mappings_by_app.setdefault(pids, []).extend(mappings)
@@ -390,18 +389,11 @@ def _collect(
     criteria: _Criteria,
     found: list[_Found],
 ) -> None:
-    """Add ``element`` (when it matches) and its matching descendants to ``found``.
-
-    Raises ``_NoReplyError`` when the element did not answer, which ends the
-    walk of its app: every later read of it would wait out the timeout too.
-    """
+    """Add ``element`` (when it matches) and its matching descendants to ``found``."""
     if depth > max_depth:
         return
     try:
-        with _answered():
-            info = _extract_info(element, depth)
-    except _NoReplyError:
-        raise
+        info = _extract_info(element, depth)
     except Exception:
         return
     if criteria.matches(info):
@@ -411,8 +403,13 @@ def _collect(
         _collect(child, scope, depth + 1, max_depth, criteria, found)
 
 
-class _NoReplyError(Exception):
-    """An application did not answer within libatspi's call timeout."""
+class _NoReplyError(BaseException):
+    """An application did not answer within libatspi's call timeout.
+
+    A BaseException, like asyncio.CancelledError: it ends the walk of the app
+    and must pass every ``except Exception`` that skips an unreadable node, up
+    to the operation that reports it.
+    """
 
 
 # libatspi's call timeouts, pinned at its defaults when the worker starts: a
@@ -420,41 +417,65 @@ class _NoReplyError(Exception):
 # first sighting.
 _CALL_TIMEOUT_MS = 800
 _STARTUP_MS = 15000
-# Reads that took this long include a call that got no reply; below the
-# timeout so that rounding in libdbus cannot hide one.
+# A call that took this long got no reply; below the timeout so that rounding
+# in libdbus cannot hide one.
 _NO_REPLY_S = (_CALL_TIMEOUT_MS - 100) / 1000
+# The error texts of a call that timed out, neither translated: libdbus's on the
+# bus, dbind's on the peer-to-peer link GTK 3 apps get.
+_NO_REPLY_TEXTS = ("Did not receive a reply", "timeout from dbind")
+_NO_REPLY = "no reply within the AT-SPI call timeout"
 
 
-@contextmanager
-def _answered() -> Iterator[None]:
-    """Raise ``_NoReplyError`` when the AT-SPI reads in the block include a timeout.
+def _timed[**P, T](read: Callable[P, T]) -> Callable[P, T]:
+    """``read``, raising ``_NoReplyError`` when the application did not answer.
 
     libatspi answers most calls that get no reply with a plausible value
     instead of an error: "" for a name, -1 for a child count, None for a
     child, a defunct state set, no interface ("TODO: Set gerror" in
     _atspi_dbus_call_partial_va). Such a call returns only once the timeout
-    has passed, while a call that is answered takes milliseconds, so the
-    time the reads took tells them apart. Wrap a bounded number of reads (one
-    element's): a long list of children can legitimately take that long.
+    has passed, while a call that is answered takes milliseconds, so the time
+    it took tells them apart. dbind, on the link GTK 3 apps get, measures the
+    timeout on the wall clock, so a call is late when either clock passed the
+    bound: a forward clock step ends dbind's wait early. A call that raises a
+    timeout's own error is no reply too.
     """
-    start = time.monotonic()
-    try:
-        yield
-    except Exception as exc:
-        if time.monotonic() - start >= _NO_REPLY_S:
-            raise _NoReplyError(_NO_REPLY) from exc
-        raise
-    if time.monotonic() - start >= _NO_REPLY_S:
-        raise _NoReplyError(_NO_REPLY)
+
+    @functools.wraps(read)
+    def timed(*args: P.args, **kwargs: P.kwargs) -> T:
+        start, wall = time.monotonic(), time.time()
+
+        def late() -> bool:
+            return max(time.monotonic() - start, time.time() - wall) >= _NO_REPLY_S
+
+        try:
+            result = read(*args, **kwargs)
+        except Exception as exc:
+            if late() or any(text in str(exc) for text in _NO_REPLY_TEXTS):
+                raise _NoReplyError(_NO_REPLY) from exc
+            raise
+        if late():
+            raise _NoReplyError(_NO_REPLY)
+        return result
+
+    return timed
 
 
-_NO_REPLY = "no reply within the AT-SPI call timeout"
+def _time_reads(cls: type) -> None:
+    """Time every ``get_*`` method ``cls`` has with ``_timed``, wherever it is called.
 
-
-def _call[T](read: Callable[..., T], *args: object) -> T:
-    """``read(*args)``, raising ``_NoReplyError`` like a block of ``_answered``."""
-    with _answered():
-        return read(*args)
+    The methods live on ``cls`` and its interfaces (Action, Component, Text,
+    Value, ...), which are all in its MRO; the classes of the same library
+    there are wrapped, whichever of them defines a method. Every read of an
+    application goes through them, so none can return an unseen placeholder.
+    ``get_process_id`` asks the bus daemon, not the application.
+    """
+    library = cls.__module__.rpartition(".")[2]
+    for owner in cls.__mro__:
+        if owner.__module__.rpartition(".")[2] != library:
+            continue
+        for name, read in list(vars(owner).items()):
+            if name.startswith("get_") and name != "get_process_id" and callable(read):
+                setattr(owner, name, _timed(read))
 
 
 # The last name read for each application root. libatspi hands out the same
@@ -472,8 +493,7 @@ def _app_name(app: Atspi.Accessible) -> str:
     not answering. Raises ``_NoReplyError`` for a busy app never named.
     """
     try:
-        with _answered():
-            name = app.get_name() or ""
+        name = app.get_name() or ""
     except _NoReplyError:
         known = _APP_NAMES.get(app)
         if known is None:
@@ -484,23 +504,16 @@ def _app_name(app: Atspi.Accessible) -> str:
 
 
 def _children(element: Atspi.Accessible, count: int | None = None) -> list[Atspi.Accessible]:
-    """The readable children of ``element``; unreadable ones are left out.
-
-    Raises ``_NoReplyError`` when a read did not answer.
-    """
+    """The readable children of ``element``; unreadable ones are left out."""
     if count is None:
         try:
-            count = _call(element.get_child_count)
-        except _NoReplyError:
-            raise
+            count = element.get_child_count()
         except Exception:
             return []
     children: list[Atspi.Accessible] = []
     for index in range(count):
         try:
-            child = _call(element.get_child_at_index, index)
-        except _NoReplyError:
-            raise
+            child = element.get_child_at_index(index)
         except Exception:
             continue
         if child is not None:
@@ -606,8 +619,6 @@ def _resolve_refs(refs: list[str]) -> list[_Resolved]:
         if record is None:
             try:
                 pids, mappings, toplevels = _resolve_app(entry.application, kwin_before, kwin_error)
-            except _NoReplyError:
-                raise
             except Exception:
                 pids, mappings, toplevels = frozenset(), [], []
             mappings_by_app.setdefault(pids, []).extend(mappings)
@@ -626,8 +637,7 @@ def _resolve_refs(refs: list[str]) -> list[_Resolved]:
             results.append(_Resolved(ref, error=str(exc)))
             continue
         try:
-            with _answered():
-                info = _extract_info(entry.accessible, entry.depth)
+            info = _extract_info(entry.accessible, entry.depth)
             mapping = toplevel_mapping(entry)
         except _NoReplyError as exc:
             results.append(_Resolved(ref, entry, error=f"Ref {ref} did not answer: {exc}."))
@@ -689,18 +699,16 @@ class _ActionRefusedError(Exception):
 
 def _incomplete_discovery_message(exc: _IncompleteDiscoveryError, app_filter: str) -> str:
     """Refusal text naming the incompletely read application and how to get around it."""
-    no_reply = isinstance(exc.__cause__, _NoReplyError) and exc.application
-    if no_reply and (app_filter or not exc.scope_helps):
-        return (
-            f"Incomplete discovery in application '{exc.application}': {exc}.\n"
-            "The application is not answering; retry when it is idle, "
-            "or find the element with element_query and act on its ref."
-        )
     if not exc.application:
         return f"Incomplete discovery: {exc}"
     message = f"Incomplete discovery in application '{exc.application}': {exc}."
     if app_filter or not exc.scope_helps:
         # Scoping cannot help (already scoped, or the name is unknown): a ref can.
+        if isinstance(exc.__cause__, _NoReplyError):
+            return message + (
+                "\nThe application is not answering; retry when it is idle, "
+                "or find the element with element_query and act on its ref."
+            )
         return message + "\nFind the element with element_query, then act on its ref."
     return message + f"\nSet app='{exc.application}' to scope the search."
 
@@ -737,22 +745,22 @@ def _strict_candidates(
             msg = f"accessibility subtree deeper than {_ACTION_SEARCH_MAX_DEPTH} levels"
             raise _IncompleteDiscoveryError(msg)
         try:
-            name = _call(element.get_name) or ""
+            name = element.get_name() or ""
         except Exception as exc:
             raise _IncompleteDiscoveryError(f"could not read element name: {exc}") from exc
         try:
-            role = _call(element.get_role_name) or "unknown"
+            role = element.get_role_name() or "unknown"
         except Exception as exc:
             raise _IncompleteDiscoveryError(f"could not read element role: {exc}") from exc
         try:
-            description = _call(element.get_description) or ""
+            description = element.get_description() or ""
         except Exception as exc:
             raise _IncompleteDiscoveryError(f"could not read element description: {exc}") from exc
 
         matched = criteria.matches_text(name, role, description)
         if matched and criteria.states:
             try:
-                states = _call(_state_nicks, element)
+                states = _state_nicks(element)
             except Exception as exc:
                 raise _IncompleteDiscoveryError(f"could not read element states: {exc}") from exc
             matched = criteria.matches_states(states)
@@ -761,18 +769,18 @@ def _strict_candidates(
             # An element without an Action interface is not a candidate;
             # every other failure to enumerate its actions is a read fault.
             try:
-                action_iface = _call(element.get_action_iface)
+                action_iface = element.get_action_iface()
             except Exception as exc:
                 raise _IncompleteDiscoveryError(f"could not read action interface: {exc}") from exc
             if action_iface is not None:
                 try:
-                    action_count = _call(action_iface.get_n_actions)
+                    action_count = action_iface.get_n_actions()
                 except Exception as exc:
                     raise _IncompleteDiscoveryError(f"could not read action count: {exc}") from exc
                 matched_actions: dict[str, str] = {}
                 for index in range(action_count):
                     try:
-                        available = _call(action_iface.get_action_name, index) or ""
+                        available = action_iface.get_action_name(index) or ""
                     except Exception as exc:
                         msg = f"could not read action name: {exc}"
                         raise _IncompleteDiscoveryError(msg) from exc
@@ -789,12 +797,12 @@ def _strict_candidates(
                     candidates.append(_Candidate(entry, name, chosen))
 
         try:
-            child_count = _call(element.get_child_count)
+            child_count = element.get_child_count()
         except Exception as exc:
             raise _IncompleteDiscoveryError(f"could not read child count: {exc}") from exc
         for index in range(child_count):
             try:
-                child = _call(element.get_child_at_index, index)
+                child = element.get_child_at_index(index)
             except Exception as exc:
                 raise _IncompleteDiscoveryError(f"could not read child: {exc}") from exc
             if child is not None:
@@ -802,13 +810,13 @@ def _strict_candidates(
 
     desktop = Atspi.get_desktop(0)
     try:
-        app_count = _call(desktop.get_child_count)
-    except Exception as exc:
+        app_count = desktop.get_child_count()
+    except (Exception, _NoReplyError) as exc:
         raise _IncompleteDiscoveryError(f"could not read desktop child count: {exc}") from exc
     for index in range(app_count):
         try:
-            app = _call(desktop.get_child_at_index, index)
-        except Exception as exc:
+            app = desktop.get_child_at_index(index)
+        except (Exception, _NoReplyError) as exc:
             raise _IncompleteDiscoveryError(f"could not read desktop child: {exc}") from exc
         if app is None:
             continue
@@ -816,7 +824,7 @@ def _strict_candidates(
         # needed even when a filter would later exclude it.
         try:
             app_name = _app_name(app)
-        except Exception as exc:
+        except (Exception, _NoReplyError) as exc:
             error = _IncompleteDiscoveryError(f"could not read application name: {exc}")
             error.application = _process_name(app)
             error.scope_helps = False
@@ -825,6 +833,10 @@ def _strict_candidates(
             continue
         try:
             visit(app, app, app_name, None, 0)
+        except _NoReplyError as exc:
+            error = _IncompleteDiscoveryError(f"application did not answer: {exc}")
+            error.application = app_name or _process_name(app)
+            raise error from exc
         except _IncompleteDiscoveryError as exc:
             # An application that stopped answering (e.g. a stopped process) can
             # report an empty name instead of failing; name it by its process so
@@ -852,14 +864,13 @@ def _action_by_ref(
         raise _ActionRefusedError(resolved.error)
     entry, info = resolved.entry, resolved.info
     try:
-        with _answered():
-            action_iface = entry.accessible.get_action_iface()
-            names: list[str] = []
-            if action_iface is not None:
-                names = [
-                    action_iface.get_action_name(index) or ""
-                    for index in range(action_iface.get_n_actions())
-                ]
+        action_iface = entry.accessible.get_action_iface()
+        names: list[str] = []
+        if action_iface is not None:
+            names = [
+                action_iface.get_action_name(index) or ""
+                for index in range(action_iface.get_n_actions())
+            ]
     except _NoReplyError as exc:
         raise _ActionRefusedError(f"Ref {ref} did not answer: {exc}.") from exc
     except Exception as exc:
@@ -1173,17 +1184,16 @@ def _resolve_app(
     the wrong window. A top-level that no KWin window matches is unmapped
     alone: it cannot take a window from a sibling, and Chromium keeps
     hidden omnibox popups as AT-SPI top-levels that report themselves
-    showing. Raises ``_NoReplyError`` when a read did not answer.
+    showing.
     """
     try:
         pid: int | None = int(app.get_process_id())
     except Exception:
         pid = None
 
-    # Each read is timed alone: an app can have many top-levels (one per GTK 3 menu).
     children: list[_AccessibleTopLevel | None] = []
-    for j in range(_call(app.get_child_count)):
-        children.append(_call(app.get_child_at_index, j))
+    for j in range(app.get_child_count()):
+        children.append(app.get_child_at_index(j))
 
     def _unmapped(reason: str) -> list[_WindowMapping]:
         return [_WindowMapping(None, reason) for _ in children]
@@ -1200,8 +1210,8 @@ def _resolve_app(
     poisoned = False
     for child in children:
         assert child is not None
-        name = _call(child.get_name) or ""
-        rect = _call(_window_rect, child)
+        name = child.get_name() or ""
+        rect = _window_rect(child)
         if rect is None:
             # No extents at all: nothing to translate, and nothing to match.
             mappings.append(_WindowMapping(None, "no-extents"))
@@ -1452,6 +1462,7 @@ def _serve(generation: int) -> None:
     global _REFS
     _REFS = _RefTable(generation)
     Atspi.set_timeout(_CALL_TIMEOUT_MS, _STARTUP_MS)
+    _time_reads(Atspi.Accessible)
 
     # The worker's stderr is the server's stderr; silence the one library
     # warning that fires on every tree walk and is not actionable for users.
@@ -1463,7 +1474,7 @@ def _serve(generation: int) -> None:
     for line in sys.stdin:
         try:
             resp = _handle_request(json.loads(line))
-        except Exception as exc:
+        except (Exception, _NoReplyError) as exc:
             resp = {"worker_error": f"{type(exc).__name__}: {exc}"}
         responses.write(json.dumps(resp) + "\n")
         responses.flush()

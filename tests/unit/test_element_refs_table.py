@@ -9,6 +9,7 @@ without affecting refs or actions.
 from __future__ import annotations
 
 import io
+import json
 import sys
 import time
 import types
@@ -51,10 +52,10 @@ class _FakeActions:
         self.names = names
 
     def get_n_actions(self) -> int:
-        return 0 if self.owner._busy() else len(self.names)
+        return 0 if self.owner._busy("get_n_actions") else len(self.names)
 
     def get_action_name(self, index: int) -> str:
-        if self.owner._busy():
+        if self.owner._busy("get_action_name"):
             raise RuntimeError(_NO_REPLY_TEXT)
         return self.names[index]
 
@@ -84,8 +85,15 @@ class _FakeNode:
     clock: ClassVar[Callable[[], bool] | None] = None
     # Seconds the fake clock is ahead of time.monotonic().
     waited: ClassVar[float] = 0.0
+    # Seconds the wall clock was stepped forward, on top of that.
+    wall_step: ClassVar[float] = 0.0
+    # Seconds an answered read takes, by method name.
+    slow: dict[str, float] = field(default_factory=dict)
+    slow_all: ClassVar[dict[str, float]] = {}
 
-    def _busy(self) -> bool:
+    def _busy(self, read: str) -> bool:
+        """Advance the fake clock for one read; True when it times out."""
+        _FakeNode.waited += self.slow.get(read, 0.0) + _FakeNode.slow_all.get(read, 0.0)
         clock = _FakeNode.clock
         busy = self.busy or (clock is not None and self.role != "desktop frame" and clock())
         if busy:
@@ -93,10 +101,10 @@ class _FakeNode:
         return busy
 
     def get_name(self) -> str:
-        return "" if self._busy() or self.gone else self.name
+        return "" if self._busy("get_name") or self.gone else self.name
 
     def get_role_name(self) -> str:
-        if self._busy():
+        if self._busy("get_role_name"):
             raise RuntimeError(_NO_REPLY_TEXT)
         if self.gone:
             msg = "atspi_error: Object does not exist at path"
@@ -104,17 +112,18 @@ class _FakeNode:
         return self.role
 
     def get_description(self) -> str:
-        return "" if self._busy() else self.description
+        return "" if self._busy("get_description") else self.description
 
     def get_state_set(self) -> _FakeStateSet:
-        return _FakeStateSet(["defunct"] if self._busy() else self.states)
+        return _FakeStateSet(["defunct"] if self._busy("get_state_set") else self.states)
 
     def get_component_iface(self) -> None:
-        self._busy()  # no extents either way, but a busy read takes the timeout
+        # No extents either way, but a busy read takes the timeout.
+        self._busy("get_component_iface")
         return None
 
     def get_action_iface(self) -> _FakeActions | None:
-        if self._busy() or self.actions is None:
+        if self._busy("get_action_iface") or self.actions is None:
             return None
         return _FakeActions(self, self.actions)
 
@@ -125,10 +134,10 @@ class _FakeNode:
         return None
 
     def get_child_count(self) -> int:
-        return -1 if self._busy() or self.gone else len(self.children)
+        return -1 if self._busy("get_child_count") or self.gone else len(self.children)
 
     def get_child_at_index(self, index: int) -> _FakeNode | None:
-        return None if self._busy() or self.gone else self.children[index]
+        return None if self._busy("get_child_at_index") or self.gone else self.children[index]
 
     def get_process_id(self) -> int:
         return self.pid
@@ -165,9 +174,24 @@ def atspi(monkeypatch: pytest.MonkeyPatch) -> _FakeAtspi:
     monkeypatch.setattr(accessibility, "_REFS", _RefTable(generation=1))
     monkeypatch.setattr(accessibility, "_APP_NAMES", {})
     monkeypatch.setattr(_FakeNode, "waited", 0.0)
-    clock = types.SimpleNamespace(monotonic=lambda: time.monotonic() + _FakeNode.waited)
+    monkeypatch.setattr(_FakeNode, "wall_step", 0.0)
+    clock = types.SimpleNamespace(
+        monotonic=lambda: time.monotonic() + _FakeNode.waited,
+        time=lambda: time.time() + _FakeNode.waited + _FakeNode.wall_step,
+    )
     monkeypatch.setattr(accessibility, "time", clock)
+    _time_fake_reads(monkeypatch)
     return fake
+
+
+def _time_fake_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Apply the worker's ``_time_reads`` to the fakes; monkeypatch undoes it."""
+    for cls in (_FakeNode, _FakeActions):
+        for name, read in list(vars(cls).items()):
+            if name.startswith("get_"):
+                monkeypatch.setattr(cls, name, read)
+    accessibility._time_reads(_FakeNode)
+    accessibility._time_reads(_FakeActions)
 
 
 def _request(op: str, **kwargs: Any) -> dict[str, Any]:
@@ -611,20 +635,95 @@ def test_a_ref_whose_app_does_not_answer_for_its_window_did_not_answer(
 def test_a_slow_answer_reads_as_no_reply(
     atspi: _FakeAtspi, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The bound is the reads' time, not their values: answers that together
-    # took a call timeout may hide one that did not come.
+    # The bound is the call's time, not its value: a value that came as late as
+    # a timeout may be one.
+    app = _kcalc(_button())
+    atspi.apps[:] = [app]
+    app.children[0].children[0].slow["get_name"] = accessibility._NO_REPLY_S
+    locator = {"query": "Seven", "app": "kcalc"}
+    response = _request("wait", locator=locator, max_depth=15, until="absent", timeout_ms=0)
+    assert response["result"]["satisfied"] is False
+    assert (response["result"]["elements"], response["result"]["complete"]) == ([], False)
+
+
+@pytest.mark.qa("QA-ELEM-023")
+@pytest.mark.parametrize(
+    "error", ["atspi_error: Did not receive a reply.", "atspi_error: timeout from dbind (1)"]
+)
+def test_a_timeout_error_is_no_reply_however_soon_it_comes(
+    atspi: _FakeAtspi, monkeypatch: pytest.MonkeyPatch, error: str
+) -> None:
+    # dbind times its loop on the wall clock: a clock step can end it early.
+    app = _kcalc(_button())
+    atspi.apps[:] = [app]
+    (element,) = _query(query="Seven")
+    button = app.children[0].children[0]
+
+    def timeout_at_once() -> str:
+        raise RuntimeError(error)
+
+    # Through the worker's wrapper, as the class method it stands in for.
+    monkeypatch.setattr(button, "get_role_name", accessibility._timed(timeout_at_once))
+    locator = {"query": "Seven", "app": "kcalc"}
+    response = _request("wait", locator=locator, max_depth=15, until="absent", timeout_ms=0)
+    assert response["result"]["satisfied"] is False
+    assert response["result"]["complete"] is False
+    (resolved,) = _resolve(element["ref"])
+    assert resolved["error"].startswith(f"Ref {element['ref']} did not answer"), resolved
+
+
+@pytest.mark.qa("QA-ELEM-023")
+def test_an_error_that_comes_as_late_as_a_timeout_is_no_reply(atspi: _FakeAtspi) -> None:
+    # Only the time tells a timeout whose error text is not libatspi's own.
+    app = _kcalc(_button())
+    atspi.apps[:] = [app]
+    button = app.children[0].children[0]
+    button.gone = True
+    button.slow["get_role_name"] = accessibility._NO_REPLY_S
+    locator = {"query": "Seven", "app": "kcalc"}
+    response = _request("wait", locator=locator, max_depth=15, until="absent", timeout_ms=0)
+    assert (response["result"]["satisfied"], response["result"]["complete"]) == (False, False)
+
+
+@pytest.mark.qa("QA-ELEM-023")
+def test_a_placeholder_after_a_wall_clock_step_is_no_reply(
+    atspi: _FakeAtspi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # dbind gives up on the wall clock: stepped forward, it returns a property
+    # read's placeholder at once, while the monotonic clock barely moves.
     app = _kcalc(_button())
     atspi.apps[:] = [app]
     button = app.children[0].children[0]
 
-    def slow_name() -> str:
-        _FakeNode.waited += accessibility._NO_REPLY_S
-        return "Seven"
+    def stepped(node: _FakeNode) -> str:
+        if node is not button:
+            return node.name
+        _FakeNode.wall_step += accessibility._CALL_TIMEOUT_MS / 1000
+        return ""
 
-    monkeypatch.setattr(button, "get_name", slow_name)
+    monkeypatch.setattr(_FakeNode, "get_name", accessibility._timed(stepped))
     locator = {"query": "Seven", "app": "kcalc"}
     response = _request("wait", locator=locator, max_depth=15, until="absent", timeout_ms=0)
-    assert response["result"]["satisfied"] is False
+    assert (response["result"]["satisfied"], response["result"]["complete"]) == (False, False)
+
+
+@pytest.mark.qa("QA-ELEM-023")
+def test_many_actions_that_answer_are_read_in_full(
+    atspi: _FakeAtspi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Each action name answers well within the timeout; together they take longer.
+    names = [f"action {index}" for index in range(20)] + ["Press"]
+    app = _kcalc(_button(actions=names))
+    atspi.apps[:] = [app]
+    monkeypatch.setattr(_FakeNode, "slow_all", {"get_action_name": accessibility._NO_REPLY_S / 10})
+    (element,) = _query(query="Seven")
+    assert element["actions"] == names
+    response = _request("query", locator={"query": "Seven"}, max_depth=15)
+    assert response["complete"] is True
+    strict = {"strict": {"query": "Seven", "app": "kcalc"}}
+    assert _request("action", address=strict, action_name="Press")["ok"] is True
+    assert _request("action", address={"ref": element["ref"]}, action_name="Press")["ok"] is True
+    assert atspi.dispatched == [("Seven", "Press"), ("Seven", "Press")]
 
 
 @pytest.mark.qa("QA-ELEM-023")
@@ -636,13 +735,8 @@ def test_a_long_list_that_answers_is_read_in_full(
     rows = [_FakeNode(f"row {index}", "table cell") for index in range(100)]
     app = _kcalc(_FakeNode("files", "table", rows), _button())
     atspi.apps[:] = [app]
-    read_child = _FakeNode.get_child_at_index
-
-    def slow_child(node: _FakeNode, index: int) -> _FakeNode | None:
-        _FakeNode.waited += accessibility._NO_REPLY_S / 50
-        return read_child(node, index)
-
-    monkeypatch.setattr(_FakeNode, "get_child_at_index", slow_child)
+    slow = {"get_child_at_index": accessibility._NO_REPLY_S / 50}
+    monkeypatch.setattr(_FakeNode, "slow_all", slow)
     assert [element["name"] for element in _query(query="Seven")] == ["Seven"]
     locator = {"query": "Nine", "app": "kcalc"}
     response = _request("wait", locator=locator, max_depth=15, until="absent", timeout_ms=0)
@@ -665,13 +759,7 @@ def test_an_app_with_many_windows_that_answers_is_read_in_full(
     atspi.apps[:] = [app]
     monkeypatch.setattr(accessibility, "_kwin_windows", lambda: ([], ""))
     monkeypatch.setattr(accessibility, "_window_pids", lambda pid, _kwin: frozenset({pid}))
-    read_name = _FakeNode.get_name
-
-    def slow_name(node: _FakeNode) -> str:
-        _FakeNode.waited += accessibility._NO_REPLY_S / 20
-        return read_name(node)
-
-    monkeypatch.setattr(_FakeNode, "get_name", slow_name)
+    monkeypatch.setattr(_FakeNode, "slow_all", {"get_name": accessibility._NO_REPLY_S / 20})
     (element,) = _query(query="Seven")
     response = _request("query", locator={"query": "Seven"}, max_depth=15)
     assert response["complete"] is True
@@ -783,7 +871,9 @@ def test_a_new_app_with_a_reused_pid_starts_unknown(atspi: _FakeAtspi) -> None:
 
 
 @pytest.mark.qa("QA-ELEM-023")
-def test_an_app_really_named_empty_stays_out_of_another_apps_scope(atspi: _FakeAtspi) -> None:
+def test_an_app_really_named_empty_stays_out_of_another_apps_scope(
+    atspi: _FakeAtspi, monkeypatch: pytest.MonkeyPatch
+) -> None:
     nameless = _FakeNode("", "application", [_FakeNode("Nameless", "frame", [_button()])])
     atspi.apps[:] = [nameless, _kcalc(_button("Eight"))]
     _query()
@@ -794,6 +884,10 @@ def test_an_app_really_named_empty_stays_out_of_another_apps_scope(atspi: _FakeA
     strict = {"strict": {"query": "Eight", "app": "kcalc"}}
     response = _request("action", address=strict, action_name="Press")
     assert response["ok"] is True, response
+    # Unscoped, the refusal names it by its process: its own name is "".
+    monkeypatch.setattr(accessibility, "_process_name", lambda _app: "nameless-process")
+    response = _request("action", address={"strict": {"query": "Eight"}}, action_name="Press")
+    assert response["error"].startswith("Incomplete discovery in application 'nameless-process'")
 
 
 def test_an_unreadable_app_name_does_not_suggest_scoping(
@@ -815,15 +909,24 @@ def test_an_unreadable_app_name_does_not_suggest_scoping(
 
 
 @pytest.mark.qa("QA-ELEM-023")
-def test_the_worker_sets_the_call_timeout_its_no_reply_bound_relies_on(
+def test_the_worker_times_every_read_against_the_timeout_it_sets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The bound assumes libatspi's timeout, so the worker sets it instead of
-    # relying on the library's default.
+    # relying on the library's default, and wraps the library's reads itself.
     pinned: list[tuple[int, int]] = []
-    monkeypatch.setattr(
-        accessibility, "Atspi", types.SimpleNamespace(set_timeout=lambda *a: pinned.append(a))
+    # GObject's own methods (get_property, get_data) are not the library's reads.
+    gobject = type("Object", (), {"get_data": lambda _self: None, "__module__": "gi.GObject"})
+    action = type("Action", (), {"get_n_actions": lambda _self: 0, "do_action": None})
+    accessible = type(
+        "Accessible",
+        (gobject, action),
+        {"get_name": lambda _self: "", "get_process_id": lambda _self: 1},
     )
+    namespace = types.SimpleNamespace(
+        set_timeout=lambda *a: pinned.append(a), Accessible=accessible
+    )
+    monkeypatch.setattr(accessibility, "Atspi", namespace)
     # Keep the worker off the test run's own file descriptors.
     fake_os = types.SimpleNamespace(
         dup=lambda fd: fd, fdopen=lambda *_a, **_k: io.StringIO(), dup2=lambda *_a: None
@@ -837,3 +940,65 @@ def test_the_worker_sets_the_call_timeout_its_no_reply_bound_relies_on(
     with warnings.catch_warnings():
         accessibility._serve(1)
     assert pinned == [(accessibility._CALL_TIMEOUT_MS, accessibility._STARTUP_MS)]
+    # Reads defined on an interface in the MRO are timed too.
+    assert hasattr(accessible.get_name, "__wrapped__")
+    assert hasattr(action.get_n_actions, "__wrapped__")
+    assert not hasattr(action.do_action, "__wrapped__")
+    assert not hasattr(gobject.get_data, "__wrapped__")
+    # The bus daemon answers it, not the application.
+    assert not hasattr(accessible.get_process_id, "__wrapped__")
+
+
+@pytest.mark.qa("QA-ELEM-023")
+def test_a_no_reply_that_escapes_an_operation_is_a_worker_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The signal passes ``except Exception``; the worker still answers the request.
+    namespace = types.SimpleNamespace(set_timeout=lambda *_a: None, Accessible=object)
+    monkeypatch.setattr(accessibility, "Atspi", namespace)
+    responses = io.StringIO()
+    fake_os = types.SimpleNamespace(
+        dup=lambda fd: fd, fdopen=lambda *_a, **_k: responses, dup2=lambda *_a: None
+    )
+    monkeypatch.setattr(accessibility, "os", fake_os)
+    stream = types.SimpleNamespace(fileno=lambda: 1)
+    monkeypatch.setattr(sys, "stdin", io.StringIO('{"op": "query"}\n'))
+    monkeypatch.setattr(sys, "stdout", stream)
+    monkeypatch.setattr(sys, "stderr", stream)
+    monkeypatch.setattr(accessibility, "_REFS", _RefTable(generation=1))
+
+    def no_reply(_request: object) -> dict[str, Any]:
+        raise accessibility._NoReplyError(accessibility._NO_REPLY)
+
+    monkeypatch.setattr(accessibility, "_handle_request", no_reply)
+    with warnings.catch_warnings():
+        accessibility._serve(1)
+    assert json.loads(responses.getvalue())["worker_error"].startswith("_NoReplyError")
+
+
+@pytest.mark.qa("QA-ELEM-023")
+def test_the_real_atspi_reads_are_timed(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Atspi.Accessible comes from gi.overrides, its interfaces from gi.repository.
+    real = accessibility.Atspi
+    for owner in real.Accessible.__mro__:
+        if not owner.__module__.endswith(".Atspi"):
+            continue
+        for name, read in list(vars(owner).items()):
+            if name.startswith("get_"):
+                monkeypatch.setattr(owner, name, read)  # undone after the test
+    accessibility._time_reads(real.Accessible)
+    for read in (
+        real.Accessible.get_name,
+        real.Accessible.get_child_at_index,
+        real.Component.get_extents,
+        real.Action.get_action_name,
+        real.Text.get_character_count,
+        real.Value.get_current_value,
+    ):
+        assert hasattr(read, "__wrapped__"), read
+    for kept in (
+        real.Accessible.get_process_id,
+        real.Action.do_action,
+        real.Accessible.get_property,
+    ):
+        assert not hasattr(kept, "__wrapped__"), kept

@@ -26,6 +26,7 @@ import re
 import sys
 import time
 from collections import OrderedDict
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from difflib import get_close_matches
 from pathlib import Path
@@ -37,7 +38,7 @@ from kwin_mcp.models import Locator, MatchMode
 from kwin_mcp.spoken_name import SpokenNameKey, normalize_spoken_name, spoken_name_matches
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Iterator, Sequence
 
     from kwin_mcp.geometry import KWinWindow
 
@@ -309,46 +310,22 @@ def _walk(criteria: _Criteria, max_depth: int) -> tuple[list[_Found], bool]:
     still searched. A node that cannot be read is skipped with its subtree;
     applications without children are included. Also returns whether every
     application in scope answered: one that did not (a busy app) may still
-    hold matches.
+    hold matches, so its walk ends at its first silent element.
     """
     kwin_before, kwin_error = _kwin_windows()
     found: list[_Found] = []
     mappings_by_app: dict[frozenset[int], list[_WindowMapping]] = {}
-
-    def collect_app(app: Atspi.Accessible, app_name: str) -> None:
-        try:
-            app_info = _extract_info(app, 0)
-        except _NoReplyError:
-            raise
-        except Exception:
-            return
-        if criteria.matches(app_info):
-            entry = _RefEntry(app, app_info.role, app_name, 0, app, None)
-            found.append(_Found(app_info, _UNMAPPED, entry))
-        if max_depth < 1:
-            return
-        try:
-            pids, mappings, toplevels = _resolve_app(app, kwin_before, kwin_error)
-        except _NoReplyError:
-            raise
-        except Exception:
-            return
-        mappings_by_app.setdefault(pids, []).extend(mappings)
-        for toplevel, mapping in zip(toplevels, mappings, strict=True):
-            if toplevel is not None:
-                scope = _Scope(app, app_name, toplevel, mapping)
-                _collect(toplevel, scope, 1, max_depth, criteria, found)
-
     answered = True
-    desktop = Atspi.get_desktop(0)
-    for app in _children(desktop):
+    try:
+        apps = _children(Atspi.get_desktop(0))
+    except _NoReplyError:
+        apps, answered = [], False
+    for app in apps:
         try:
             app_name = _app_name(app)
             if criteria.matches_app(app_name):
-                collect_app(app, app_name)
-                # Reads after the app turned busy returned plausible values,
-                # not errors: one more count read catches it still busy.
-                _child_count(app)
+                kwin = (kwin_before, kwin_error)
+                _collect_app(app, app_name, max_depth, criteria, found, mappings_by_app, kwin)
         except _NoReplyError:
             answered = False
         except Exception:
@@ -358,6 +335,41 @@ def _walk(criteria: _Criteria, max_depth: int) -> tuple[list[_Found], bool]:
     for item in found:
         _finalize(item.info, item.mapping)
     return found, answered
+
+
+def _collect_app(
+    app: Atspi.Accessible,
+    app_name: str,
+    max_depth: int,
+    criteria: _Criteria,
+    found: list[_Found],
+    mappings_by_app: dict[frozenset[int], list[_WindowMapping]],
+    kwin: tuple[list[KWinWindow], str],
+) -> None:
+    """``_collect`` for an application node; raises ``_NoReplyError`` like it."""
+    try:
+        with _answered():
+            app_info = _extract_info(app, 0)
+    except _NoReplyError:
+        raise
+    except Exception:
+        return
+    if criteria.matches(app_info):
+        entry = _RefEntry(app, app_info.role, app_name, 0, app, None)
+        found.append(_Found(app_info, _UNMAPPED, entry))
+    if max_depth < 1:
+        return
+    try:
+        pids, mappings, toplevels = _resolve_app(app, *kwin)
+    except _NoReplyError:
+        raise
+    except Exception:
+        return
+    mappings_by_app.setdefault(pids, []).extend(mappings)
+    for toplevel, mapping in zip(toplevels, mappings, strict=True):
+        if toplevel is not None:
+            scope = _Scope(app, app_name, toplevel, mapping)
+            _collect(toplevel, scope, 1, max_depth, criteria, found)
 
 
 @dataclass(frozen=True)
@@ -380,13 +392,14 @@ def _collect(
 ) -> None:
     """Add ``element`` (when it matches) and its matching descendants to ``found``.
 
-    Raises ``_NoReplyError`` when an element did not answer, which ends the
+    Raises ``_NoReplyError`` when the element did not answer, which ends the
     walk of its app: every later read of it would wait out the timeout too.
     """
     if depth > max_depth:
         return
     try:
-        info = _extract_info(element, depth)
+        with _answered():
+            info = _extract_info(element, depth)
     except _NoReplyError:
         raise
     except Exception:
@@ -399,94 +412,95 @@ def _collect(
 
 
 class _NoReplyError(Exception):
-    """An element did not answer within libatspi's call timeout."""
+    """An application did not answer within libatspi's call timeout."""
 
 
-# The error texts of a call that timed out, neither translated: libdbus's on the
-# bus (Qt, GTK 4), dbind's on the peer-to-peer link atk-bridge apps get (GTK 3).
-_NO_REPLY_TEXTS = ("Did not receive a reply", "timeout from dbind")
+# libatspi's call timeouts, pinned at its defaults when the worker starts: a
+# call waits at least _CALL_TIMEOUT_MS, longer within _STARTUP_MS of an app's
+# first sighting.
+_CALL_TIMEOUT_MS = 800
+_STARTUP_MS = 15000
+# Reads that took this long include a call that got no reply; below the
+# timeout so that rounding in libdbus cannot hide one.
+_NO_REPLY_S = (_CALL_TIMEOUT_MS - 100) / 1000
 
 
-def _is_no_reply(exc: BaseException | None) -> bool:
-    """Whether ``exc`` is a call the application did not answer in time."""
-    return isinstance(exc, _NoReplyError) or any(text in str(exc) for text in _NO_REPLY_TEXTS)
+@contextmanager
+def _answered() -> Iterator[None]:
+    """Raise ``_NoReplyError`` when the AT-SPI reads in the block include a timeout.
 
-
-def _child_count(element: Atspi.Accessible) -> int:
-    """The child count of ``element``; raises ``_NoReplyError`` when it did not answer.
-
-    libatspi reports a property read that got no reply as a plausible value
-    instead of an error: "" for a name, -1 for a child count. That covers a
-    busy app (no reply within 800 ms by default) and, on the bus, an element
-    that is gone. The role read does raise, so it tells the two apart: a gone
-    element raises an ordinary error and is skipped like any unreadable node.
+    libatspi answers most calls that get no reply with a plausible value
+    instead of an error: "" for a name, -1 for a child count, None for a
+    child, a defunct state set, no interface ("TODO: Set gerror" in
+    _atspi_dbus_call_partial_va). Such a call returns only once the timeout
+    has passed, while a call that is answered takes milliseconds, so the
+    time the reads took tells them apart. Wrap a bounded number of reads (one
+    element's): a long list of children can legitimately take that long.
     """
-    # shortcut: libatspi drops a missing reply to a property read ("TODO: throw
-    # exception" in _atspi_dbus_get_property), so a -1 is classified by the
-    # role read's message; read the count's own error once libatspi sets it.
-    count = element.get_child_count()
-    if count >= 0:
-        return count
-    msg = "no reply within the AT-SPI call timeout"
+    start = time.monotonic()
     try:
-        element.get_role_name()
+        yield
     except Exception as exc:
-        if not _is_no_reply(exc):
-            raise
-        raise _NoReplyError(msg) from exc
-    # The role answered: a busy spell just ended. (An exited GTK 3 app also gets
-    # here until libatspi drops it, as a call on its closed link returns the last
-    # role; "did not answer" is the safe reading then.)
-    raise _NoReplyError(msg)
+        if time.monotonic() - start >= _NO_REPLY_S:
+            raise _NoReplyError(_NO_REPLY) from exc
+        raise
+    if time.monotonic() - start >= _NO_REPLY_S:
+        raise _NoReplyError(_NO_REPLY)
 
 
-# The last name read for each application, by process id (the bus daemon or
-# libatspi's cache answers the pid even while the app is busy).
-_APP_NAMES: dict[int, str] = {}
+_NO_REPLY = "no reply within the AT-SPI call timeout"
+
+
+def _call[T](read: Callable[..., T], *args: object) -> T:
+    """``read(*args)``, raising ``_NoReplyError`` like a block of ``_answered``."""
+    with _answered():
+        return read(*args)
+
+
+# The last name read for each application root. libatspi hands out the same
+# root object while the application lives and a new one for a new process, so
+# an application that reuses an old pid starts unknown.
+_APP_NAMES: dict[Atspi.Accessible, str] = {}
 
 
 def _app_name(app: Atspi.Accessible) -> str:
-    """The name of ``app``; raises like ``_child_count`` when it reads empty and is unknown.
+    """The name of ``app``, or its last known name while it does not answer.
 
-    An app that does not answer reads as named "", so an app filter would drop
-    it as some other app. Its last known name decides instead: a busy app the
-    filter excludes stays out of the search, one it covers is then found not
-    answering. An empty name is re-read once the app answers: the "" may be
-    the timeout of an app that became free right after it.
+    An app that does not answer would read as named "", so an app filter would
+    drop it as some other app. Its last known name decides instead: a busy app
+    the filter excludes stays out of the search, one it covers is then found
+    not answering. Raises ``_NoReplyError`` for a busy app never named.
     """
-    pid = _pid(app)
-    name = app.get_name() or ""
-    if not name:
-        known = _APP_NAMES.get(pid) if pid else None
-        if known is not None:
-            return known
-        _child_count(app)  # never named: raises _NoReplyError while it is busy
-        name = app.get_name() or ""
-    if name:
-        _APP_NAMES[pid] = name
+    try:
+        with _answered():
+            name = app.get_name() or ""
+    except _NoReplyError:
+        known = _APP_NAMES.get(app)
+        if known is None:
+            raise
+        return known
+    _APP_NAMES[app] = name
     return name
 
 
-def _pid(app: Atspi.Accessible) -> int:
-    """The app's process id, or 0 when unknown (libatspi reports a failed read as -1)."""
-    try:
-        pid = int(app.get_process_id())
-    except Exception:
-        return 0
-    return pid if 0 < pid < 2**32 - 1 else 0
-
-
 def _children(element: Atspi.Accessible, count: int | None = None) -> list[Atspi.Accessible]:
-    """The readable children of ``element``; unreadable ones are left out."""
+    """The readable children of ``element``; unreadable ones are left out.
+
+    Raises ``_NoReplyError`` when a read did not answer.
+    """
     if count is None:
         try:
-            count = element.get_child_count()
+            count = _call(element.get_child_count)
+        except _NoReplyError:
+            raise
         except Exception:
             return []
     children: list[Atspi.Accessible] = []
     for index in range(count):
         try:
-            child = element.get_child_at_index(index)
+            child = _call(element.get_child_at_index, index)
+        except _NoReplyError:
+            raise
         except Exception:
             continue
         if child is not None:
@@ -501,10 +515,13 @@ def _mint(item: _Found) -> dict[str, Any]:
     return asdict(item.info)
 
 
-def query_elements(locator: Locator, max_depth: int = 15) -> list[dict[str, Any]]:
-    """Every element matching ``locator`` down to ``max_depth``, in pre-order, with refs."""
-    found, _ = _walk(_Criteria.from_locator(locator), max_depth)
-    return [_mint(item) for item in found]
+def query_elements(locator: Locator, max_depth: int = 15) -> tuple[list[dict[str, Any]], bool]:
+    """Every element matching ``locator`` down to ``max_depth``, in pre-order, with refs.
+
+    Also returns whether every application in scope answered.
+    """
+    found, answered = _walk(_Criteria.from_locator(locator), max_depth)
+    return [_mint(item) for item in found], answered
 
 
 def wait_elements(
@@ -548,6 +565,7 @@ def wait_elements(
             return {
                 "elements": [_mint(item) for item in found],
                 "satisfied": satisfied,
+                "complete": answered,
                 "elapsed_ms": round((now - start) * 1000),
             }
         time.sleep(min(interval, deadline - now))
@@ -588,6 +606,8 @@ def _resolve_refs(refs: list[str]) -> list[_Resolved]:
         if record is None:
             try:
                 pids, mappings, toplevels = _resolve_app(entry.application, kwin_before, kwin_error)
+            except _NoReplyError:
+                raise
             except Exception:
                 pids, mappings, toplevels = frozenset(), [], []
             mappings_by_app.setdefault(pids, []).extend(mappings)
@@ -606,18 +626,15 @@ def _resolve_refs(refs: list[str]) -> list[_Resolved]:
             results.append(_Resolved(ref, error=str(exc)))
             continue
         try:
-            info = _extract_info(entry.accessible, entry.depth)
-            if "defunct" in info.states:
-                # A state read that timed out reads as defunct too: only an
-                # element that answers (or fails ordinarily) is really gone.
-                _child_count(entry.accessible)
-                info = None
+            with _answered():
+                info = _extract_info(entry.accessible, entry.depth)
+            mapping = toplevel_mapping(entry)
         except _NoReplyError as exc:
             results.append(_Resolved(ref, entry, error=f"Ref {ref} did not answer: {exc}."))
             continue
         except Exception:
             info = None
-        if info is None:
+        if info is None or "defunct" in info.states:
             error = f"Stale ref {ref} (element no longer exists); re-run element_query."
             results.append(_Resolved(ref, entry, error=error))
             continue
@@ -629,7 +646,7 @@ def _resolve_refs(refs: list[str]) -> list[_Resolved]:
             results.append(_Resolved(ref, entry, error=error))
             continue
         info.ref, info.app = ref, entry.app
-        pending.append((info, toplevel_mapping(entry)))
+        pending.append((info, mapping))
         results.append(_Resolved(ref, entry, info))
 
     _apply_stability(mappings_by_app, kwin_before, kwin_error)
@@ -672,10 +689,10 @@ class _ActionRefusedError(Exception):
 
 def _incomplete_discovery_message(exc: _IncompleteDiscoveryError, app_filter: str) -> str:
     """Refusal text naming the incompletely read application and how to get around it."""
-    if _is_no_reply(exc.__cause__) and (app_filter or not exc.scope_helps):
-        where = f" in application '{exc.application}'" if exc.application else ""
+    no_reply = isinstance(exc.__cause__, _NoReplyError) and exc.application
+    if no_reply and (app_filter or not exc.scope_helps):
         return (
-            f"Incomplete discovery{where}: {exc}.\n"
+            f"Incomplete discovery in application '{exc.application}': {exc}.\n"
             "The application is not answering; retry when it is idle, "
             "or find the element with element_query and act on its ref."
         )
@@ -720,22 +737,22 @@ def _strict_candidates(
             msg = f"accessibility subtree deeper than {_ACTION_SEARCH_MAX_DEPTH} levels"
             raise _IncompleteDiscoveryError(msg)
         try:
-            name = element.get_name() or ""
+            name = _call(element.get_name) or ""
         except Exception as exc:
             raise _IncompleteDiscoveryError(f"could not read element name: {exc}") from exc
         try:
-            role = element.get_role_name() or "unknown"
+            role = _call(element.get_role_name) or "unknown"
         except Exception as exc:
             raise _IncompleteDiscoveryError(f"could not read element role: {exc}") from exc
         try:
-            description = element.get_description() or ""
+            description = _call(element.get_description) or ""
         except Exception as exc:
             raise _IncompleteDiscoveryError(f"could not read element description: {exc}") from exc
 
         matched = criteria.matches_text(name, role, description)
         if matched and criteria.states:
             try:
-                states = _state_nicks(element)
+                states = _call(_state_nicks, element)
             except Exception as exc:
                 raise _IncompleteDiscoveryError(f"could not read element states: {exc}") from exc
             matched = criteria.matches_states(states)
@@ -744,18 +761,18 @@ def _strict_candidates(
             # An element without an Action interface is not a candidate;
             # every other failure to enumerate its actions is a read fault.
             try:
-                action_iface = element.get_action_iface()
+                action_iface = _call(element.get_action_iface)
             except Exception as exc:
                 raise _IncompleteDiscoveryError(f"could not read action interface: {exc}") from exc
             if action_iface is not None:
                 try:
-                    action_count = action_iface.get_n_actions()
+                    action_count = _call(action_iface.get_n_actions)
                 except Exception as exc:
                     raise _IncompleteDiscoveryError(f"could not read action count: {exc}") from exc
                 matched_actions: dict[str, str] = {}
                 for index in range(action_count):
                     try:
-                        available = action_iface.get_action_name(index) or ""
+                        available = _call(action_iface.get_action_name, index) or ""
                     except Exception as exc:
                         msg = f"could not read action name: {exc}"
                         raise _IncompleteDiscoveryError(msg) from exc
@@ -772,12 +789,12 @@ def _strict_candidates(
                     candidates.append(_Candidate(entry, name, chosen))
 
         try:
-            child_count = _child_count(element)
+            child_count = _call(element.get_child_count)
         except Exception as exc:
             raise _IncompleteDiscoveryError(f"could not read child count: {exc}") from exc
         for index in range(child_count):
             try:
-                child = element.get_child_at_index(index)
+                child = _call(element.get_child_at_index, index)
             except Exception as exc:
                 raise _IncompleteDiscoveryError(f"could not read child: {exc}") from exc
             if child is not None:
@@ -785,12 +802,12 @@ def _strict_candidates(
 
     desktop = Atspi.get_desktop(0)
     try:
-        app_count = desktop.get_child_count()
+        app_count = _call(desktop.get_child_count)
     except Exception as exc:
         raise _IncompleteDiscoveryError(f"could not read desktop child count: {exc}") from exc
     for index in range(app_count):
         try:
-            app = desktop.get_child_at_index(index)
+            app = _call(desktop.get_child_at_index, index)
         except Exception as exc:
             raise _IncompleteDiscoveryError(f"could not read desktop child: {exc}") from exc
         if app is None:
@@ -808,11 +825,6 @@ def _strict_candidates(
             continue
         try:
             visit(app, app, app_name, None, 0)
-            try:
-                _child_count(app)  # catches an app that turned busy or exited partway
-            except Exception as exc:
-                msg = f"could not read the application again: {exc}"
-                raise _IncompleteDiscoveryError(msg) from exc
         except _IncompleteDiscoveryError as exc:
             # An application that stopped answering (e.g. a stopped process) can
             # report an empty name instead of failing; name it by its process so
@@ -840,16 +852,17 @@ def _action_by_ref(
         raise _ActionRefusedError(resolved.error)
     entry, info = resolved.entry, resolved.info
     try:
-        action_iface = entry.accessible.get_action_iface()
-        names: list[str] = []
-        if action_iface is not None:
-            names = [
-                action_iface.get_action_name(index) or ""
-                for index in range(action_iface.get_n_actions())
-            ]
+        with _answered():
+            action_iface = entry.accessible.get_action_iface()
+            names: list[str] = []
+            if action_iface is not None:
+                names = [
+                    action_iface.get_action_name(index) or ""
+                    for index in range(action_iface.get_n_actions())
+                ]
+    except _NoReplyError as exc:
+        raise _ActionRefusedError(f"Ref {ref} did not answer: {exc}.") from exc
     except Exception as exc:
-        if _is_no_reply(exc):
-            raise _ActionRefusedError(f"Ref {ref} did not answer: {exc}.") from exc
         msg = f"Stale ref {ref} (element no longer exists); re-run element_query."
         raise _ActionRefusedError(msg) from exc
     requested = [action_name] if isinstance(action_name, str) else list(action_name)
@@ -858,13 +871,6 @@ def _action_by_ref(
         if action_iface is not None and indexes:
             index = next((i for i in indexes if names[i] == wanted), indexes[0])
             return entry, info, action_iface, index, names[index]
-    # A timed-out action read lists no actions too: confirm the app answers.
-    try:
-        _child_count(entry.accessible)
-    except _NoReplyError as exc:
-        raise _ActionRefusedError(f"Ref {ref} did not answer: {exc}.") from exc
-    except Exception:
-        pass  # gone: the missing action is real
     action_desc = (
         f"no AT-SPI action {requested[0]!r}"
         if len(requested) == 1
@@ -1167,16 +1173,17 @@ def _resolve_app(
     the wrong window. A top-level that no KWin window matches is unmapped
     alone: it cannot take a window from a sibling, and Chromium keeps
     hidden omnibox popups as AT-SPI top-levels that report themselves
-    showing.
+    showing. Raises ``_NoReplyError`` when a read did not answer.
     """
     try:
         pid: int | None = int(app.get_process_id())
     except Exception:
         pid = None
 
+    # Each read is timed alone: an app can have many top-levels (one per GTK 3 menu).
     children: list[_AccessibleTopLevel | None] = []
-    for j in range(_child_count(app)):
-        children.append(app.get_child_at_index(j))
+    for j in range(_call(app.get_child_count)):
+        children.append(_call(app.get_child_at_index, j))
 
     def _unmapped(reason: str) -> list[_WindowMapping]:
         return [_WindowMapping(None, reason) for _ in children]
@@ -1193,8 +1200,8 @@ def _resolve_app(
     poisoned = False
     for child in children:
         assert child is not None
-        name = child.get_name() or ""
-        rect = _window_rect(child)
+        name = _call(child.get_name) or ""
+        rect = _call(_window_rect, child)
         if rect is None:
             # No extents at all: nothing to translate, and nothing to match.
             mappings.append(_WindowMapping(None, "no-extents"))
@@ -1307,15 +1314,7 @@ def _window_rect(element: _AccessibleTopLevel) -> tuple[int, int, int, int] | No
 
 def _extract_info(element: Atspi.Accessible, depth: int) -> ElementInfo:
     """Extract information from an AT-SPI accessible element."""
-    # First: when the app is busy, the reads below return plausible values.
-    children_count = _child_count(element)
-    try:
-        role = element.get_role_name() or "unknown"
-    except Exception as exc:
-        # The app can turn busy right after the count read answered.
-        if _is_no_reply(exc):
-            raise _NoReplyError(str(exc)) from exc
-        raise
+    role = element.get_role_name() or "unknown"
     name = element.get_name() or ""
     description = element.get_description() or ""
 
@@ -1389,7 +1388,7 @@ def _extract_info(element: Atspi.Accessible, depth: int) -> ElementInfo:
         text=text,
         value=value,
         value_max=value_max,
-        children_count=children_count,
+        children_count=element.get_child_count(),
         depth=depth,
         has_extents=has_extents,
         mapped=False,
@@ -1417,8 +1416,9 @@ def _dispatch_request(request: dict[str, Any]) -> dict[str, Any]:
     op = request.get("op", "")
 
     if op == "query":
-        elements = query_elements(_locator(request), max_depth=int(request.get("max_depth", 15)))
-        return {"ok": True, "result": elements}
+        max_depth = int(request.get("max_depth", 15))
+        elements, complete = query_elements(_locator(request), max_depth=max_depth)
+        return {"ok": True, "result": elements, "complete": complete}
 
     if op == "wait":
         result = wait_elements(
@@ -1451,6 +1451,7 @@ def _serve(generation: int) -> None:
 
     global _REFS
     _REFS = _RefTable(generation)
+    Atspi.set_timeout(_CALL_TIMEOUT_MS, _STARTUP_MS)
 
     # The worker's stderr is the server's stderr; silence the one library
     # warning that fires on every tree walk and is not actionable for users.

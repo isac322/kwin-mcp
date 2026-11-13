@@ -478,6 +478,8 @@ class ElementList(BaseModel):
 
     locator: Locator = Field(default_factory=Locator)
     elements: list[UIElement]
+    # False when an application in scope did not answer: its elements may be missing.
+    complete: bool = True
     wait: ElementWaitResult | None = None
 
     def _listing(self) -> str:
@@ -499,6 +501,11 @@ class ElementList(BaseModel):
         satisfied wait reports its elapsed time last.
         """
         parts = [self._listing()]
+        if not self.complete:
+            parts.append(
+                "INCOMPLETE: an application in scope did not answer (busy); "
+                "its elements may be missing. Retry when it is idle."
+            )
         if self.wait is not None:
             if self.wait.satisfied:
                 parts.append(self.wait.render())

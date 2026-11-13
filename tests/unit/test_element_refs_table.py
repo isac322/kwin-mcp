@@ -8,7 +8,11 @@ without affecting refs or actions.
 
 from __future__ import annotations
 
+import io
+import sys
+import time
 import types
+import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -51,16 +55,20 @@ class _FakeActions:
 
     def get_action_name(self, index: int) -> str:
         if self.owner._busy():
-            raise RuntimeError(self.owner.no_reply)
+            raise RuntimeError(_NO_REPLY_TEXT)
         return self.names[index]
+
+
+_NO_REPLY_TEXT = "atspi_error: Did not receive a reply."
 
 
 @dataclass(eq=False)
 class _FakeNode:
     """Minimal ``Atspi.Accessible`` double: mutable name, role, states and children.
 
-    ``busy`` answers like libatspi when the app does not reply in time, ``gone``
-    like it does for an element the app destroyed.
+    ``busy`` answers like libatspi when the app does not reply in time (after
+    the call timeout, on the fake clock), ``gone`` like it does for an element
+    the app destroyed (at once).
     """
 
     name: str
@@ -68,36 +76,41 @@ class _FakeNode:
     children: list[_FakeNode] = field(default_factory=list)
     states: list[str] = field(default_factory=lambda: ["enabled", "visible"])
     actions: list[str] | None = None
+    description: str = ""
     busy: bool = False
     gone: bool = False
     pid: int = 0
-    # libdbus's text on the bus; atk-bridge apps on a peer-to-peer link get dbind's.
-    no_reply: ClassVar[str] = "atspi_error: Did not receive a reply."
     # Called once per read of an app's element; True makes that read time out.
     clock: ClassVar[Callable[[], bool] | None] = None
+    # Seconds the fake clock is ahead of time.monotonic().
+    waited: ClassVar[float] = 0.0
 
     def _busy(self) -> bool:
         clock = _FakeNode.clock
-        return self.busy or (clock is not None and self.role != "desktop frame" and clock())
+        busy = self.busy or (clock is not None and self.role != "desktop frame" and clock())
+        if busy:
+            _FakeNode.waited += accessibility._CALL_TIMEOUT_MS / 1000
+        return busy
 
     def get_name(self) -> str:
         return "" if self._busy() or self.gone else self.name
 
     def get_role_name(self) -> str:
         if self._busy():
-            raise RuntimeError(self.no_reply)
+            raise RuntimeError(_NO_REPLY_TEXT)
         if self.gone:
             msg = "atspi_error: Object does not exist at path"
             raise RuntimeError(msg)
         return self.role
 
     def get_description(self) -> str:
-        return ""
+        return "" if self._busy() else self.description
 
     def get_state_set(self) -> _FakeStateSet:
         return _FakeStateSet(["defunct"] if self._busy() else self.states)
 
     def get_component_iface(self) -> None:
+        self._busy()  # no extents either way, but a busy read takes the timeout
         return None
 
     def get_action_iface(self) -> _FakeActions | None:
@@ -151,6 +164,9 @@ def atspi(monkeypatch: pytest.MonkeyPatch) -> _FakeAtspi:
     monkeypatch.setattr(accessibility, "_kwin_windows", lambda: ([], "no KWin in unit tests"))
     monkeypatch.setattr(accessibility, "_REFS", _RefTable(generation=1))
     monkeypatch.setattr(accessibility, "_APP_NAMES", {})
+    monkeypatch.setattr(_FakeNode, "waited", 0.0)
+    clock = types.SimpleNamespace(monotonic=lambda: time.monotonic() + _FakeNode.waited)
+    monkeypatch.setattr(accessibility, "time", clock)
     return fake
 
 
@@ -475,15 +491,8 @@ def _set_busy(node: _FakeNode, busy: bool) -> None:
 
 
 @pytest.mark.qa("QA-ELEM-023")
-@pytest.mark.parametrize(
-    "no_reply", ["atspi_error: Did not receive a reply.", "atspi_error: timeout from dbind (1)"]
-)
-def test_an_app_that_does_not_answer_is_not_read_as_gone(
-    atspi: _FakeAtspi, monkeypatch: pytest.MonkeyPatch, no_reply: str
-) -> None:
-    monkeypatch.setattr(_FakeNode, "no_reply", no_reply)
+def test_an_app_that_does_not_answer_is_not_read_as_gone(atspi: _FakeAtspi) -> None:
     app = _kcalc(_button())
-    app.pid = 2
     atspi.apps[:] = [app]
     (ref,) = [element["ref"] for element in _query(query="Seven")]
 
@@ -491,112 +500,201 @@ def test_an_app_that_does_not_answer_is_not_read_as_gone(
     for locator in ({"query": "Seven", "app": "kcalc"}, {"query": "Seven"}):
         response = _request("wait", locator=locator, max_depth=15, until="absent", timeout_ms=0)
         assert response["result"]["satisfied"] is False, locator
+        assert response["result"]["complete"] is False, locator
+        # A plain query cannot list the busy app's elements, but says so.
+        response = _request("query", locator=locator, max_depth=15)
+        assert (response["result"], response["complete"]) == ([], False), locator
     strict = {"strict": {"query": "Seven", "app": "kcalc"}}
     response = _request("action", address=strict, action_name="Press")
-    assert response["ok"] is False
     assert response["error"].startswith("Incomplete discovery in application 'kcalc'")
     assert response["error"].endswith(
-        "retry when it is idle, or find the element with element_query and act on its ref."
+        "The application is not answering; retry when it is idle, "
+        "or find the element with element_query and act on its ref."
     )
     (resolved,) = _resolve(ref)
     assert resolved["error"].startswith(f"Ref {ref} did not answer")
+    response = _request("action", address={"ref": ref}, action_name="Press")
+    assert response["error"].startswith(f"Ref {ref} did not answer")
     assert atspi.dispatched == []
 
-    # The name read times out, and the app answers right after it: still kcalc.
-    def name_then_answer() -> str:
-        timed_out = app.busy
-        _set_busy(app, False)
-        return "" if timed_out else app.name
+    _set_busy(app, False)
+    assert _request("query", locator={"query": "Seven"}, max_depth=15)["complete"] is True
+    response = _request("action", address=strict, action_name="Press")
+    assert response["ok"] is True, response
+    assert atspi.dispatched == [("Seven", "Press")]
 
-    with monkeypatch.context() as patch:
-        patch.setattr(app, "get_name", name_then_answer)
-        patch.setattr(accessibility, "_APP_NAMES", {})  # not remembered yet
-        scoped = {"query": "Seven", "app": "kcalc"}
-        response = _request("wait", locator=scoped, max_depth=15, until="absent", timeout_ms=0)
-    assert [element["name"] for element in response["result"]["elements"]] == ["Seven"]
 
-    # The app turns busy after the button's count read: its name and children
-    # read as "" and none, and only a later count check notices.
+@pytest.mark.qa("QA-ELEM-023")
+@pytest.mark.parametrize("op", ["absent", "ref", "strict"])
+def test_no_busy_spell_reads_as_a_wrong_result(
+    atspi: _FakeAtspi, monkeypatch: pytest.MonkeyPatch, op: str
+) -> None:
+    # Every read of the app from the k-th to the m-th times out, then it answers
+    # again: a busy spell of any length starting at any read. libatspi answers
+    # most of those reads with plausible values, so only the time they took
+    # shows them.
+    seven = _button("Seven")
+    seven.description = "digit"
+    app = _kcalc(seven, _button("Eight"))
+    app.pid = 4242
+    atspi.apps[:] = [app]
+    # With KWin answering, window mapping reads every top-level's name and extents.
+    monkeypatch.setattr(accessibility, "_kwin_windows", lambda: ([], ""))
+    monkeypatch.setattr(accessibility, "_window_pids", lambda pid, _kwin: frozenset({pid}))
+    (element,) = _query(query="Seven")
+    # The fake has no Atspi.StateType to check state names against.
+    monkeypatch.setattr(accessibility, "_validate_state_nicks", lambda _states: None)
+    reads = 0
+
+    def run() -> dict[str, Any]:
+        if op == "absent":
+            locator = {"query": "Seven", "app": "kcalc"}
+            return _request("wait", locator=locator, max_depth=15, until="absent", timeout_ms=0)
+        if op == "ref":
+            return _request("resolve", refs=[element["ref"]])
+        # Matched by description and states: those reads time out as well.
+        strict = {"strict": {"query": "digit", "states": ["enabled"], "app": "kcalc"}}
+        return _request("action", address=strict, action_name="Press")
+
+    def count() -> bool:
+        nonlocal reads
+        reads += 1
+        return False
+
+    monkeypatch.setattr(_FakeNode, "clock", count)
+    run()
+    total = reads
+    for first in range(1, total + 1):
+        for last in range(first, total + 1):
+            reads = 0
+            atspi.dispatched.clear()
+
+            def spell(first: int = first, last: int = last) -> bool:
+                nonlocal reads
+                reads += 1
+                return first <= reads <= last
+
+            monkeypatch.setattr(_FakeNode, "clock", spell)
+            response = run()
+            where = f"silent from read {first} to {last} of {total}: {response}"
+            if op == "absent":
+                assert response["result"]["satisfied"] is False, where
+            elif op == "ref":
+                (resolved,) = response["result"]
+                if resolved["ok"]:
+                    assert resolved["element"] == element, where
+                else:
+                    assert "did not answer" in resolved["error"], where
+            elif response["ok"]:
+                assert atspi.dispatched == [("Seven", "Press")], where
+            else:
+                assert atspi.dispatched == [], where
+                assert "not answering" in response["error"] or (
+                    "did not answer" in response["error"]
+                ), where
+
+
+@pytest.mark.qa("QA-ELEM-023")
+def test_a_ref_whose_app_does_not_answer_for_its_window_did_not_answer(
+    atspi: _FakeAtspi,
+) -> None:
+    # The element answers, the reads that map its window to a KWin window do not.
+    app = _kcalc(_button())
+    atspi.apps[:] = [app]
+    (ref,) = [element["ref"] for element in _query(query="Seven")]
+    app.busy = True
+    (resolved,) = _resolve(ref)
+    assert resolved["error"].startswith(f"Ref {ref} did not answer"), resolved
+
+
+@pytest.mark.qa("QA-ELEM-023")
+def test_a_slow_answer_reads_as_no_reply(
+    atspi: _FakeAtspi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The bound is the reads' time, not their values: answers that together
+    # took a call timeout may hide one that did not come.
+    app = _kcalc(_button())
+    atspi.apps[:] = [app]
     button = app.children[0].children[0]
 
-    def name_turns_busy() -> str:
-        _set_busy(app, True)
-        return ""
+    def slow_name() -> str:
+        _FakeNode.waited += accessibility._NO_REPLY_S
+        return "Seven"
 
-    with monkeypatch.context() as patch:
-        patch.setattr(button, "get_name", name_turns_busy)
-        response = _request("wait", locator=scoped, max_depth=15, until="absent", timeout_ms=0)
-        assert response["result"]["satisfied"] is False
-        _set_busy(app, False)
-        response = _request("action", address=strict, action_name="Press")
-        assert "The application is not answering; retry when it is idle" in response["error"]
-    assert atspi.dispatched == []
+    monkeypatch.setattr(button, "get_name", slow_name)
+    locator = {"query": "Seven", "app": "kcalc"}
+    response = _request("wait", locator=locator, max_depth=15, until="absent", timeout_ms=0)
+    assert response["result"]["satisfied"] is False
 
-    # Busy between two siblings: the second reads as None, and only the check
-    # after the app's walk notices.
-    _set_busy(app, False)
-    app.children[0].children.append(_button("Eight"))
 
-    def count_then_busy() -> int:
-        _set_busy(app, True)
-        return 0
+@pytest.mark.qa("QA-ELEM-023")
+def test_a_long_list_that_answers_is_read_in_full(
+    atspi: _FakeAtspi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Each child read answers quickly, but together they take longer than a
+    # call timeout: that is not a silent read.
+    rows = [_FakeNode(f"row {index}", "table cell") for index in range(100)]
+    app = _kcalc(_FakeNode("files", "table", rows), _button())
+    atspi.apps[:] = [app]
+    read_child = _FakeNode.get_child_at_index
 
-    with monkeypatch.context() as patch:
-        patch.setattr(button, "get_child_count", count_then_busy)
-        response = _request("action", address={"strict": {"query": "Eight"}}, action_name="Press")
-    assert "could not read the application again" in response["error"]
-    _set_busy(app, False)
+    def slow_child(node: _FakeNode, index: int) -> _FakeNode | None:
+        _FakeNode.waited += accessibility._NO_REPLY_S / 50
+        return read_child(node, index)
 
-    # One count read times out and the app answers right after: not gone.
-    def one_timeout() -> int:
-        return next(replies, 1 if node is app else 0)
-
-    frame = app.children[0]
-    for node, counts in ((button, [-1]), (frame, [-1]), (app, [-1]), (app, [1, -1])):
-        replies = iter(counts)
-        with monkeypatch.context() as patch:
-            patch.setattr(node, "get_child_count", one_timeout)
-            response = _request("wait", locator=scoped, max_depth=15, until="absent", timeout_ms=0)
-        assert response["result"]["satisfied"] is False, node.name
-    assert atspi.dispatched == []
-    app.children[0].children.pop()
-
-    # The count read answers, then the role read times out: still not gone.
-    def role_times_out() -> str:
-        raise RuntimeError(no_reply)
-
-    with monkeypatch.context() as patch:
-        patch.setattr(button, "get_role_name", role_times_out)
-        response = _request("wait", locator=scoped, max_depth=15, until="absent", timeout_ms=0)
-        assert response["result"]["satisfied"] is False
-        (resolved,) = _resolve(ref)
-        assert resolved["error"].startswith(f"Ref {ref} did not answer")
-
-    # The app exits right after the strict walk: a refusal, not a worker error.
-    def no_longer_exists() -> str:
-        msg = "atspi_error: The application no longer exists (0)"
-        raise RuntimeError(msg)
-
-    with monkeypatch.context() as patch:
-        counts = iter([1])
-
-        def count_then_exit() -> int:
-            count = next(counts, -1)
-            if count < 0:
-                patch.setattr(app, "get_role_name", no_longer_exists)
-            return count
-
-        patch.setattr(app, "get_child_count", count_then_exit)
-        response = _request("action", address=strict, action_name="Press")
-    assert response["ok"] is False
-    assert "could not read the application again" in response["error"]
-    assert atspi.dispatched == []
-
-    # Answering again, without the button: now it is gone.
-    _set_busy(app, False)
-    app.children[0].children.clear()
-    response = _request("wait", locator={"query": "Seven"}, max_depth=15, until="absent")
+    monkeypatch.setattr(_FakeNode, "get_child_at_index", slow_child)
+    assert [element["name"] for element in _query(query="Seven")] == ["Seven"]
+    locator = {"query": "Nine", "app": "kcalc"}
+    response = _request("wait", locator=locator, max_depth=15, until="absent", timeout_ms=0)
     assert response["result"]["satisfied"] is True
+    strict = {"strict": {"query": "Seven", "app": "kcalc"}}
+    response = _request("action", address=strict, action_name="Press")
+    assert response["ok"] is True, response
+
+
+@pytest.mark.qa("QA-ELEM-023")
+def test_an_app_with_many_windows_that_answers_is_read_in_full(
+    atspi: _FakeAtspi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Mapping top-levels to KWin windows reads each one: many quick answers
+    # take longer than a call timeout together.
+    menus = [_FakeNode(f"menu {index}", "window") for index in range(40)]
+    app = _kcalc(_button())
+    app.children += menus
+    app.pid = 4242
+    atspi.apps[:] = [app]
+    monkeypatch.setattr(accessibility, "_kwin_windows", lambda: ([], ""))
+    monkeypatch.setattr(accessibility, "_window_pids", lambda pid, _kwin: frozenset({pid}))
+    read_name = _FakeNode.get_name
+
+    def slow_name(node: _FakeNode) -> str:
+        _FakeNode.waited += accessibility._NO_REPLY_S / 20
+        return read_name(node)
+
+    monkeypatch.setattr(_FakeNode, "get_name", slow_name)
+    (element,) = _query(query="Seven")
+    response = _request("query", locator={"query": "Seven"}, max_depth=15)
+    assert response["complete"] is True
+    (resolved,) = _resolve(element["ref"])
+    assert resolved["ok"] is True, resolved
+
+
+@pytest.mark.qa("QA-ELEM-023")
+def test_a_registry_that_does_not_answer_is_not_an_empty_desktop(
+    atspi: _FakeAtspi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The registry lists the applications; it can time out like an app.
+    atspi.apps[:] = [_kcalc(_button())]
+    desktop = _FakeNode("desktop", "desktop frame", atspi.apps, busy=True)
+    namespace = types.SimpleNamespace(**vars(accessibility.Atspi))
+    namespace.get_desktop = lambda _index: desktop
+    monkeypatch.setattr(accessibility, "Atspi", namespace)
+    locator = {"query": "Seven", "app": "kcalc"}
+    response = _request("wait", locator=locator, max_depth=15, until="absent", timeout_ms=0)
+    assert response["result"]["satisfied"] is False
+    response = _request("action", address={"strict": locator}, action_name="Press")
+    assert response["error"].startswith("Incomplete discovery: could not read desktop child")
+    assert "application is not answering" not in response["error"]
 
 
 @pytest.mark.qa("QA-ELEM-036")
@@ -604,7 +702,7 @@ def test_a_destroyed_element_is_gone_not_busy(
     atspi: _FakeAtspi, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # libatspi reads a destroyed element's child count as -1 too, like a busy
-    # app's, but its role read fails with an ordinary error.
+    # app's, but at once, and its role read fails with an ordinary error.
     seven, eight = _button("Seven"), _button("Eight")
     exited = _FakeNode("exited", "application")
 
@@ -625,62 +723,11 @@ def test_a_destroyed_element_is_gone_not_busy(
 
 
 @pytest.mark.qa("QA-ELEM-023")
-@pytest.mark.parametrize("op", ["absent", "ref", "strict"])
-def test_an_app_that_turns_busy_at_any_read_is_not_read_as_gone(
-    atspi: _FakeAtspi, monkeypatch: pytest.MonkeyPatch, op: str
-) -> None:
-    atspi.apps[:] = [_kcalc(_button("Seven"), _button("Eight"))]
-    (ref,) = [element["ref"] for element in _query(query="Seven")]
-    reads = 0
-
-    def run() -> dict[str, Any]:
-        if op == "absent":
-            locator = {"query": "Seven", "app": "kcalc"}
-            return _request("wait", locator=locator, max_depth=15, until="absent", timeout_ms=0)
-        if op == "ref":
-            return _request("resolve", refs=[ref])
-        strict = {"strict": {"query": "Seven", "app": "kcalc"}}
-        return _request("action", address=strict, action_name="Press")
-
-    def count() -> bool:
-        nonlocal reads
-        reads += 1
-        return False
-
-    monkeypatch.setattr(_FakeNode, "clock", count)
-    run()
-    total = reads
-    for first_silent in range(1, total + 1):
-        reads = 0
-        atspi.dispatched.clear()
-
-        def busy_from_here(first_silent: int = first_silent) -> bool:
-            nonlocal reads
-            reads += 1
-            return reads >= first_silent
-
-        monkeypatch.setattr(_FakeNode, "clock", busy_from_here)
-        response = run()
-        where = f"busy from read {first_silent} of {total}: {response}"
-        if op == "absent":
-            assert response["result"]["satisfied"] is False, where
-        elif op == "ref":
-            assert not response["result"][0].get("error", "").startswith("Stale"), where
-        elif not response["ok"]:
-            # Refused during the search, or the chosen element stopped answering.
-            error = response["error"]
-            assert error.startswith("Incomplete discovery") or "did not answer" in error, where
-        else:
-            assert atspi.dispatched == [("Seven", "Press")], where
-
-
-@pytest.mark.qa("QA-ELEM-023")
 def test_a_busy_app_outside_the_scope_stays_out_of_the_search(
     atspi: _FakeAtspi, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    zoo = _FakeNode("window-zoo", "application", [_FakeNode("Zoo", "frame")], pid=1)
+    zoo = _FakeNode("window-zoo", "application", [_FakeNode("Zoo", "frame")])
     kcalc = _kcalc(_button())
-    kcalc.pid = 2
     atspi.apps[:] = [zoo, kcalc]
     scoped = {"strict": {"query": "Seven", "app": "kcalc"}}
     unscoped = {"strict": {"query": "Seven"}}
@@ -715,81 +762,45 @@ def test_a_busy_app_outside_the_scope_stays_out_of_the_search(
     assert response["error"].startswith("Incomplete discovery in application 'window-zoo'")
     assert response["error"].endswith("\nSet app='window-zoo' to scope the search.")
 
-    # Just exited, it still reads as -1 with an ordinary role error: its known
-    # name keeps it out of the scoped search too.
-    atspi.dispatched.clear()
-    _set_busy(zoo, False)
-    zoo.gone = True
-    response = _request("action", address=scoped, action_name="Press")
-    assert response["ok"] is True, response
-
 
 @pytest.mark.qa("QA-ELEM-023")
-def test_apps_without_a_pid_do_not_share_a_remembered_name(atspi: _FakeAtspi) -> None:
-    # libatspi reports a pid it could not read as -1 (4294967295 unsigned).
-    one = _FakeNode("one", "application", [_FakeNode("One", "frame", [_button()])], pid=2**32 - 1)
-    two = _FakeNode("two", "application", [_FakeNode("Two", "frame")], pid=2**32 - 1)
-    atspi.apps[:] = [one, two]
-    assert {element["app"] for element in _query()} == {"one", "two"}
+def test_a_new_app_with_a_reused_pid_starts_unknown(atspi: _FakeAtspi) -> None:
+    other = _FakeNode("otherapp", "application", [_FakeNode("Other", "frame")], pid=5)
+    atspi.apps[:] = [other]
+    assert {element["app"] for element in _query()} == {"otherapp"}
 
-    _set_busy(one, True)
-    response = _request(
-        "action", address={"strict": {"query": "Seven", "app": "one"}}, action_name="Press"
+    # otherapp exits; a new process gets the same pid and is busy from the start.
+    target = _FakeNode(
+        "targetapp", "application", [_FakeNode("Target", "frame", [_button()])], pid=5
     )
-    assert response["error"].startswith("Incomplete discovery"), response
-
-
-@pytest.mark.qa("QA-ELEM-023")
-def test_an_app_that_turns_busy_deep_in_its_tree_is_not_read_again(
-    atspi: _FakeAtspi, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    leaf = _button()
-    node = leaf
-    for _ in range(10):
-        node = _FakeNode("", "panel", [node])
-    app = _kcalc(node)
-    atspi.apps[:] = [app]
-    busy_counts = 0
-    real_count = app.get_child_count
-
-    def counted() -> int:
-        nonlocal busy_counts
-        busy_counts += app.busy
-        return real_count()
-
-    def leaf_turns_busy() -> int:
-        _set_busy(app, True)
-        return -1
-
-    _query(query="Seven")
-    monkeypatch.setattr(app, "get_child_count", counted)
-    monkeypatch.setattr(leaf, "get_child_count", leaf_turns_busy)
-    locator = {"query": "Seven"}
+    _set_busy(target, True)
+    atspi.apps[:] = [target]
+    locator = {"query": "Seven", "app": "targetapp"}
     response = _request("wait", locator=locator, max_depth=15, until="absent", timeout_ms=0)
     assert response["result"]["satisfied"] is False
-    # The silent element ends the app's walk: no further reads of the app.
-    assert busy_counts == 0
+    response = _request("action", address={"strict": locator}, action_name="Press")
+    assert response["error"].startswith("Incomplete discovery"), response
 
 
 @pytest.mark.qa("QA-ELEM-023")
-def test_a_strict_search_refuses_when_a_count_read_times_out_once(
-    atspi: _FakeAtspi, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    app = _kcalc(_button())
-    atspi.apps[:] = [app]
-    replies = iter([-1])
-    frame = app.children[0]
-    monkeypatch.setattr(frame, "get_child_count", lambda: next(replies, 1))
-    response = _request("action", address={"strict": {"query": "Seven"}}, action_name="Press")
-    assert response["error"].startswith("Incomplete discovery"), response
-    assert atspi.dispatched == []
+def test_an_app_really_named_empty_stays_out_of_another_apps_scope(atspi: _FakeAtspi) -> None:
+    nameless = _FakeNode("", "application", [_FakeNode("Nameless", "frame", [_button()])])
+    atspi.apps[:] = [nameless, _kcalc(_button("Eight"))]
+    _query()
+    _set_busy(nameless, True)
+    locator = {"query": "Nine", "app": "kcalc"}
+    response = _request("wait", locator=locator, max_depth=15, until="absent", timeout_ms=0)
+    assert response["result"]["satisfied"] is True
+    strict = {"strict": {"query": "Eight", "app": "kcalc"}}
+    response = _request("action", address=strict, action_name="Press")
+    assert response["ok"] is True, response
 
 
 def test_an_unreadable_app_name_does_not_suggest_scoping(
     atspi: _FakeAtspi, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Every app's name is read before the filter applies, so app= cannot help.
-    broken = _FakeNode("broken", "application", pid=3)
+    broken = _FakeNode("broken", "application")
 
     def name_error() -> str:
         msg = "atspi_error: org.freedesktop.DBus.Error.Failed"
@@ -801,3 +812,28 @@ def test_an_unreadable_app_name_does_not_suggest_scoping(
     response = _request("action", address={"strict": {"query": "Seven"}}, action_name="Press")
     assert response["error"].startswith("Incomplete discovery in application 'broken-process'")
     assert response["error"].endswith("\nFind the element with element_query, then act on its ref.")
+
+
+@pytest.mark.qa("QA-ELEM-023")
+def test_the_worker_sets_the_call_timeout_its_no_reply_bound_relies_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The bound assumes libatspi's timeout, so the worker sets it instead of
+    # relying on the library's default.
+    pinned: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        accessibility, "Atspi", types.SimpleNamespace(set_timeout=lambda *a: pinned.append(a))
+    )
+    # Keep the worker off the test run's own file descriptors.
+    fake_os = types.SimpleNamespace(
+        dup=lambda fd: fd, fdopen=lambda *_a, **_k: io.StringIO(), dup2=lambda *_a: None
+    )
+    monkeypatch.setattr(accessibility, "os", fake_os)
+    stream = types.SimpleNamespace(fileno=lambda: 1)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    monkeypatch.setattr(sys, "stdout", stream)
+    monkeypatch.setattr(sys, "stderr", stream)
+    monkeypatch.setattr(accessibility, "_REFS", _RefTable(generation=1))
+    with warnings.catch_warnings():
+        accessibility._serve(1)
+    assert pinned == [(accessibility._CALL_TIMEOUT_MS, accessibility._STARTUP_MS)]

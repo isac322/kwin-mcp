@@ -456,6 +456,7 @@ async def test_typed_tools_return_schema_valid_structured_content_matching_text(
                     "match": "substring",
                 },
                 "elements": [],
+                "complete": True,
                 "wait": None,
             }, empty
             assert record.calls[-1].text == f"No elements found matching app='{MISSING_NAME}'"
